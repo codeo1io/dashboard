@@ -890,19 +890,19 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
     })
 
   // Real Octokit-backed metadata reader: fetches metadata/repos.yaml from
-  // fro-bot/.github at ref=data via an INSTALLATION token (not App JWT).
-  // The installation is resolved via resolveInstallationIdForRepo('fro-bot', '.github').
+  // codeo1io/.github at ref=data via an INSTALLATION token (not App JWT).
+  // The installation is resolved via resolveInstallationIdForRepo('codeo1io', '.github').
   const metadataReader: MetadataReader =
     deps.metadataReader ??
     (async (path: string, ref: string): Promise<string> => {
-      // Resolve the installation for fro-bot/.github and mint a read-only token.
+      // Resolve the installation for codeo1io/.github and mint a read-only token.
       // This uses an installation token (not App JWT) — App JWT cannot read repo contents.
-      const installationId = await resolveInstallationIdForRepo('fro-bot', '.github')
+      const installationId = await resolveInstallationIdForRepo('codeo1io', '.github')
       const token = await getReadOnlyToken(installationId)
 
       const installOctokit = new Octokit({auth: token})
       const response = await installOctokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
-        owner: 'fro-bot',
+        owner: 'codeo1io',
         repo: '.github',
         path,
         ref,
