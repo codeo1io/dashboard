@@ -1,22 +1,24 @@
 /**
- * ReloadPrompt tests — mocked useRegisterSW.
+ * ReloadPrompt tests — component is a no-op under the SW kill-switch.
  *
- * The virtual:pwa-register/react module is aliased to a stub in vitest.config.ts.
- * We override the stub's return value per test using vi.mocked().mockReturnValue().
+ * SW registration is disabled for this deployment (see sw.ts: the service
+ * worker exists only to remove the old PWA shell from clients). ReloadPrompt
+ * intentionally renders nothing and wires nothing, so these tests pin that
+ * contract: no DOM output in any hook state, and no update-path callbacks
+ * are ever invoked through it.
  */
 
-import {render, screen, fireEvent} from '@testing-library/react'
+import {render, screen} from '@testing-library/react'
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 import * as pwaRegister from 'virtual:pwa-register/react'
 import {ReloadPrompt} from './ReloadPrompt.tsx'
 
-describe('ReloadPrompt', () => {
+describe('ReloadPrompt (no-op under SW kill-switch)', () => {
   const mockUpdateServiceWorker = vi.fn()
   const mockSetNeedRefresh = vi.fn()
 
   beforeEach(() => {
     vi.clearAllMocks()
-    // Default: no refresh needed
     vi.mocked(pwaRegister.useRegisterSW).mockReturnValue({
       needRefresh: [false, mockSetNeedRefresh],
       offlineReady: [false, vi.fn()],
@@ -24,93 +26,23 @@ describe('ReloadPrompt', () => {
     })
   })
 
-  it('renders nothing when needRefresh is false', () => {
+  it('renders nothing regardless of needRefresh state', () => {
+    vi.mocked(pwaRegister.useRegisterSW).mockReturnValue({
+      needRefresh: [true, mockSetNeedRefresh],
+      offlineReady: [false, vi.fn()],
+      updateServiceWorker: mockUpdateServiceWorker,
+    })
     render(<ReloadPrompt />)
     expect(screen.queryByTestId('reload-prompt')).toBeNull()
   })
 
-  it('renders the update banner when needRefresh is true', () => {
-    vi.mocked(pwaRegister.useRegisterSW).mockReturnValue({
-      needRefresh: [true, mockSetNeedRefresh],
-      offlineReady: [false, vi.fn()],
-      updateServiceWorker: mockUpdateServiceWorker,
-    })
+  it('never invokes updateServiceWorker — the update path is gone with the SW', () => {
     render(<ReloadPrompt />)
-    expect(screen.getByTestId('reload-prompt')).toBeInTheDocument()
-    expect(screen.getByText('New version available')).toBeInTheDocument()
-  })
-
-  it('calls updateServiceWorker(true) when Refresh is clicked — activates waiting SW and reloads', () => {
-    vi.mocked(pwaRegister.useRegisterSW).mockReturnValue({
-      needRefresh: [true, mockSetNeedRefresh],
-      offlineReady: [false, vi.fn()],
-      updateServiceWorker: mockUpdateServiceWorker,
-    })
-    render(<ReloadPrompt />)
-    fireEvent.click(screen.getByTestId('reload-prompt-refresh'))
-    expect(mockUpdateServiceWorker).toHaveBeenCalledTimes(1)
-    // Must pass true so vite-plugin-pwa skips waiting, activates the new SW, and reloads.
-    expect(mockUpdateServiceWorker).toHaveBeenCalledWith(true)
-  })
-
-  it('calls setNeedRefresh(false) when dismiss is clicked', () => {
-    vi.mocked(pwaRegister.useRegisterSW).mockReturnValue({
-      needRefresh: [true, mockSetNeedRefresh],
-      offlineReady: [false, vi.fn()],
-      updateServiceWorker: mockUpdateServiceWorker,
-    })
-    render(<ReloadPrompt />)
-    fireEvent.click(screen.getByTestId('reload-prompt-dismiss'))
-    expect(mockSetNeedRefresh).toHaveBeenCalledWith(false)
-  })
-
-  it('does not call updateServiceWorker when dismiss is clicked', () => {
-    vi.mocked(pwaRegister.useRegisterSW).mockReturnValue({
-      needRefresh: [true, mockSetNeedRefresh],
-      offlineReady: [false, vi.fn()],
-      updateServiceWorker: mockUpdateServiceWorker,
-    })
-    render(<ReloadPrompt />)
-    fireEvent.click(screen.getByTestId('reload-prompt-dismiss'))
     expect(mockUpdateServiceWorker).not.toHaveBeenCalled()
   })
 
-  it('uses role=status (polite) for the non-urgent update notice', () => {
-    vi.mocked(pwaRegister.useRegisterSW).mockReturnValue({
-      needRefresh: [true, mockSetNeedRefresh],
-      offlineReady: [false, vi.fn()],
-      updateServiceWorker: mockUpdateServiceWorker,
-    })
+  it('never invokes setNeedRefresh — no banner state is wired', () => {
     render(<ReloadPrompt />)
-    expect(screen.getByRole('status')).toBeInTheDocument()
-  })
-
-  it('hourly interval calls registration.update() — NOT updateServiceWorker (no silent skip-waiting/reload)', () => {
-    vi.useFakeTimers()
-    const mockRegistrationUpdate = vi.fn().mockResolvedValue(undefined)
-    // Make the hook invoke onRegisteredSW with a fake registration whose update()
-    // we can observe, mirroring vite-plugin-pwa's real callback.
-    vi.mocked(pwaRegister.useRegisterSW).mockImplementation(
-      (options?: {onRegisteredSW?: (url: string, reg: ServiceWorkerRegistration) => void}) => {
-        options?.onRegisteredSW?.('/sw.js', {
-          update: mockRegistrationUpdate,
-        } as unknown as ServiceWorkerRegistration)
-        return {
-          needRefresh: [false, mockSetNeedRefresh],
-          offlineReady: [false, vi.fn()],
-          updateServiceWorker: mockUpdateServiceWorker,
-        }
-      },
-    )
-
-    render(<ReloadPrompt />)
-    // Advance one hour to fire the interval.
-    vi.advanceTimersByTime(60 * 60 * 1000)
-
-    expect(mockRegistrationUpdate).toHaveBeenCalledTimes(1)
-    // The interval must NOT activate the waiting SW (that bypasses the prompt).
-    expect(mockUpdateServiceWorker).not.toHaveBeenCalled()
-
-    vi.useRealTimers()
+    expect(mockSetNeedRefresh).not.toHaveBeenCalled()
   })
 })

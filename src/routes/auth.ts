@@ -75,7 +75,7 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
     // CSRF check compares query param state vs cookie state (exact match).
     setCookie(c, STATE_COOKIE_NAME, state, {
       httpOnly: true,
-      secure: c.req.url.startsWith("https://") || c.req.header("x-forwarded-proto") === "https",
+      secure: c.req.url.startsWith('https://') || c.req.header('x-forwarded-proto') === 'https',
       sameSite: 'Lax',
       maxAge: STATE_COOKIE_MAX_AGE,
       path: '/auth',
@@ -145,7 +145,7 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
     const sessionValue = sessionManager.sign(login)
     setCookie(c, SESSION_COOKIE_NAME, sessionValue, {
       httpOnly: true,
-      secure: c.req.url.startsWith("https://") || c.req.header("x-forwarded-proto") === "https",
+      secure: c.req.url.startsWith('https://') || c.req.header('x-forwarded-proto') === 'https',
       sameSite: 'Lax',
       maxAge: 24 * 60 * 60,
       path: '/',
