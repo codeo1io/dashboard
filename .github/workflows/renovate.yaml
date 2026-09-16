@@ -1,6 +1,6 @@
 ---
 # Renovate this repository if Renovate-specific tasks are checked or if dispatched.
-name: Renovate
+name: Renovate (disabled - external reusable workflow runs on GitHub-hosted runners)
 
 on:
   issues:
