@@ -352,15 +352,31 @@ jobs:
           node-version: '24'
 
       # Mint the publication token only after all third-party actions have completed.
+      # Fork posture: this repository runs without APPLICATION_ID/APPLICATION_PRIVATE_KEY
+      # (no release App is installed), so the token mint is skipped and the App-gated
+      # publication steps below degrade to a warning — mirroring the dispatch job's
+      # unprovisioned-secret contract. The scanned image is still published to GHCR by
+      # the ci-<run> tag from the build step, and :latest promotion needs no App token.
       - name: 🤖 Get App token for publication
         id: app-token
+        if: ${{ secrets.APPLICATION_ID != '' && secrets.APPLICATION_PRIVATE_KEY != '' }}
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.APPLICATION_ID }}
           private-key: ${{ secrets.APPLICATION_PRIVATE_KEY }}
 
+      - name: ⚠️ Publication credentials not provisioned
+        if: ${{ secrets.APPLICATION_ID == '' || secrets.APPLICATION_PRIVATE_KEY == '' }}
+        run: >-
+          echo "::warning title=CalVer release skipped::APPLICATION_ID/APPLICATION_PRIVATE_KEY
+          are not configured in this repository — skipping release-tag creation and
+          CalVer/sha image promotion. The scanned image is published as
+          ghcr.io/${{ github.repository }}:ci-${{ github.run_id }}-${{ github.run_attempt }}
+          and :latest."
+
       - name: 🏷️ Create release tag
         id: calver
+        if: ${{ steps.app-token.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
@@ -392,6 +408,7 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: 📦 Promote release-unique image tags
+        if: ${{ steps.app-token.outcome == 'success' }}
         run: |
           CALVER="${{ steps.calver.outputs.tag }}"
           SRC="ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"
@@ -424,6 +441,7 @@ jobs:
           echo "digest verification OK"
 
       - name: 🚀 Create GitHub Release
+        if: ${{ steps.app-token.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
