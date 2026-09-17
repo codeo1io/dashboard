@@ -36,6 +36,16 @@ FROM node:24-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b
 
 WORKDIR /app
 
+# Patch OS packages that have a published distro fix the pinned base digest has
+# not yet absorbed (digest verified current against the registry; renovate is
+# absent in this fork so pins move only by hand). Only packages named here are
+# upgraded — the delta stays auditable against the pinned digest. Triage order:
+# docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md
+# 2026-09-17: libpcre2-8-0 10.42-1 -> 10.42-1+deb12u1 (CVE-2026-86145/89157/89161, HIGH, fixed)
+RUN apt-get update \
+      && apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0 \
+      && rm -rf /var/lib/apt/lists/*
+
 # Copy only the production dependency tree. Package manifests and package-manager
 # state never enter the final image.
 COPY --from=prod-deps /app/node_modules/ ./node_modules/
