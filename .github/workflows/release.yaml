@@ -435,10 +435,15 @@ jobs:
             done
           done
 
+          # NOTE: buildx v0.30.1 on the self-hosted runner prints the default pretty
+          # dump for `imagetools inspect --format '{{.Manifest.Digest}}'` on
+          # attestation-bearing OCI indexes (template silently ignored, exit 0), so
+          # parse the Digest line from the default output instead of trusting the
+          # template across buildx versions.
           for TAG in "$CALVER" "sha-${SHORT_SHA}"; do
             got=$(docker buildx imagetools inspect \
               "ghcr.io/${{ github.repository }}:$TAG" \
-              --format '{{.Manifest.Digest}}')
+              | awk '/^Digest:/{print $2; exit}')
             if [ "$got" != "${{ steps.build.outputs.digest }}" ]; then
               echo "DIGEST MISMATCH on $TAG: got=$got expected=${{ steps.build.outputs.digest }}"
               exit 1
@@ -476,7 +481,7 @@ jobs:
                 --tag "ghcr.io/${{ github.repository }}:latest" "$SRC" \
                 && got="$(docker buildx imagetools inspect \
                   "ghcr.io/${{ github.repository }}:latest" \
-                  --format '{{.Manifest.Digest}}')" \
+                  | awk '/^Digest:/{print $2; exit}')" \
                 && [ "$got" = "${{ steps.build.outputs.digest }}" ]; then
               verified=1
               break
