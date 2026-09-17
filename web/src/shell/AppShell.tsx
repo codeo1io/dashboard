@@ -36,6 +36,57 @@ function teardownPushOnLogout(): Promise<unknown> {
   }).catch(() => undefined)
 }
 
+/**
+ * Arctic (default) auth mode logout. The gateway operator surface is not
+ * mounted in this mode, so `handleLogout` lands here after the gateway CSRF
+ * fetch fails. Uses the Arctic contract: GET /auth/logout-csrf returns the
+ * HMAC-derived token, then POST /auth/logout submits it form-encoded so the
+ * server clears the 24h session cookie (HttpOnly — the client cannot clear it
+ * itself). Every failure path still fails closed to the login page.
+ */
+async function arcticLogout(): Promise<void> {
+  try {
+    const csrfRes = await fetch('/auth/logout-csrf', {credentials: 'same-origin'})
+    if (!csrfRes.ok) {
+      redirectToLogin()
+      return
+    }
+
+    const csrfBody: unknown = await csrfRes.json().catch(() => null)
+    const csrfToken =
+      csrfBody !== null && typeof csrfBody === 'object' && 'csrfToken' in csrfBody
+        ? (csrfBody as {csrfToken: unknown}).csrfToken
+        : undefined
+    if (typeof csrfToken !== 'string' || csrfToken.length === 0) {
+      redirectToLogin()
+      return
+    }
+
+    // Same best-effort push teardown discipline as the gateway branch:
+    // bounded by Promise.allSettled so it can never block navigation.
+    const [logoutSettled] = await Promise.allSettled([
+      fetch('/auth/logout', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {'content-type': 'application/x-www-form-urlencoded'},
+        body: new URLSearchParams({csrf_token: csrfToken}).toString(),
+      }),
+      teardownPushOnLogout(),
+    ])
+
+    // The server answers the successful logout with a 302 to /auth/login;
+    // fetch follows it, so any non-ok outcome is a real failure.
+    if (logoutSettled.status !== 'fulfilled' || !logoutSettled.value.ok) {
+      redirectToLogin()
+      return
+    }
+    await logoutSettled.value.text().catch(() => undefined)
+  } catch {
+    // Network error — fail closed.
+  }
+  redirectToLogin()
+}
+
 // Fail-closed redirect target for any logout outcome (success or failure).
 // The Gateway session cookie is HttpOnly — it cannot be cleared client-side,
 // so failure paths navigate here too and rely on server-side reauth.
@@ -127,7 +178,11 @@ export function AppShell({
     try {
       const csrfRes = await fetch('/operator/session/csrf', {credentials: 'same-origin'})
       if (!csrfRes.ok) {
-        redirectToLogin()
+        // Arctic (default) auth mode: the gateway operator session surface is
+        // not mounted here, so this fetch 404s. Complete the logout through
+        // the Arctic contract so the server-side session cookie is actually
+        // cleared; arcticLogout fails closed to the login page on any error.
+        await arcticLogout()
         return
       }
 

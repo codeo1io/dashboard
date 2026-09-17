@@ -66,15 +66,21 @@ function nonOkResponse(status = 500) {
 }
 
 // Routes fetch to CSRF/logout handlers by URL; anything else throws so an
-// unexpected call fails the test loudly instead of hanging.
+// unexpected call fails the test loudly instead of hanging. Arctic-mode
+// routes (/auth/logout-csrf, POST /auth/logout) must be checked before the
+// bare /auth/logout prefix so the CSRF GET doesn't match the POST route.
 function mockLogoutFetch(routes: {
   csrf?: () => Response | Promise<Response>
   logout?: () => Response | Promise<Response>
+  arcticCsrf?: () => Response | Promise<Response>
+  arcticLogout?: () => Response | Promise<Response>
 }) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = requestUrl(input)
     if (url.includes('/operator/session/csrf') && routes.csrf) return routes.csrf()
     if (url.includes('/operator/auth/logout') && routes.logout) return routes.logout()
+    if (url.includes('/auth/logout-csrf') && routes.arcticCsrf) return routes.arcticCsrf()
+    if (url.includes('/auth/logout') && routes.arcticLogout) return routes.arcticLogout()
     throw new Error(`unexpected fetch: ${url}`)
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -297,10 +303,13 @@ describe('AppShell', () => {
     })
   })
 
-  it('redirects to /auth/login and skips the logout POST when the CSRF endpoint is non-ok', async () => {
+  it('redirects to /auth/login when the gateway CSRF is non-ok and the Arctic logout is unavailable', async () => {
     spyOnPurgeOperatorCache()
     const location = stubLocation()
-    const fetchMock = mockLogoutFetch({csrf: () => nonOkResponse()})
+    const fetchMock = mockLogoutFetch({
+      csrf: () => nonOkResponse(404),
+      arcticCsrf: () => nonOkResponse(404),
+    })
 
     render(<AppShell>content</AppShell>)
     fireEvent.click(screen.getByTestId('logout-button'))
@@ -309,7 +318,64 @@ describe('AppShell', () => {
       expect(location.href).toBe('/auth/login')
     })
 
+    // The Arctic fallback was attempted before failing closed.
+    expect(findFetchCall(fetchMock, '/auth/logout-csrf')).toBeDefined()
     expect(findFetchCall(fetchMock, '/operator/auth/logout')).toBeUndefined()
+  })
+
+  it('Arctic mode: falls back to /auth logout when the gateway CSRF 404s, clearing the session cookie server-side', async () => {
+    spyOnPurgeOperatorCache()
+    const location = stubLocation()
+    const fetchMock = mockLogoutFetch({
+      csrf: () => nonOkResponse(404),
+      arcticCsrf: csrfOkResponse,
+      arcticLogout: logoutOkResponse,
+    })
+
+    render(<AppShell>content</AppShell>)
+    fireEvent.click(screen.getByTestId('logout-button'))
+
+    await vi.waitFor(() => {
+      // Match the POST /auth/logout call specifically (the earlier
+      // GET /auth/logout-csrf URL also contains the /auth/logout prefix).
+      const logoutCall = fetchMock.mock.calls.find(
+        ([input]) =>
+          requestUrl(input).includes('/auth/logout') &&
+          !requestUrl(input).includes('/auth/logout-csrf'),
+      ) as [RequestInfo | URL, RequestInit] | undefined
+      expect(logoutCall).toBeDefined()
+      const [, init] = logoutCall ?? []
+      expect(init?.method).toBe('POST')
+      expect(init?.credentials).toBe('same-origin')
+      expect(new Headers(init?.headers).get('content-type')).toBe(
+        'application/x-www-form-urlencoded',
+      )
+      expect(init?.body).toBe('csrf_token=test-csrf-token')
+    })
+
+    await vi.waitFor(() => {
+      expect(location.href).toBe('/auth/login')
+    })
+
+    // Never posts to the gateway-only endpoint in Arctic mode.
+    expect(findFetchCall(fetchMock, '/operator/auth/logout')).toBeUndefined()
+  })
+
+  it('Arctic mode: redirects to /auth/login when the Arctic logout POST is non-ok', async () => {
+    spyOnPurgeOperatorCache()
+    const location = stubLocation()
+    mockLogoutFetch({
+      csrf: () => nonOkResponse(404),
+      arcticCsrf: csrfOkResponse,
+      arcticLogout: () => nonOkResponse(403),
+    })
+
+    render(<AppShell>content</AppShell>)
+    fireEvent.click(screen.getByTestId('logout-button'))
+
+    await vi.waitFor(() => {
+      expect(location.href).toBe('/auth/login')
+    })
   })
 
   it('redirects to /auth/login when the logout POST is non-ok', async () => {
