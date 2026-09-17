@@ -43,7 +43,8 @@ concurrency:
 env:
   PR_REVIEW_PROMPT: |
     You are a skeptical reviewer for fro-bot/dashboard — a TypeScript Hono
-    read-only monitoring dashboard (Node 24 native TS, pnpm, no build step).
+    read-only monitoring dashboard — never a write code path
+    (Node 24 native TS, pnpm, no build step).
     Focus on correctness, security, and breaking changes. Prefer false positives
     over false negatives for security issues.
 
@@ -100,7 +101,8 @@ env:
 
   SCHEDULE_PROMPT: |
     Run the daily Fro Bot pass for fro-bot/dashboard — a TypeScript Hono
-    read-only monitoring dashboard (Node 24 native TS, pnpm, no build step).
+    read-only monitoring dashboard — never a write code path
+    (Node 24 native TS, pnpm, no build step).
     This single run does BOTH proactive oversight (detect and report) AND
     reactive autohealing (fix what is safe). Prioritize minimal, reversible
     changes. Read the canonical context first: README.md,
@@ -290,6 +292,12 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
+          # Review-path triggers withhold credentials from the agent; don't leave one in the workspace.
+          # Schedule/dispatch keep it because branch-pr delivery pushes with it.
+          persist-credentials: >-
+            ${{
+            !contains(fromJSON('["pull_request", "issue_comment", "issues"]'), github.event_name)
+            }}
           # Always check out the default/workflow ref — never PR-head code. On
           # issue_comment the fork guard cannot see PR fork status (the event has
           # no github.event.pull_request), so checking out refs/pull/<n>/head would
@@ -302,7 +310,7 @@ jobs:
 
       - name: Run Fro Bot
         id: fro-bot-agent
-        uses: fro-bot/agent@994357c38748c9555e218468b20f4807e742d817 # v0.98.2
+        uses: fro-bot/agent@43023e5b9755fe307c03ede1067cc182564d30e3 # v0.113.2
         env:
           OPENCODE_PROMPT_ARTIFACT: 'true'
           TASK_PROMPT: >-
@@ -314,6 +322,13 @@ jobs:
             }}
         with:
           github-token: ${{ secrets.FRO_BOT_PAT }}
+          # Scheduled runs need branch-pr; this workflow has no caller-side PR step.
+          # Scope it to those triggers so other events stay on auto.
+          output-mode: >-
+            ${{
+            (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+            && 'branch-pr' || 'auto'
+            }}
           auth-json: ${{ secrets.OPENCODE_AUTH_JSON }}
           model: ${{ vars.FRO_BOT_MODEL }}
           opencode-config: ${{ secrets.OPENCODE_CONFIG }}
