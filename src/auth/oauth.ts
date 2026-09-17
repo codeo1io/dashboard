@@ -139,7 +139,12 @@ export async function fetchGitHubUserLogin(accessToken: string): Promise<string>
     throw new Error(`GitHub /user request failed: ${res.status}`)
   }
 
-  const data: unknown = await res.json()
+  let data: unknown
+  try {
+    data = await res.json()
+  } catch {
+    throw new Error('GitHub /user response was not valid JSON')
+  }
   if (data === null || typeof data !== 'object') {
     throw new TypeError('GitHub /user response is not an object')
   }
