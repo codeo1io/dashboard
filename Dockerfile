@@ -1,7 +1,7 @@
 FROM node:24-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS builder
 
 # Enable corepack for pnpm
-RUN corepack enable && corepack prepare pnpm@11.8.0 --activate
+RUN corepack enable && corepack prepare pnpm@11.27.0 --activate
 
 WORKDIR /app
 
@@ -21,7 +21,7 @@ RUN pnpm build:web
 FROM node:24-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS prod-deps
 
 # Enable corepack for pnpm
-RUN corepack enable && corepack prepare pnpm@11.8.0 --activate
+RUN corepack enable && corepack prepare pnpm@11.27.0 --activate
 
 WORKDIR /app
 
