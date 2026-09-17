@@ -116,7 +116,7 @@ jobs:
     needs: [guard]
     if: needs.guard.outputs.should-release == 'true'
     runs-on: self-hosted
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
