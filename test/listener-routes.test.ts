@@ -131,6 +131,100 @@ describe('operator listener channel routes', () => {
     expect(res.status).toBe(413)
   })
 
+  it('POST /ingest with oversized declared Content-Length → 413 before reading any body bytes', async () => {
+    const app = await buildTestApp({listenerStore: store, listenerIngestKey: INGEST_KEY})
+
+    let pulledBytes = 0
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulledBytes += 8192
+        controller.enqueue(new Uint8Array(8192))
+      },
+    })
+
+    const req = new Request('http://localhost/api/listener/ingest', {
+      method: 'POST',
+      headers: {
+        ...ingestHeaders('whatever'),
+        'content-length': String(1024 * 1024),
+      },
+      body: endless,
+      duplex: 'half',
+    })
+
+    const res = await app.request(req)
+    expect(res.status).toBe(413)
+    // The precheck must reject on the declared length alone: the handler
+    // reads nothing. (Hono's request adapter itself probes at most one
+    // chunk — 8 KiB here — regardless of the handler, so the assertable
+    // invariant is "bounded to a single chunk", never the declared 1 MiB.)
+    expect(pulledBytes).toBeLessThanOrEqual(8192)
+  })
+
+  it('POST /ingest chunked body over the cap → 413 with the stream cancelled, not drained', async () => {
+    const app = await buildTestApp({listenerStore: store, listenerIngestKey: INGEST_KEY})
+
+    let pulledChunks = 0
+    const chunk = new Uint8Array(8192) // 8 chunks × 8 KiB = 64 KiB total, cap is 16 KiB
+    const oversized = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulledChunks += 1
+        controller.enqueue(chunk)
+      },
+      cancel() {
+        /* reader.cancel() after crossing the cap lands here */
+      },
+    })
+
+    const req = new Request('http://localhost/api/listener/ingest', {
+      method: 'POST',
+      headers: ingestHeaders('x'),
+      body: oversized,
+      duplex: 'half',
+    })
+
+    const res = await app.request(req)
+    expect(res.status).toBe(413)
+    // The reader must stop as soon as the running total crosses the cap:
+    // 8 KiB + 8 KiB + 8 KiB = 24 KiB pulled, then cancel — never all 8 chunks.
+    expect(pulledChunks).toBe(3)
+  })
+
+  it('POST /ingest stream body within the cap is decoded and processed normally', async () => {
+    const app = await buildTestApp({listenerStore: store, listenerIngestKey: INGEST_KEY})
+    const validBody = JSON.stringify({
+      source: 'infra',
+      kind: 'deploy-health',
+      severity: 'warning',
+      title: 'streamed',
+      body: 'chunked but small',
+      createdAt: '2026-07-11T12:00:00Z',
+    })
+    const encoder = new TextEncoder()
+    const mid = Math.floor(validBody.length / 2)
+    const chunkA = encoder.encode(validBody.slice(0, mid))
+    const chunkB = encoder.encode(validBody.slice(mid))
+    const splitBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(chunkA)
+        controller.enqueue(chunkB)
+        controller.close()
+      },
+    })
+
+    const req = new Request('http://localhost/api/listener/ingest', {
+      method: 'POST',
+      headers: ingestHeaders(validBody),
+      body: splitBody,
+      duplex: 'half',
+    })
+
+    const res = await app.request(req)
+    expect(res.status).toBe(202)
+    const json = (await res.json()) as {id: string}
+    expect(typeof json.id).toBe('string')
+  })
+
   it('GET /api/listener/messages WITHOUT a session cookie → denied', async () => {
     const app = await buildTestApp({listenerStore: store, listenerIngestKey: INGEST_KEY})
     const res = await app.request('/api/listener/messages')
