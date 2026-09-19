@@ -25,5 +25,5 @@ runs:
 
     - name: Install dependencies
       run: pnpm install --frozen-lockfile
-      shell: bash -Eeuo pipefail
+      shell: bash -Eeuo pipefail {0}
   using: composite
