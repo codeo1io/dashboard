@@ -8,6 +8,11 @@ inputs:
     description: Cache version. Can be incremented to invalidate the cache.
     required: false
 
+# 2026-09-19: the pnpm-store actions/cache round-trip was removed. This action
+# runs on a self-hosted runner whose pnpm store persists on local disk across
+# jobs, so the GitHub cache-service upload/download was pure overhead (each of
+# the six jobs in Main paid it; measured 1-3 min per job of cache restore+save
+# against a store that was already warm on disk).
 runs:
   steps:
     - name: Install pnpm
@@ -17,33 +22,8 @@ runs:
       uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
       with:
         node-version: '24'
-        cache: pnpm
-
-    - id: configure-cache
-      name: Configure cache
-      run: |
-        pnpm_store_path="$(pnpm store path --silent)"
-        if [ -z "$pnpm_store_path" ]; then
-          echo "Failed to get pnpm store path"
-          exit 1
-        fi
-        mkdir -p "$pnpm_store_path" || exit 1
-        echo "path=$pnpm_store_path" >> $GITHUB_OUTPUT
-        year_month=$(date -u '+%Y-%m')
-        base_key="pnpm-store-v${{ inputs.cache-version }}-${{ runner.os }}-${year_month}-"
-        echo "key=${base_key}${{ hashFiles('**/pnpm-lock.yaml') }}" >> $GITHUB_OUTPUT
-        echo "restore-keys=${base_key}" >> $GITHUB_OUTPUT
-      shell: bash -Eeuo pipefail {0}
-
-    - name: Restore pnpm store cache
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-      with:
-        key: ${{ steps.configure-cache.outputs.key }}
-        path: ${{ steps.configure-cache.outputs.path }}
-        restore-keys: ${{ steps.configure-cache.outputs.restore-keys }}
 
     - name: Install dependencies
       run: pnpm install --frozen-lockfile
-      shell: bash -Eeuo pipefail {0}
-
+      shell: bash -Eeuo pipefail
   using: composite
