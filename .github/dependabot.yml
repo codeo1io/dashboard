@@ -1,0 +1,44 @@
+# Dependency automation for codeo1io/dashboard.
+#
+# Why this exists: Renovate has never run on this fork (shared fro-bot config in
+# .github/renovate.json5, but no Renovate app installation — 1 PR total in repo
+# history, manual). Upstream fro-bot/dashboard receives automated dependency PRs
+# continuously; this fork moves only by manual upstream merges without this file.
+#
+# Conventions honored:
+# - GitHub Actions updates preserve the repo's commit-SHA pinning style.
+# - Grouped updates: the fork has ONE self-hosted runner, so every PR's checks
+#   serialize behind everything else — one grouped PR per ecosystem per week
+#   instead of a PR per dependency.
+# - Weekly cadence, low open-PR cap, to keep the runner queue shallow.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        patterns:
+          - '*'
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      npm-and-workspaces:
+        patterns:
+          - '*'
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      docker:
+        patterns:
+          - '*'
