@@ -38,6 +38,11 @@ view of Fro Bot's cross-repo footprint.
 - `docs/solutions/` — documented solutions to past problems, organized by category
   with YAML frontmatter (`module`, `tags`, `problem_type`). Relevant when
   implementing or debugging in documented areas.
+- Validate workflows with actionlint via the container form (see
+  `docs/solutions/workflow-issues/actionlint-pipx-missing-container-form-2026-09-19.md`)
+  — the self-hosted runner has no pipx.
+- New `.yaml`/`.yml` files must single-quote string values — eslint's `yml` plugin
+  enforces `yml/quotes` repo-wide (`pnpm lint`), e.g. `patterns: ['*']` in dependabot groups.
 - `.agents/skills/` is the canonical home for cross-harness agent skills (read by
   both OpenCode and GitHub Copilot). Install shared skills there, not per-harness:
   e.g. `npx impeccable skills install --providers=agents --scope=project`. The CI
@@ -60,6 +65,10 @@ view of Fro Bot's cross-repo footprint.
   workflow now sets `branch-pr` for those triggers; verify delivery by confirming a
   fro-bot-authored PR exists, not by reading run status. See
   `docs/solutions/workflow-issues/workflow-output-mode-auto-discarded-agent-fixes-2026-08-31.md`.
+- The `Fro Bot` workflow on this fork is `disabled_manually` (verified 2026-09-19):
+  codeo1io/dashboard has no `FRO_BOT_PAT` secret, so the daily cron would fail on
+  every run. Re-enabling it without provisioning that secret resurrects the failing
+  cron — check `gh workflow list` state and secret presence before flipping it back on.
 
 ## Cloned Dependency Source
 
