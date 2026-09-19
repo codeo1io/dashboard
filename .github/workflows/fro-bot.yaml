@@ -259,7 +259,13 @@ jobs:
   fro-bot:
     name: Fro Bot
     runs-on: self-hosted
+    # 2026-09-19: this repo has no FRO_BOT_PAT secret configured, so the job's
+    # token input is empty and every scheduled run fails at input validation
+    # ("Input required and not supplied: token"). Skip scheduled runs until the
+    # secret exists (manual dispatch with the secret set still runs).
     if: >-
+      (
+      (github.event_name != 'schedule' || secrets.FRO_BOT_PAT != '') &&
       (
         github.event.pull_request == null ||
         (
@@ -286,6 +292,7 @@ jobs:
           (github.event.comment.user.login || '') != 'fro-bot' &&
           contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association || '')
         )
+      )
       )
     steps:
       - name: Checkout repository
