@@ -69,9 +69,9 @@ test.beforeEach(async ({page}) => {
       return
     }
     let css = await response.text()
-    if (css.includes('prefers-color-scheme: light')) {
-      css = css.replace(/@media \(prefers-color-scheme: light\) \{[\s\S]*?\n\}/g, '')
-    }
+    // Minified bundles write `(prefers-color-scheme:light)` — no space.
+    css = css.replace(/@media\s*\(prefers-color-scheme:\s*light\)\s*\{[\s\S]*?\n\}/g, '')
+    css = css.replace(/@media\s*\(prefers-color-scheme:\s*light\)\s*\{(?:[^{}]|\{[^{}]*\})*\}/g, '')
     await route.fulfill({response, body: css})
   })
 })
