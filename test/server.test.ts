@@ -207,7 +207,7 @@ describe('buildSnapshotProvider — auth topology regression tests', () => {
    * If the metadata reader were reverted to App JWT, it would bypass the
    * resolveInstallationIdForRepo call entirely.
    */
-  it('metadata read uses installation token (not App JWT): resolveInstallationIdForRepo is called for fro-bot/.github', async () => {
+  it('metadata read uses installation token (not App JWT): resolveInstallationIdForRepo is called for codeo1io/.github', async () => {
     const resolveInstallationIdForRepo = vi.fn().mockResolvedValue(42)
 
     // Fake metadata reader that records which installation was resolved
@@ -216,7 +216,7 @@ describe('buildSnapshotProvider — auth topology regression tests', () => {
     const fakeMetadataReader = vi.fn().mockResolvedValue('version: 1\nrepos: []\n')
     const fakeEnumerate = vi.fn().mockResolvedValue({
       success: true,
-      data: {repos: [], installations: [{id: 42, account: 'fro-bot'}]},
+      data: {repos: [], installations: [{id: 42, account: 'codeo1io'}]},
     })
     const fakeGraphqlQuery = vi.fn().mockResolvedValue({repository: null})
 
@@ -241,17 +241,17 @@ describe('buildSnapshotProvider — auth topology regression tests', () => {
 
   /**
    * Metadata installation resolution: when two installations exist,
-   * resolveInstallationIdForRepo('fro-bot', '.github') must return the
-   * fro-bot installation (id=2), not the first one (id=1).
+   * resolveInstallationIdForRepo('codeo1io', '.github') must return the
+   * codeo1io installation (id=2), not the first one (id=1).
    * The metadata reader must use installation 2's token.
    */
-  it('metadata installation resolution: resolveInstallationIdForRepo returns correct install for fro-bot/.github', async () => {
+  it('metadata installation resolution: resolveInstallationIdForRepo returns correct install for codeo1io/.github', async () => {
     const installations = [
       {id: 1, account: 'marcusrbrown'},
-      {id: 2, account: 'fro-bot'},
+      {id: 2, account: 'codeo1io'},
     ]
 
-    // resolveInstallationIdForRepo should return 2 for fro-bot/.github
+    // resolveInstallationIdForRepo should return 2 for codeo1io/.github
     const resolveInstallationIdForRepo = vi.fn().mockImplementation(async (owner: string, _name: string) => {
       const install = installations.find(i => i.account === owner)
       if (install === undefined) throw new Error(`No installation for ${owner}`)
@@ -285,11 +285,11 @@ describe('buildSnapshotProvider — auth topology regression tests', () => {
 
   /**
    * Reversed installation order: same test with installations in reversed order.
-   * The resolver must still return the correct installation for fro-bot/.github.
+   * The resolver must still return the correct installation for codeo1io/.github.
    */
   it('metadata installation resolution: works with reversed installation order', async () => {
     const installations = [
-      {id: 2, account: 'fro-bot'},
+      {id: 2, account: 'codeo1io'},
       {id: 1, account: 'marcusrbrown'},
     ]
 

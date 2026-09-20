@@ -101,14 +101,20 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
       return c.text('Bad Request: missing code', 400)
     }
 
-    // CSRF: state must be present in both cookie and query, and must match
-    if (
-      typeof stateParam !== 'string' ||
-      stateParam.length === 0 ||
-      typeof stateCookie !== 'string' ||
-      stateCookie.length === 0 ||
-      stateParam !== stateCookie
-    ) {
+    // CSRF: state must be present in both cookie and query, and must match.
+    // Compare timing-safely: the state param is attacker-supplied input checked
+    // against our opaque token, so avoid the early-exit plain string compare.
+    // Length mismatch short-circuits (length is not secret — the token is a
+    // fixed-size 32-hex string by construction, see randomBytes(16).toString('hex')).
+    const stateMatches =
+      typeof stateParam === 'string' &&
+      stateParam.length > 0 &&
+      typeof stateCookie === 'string' &&
+      stateCookie.length > 0 &&
+      stateParam.length === stateCookie.length &&
+      timingSafeEqual(Buffer.from(stateParam), Buffer.from(stateCookie))
+
+    if (!stateMatches) {
       logger.warning('OAuth callback: state mismatch (CSRF attempt or stale session)')
       return c.text('Forbidden: state mismatch', 403)
     }

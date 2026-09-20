@@ -302,6 +302,44 @@ repos:
     expect(result.error).toBeInstanceOf(MetadataSchemaError)
     expect(result.error.message).toContain('99')
   })
+
+  it('malformed entries are dropped AND surfaced: a skipped-count warning is logged', async () => {
+    // One well-formed entry + one malformed scalar entry + one malformed
+    // array entry. The doc parses fine; the two junk entries must be skipped
+    // WITHOUT becoming invisible — a warning with the skip count is required.
+    const yaml = `
+version: 1
+repos:
+  - owner: marcusrbrown
+    name: ha-config
+    added: 2026-04-17
+    onboarding_status: onboarded
+    last_survey_at: 2026-06-10
+    last_survey_status: success
+    has_fro_bot_workflow: false
+    has_renovate: true
+    next_survey_eligible_at: 2026-07-12
+    discovery_channel: collab
+    private: false
+    node_id: R_kgDOJ_bMaQ
+  - just-a-scalar-entry
+  - [an, array, entry]
+`
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const result = await readRepoMetadata(makeReader(yaml))
+
+      expect(isOk(result)).toBe(true)
+      if (!isOk(result)) return
+      expect(result.data.publicRepos).toHaveLength(1)
+
+      const warnLine = warnSpy.mock.calls.map(c => c.join(' ')).find(l => l.includes('skipped malformed entries'))
+      expect(warnLine).toBeDefined()
+      expect(warnLine).toContain('"skippedCount":2')
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
 })
 
 // ---------------------------------------------------------------------------

@@ -958,3 +958,45 @@ describe('rate limiter (FIX P1 + P2)', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// /auth/callback — CSRF state compare (timing-safe)
+//
+// The state param is attacker-supplied input compared against our opaque
+// 32-hex token. The compare must be timing-safe (timingSafeEqual with a
+// length guard — the raw compare throws on length mismatch and would surface
+// as a 500 via the global error handler instead of a clean 403).
+// ---------------------------------------------------------------------------
+
+describe('/auth/callback — CSRF state compare (timing-safe)', () => {
+  const STATE = 'a'.repeat(32) // same shape as randomBytes(16).toString('hex')
+
+  it('equal-length wrong state value → 403 (mismatch detected through timingSafeEqual)', async () => {
+    const app = await buildTestApp({operatorLogin: 'octocat'})
+    const res = await app.request(`/auth/callback?code=abc&state=${'b'.repeat(32)}`, {
+      headers: {cookie: `oauth_state=${STATE}`},
+    })
+    expect(res.status).toBe(403)
+  })
+
+  it('wrong-length state value → 403, not a crash/500 (length guard before timingSafeEqual)', async () => {
+    const app = await buildTestApp({operatorLogin: 'octocat'})
+    const res = await app.request('/auth/callback?code=abc&state=xyz', {
+      headers: {cookie: `oauth_state=${STATE}`},
+    })
+    expect(res.status).toBe(403)
+    const body = await res.text()
+    expect(body).toContain('state mismatch')
+  })
+
+  it('matching state passes the CSRF gate (no false rejection on the happy path)', async () => {
+    const app = await buildTestApp({operatorLogin: 'octocat'})
+    const res = await app.request(`/auth/callback?code=abc&state=${STATE}`, {
+      headers: {cookie: `oauth_state=${STATE}`},
+    })
+    // Past the CSRF gate the code exchange runs (fake client) and the operator
+    // login matches, so this must NOT be a 403.
+    expect(res.status).not.toBe(403)
+    expect(res.status).not.toBe(500)
+  })
+})

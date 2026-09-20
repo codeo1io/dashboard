@@ -134,6 +134,7 @@ const REPO_STATUS_QUERY = `
             statusCheckRollup {
               state
             }
+            // GraphQL max page size; repos with >100 suites still understate failingChecks (documented ceiling, rm-110)
             checkSuites(first: 100) {
               nodes {
                 checkRuns(first: 50, filterBy: { status: COMPLETED, conclusions: [FAILURE, TIMED_OUT, CANCELLED, ACTION_REQUIRED, STARTUP_FAILURE] }) {
@@ -171,6 +172,7 @@ const REPO_STATUS_QUERY_NO_ALERTS = `
             statusCheckRollup {
               state
             }
+            // GraphQL max page size; repos with >100 suites still understate failingChecks (documented ceiling, rm-110)
             checkSuites(first: 100) {
               nodes {
                 checkRuns(first: 50, filterBy: { status: COMPLETED, conclusions: [FAILURE, TIMED_OUT, CANCELLED, ACTION_REQUIRED, STARTUP_FAILURE] }) {

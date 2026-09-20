@@ -67,7 +67,10 @@ curl -s -H "Authorization: Bearer $token" \
   | grep -i docker-content-digest
 ```
 
-Renovate already keeps this pin current, so a match is the expected result.
+On this fork no Renovate runs (PR #1 removed it), so the pin moves only by manual
+upstream absorbs and — since 2026-09-19 — weekly dependabot docker PRs. Drift between
+the pinned digest and the live tag for a few days at a time is therefore EXPECTED;
+a mismatch means the pin is stale (absorb due), not that the check is wrong.
 
 **3. Understand that reporting and enforcement are separate steps.**
 `.github/workflows/release.yaml` runs Trivy twice, deliberately:

@@ -18,7 +18,7 @@ import type {GitHubOAuthClient} from '../src/auth/oauth.ts'
 import type {AggregatorSnapshot, DashboardRepo} from '../src/github/aggregator.ts'
 import {Buffer} from 'node:buffer'
 import process from 'node:process'
-import {afterEach, describe, expect, it} from 'vitest'
+import {afterEach, describe, expect, it, vi} from 'vitest'
 import {buildDashboardApp} from '../src/server.ts'
 import {SessionManager} from '../src/session.ts'
 
@@ -489,6 +489,67 @@ describe('/api/status', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Global error handler — redaction chokepoint (unhandled route exceptions)
+//
+// Hono's default onError does a raw console.error(err) — this must instead
+// route through logger.ts's single redacting chokepoint (sanitizeErrorMessage),
+// so a thrown error that happens to embed secret-shaped text never reaches the
+// log sink unredacted. The HTTP response must stay generic either way.
+// Ported from upstream PR #481 (876a02a, 2026-09-19).
+// ---------------------------------------------------------------------------
+
+describe('global error handler — redaction chokepoint', () => {
+  it('an uncaught throw in a route handler returns a generic 500, not the raw error message', async () => {
+    const app = await buildDashboardApp({
+      operatorLogin: TEST_OPERATOR,
+      cookieKey: TEST_KEY,
+      oauthClient: makeFakeOAuthClient(),
+      fetchUserLogin: async () => TEST_OPERATOR,
+      getSnapshot: () => {
+        throw new Error('boom: ghp_abcdefghijklmnopqrstuvwxyz0123456789')
+      },
+    })
+
+    const res = await authedGet(app, '/api/status')
+
+    expect(res.status).toBe(500)
+    const body = await res.text()
+    expect(body).not.toContain('ghp_abcdefghijklmnopqrstuvwxyz0123456789')
+    expect(body).not.toContain('boom')
+  })
+
+  it('logs the sanitized error via logger.error, never the raw secret-shaped text, via console.error', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const app = await buildDashboardApp({
+        operatorLogin: TEST_OPERATOR,
+        cookieKey: TEST_KEY,
+        oauthClient: makeFakeOAuthClient(),
+        fetchUserLogin: async () => TEST_OPERATOR,
+        getSnapshot: () => {
+          throw new Error('boom: ghp_abcdefghijklmnopqrstuvwxyz0123456789')
+        },
+      })
+
+      const res = await authedGet(app, '/api/status')
+      expect(res.status).toBe(500)
+
+      expect(consoleErrorSpy).toHaveBeenCalledTimes(1)
+      const loggedLine = consoleErrorSpy.mock.calls[0]?.join(' ') ?? ''
+      // Routed through logger.error (the "[error] ..." prefix), not Hono's raw
+      // console.error(err) of the bare Error object.
+      expect(loggedLine).toContain('[error]')
+      expect(loggedLine).toContain('Unhandled request error')
+      // sanitizeErrorMessage must have stripped the token-shaped text.
+      expect(loggedLine).not.toContain('ghp_abcdefghijklmnopqrstuvwxyz0123456789')
+      expect(loggedLine).toContain('[REDACTED]')
+    } finally {
+      consoleErrorSpy.mockRestore()
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
 // /auth/logout-csrf — auth-gate pin
 // ---------------------------------------------------------------------------
 // Pins that GET /auth/logout-csrf is behind the auth middleware. A future
@@ -550,7 +611,37 @@ describe('devAutoLogin — DEV-ONLY auth bypass', () => {
 
   // ── Injected opts.devAutoLogin path (test seam) ─────────────────────────────
   // opts.devAutoLogin bypasses the DASHBOARD_HOST loopback check (test seam)
-  // but still throws if NODE_ENV==='production'.
+  // but still requires NODE_ENV to be EXPLICITLY 'development' or 'test'.
+
+  describe('injected opts.devAutoLogin=true + UNSET NODE_ENV → boot throws (Guard A allowlist)', () => {
+    it('an unset NODE_ENV must NOT satisfy the dev bypass (comment/code mismatch fix)', async () => {
+      delete process.env.NODE_ENV
+      await expect(
+        buildDashboardApp({
+          operatorLogin: TEST_OPERATOR,
+          cookieKey: TEST_KEY,
+          oauthClient: makeFakeOAuthClient(),
+          fetchUserLogin: async (_token: string) => TEST_OPERATOR,
+          getSnapshot: () => makeSnapshot(),
+          devAutoLogin: true,
+        }),
+      ).rejects.toThrow('DASHBOARD_DEV_AUTOLOGIN refused')
+    })
+
+    it("NODE_ENV='staging' (set but not allowlisted) → boot throws too", async () => {
+      process.env.NODE_ENV = 'staging'
+      await expect(
+        buildDashboardApp({
+          operatorLogin: TEST_OPERATOR,
+          cookieKey: TEST_KEY,
+          oauthClient: makeFakeOAuthClient(),
+          fetchUserLogin: async (_token: string) => TEST_OPERATOR,
+          getSnapshot: () => makeSnapshot(),
+          devAutoLogin: true,
+        }),
+      ).rejects.toThrow('DASHBOARD_DEV_AUTOLOGIN refused')
+    })
+  })
 
   describe('injected opts.devAutoLogin=true + non-production → effective', () => {
     it('unauthenticated GET / returns 200 (SPA served, not redirect to /auth/login)', async () => {
@@ -665,7 +756,7 @@ describe('devAutoLogin — DEV-ONLY auth bypass', () => {
           getSnapshot: () => makeSnapshot(),
           devAutoLogin: true,
         }),
-      ).rejects.toThrow('dev-only auth bypass must never run in production')
+      ).rejects.toThrow('dev-only auth bypass must never run outside an explicit dev/test environment')
     })
   })
 

@@ -14,7 +14,7 @@ load-bearing rules for code suggestions.
    write/mutating GitHub code path, a broader token scope, or a `permissions` entry above
    `read`.
 2. **Redaction preservation.** `src/github/metadata.ts` reads `metadata/repos.yaml` from
-   the `fro-bot/.github` `data` branch and exports `redactedNodeIds` (the node_ids of
+   the `codeo1io/.github` `data` branch and exports `redactedNodeIds` (the node_ids of
    `[REDACTED]`/`private: true` entries). The aggregator must exclude denylisted repos
    from the installation-enumerated set **before** any per-repo GraphQL query (a query is
    itself a leak signal), and must fail closed (serve stale/empty, never an unfiltered

@@ -1,7 +1,7 @@
 /**
  * Repo metadata reader for the dashboard.
  *
- * Reads `metadata/repos.yaml` from the `fro-bot/.github` `data` branch and
+ * Reads `metadata/repos.yaml` from the `codeo1io/.github` `data` branch and
  * exports a denylist of redacted node_ids for the aggregator.
  *
  * Security invariants:
@@ -272,10 +272,13 @@ export async function readRepoMetadata(reader: MetadataReader): Promise<Result<M
   const publicRepos: PublicRepo[] = []
   const redactedNodeIds = new Set<string>()
   const redactedDatabaseIds = new Set<number>()
+  let skippedMalformedCount = 0
 
   for (const rawEntry of doc.repos) {
     if (rawEntry === null || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) {
-      // Skip malformed entries silently (log count at end)
+      // Skip malformed entries; counted and surfaced in the summary log below
+      // so silent drops are never invisible in the logs.
+      skippedMalformedCount++
       continue
     }
 
@@ -340,6 +343,11 @@ export async function readRepoMetadata(reader: MetadataReader): Promise<Result<M
     }
   }
 
+  if (skippedMalformedCount > 0) {
+    logger.warning('metadata/repos.yaml skipped malformed entries', {
+      skippedCount: skippedMalformedCount,
+    })
+  }
   logger.info('metadata/repos.yaml loaded', {
     publicCount: publicRepos.length,
     redactedCount: redactedNodeIds.size,

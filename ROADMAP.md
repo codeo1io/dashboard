@@ -17,23 +17,32 @@
      cycle-1 outcome (2026-09-19, run cf5527c1): rm-100 (container actionlint + codeql-action digest
      1c5b675), rm-102 (.github/dependabot.yml), rm-109 (AGENTS.md Fro Bot ops note) landed on
      origin/main at 3075f4a. CodeQL green at the pushed sha remains open (see rm-100). Batch
-     decisions: docs/prioritization/2026-09-19-cycle-1-batch.md. -->
+     decisions: docs/prioritization/2026-09-19-cycle-1-batch.md.
+     manual-revision 2026-09-20 (run 779e7271, cycle-2 batch-2 implement — lineage reconciliation):
+     the two divergent curated lineages were reconciled with this file (aa4ff9f) as base.
+     Id-collision mapping applied verbatim from docs/prioritization/2026-09-20-cycle-2-batch-2.md:
+     unlanded f4622d7e items renumbered rm-116 merge-hygiene, rm-117 security panel, rm-118 per-repo
+     tokens, rm-119 gate-health roll-up, rm-120 gateway watch, rm-121 binding-docs sync (implemented
+     this batch), and its rm-118 aggregator-hygiene folded into landed rm-112; this run's items
+     renumbered rm-122 port upstream #481 (implemented this batch), rm-123 digest-drift, rm-124
+     server/docs hygiene (implemented this batch). Landed-id meanings (rm-112..rm-115 at 916783f)
+     unchanged. rm-100/rm-110/rm-113 closed against aa4ff9f outcomes (Main 35490785353 green,
+     CodeQL 35490785207 green); rm-111 CLOSED at compound time — Release 35491419600 completed
+     success at aa4ff9f with the '🚦 Enforce fixed HIGH/CRITICAL' Trivy step green (image 9e6cbb41,
+     zero enforceable findings). cycle-2 outcome (2026-09-20, run 779e7271 compound): batch-2
+     (B0/B2/B3/B4/B5) implemented and validated pre-review in this tree (lint/check-types/test
+     3026/3026, actionlint container 0); review/shipping outcomes follow this phase and carry into
+     the next cycle's assessment. Next-cycle candidates queued: rm-116, rm-119, rm-123, rm-117,
+     rm-118, rm-120. Cycle lessons compounded to
+     docs/solutions/workflow-issues/parallel-conductor-campaigns-frame-movement-collisions-2026-09-20.md,
+     docs/solutions/best-practices/binding-doc-consistency-greps-avoid-pathspec-miss-2026-09-20.md, and
+     docs/solutions/workflow-issues/codeql-semmle-typescript-home-2026-09-20.md -->
 
 **Vision**: A reliable, customer-friendly repository advanced by evidence-cited roadmap cycles owned by the autonomy loop
 
 **Pillars**: reliability work outranks customer-experience work; every roadmap item cites reproducible codebase signals; acceptance is proven by cited evidence, never claimed
 
 ## Open items
-
-### Restore required gates green at HEAD on main
-- id: `rm-100` | track: reliability | priority: 100.0 | status: in-progress (cycle 2: all three fixes applied in the run-270220e7 worktree 2026-09-20 — lint restored, fro-bot.yaml job-env gate, codeql deps-install; pending landing + CI proof at the pushed sha)
-- signals: Lint job red at 2f3a884 only (run 35479225529; `markdown/no-missing-label-refs` at ROADMAP.md:20:32 — introduced by the fleet render itself; parent 5b8a2b3 Lint green via run 35459361435; this revision removes the construct, re-prove after every edit); Check Workflows red on the self-hosted runner (fro-bot.yaml:266 — step-level `if:` referencing the `secrets` context invalidates the whole workflow file; schema-level, actionlint detects it); CodeQL Analyze red since 6ffbe89 (`Cannot find module typescript` in autobuild under build-mode none — checkout's git-clean wipes node_modules before analyze)
-- acceptance:
-  - `pnpm lint` exits 0 at HEAD — satisfied by this roadmap revision (the bare-array construct at ROADMAP.md:20 is gone); re-prove after every subsequent edit
-  - Check Workflows green: fro-bot.yaml gate rewritten to job-level env (`env.HAS_TOKEN == 'true'` pattern, mirroring the in-tree dispatch-job contract at release.yaml) instead of step-level `secrets` references; container actionlint exit 0 on all workflows
-  - CodeQL Analyze green on origin/main via the self-hosted posture: `pnpm install --frozen-lockfile` before codeql-init in codeql.yaml (runs-on stays self-hosted per PR #1 policy — no hosted runners)
-- evidence: `gh run list --workflow main.yaml --branch main -L 1` → completed/success, same for codeql.yaml, at the pushed sha; local `pnpm lint` exit 0; container actionlint (`docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -no-color`) exit 0
-- implementation note (2026-09-19/20): actionlint container form + codeql-action digest 1c5b675 landed at 3075f4a (sub-acceptance met for the actionlint step form). The run-333ad19e worktree holds proven pnpm-install-before-init codeql.yaml and Dockerfile absorb edits that never landed — re-apply from that diagnosis, do not re-derive. Solution doc: `docs/solutions/workflow-issues/actionlint-pipx-missing-container-form-2026-09-19.md`; policy doc: `docs/solutions/workflow-issues/ci-policy-lived-only-in-pr-body-2026-09-19.md`
 
 ### Harden the roadmap render (vendored-path exclusion, stack-correct evidence, lint-clean output)
 - id: `rm-104` | track: reliability | priority: 98.0 | status: candidate (ESCALATED: failure recurred 2026-09-20)
@@ -45,12 +54,6 @@
   - manual-revision, superseded, and completed sections survive a render verbatim unless explicitly superseded; tracked items may only close with an explicit superseded marker citing evidence
 - evidence: diff of ROADMAP.md across the next sync commit; `pnpm lint` exit 0 at that commit; upstream fro-bot tracking issue/PR link for the generator fix; delegate-side recovery recipe documented at `docs/solutions/workflow-issues/fleet-roadmap-render-clobber-recovery-2026-09-20.md` (compound-phase 2026-09-20)
 
-### Upstream absorb batch 2026-09-20 (node 0e0ff40, hono 4.13.8, retire in-image patch)
-- id: `rm-111` | track: reliability | priority: 92.0 | status: in-progress (absorbed as content-merge in the run-270220e7 worktree 2026-09-20 — pins at 0e0ff40, hono 4.13.8, patch retired; pending landing + Release Trivy proof)
-- signals: fork is 4 commits behind `autonomy-upstream/main` (merge-base 6f4e620; measured 2026-09-20): node digest 0e0ff40 (#86c1e6a, #492) superseding a9d7043 (#3efa4b1, #491), hono 4.13.8 (#7fab758, #488) — codeql-action 1c5b675 (#54a5669) already absorbed at 3075f4a; Dockerfile pins 2fe369e at lines 1/21/35 (two digest generations stale); live `node:24-slim` tag = 0e0ff40 (2026-09-19) and ships libpcre2-8-0 10.42-1+deb12u1, so the in-image `apt-get install --only-upgrade libpcre2-8-0` patch (Dockerfile:37-46) retires on absorb and Trivy HIGHs clear at the base; lockfile hono resolves 4.13.7 vs upstream 4.13.8
-- acceptance: upstream merge absorbed to origin/main with fork exclusions preserved (no write code path; stricter read-only doc wording); all three Dockerfile pins at 0e0ff40; in-image libpcre2 patch removed; `pnpm frozen-lockfile` install clean; Release Trivy step reports zero HIGH at the pushed sha
-- evidence: `git rev-list --count HEAD..autonomy-upstream/main` → 0; `docker run --rm node:24-slim@sha256:0e0ff40... dpkg -s libpcre2-8-0` → 10.42-1+deb12u1; Release run log Trivy step zero HIGH; tests green (3017 at base; expect 3018 if the rm-110 fixture rides along); lockfile absorb recipe documented at `docs/solutions/workflow-issues/upstream-lockfile-content-merge-2026-09-20.md` (compound-phase 2026-09-20)
-
 ### Land fork dependency automation — first-PR proof
 - id: `rm-102` | track: reliability | priority: 90.0 | status: in-progress (config landed 3075f4a 2026-09-19; first dependabot PR evidence pending ~2026-10-03)
 - signals: `.github/dependabot.yml` present on origin/main (landed at 3075f4a — verified by `git log origin/main -- .github/dependabot.yml`); Renovate never runs here (PR #1 deleted renovate.yaml; config .github/renovate.json5 persists uninvoked); weekly cadence, first window opened 2026-09-19
@@ -59,7 +62,8 @@
 
 ### Automated upstream-absorb cadence with drift gate
 - id: `rm-103` | track: reliability | priority: 85.0 | status: candidate
-- signals: drift recurs by design — 2 commits behind on 2026-09-19, 4 behind on 2026-09-20 (node digests churn ~daily; two tag rebuilds in 24h); absorption is manual-only; upstream open PR #481 (route unhandled request errors through the redacting logger, 2026-09-16) is security-relevant to this fork's session middleware surface and unmerged upstream
+- signals: drift recurs by design — 2 commits behind on 2026-09-19, 6 behind on 2026-09-20 (node digests churn ~daily; two tag rebuilds in 24h); absorption is manual-only; upstream PR #481 (redaction chokepoint) MERGED upstream 2026-09-19 and ported by rm-122; upstream #493 (clonedeps-skill removal) must be SKIPPED on absorb — the fork keeps its clonedep artifacts deliberately as the v0.78.0 reference source (rm-120)
+- implementation note (2026-09-20, f4622d7e lineage): the 2026-09-20 absorb's CONTENT (hono 4.13.8 + base digest 0e0ff40) landed as direct edits via rm-111 rather than a history merge, so upstream history stays ahead while content converged — a future history absorb must not double-apply (Dockerfile pins and pnpm-lock.yaml already sit at the upstream values)
 - acceptance: scheduled workflow compares HEAD to `autonomy-upstream/main` and opens a human-approved merge PR when behind (auto-prepare + gate, never auto-push — fork exclusions demand human review); drift past a documented threshold opens an alert issue; #481 fast-followed within one cycle of merging upstream
 - evidence: workflow run logs showing the compare step; merge PR links; `git rev-list --count HEAD..autonomy-upstream/main` → 0 (or ≤ threshold with an open alert)
 
@@ -69,11 +73,20 @@
 - acceptance: Release publishes the GHCR image with SBOM (syft) artifact and build provenance (`actions/attest-build-provenance`); verification reads the digest via the Digest line (`awk '/^Digest:/{print $2; exit}'` — the `--format` template is silently ignored for attestation-bearing indexes on this buildx) and confirms the attestation manifest exists
 - evidence: release run log showing SBOM + attest steps green; registry manifest for the released digest shows attestation layer; docs note how an operator verifies (`docker buildx imagetools inspect` or `gh attestation verify`)
 
+### Port upstream security fix #481 — global redaction chokepoint
+- id: `rm-122` | track: security | priority: 76.0 | status: in-progress (implemented in the run-779e7271 worktree 2026-09-20 as B2 of docs/prioritization/2026-09-20-cycle-2-batch-2.md; pending landing + CI proof at the pushed sha)
+- signals: upstream fro-bot/dashboard merged 876a02a (PR #481, 2026-09-19) — buildDashboardApp registers `app.onError` routing unhandled request errors through `logger.error` with `sanitizeErrorMessage` and a generic 500, plus 62 lines of tests; grep-verified 2026-09-20 (run 779e7271 research): no `app.onError` anywhere in fork `src/` — an unhandled throw reached Hono's default raw `console.error`, bypassing the logger.ts single-chokepoint redaction discipline (AGENTS.md invariant 2); the fork already imports `sanitizeErrorMessage` (src/server.ts:50), but its server.ts has diverged (fixture harness, ingest routes, rate limiter), so this is a hand port of intent, not a line-level merge
+- acceptance: fork's buildDashboardApp registers `app.onError` (sanitized log line + generic 500 body, upstream parity); upstream's test intent ported — a secret-shaped throw never reaches the response body nor the log raw; existing handler behavior unchanged; full suite green
+- evidence: `pnpm test` green including the 2 ported redaction tests; grep shows onError registered in src/server.ts; cross-ref `git show 876a02a` and upstream PR #481
+- implementation note (2026-09-20, run 779e7271 implement): `app.onError` registered in src/server.ts after the middleware chain, upstream shape (logger.error with sanitizeErrorMessage(err) + generic 500 text); 2 tests added to test/dashboard.test.ts porting upstream's intent (secret-shaped throw: never in the response body, never raw in the log); dashboard.test.ts 45/45 green locally. Outstanding: land
+
 ### Aggregator degradation and staleness semantics
 - id: `rm-112` | track: reliability | priority: 75.0 | status: candidate (from run 270220e7 assess F3)
 - signals: `src/github/aggregator.ts` silently drops repos on resolver failure (line 686) and a warm-empty working set replaces `lastGoodSnapshot` with fresh-empty without a stale banner (lines 704-706), contradicting the file's own fail-closed cold-start path (lines 624-641); no test covers either branch (verified 2026-09-20); the operator cannot distinguish "all quiet" from "data lost"
+- absorbed signals (2026-09-20, from the f4622d7e lineage item formerly rm-118 — aggregator hygiene batch): the snapshot cache TTL equals the refresh interval (60s) so the cache never serves between refreshes (dead weight plus a false sense of caching); the denylistComplete doc comment and its code disagree; failed installation resolution has no negative caching so a dead install re-hits the GitHub API every cycle; `.github/renovate.json5` persists with nothing invoking it since PR #1 deleted renovate.yaml — undocumented dead config inviting confusion with the landed dependabot (rm-102)
 - acceptance: partial resolver failure serves last-good with an explicit stale marker and per-repo absence entries instead of silent drop; warm-empty never replaces last-good without a banner; MonitoringDto gains a degradation signal consumed by the operator view; both branches tested
 - evidence: new aggregator tests in `pnpm test` covering resolver-failure and warm-empty paths; operator view renders a stale banner against a seeded degraded snapshot
+- absorbed acceptance (f4622d7e lineage rm-118): cache TTL raised above the refresh interval or the cache removed with a comment recording why; denylistComplete comment corrected or code aligned — one truth; failed-installation resolution negatively cached with a short TTL and tested; renovate.json5 deleted or an AGENTS.md line documents its inert state
 
 ### Listener digest push
 - id: `rm-106` | track: operator-experience | priority: 70.0 | status: candidate
@@ -87,17 +100,42 @@
 - acceptance: one status surface composes snapshot freshness, rate-limit budget, listener store depth/age, and last refresh failures (fail-closed events); each composed signal has a test; no duplication of `/healthz` liveness semantics
 - evidence: `pnpm test` includes tests for each composed signal; operator verification against a seeded stale snapshot renders the panel correctly
 
+### Binding-docs metadata-source sync
+- id: `rm-121` | track: reliability | priority: 63.0 | status: in-progress (implemented in the run-779e7271 worktree 2026-09-20 as B4 of cycle-2 batch-2 — all four binding surfaces plus the deferred test-narration residue; an earlier implementation in run-f4622d7e's worktree never landed; pending landing)
+- signals: AGENTS.md, README.md, .github/copilot-instructions.md, and the src/github/metadata.ts:4 doc comment all said the redaction source repo is `fro-bot/.github` while src/server.ts has read `codeo1io/.github` since commit 4aa5d07 (2026-08-10) — the docs described a stricter configuration than what actually runs; the deferred IR-5 residue (test/server.test.ts:210/248/254/288 titles and comments narrating fro-bot/.github) still stood at aa4ff9f
+- acceptance: all binding docs name `codeo1io/.github` as the metadata denylist source (docs updated, not code — the code is correct); a grep over binding docs for the fro-bot/.github metadata claim returns nothing; metadata.ts doc comments and tests aligned in the same change
+- evidence: grep output post-change across AGENTS.md, README.md, .github/copilot-instructions.md, src/github/metadata.ts; pnpm lint exit 0; pnpm test green
+- implementation note (2026-09-20, run 779e7271 implement): AGENTS.md:18, README.md:65, metadata.ts:4, and .github/copilot-instructions.md:17 now read `codeo1io/.github`; test/server.test.ts metadata-topology titles/comments + fixture accounts aligned (4 sites, injection-based, assertions unchanged); grep for the metadata claim across binding docs and tests returns nothing (the two `fro-bot/.github#3525` hits in test/aggregator.test.ts are upstream issue-tracker references — different semantics, left). CAUTION: the run-779e7271 stewardship grep that called copilot-instructions.md "clean" was a pathspec miss (bare filename vs the .github/ path). Outstanding: land
+
 ### Dated major-upgrade decision matrix
 - id: `rm-108` | track: reliability | priority: 60.0 | status: candidate (reframed 2026-09-20 from open-ended watchlist)
 - signals: measured 2026-09-20 — typescript 6.0.3 → 7.0.2 (native compiler, announced 2026-07-08; 7.0 ships no programmatic API — typescript-eslint still needs 6.x via the `@typescript/typescript6` side-by-side package); vitest 4.1.11 → 5.0.1 (the 3→4 migration already cost a cycle; flags/`basic`-reporter breaks documented in solutions docs); jsdom 29.1.1 → 30.1.0; Node 26 enters LTS 2026-10 under the new annual schedule (every release LTS 30 months) while the image pins node:24-slim; everything else measured current (octokit modular, vite 8.3.0, react 19.3.0, tailwind 4.3.3, workbox 7.4.1)
 - acceptance: this roadmap or a linked doc carries an adopted-vs-available table refreshed each maintenance cycle, each row with a trigger date, blast radius, and go/no-go decision recorded at the date; majors absorb via upstream merges where possible, otherwise explicit upgrade PRs — never a silent ride; REST API-version pin (`X-GitHub-Api-Version: 2022-11-28`, src/auth/oauth.ts:130) reviewed on the same cadence (protective pin — 2026-03-10 REST removals verified unexposed)
 - evidence: `npm view <pkg> version` outputs cited at each refresh; each adopted-major bump shows a green Main run before merge
 
-### Aggregate complete check-suite counts
-- id: `rm-110` | track: reliability | priority: 55.0 | status: in-progress (first: 100 in both query variants + 12-suite fixture applied in the run-270220e7 worktree 2026-09-20; suite count 3018 local; pending landing)
-- signals: `src/github/aggregator.ts` requests `checkSuites(first: 10)` per commit (line 137) — repos with more than 10 suites understate `failingChecks`; the failure-conclusion filtering itself is correct (verified against the GraphQL query)
-- acceptance: paginate `checkSuites` (or raise the page with a documented ceiling) with a test fixture containing more than 10 suites proving full counting; MonitoringDto behavior unchanged otherwise
-- evidence: new/updated aggregator test in `pnpm test`; fixture demonstrates >10 suites counted; suite count 3018 at the landing tree
+### Merge-hygiene baseline: required checks on main plus drift alert
+- id: `rm-116` | track: reliability | priority: 58.0 | status: candidate
+- signals: `gh api /repos/codeo1io/dashboard/branches/main/protection` returns 404 "Branch not protected" and `/rulesets` is empty (probed 2026-09-20); nothing structurally blocks red-check merges — PR #4 merged 2026-09-19 17:51Z with TWO red checks on its own run (35459324430) and its defects became the cycle's P1 findings (rm-100); repo is public on a User account, where required status checks and rulesets are available; SECOND INSTANCE 2026-09-20 (f4622d7e review): the fleet render 2f3a884 landed by direct push with its own run already red — a second red landing after PR #4's red merge
+- acceptance:
+  - main protected (classic branch protection or a ruleset) with required status checks covering the Main workflow's job set (Test, Check Types, Check Workflows, Lint, Test Scripts Load, Design Check) plus CodeQL; strict-on-required-context where feasible
+  - a periodic (weekly) workflow snapshots the protection/ruleset API state and alerts (open issue or failing check) on drift from the codified baseline
+  - the hotfix override path documented in AGENTS.md (an admin merge over red checks becomes an explicit, visible decision, not a default)
+- evidence: `gh api /repos/codeo1io/dashboard/branches/main/protection` returns the configured object post-change; drift-check workflow run log on first run; AGENTS.md note merged; PR #4-style merge attempt with red checks is blocked (observed on a throwaway branch)
+
+### Gate-health roll-up: workflow-run conclusions per repo
+- id: `rm-119` | track: operator-experience | priority: 52.0 | status: candidate
+- signals: REST actions/runs probed 2026-09-20 returning exactly the needed shape (latest runs at 5b8a2b3: Main=failure, CodeQL=failure, Scorecard=success); the 2026-09-19/20 gate reds sat invisible to operator-facing surfaces for ~26h (merged 17:51Z, found only by out-of-band assess); the dashboard renders check runs on commits but not workflow-level conclusions — and the week's failures lived at the workflow level (schema rejection before any check run existed)
+- acceptance:
+  - snapshot carries the latest conclusion per workflow at the default-branch tip (dedupe by workflow name, REST pagination with a documented ceiling — rm-110 discipline)
+  - any red required-gate at the tip triggers the existing needs-attention surface
+  - designed jointly with rm-107 as ONE status surface (repo gate health + monitor health), not two parallel panels — the joint-design decision recorded at plan time
+- evidence: pnpm test for the roll-up path; fixture with multiple runs per workflow; manual verification against the live red Main/CodeQL state shows both surfaced
+
+### Base-digest drift visibility: weekly read-only pin check
+- id: `rm-123` | track: reliability | priority: 48.0 | status: candidate
+- signals: node:24-slim moved through four digests in ~8 days (2fe369e → a9d7043 #491 → 0e0ff40 #492 (the pin since rm-111 landed) → live 5cbc7cab at 2026-09-20, `docker manifest inspect`); dependabot docker updates are weekly (rm-102), so the pin can silently trail a rebuilt, security-fixed base for days — drift is detectable today only by hand-run manifest inspection (exactly how the 779e7271 assess found the old pinned 2fe369e shipping libpcre2 10.42-1 while the live base shipped 10.42-1+deb12u1)
+- acceptance: weekly scheduled workflow compares each Dockerfile pin to the live tag digest and opens/updates ONE tracking issue on drift (title carries pinned→live digests); GITHUB_TOKEN only — the fork has no secrets; strictly read-only — it never bumps the pin itself (dependabot owns bump PRs, rm-102); the workflow passes the actionlint container gate
+- evidence: actionlint container exit 0 on the new workflow; first run log shows pinned digest, live digest, drift verdict; a dry-run mode prints the issue text verbatim for review
 
 ### Single-source the SSE parser invariants
 - id: `rm-114` | track: reliability | priority: 45.0 | status: candidate (from run 270220e7 assess F5/F6)
@@ -105,11 +143,30 @@
 - acceptance: cap constant and normalization rules extracted to one shared source consumed by both the server reader and the browser bundle (shared module or build-time generation); divergence becomes a build/type failure rather than a live parser bug; multi-byte frame tests cover the corrected cap semantics
 - evidence: single definition site; `pnpm test` includes multi-byte boundary-frame tests; grep shows no remaining duplicated literal
 
-### CI pin hygiene micro-batch
-- id: `rm-113` | track: reliability | priority: 40.0 | status: in-progress (checkout unified at v7.0.1 and setup-node at v7.0.0 incl. the setup composite in the run-270220e7 worktree 2026-09-20; pending landing + Main proof)
-- signals: `actions/setup-node` pinned v6 while v7.0.0 is latest (measured via `gh api repos/actions/setup-node/releases/latest`, 2026-09-20); `actions/checkout` dual-pinned at v6.1.0 in one workflow and v7.0.1 elsewhere (`grep 'uses: actions/checkout' .github/workflows/`); all other measured action pins current
-- acceptance: setup-node at v7.0.0; single checkout pin repo-wide; container actionlint exit 0; Main green at the pushed sha
-- evidence: `grep -r 'uses: actions/checkout' .github/workflows | sort -u` shows one digest; Main run green
+### Security-posture panel: Dependabot and code-scanning alerts per repo
+- id: `rm-117` | track: security | priority: 44.0 | status: candidate
+- signals: live probes 2026-09-20 — REST `/repos/codeo1io/dashboard/code-scanning/alerts?state=open` returns 10 OPEN alerts on this fork's main (1 critical CVE-2023-45853 + 9 high, created 2026-09-16, refs/heads/main) that no operator-facing surface shows, while the 2026-09-19 Release Trivy gate was green — alert triage lags the release state; GraphQL `vulnerabilityAlerts(states:OPEN)` works (0 open / 28 historical here) but GraphQL has NO code-scanning field (probed — REST only); the token mint already requests security_events and vulnerability_alerts read with graceful fallback (src/github/installations.ts FULL_READ_PERMISSIONS), so the permission plumbing predates the feature
+- acceptance:
+  - aggregator snapshot carries per-repo open-alert counts — Dependabot via GraphQL `vulnerabilityAlerts(states:OPEN)`, code-scanning via one REST call per repo — both behind the existing optional-permission graceful degradation (absent permission ⇒ field omitted, never an error)
+  - counts render per repo with a needs-attention trigger; only counts and severity buckets are stored/rendered — no alert content beyond that
+  - the 10 standing open code-scanning alerts are triaged (dismissed with reason or routed to fix work) and the panel reflects the triaged state — surfacing is the feature, triage is the operator decision it enables
+  - rate-limit cost documented: one REST call per repo per cycle, batched with the same pagination/ceiling discipline as the check-suite query (rm-110 family)
+- evidence: pnpm test coverage for both alert paths including the graceful-fallback case; seeded fixture with alert counts; operator verification against live data shows the triaged state
+
+### Per-repo scoped installation tokens
+- id: `rm-118` | track: security | priority: 42.0 | status: candidate
+- signals: mintReadOnlyToken (src/github/installations.ts) mints installation-WIDE tokens — the redaction denylist constrains queries (aggregator excludes denylisted repos before any per-repo query) but a minted token's capability still spans the whole installation including denylisted/private repos; GitHub's create-installation-access-token endpoint accepts a repositories array to scope a token to named repos, so capability can be made to match query intent
+- acceptance:
+  - per-repo GraphQL/REST status queries use a token scoped to just that repo (repositories array param at mint); installation enumeration keeps the installation-wide token
+  - per-repo tokens cached with the existing 55-min pattern; the 5000-mints-per-hour-per-installation cap documented as the budget ceiling (fleet size is far below it)
+  - a test proves the scoping: the client seam rejects a repo-scoped token used against a sibling repo
+- evidence: pnpm test includes the scoping/rejection test; code diff extends the mint signature and call sites; AGENTS.md security-invariant block notes the capability-scoping layer
+
+### Gateway-contract drift watch for the mirrored agent source
+- id: `rm-120` | track: reliability | priority: 36.0 | status: candidate
+- signals: the cloned dependency source pins fro-bot/agent at v0.78.0 while upstream is at v0.113.2 — 75 releases of drift, with release bodies at v0.113.1, v0.113.0, v0.109.3, v0.107.1, v0.106.2 touching operator/gateway surfaces (gh api repos/fro-bot/agent/releases, 2026-09-20); AGENTS.md names this clone as the reference for the operator OAuth return path, GitHub App client, secret readers, and logger/Result primitives this app mirrors — and no process notices when that contract moves underneath the conformance tests
+- acceptance: a periodic watch (checklist item in the maintenance cycle or a small workflow) compares the clonedep pin to the upstream latest tag; on drift, diffs the mirrored contract surfaces and records a short delta note (docs/solutions/ or the cycle batch doc) flagging conformance-test impact explicitly; the clonedep is refreshed on cadence, never auto-merged
+- evidence: first watch output showing the v0.78.0→v0.113.2 delta summary with the operator/gateway-touching releases called out; the checklist/workflow merged
 
 ### CSRF tokens for listener ack mutations
 - id: `rm-115` | track: security | priority: 30.0 | status: candidate (hardening; low severity)
@@ -117,7 +174,34 @@
 - acceptance: ack mutations require the same csrf-token pattern as logout (or equivalent origin check), with tests for the rejected cross-origin case; no behavior change for the operator's own client
 - evidence: route tests in `pnpm test` covering token-missing rejection; manual operator flow unchanged
 
+### Server and docs hygiene batch
+- id: `rm-124` | track: reliability | priority: 26.0 | status: in-progress (4 of 5 items implemented in the run-779e7271 worktree 2026-09-20 as B5 of cycle-2 batch-2 — the fifth became moot at aa4ff9f; pending landing)
+- signals: five verified small defects from the 779e7271 assess — `devAutoLogin` Guard A rejected only `production` though its comment promised an explicit development/test allowlist (src/server.ts — the fixture-harness guard implements the strict form, so the divergence was between two guards in the same file); `src/github/metadata.ts` silently skipped malformed entries while the promised `log count at end` was never implemented; OAuth state compared with plain `!==` (src/routes/auth.ts) where session verification uses `timingSafeEqual` — two guards, two disciplines; the trivy best-practices doc claimed `Renovate already keeps this pin current` — false on this fork (PR #1 deleted renovate.yaml; pins move by manual absorb + weekly dependabot); `Dockerfile:41` said dependabot.yml was `staged 2026-09-19` (moot: the sentence no longer exists at aa4ff9f)
+- acceptance: devAutoLogin allowlist matches its comment (unset NODE_ENV no longer passes, mirroring the fixture guard); the malformed-entry count is logged as promised; the state comparison is timing-safe; the stale doc sentence corrected; `pnpm lint` / `pnpm check-types` / `pnpm test` all green
+- evidence: new tests for the guard allowlist and the skip-count log; cross-ref to the session.ts timingSafeEqual pattern; git diff of the doc line; full local suite green
+- implementation note (2026-09-20, run 779e7271 implement): Guard A now requires NODE_ENV=development|test explicitly (+2 pinning tests, and Guard B's message aligned); metadata.ts counts skipped malformed entries and warns with skippedCount when >0 (+1 test asserting the warning and its count); the OAuth state compare is timingSafeEqual with a length guard (+3 tests: equal-length mismatch, wrong-length mismatch → 403 not 500, happy path); the trivy doc sentence replaced with the fork-accurate drift-is-expected wording; the Dockerfile item verified moot at aa4ff9f. Outstanding: land
+
 ## Completed items
+
+### Upstream absorb batch 2026-09-20 (node 0e0ff40, hono 4.13.8, retire in-image patch)
+- id: `rm-111` | track: reliability | priority: 92.0 | status: completed (2026-09-20; landed at 916783f, Trivy proof at aa4ff9f)
+- acceptance was: upstream content absorbed with fork exclusions preserved (no write code path; stricter read-only doc wording); all three Dockerfile pins at 0e0ff40; in-image libpcre2 patch removed; frozen-lockfile install clean; Release Trivy zero HIGH at the pushed sha
+- completion evidence: pins at 0e0ff40 + patch retired in 916783f (content absorbed as direct edits, upstream history intentionally still ahead — see rm-116's double-apply note); Release run 35491419600 completed success at aa4ff9f with '🚦 Enforce fixed HIGH/CRITICAL vulnerabilities' conclusion=success (image ghcr.io/codeo1io/dashboard@sha256:9e6cbb41…, exit-code:1 fail-on-findings mode, zero enforceable findings); suite 3018 green at landing; absorb recipe at `docs/solutions/workflow-issues/upstream-lockfile-content-merge-2026-09-20.md`
+
+### Restore required gates green at HEAD on main
+- id: `rm-100` | track: reliability | priority: 100.0 | status: completed (2026-09-20; cycle-2 arc closed at aa4ff9f)
+- acceptance was: Lint, Check Workflows (fro-bot.yaml job-env gate), and CodeQL Analyze green at HEAD on main via the self-hosted posture
+- completion evidence: Main green at aa4ff9f (run 35490785353 — Lint + Check Workflows + full suite); CodeQL green (run 35490785207, SEMMLE_TYPESCRIPT_HOME round 2 landed aa4ff9f); the gates fixes landed at 916783f/aa4ff9f (runs 270220e7); root-cause solution doc `docs/solutions/workflow-issues/codeql-semmle-typescript-home-2026-09-20.md`
+
+### Aggregate complete check-suite counts
+- id: `rm-110` | track: reliability | priority: 55.0 | status: completed (2026-09-20; landed at 916783f)
+- acceptance was: checkSuites raised past 10 with a fixture proving full counting
+- completion evidence: `checkSuites(first: 100)` in both query variants at src/github/aggregator.ts:137/:174 with a 12-suite regression test in test/aggregator.test.ts; suite count 3018 at the landing tree; Main green at aa4ff9f (35490785353); page-ceiling comment rider (f4622d7e IR-6) applied at both query sites in the run-779e7271 batch-2 tree
+
+### CI pin hygiene micro-batch
+- id: `rm-113` | track: reliability | priority: 40.0 | status: completed (2026-09-20; landed at 916783f)
+- acceptance was: setup-node at v7.0.0; single checkout pin repo-wide; container actionlint exit 0; Main green at the pushed sha
+- completion evidence: checkout unified at v7.0.1 and setup-node at v7.0.0 incl. the setup composite (916783f); Main green at aa4ff9f (run 35490785353)
 
 ### Document the Fro Bot workflow disable state
 - id: `rm-109` | track: reliability | priority: 50.0 | status: completed (2026-09-19; landed on origin/main at 3075f4a)
