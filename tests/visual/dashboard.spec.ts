@@ -54,6 +54,20 @@ test.beforeEach(async ({page}) => {
   // stale/intercepted response, which makes screenshots depend on prior runs.
   await page.route('/sw.js', (route) => route.fulfill({status: 200, body: ''}))
   await page.route('/registerSW.js', (route) => route.fulfill({status: 200, body: ''}))
+  // Force dark at the CSS level in addition to context colorScheme: the
+  // static privacy page ships no JS to set data-theme, so its colors come
+  // from the prefers-color-scheme media query — which some chromium builds
+  // under emulation on CI still resolve to light. This style tag makes dark
+  // deterministic on every machine.
+  await page.addInitScript(() => {
+    const style = document.createElement('style')
+    style.textContent = '@media (prefers-color-scheme: light) { :root { color-scheme: dark } }'
+    document.addEventListener('DOMContentLoaded', () => {
+      document.documentElement.setAttribute('data-theme-force-note', 'dark-by-test')
+      document.documentElement.setAttribute('data-theme', 'dark')
+    })
+    document.addEventListener('DOMContentLoaded', () => document.head.append(style))
+  })
 })
 
 test('dashboard home — operator view (dark theme)', async ({page}) => {
