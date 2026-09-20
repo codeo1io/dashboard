@@ -58,13 +58,20 @@ test.beforeEach(async ({page}) => {
   // light) { :root { ... light tokens ... } }` which overrides dark for ALL
   // pages when the host prefers light — data-theme="dark" cannot beat it
   // (equal specificity, later position). The runner's chromium resolves
-  // prefers-color-scheme: light (context emulation notwithstanding), so the
-  // static privacy page rendered light. Neutralize the block by rewriting
-  // the stylesheet in flight.
-  await page.route('**/index.css', async (route) => {
+  // prefers-color-scheme: light, so the static privacy page rendered light.
+  // Neutralize the block in whichever bundle serves it (dev: /index.css via
+  // @import; built fixture: /assets/src-*.css single bundle).
+  await page.route(/\.css$/, async (route) => {
     const response = await route.fetch()
+    const headers = response.headers()
+    if (!/css/i.test(headers['content-type'] ?? '')) {
+      await route.fulfill({response})
+      return
+    }
     let css = await response.text()
-    css = css.replace(/@media \(prefers-color-scheme: light\) \{[\s\S]*?\n\}/, '')
+    if (css.includes('prefers-color-scheme: light')) {
+      css = css.replace(/@media \(prefers-color-scheme: light\) \{[\s\S]*?\n\}/g, '')
+    }
     await route.fulfill({response, body: css})
   })
 })
