@@ -21,6 +21,14 @@ jobs:
     permissions:
       contents: read
       security-events: write
+    env:
+      # 2026-09-20 (ci fix): CodeQL's bundled typescript-parser-wrapper resolves
+      # 'typescript' via this override or a bare require from the _tool cache
+      # path (no node_modules anywhere up that tree on this runner). Upstream
+      # passes on hosted runners where the wrapper resolves on its own; here
+      # autobuild never sets the override, so point it at the repo-installed
+      # typescript (pinned toolchain, installed by the Setup step below).
+      SEMMLE_TYPESCRIPT_HOME: ${{ github.workspace }}/node_modules/typescript
 
     steps:
       - name: Checkout repository
@@ -31,7 +39,8 @@ jobs:
       # 2026-09-20: autobuild under build-mode none needs node_modules/typescript
       # (this repo has no `main` entrypoint), and checkout's git-clean wipes
       # node_modules — install deps before codeql-init so autobuild finds the
-      # toolchain. Runs self-hosted per PR #1 policy.
+      # toolchain. Runs self-hosted per PR #1 policy. Also feeds
+      # SEMMLE_TYPESCRIPT_HOME (job env above) with the pinned typescript.
       - name: 📦 Setup
         uses: ./.github/actions/setup
 
