@@ -66,6 +66,35 @@ describe('sw.js build output', () => {
     expect(content).toMatch(/\\\/api/)
   })
 
+  // /privacy navigation exemption — the public policy page must reach the
+  // server (which serves it), not the precached SPA shell.
+
+  it('GUARD: NavigationRoute denylist contains a /privacy regex pattern', () => {
+    const content = readSW()
+    expect(content).toMatch(/\\\/privacy/)
+  })
+
+  it('GUARD: /privacy denylist regex exempts both the bare path and the trailing-slash variant', () => {
+    const src = readFileSync(resolve(import.meta.dirname, 'sw.ts'), 'utf8')
+    const denylistMatch = /denylist:\s*\[([^\]]+)]/.exec(src)
+    expect(denylistMatch).not.toBeNull()
+    const privacyEntry = denylistMatch?.[1]
+      ?.split(',')
+      .map(entry => entry.trim())
+      .find(entry => entry.includes('privacy'))
+    expect(privacyEntry).toBeDefined()
+    // Test-only: constructing the exact regex the source declares, to assert its match behavior directly.
+    const privacyRegex = new RegExp(privacyEntry?.replace(/^\/|\/$/g, '') ?? '')
+    expect(privacyRegex.test('/privacy')).toBe(true)
+    expect(privacyRegex.test('/privacy/')).toBe(true)
+    // A path merely sharing the prefix must NOT be exempted — proves this is
+    // an anchored path match, not a substring/prefix match.
+    expect(privacyRegex.test('/privacy-policy-internal')).toBe(false)
+    // An ordinary in-app navigation must NOT be exempted — it still falls
+    // through to the precached app shell.
+    expect(privacyRegex.test('/dashboard')).toBe(false)
+  })
+
   // REGRESSION: /api/monitoring NetworkFirst route MUST be absent.
 
   it('REGRESSION: /api/monitoring NetworkFirst route is ABSENT from the built SW', () => {
@@ -153,10 +182,28 @@ describe('sw.js build output', () => {
     expect(content).not.toMatch(/"url":"registerSW\.js"/)
   })
 
+  // Asserts the shell's hashed JS and CSS are precached. Deliberately not
+  // pinned to a chunk name: the shared stylesheet is emitted as `src-*.css`
+  // rather than `index-*.css` now that privacy.html is a second build entry
+  // sharing it. The guarantee is "the shell's JS and CSS are precached", not
+  // what Rollup happens to name the chunk.
   it('precache list contains at least the app JS bundle and CSS', () => {
     const content = readSW()
-    expect(content).toMatch(/"url":"assets\/index-[A-Za-z0-9_-]+\.js"/)
-    expect(content).toMatch(/"url":"assets\/index-[A-Za-z0-9_-]+\.css"/)
+    expect(content).toMatch(/"url":"assets\/[A-Za-z0-9_-]+\.js"/)
+    expect(content).toMatch(/"url":"assets\/[A-Za-z0-9_-]+\.css"/)
+  })
+
+  // The public privacy page must never enter the precache. Its install-time
+  // fetch would 404 (the server serves it at /privacy, not /privacy.html),
+  // which makes the service worker redundant and stops it registering at all.
+  //
+  // Scoped to precache manifest entries ("url":"...") rather than the whole
+  // file: the NavigationRoute denylist below legitimately mentions /privacy
+  // (as an exemption, not a precache entry), so a bare /privacy/i scan over
+  // the entire build would false-positive on that unrelated, correct string.
+  it('SECURITY: privacy.html is NOT in the precache list', () => {
+    const content = readSW()
+    expect(content).not.toMatch(/"url":"[^"]*privacy[^"]*"/i)
   })
 
   // Security: operator data must never be cached.
