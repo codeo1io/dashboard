@@ -33,7 +33,8 @@ async function assertAccessible(
   const results = await builder.analyze()
 
   const failing = results.violations.filter(
-    (violation) => violation.impact !== null && FAILING_IMPACTS.has(violation.impact),
+    (violation): violation is (typeof results.violations)[number] & {impact: string} =>
+      typeof violation.impact === 'string' && FAILING_IMPACTS.has(violation.impact),
   )
 
   for (const violation of results.violations) {
@@ -125,10 +126,13 @@ test('privacy policy page', async ({page}) => {
   // the fullPage stitching path produces an inverted-color image for tall
   // static pages even though the live page is dark at capture time (probe:
   // bg rgb(13,2,22), theme dark, scheme dark). Clip avoids the stitching.
-  const height = await page.evaluate(() => document.documentElement.scrollHeight)
+  const pageHeight = (await page.evaluate(
+    () => (globalThis as unknown as {document: {documentElement: {scrollHeight: number}}})
+      .document.documentElement.scrollHeight,
+  )) as number
 
   await assertAccessible(page)
   await expect(page).toHaveScreenshot('privacy-dark.png', {
-    clip: {x: 0, y: 0, width: 1280, height},
+    clip: {x: 0, y: 0, width: 1280, height: pageHeight},
   })
 })
