@@ -48,3 +48,4 @@ web/dist-fixture
 # impeccable-ignore-end
 my-profile/
 test-results/
+playwright-report/
