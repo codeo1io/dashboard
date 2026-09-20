@@ -263,9 +263,13 @@ jobs:
     # token input is empty and every scheduled run fails at input validation
     # ("Input required and not supplied: token"). Skip scheduled runs until the
     # secret exists (manual dispatch with the secret set still runs).
+    # 2026-09-20: the secret-presence gate moved out of this job-level if (neither
+    # the secrets nor env context is available there — actionlint rejects the
+    # whole workflow file) to job-level env + per-step if, mirroring release.yaml's
+    # HAS_RELEASE_APP contract.
+    env:
+      HAS_FRO_BOT_PAT: ${{ secrets.FRO_BOT_PAT != '' }}
     if: >-
-      (
-      (github.event_name != 'schedule' || secrets.FRO_BOT_PAT != '') &&
       (
         github.event.pull_request == null ||
         (
@@ -293,10 +297,17 @@ jobs:
           contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association || '')
         )
       )
-      )
     steps:
+      - name: ⚠️ Fro Bot skipped (FRO_BOT_PAT not configured)
+        if: github.event_name == 'schedule' && env.HAS_FRO_BOT_PAT != 'true'
+        run: >-
+          echo "::warning title=Fro Bot skipped::FRO_BOT_PAT is not configured in
+          this repository — skipping the scheduled run. Provision the secret (and
+          re-enable this workflow) to restore the daily cron."
+
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        if: github.event_name != 'schedule' || env.HAS_FRO_BOT_PAT == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           # Review-path triggers withhold credentials from the agent; don't leave one in the workspace.
@@ -313,9 +324,11 @@ jobs:
           token: ${{ secrets.FRO_BOT_PAT }}
 
       - name: 📦 Setup
+        if: github.event_name != 'schedule' || env.HAS_FRO_BOT_PAT == 'true'
         uses: ./.github/actions/setup
 
       - name: Run Fro Bot
+        if: github.event_name != 'schedule' || env.HAS_FRO_BOT_PAT == 'true'
         id: fro-bot-agent
         uses: fro-bot/agent@43023e5b9755fe307c03ede1067cc182564d30e3 # v0.113.2
         env:

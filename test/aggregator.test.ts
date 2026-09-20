@@ -73,6 +73,7 @@ function makeEnumerateResult(repos: ReturnType<typeof makeRepo>[]): Result<Enume
 function makeGraphqlResponse(overrides: {
   rollupState?: string
   failingChecks?: number
+  checkSuites?: {checkRuns: {totalCount: number}}[]
   openPrCount?: number
   openIssueCount?: number
   openAlertCount?: number | null
@@ -84,7 +85,7 @@ function makeGraphqlResponse(overrides: {
         target: {
           statusCheckRollup: overrides.rollupState === undefined ? null : {state: overrides.rollupState},
           checkSuites: {
-            nodes: failingChecks > 0 ? [{checkRuns: {totalCount: failingChecks}}] : [],
+            nodes: overrides.checkSuites ?? (failingChecks > 0 ? [{checkRuns: {totalCount: failingChecks}}] : []),
           },
         },
       },
@@ -1701,5 +1702,46 @@ describe('P1 regression — per-install token cache: no cross-install reuse', ()
 
     // mintFn called exactly twice (once per installation, cache hit on repeat)
     expect(mintFn).toHaveBeenCalledTimes(2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-110: check-suite pagination cap
+// ---------------------------------------------------------------------------
+
+describe('aggregator — check-suite cap (rm-110)', () => {
+  it('queries checkSuites(first: 100) and sums failing runs across >10 suites', async () => {
+    const repo = makeRepo({node_id: 'NODE_MANY', owner: 'org', name: 'many-suites'})
+    const queries: string[] = []
+    const graphqlQueryForInstallation: GraphqlQueryForInstallationFn = vi.fn().mockImplementation(async (_installId: number, query: string, vars: unknown) => {
+      queries.push(query)
+      if ((vars as {name: string}).name === 'many-suites') {
+        // 12 completed suites with one failing run each — exceeds the old first: 10
+        // cap, so an under-page would silently drop two suites' failures.
+        return makeGraphqlResponse({
+          rollupState: 'FAILURE',
+          checkSuites: Array.from({length: 12}, () => ({checkRuns: {totalCount: 1}})),
+        })
+      }
+      return makeGraphqlResponse({rollupState: 'SUCCESS'})
+    })
+
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_MANY', owner: 'org', name: 'many-suites'})],
+      }))),
+      graphqlQueryForInstallation,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos).toHaveLength(1)
+    expect(snap.repos[0]?.status.failingChecks).toBe(12)
+    for (const query of queries) {
+      expect(query).toContain('checkSuites(first: 100)')
+    }
   })
 })

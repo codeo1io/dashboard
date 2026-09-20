@@ -24,9 +24,16 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # 2026-09-20: autobuild under build-mode none needs node_modules/typescript
+      # (this repo has no `main` entrypoint), and checkout's git-clean wipes
+      # node_modules — install deps before codeql-init so autobuild finds the
+      # toolchain. Runs self-hosted per PR #1 policy.
+      - name: 📦 Setup
+        uses: ./.github/actions/setup
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
