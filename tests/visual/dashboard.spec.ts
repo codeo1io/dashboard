@@ -121,16 +121,14 @@ test('privacy policy page', async ({page}) => {
   await expect(page.locator('body')).toContainText(/privacy/i)
   await page.waitForTimeout(250)
 
-
-  // Probe: capture computed styles at screenshot time for CI diagnosis.
-  const probe = await page.evaluate(() => ({
-    theme: document.documentElement.getAttribute('data-theme'),
-    scheme: matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark',
-    bg: getComputedStyle(document.body).backgroundColor,
-    href: location.href,
-  }))
-  console.log('[theme-probe]', JSON.stringify(probe))
+  // Capture via clip(scrollHeight) instead of fullPage: on some CI runners
+  // the fullPage stitching path produces an inverted-color image for tall
+  // static pages even though the live page is dark at capture time (probe:
+  // bg rgb(13,2,22), theme dark, scheme dark). Clip avoids the stitching.
+  const height = await page.evaluate(() => document.documentElement.scrollHeight)
 
   await assertAccessible(page)
-  await expect(page).toHaveScreenshot('privacy-dark.png', {fullPage: true})
+  await expect(page).toHaveScreenshot('privacy-dark.png', {
+    clip: {x: 0, y: 0, width: 1280, height},
+  })
 })
