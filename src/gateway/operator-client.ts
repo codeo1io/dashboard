@@ -672,13 +672,28 @@ export function createOperatorClient(options: OperatorClientOptions): OperatorCl
 
     const first = await fetchJson<RunApprovalDecisionResponse>(path, route, init)
 
-    // One CSRF-400 retry reusing the SAME idempotency key (mirrors the launch-surface pattern).
-    // A 400 may indicate a stale CSRF token; the caller must supply a fresh token on retry.
-    // Since the client does not own CSRF refresh, we re-attempt with the same token — the
-    // gateway will accept if the token is still valid. The idempotency key is reused to
-    // deduplicate any lost-response scenario.
+    // One CSRF-400 retry with a REFRESHED token, reusing the SAME idempotency
+    // key (mirrors the launch-surface pattern). A 400 here most likely means
+    // the CSRF token went stale between session fetch and this call; re-sending
+    // the identical request can never succeed in that case, so the retry mints
+    // a fresh token via the csrf refresh route first. If the refresh itself
+    // fails, the retry is abandoned — the original error surfaces to the
+    // caller (the gateway is unreachable or the session is gone).
+    //
+    // Divergence from the cloned fro-bot/agent v0.78.0 mirror (rm-130): the
+    // upstream reference re-sends the same token; this fork treats the retry
+    // as a refresh-then-resend so the retry is not a guaranteed no-op.
     if (!first.success && first.error.kind === 'http' && first.error.status === 400) {
-      return fetchJson<RunApprovalDecisionResponse>(path, route, init)
+      const refreshed = await refreshCsrf()
+      if (!refreshed.success) return first
+      const retryInit: RequestInit = {
+        ...init,
+        headers: {
+          ...init.headers,
+          'x-csrf-token': refreshed.data.csrfToken,
+        },
+      }
+      return fetchJson<RunApprovalDecisionResponse>(path, route, retryInit)
     }
 
     return first
@@ -751,9 +766,24 @@ export function createOperatorClient(options: OperatorClientOptions): OperatorCl
 
     const first = await fetchJson<unknown>(path, route, init)
 
-    // One CSRF-400 retry reusing the SAME idempotency key (mirrors decideRunApproval).
+    // One CSRF-400 retry with a REFRESHED token, reusing the SAME idempotency
+    // key (mirrors decideRunApproval's rm-130 refresh-then-resend). A 400 here
+    // most likely means the CSRF token went stale between session fetch and
+    // this call; re-sending the identical request can never succeed in that
+    // case, so the retry mints a fresh token via the csrf refresh route first.
+    // If the refresh itself fails, the retry is abandoned — the original
+    // error surfaces to the caller.
     if (!first.success && first.error.kind === 'http' && first.error.status === 400) {
-      const retry = await fetchJson<unknown>(path, route, init)
+      const refreshed = await refreshCsrf()
+      if (!refreshed.success) return first
+      const retryInit: RequestInit = {
+        ...init,
+        headers: {
+          ...init.headers,
+          'x-csrf-token': refreshed.data.csrfToken,
+        },
+      }
+      const retry = await fetchJson<unknown>(path, route, retryInit)
       if (!retry.success) return retry
       return ok(undefined)
     }
@@ -789,9 +819,24 @@ export function createOperatorClient(options: OperatorClientOptions): OperatorCl
 
     const first = await fetchJson<unknown>(path, route, init)
 
-    // One CSRF-400 retry reusing the SAME idempotency key (mirrors decideRunApproval).
+    // One CSRF-400 retry with a REFRESHED token, reusing the SAME idempotency
+    // key (mirrors decideRunApproval's rm-130 refresh-then-resend). A 400 here
+    // most likely means the CSRF token went stale between session fetch and
+    // this call; re-sending the identical request can never succeed in that
+    // case, so the retry mints a fresh token via the csrf refresh route first.
+    // If the refresh itself fails, the retry is abandoned — the original
+    // error surfaces to the caller.
     if (!first.success && first.error.kind === 'http' && first.error.status === 400) {
-      const retry = await fetchJson<unknown>(path, route, init)
+      const refreshed = await refreshCsrf()
+      if (!refreshed.success) return first
+      const retryInit: RequestInit = {
+        ...init,
+        headers: {
+          ...init.headers,
+          'x-csrf-token': refreshed.data.csrfToken,
+        },
+      }
+      const retry = await fetchJson<unknown>(path, route, retryInit)
       if (!retry.success) return retry
       return ok(undefined)
     }

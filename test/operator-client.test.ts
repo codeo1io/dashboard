@@ -1067,18 +1067,26 @@ describe('decideRunApproval', () => {
     }
   })
 
-  // CSRF-400 retry: retried once reusing the SAME idempotency key
+  // CSRF-400 retry: one retry, with a REFRESHED csrf token, reusing the SAME idempotency key
 
-  it('retries once on CSRF-400 reusing the same idempotency key', async () => {
-    const capturedKeys: string[] = []
-    let callCount = 0
+  it('retries once on CSRF-400 with a refreshed token, reusing the same idempotency key', async () => {
+    const decisionCalls: {idemKey: string; csrf: string}[] = []
+    let csrfCalls = 0
+    let decisionCount = 0
     const client = createOperatorClient({
-      fetch: async (_input, init) => {
-        callCount++
+      fetch: async (input, init) => {
+        const url = typeof input === 'string' ? input : String(input)
+        if (url === '/operator/session/csrf') {
+          csrfCalls++
+          return new Response(JSON.stringify({csrfToken: 'csrf-token-fresh'}), {
+            status: 200,
+            headers: {'content-type': 'application/json'},
+          })
+        }
+        decisionCount++
         const h = init?.headers as Record<string, string> | undefined
-        const idemKey = h?.['idempotency-key']
-        if (idemKey !== undefined && idemKey !== '') capturedKeys.push(idemKey)
-        if (callCount === 1) {
+        decisionCalls.push({idemKey: h?.['idempotency-key'] ?? '', csrf: h?.['x-csrf-token'] ?? ''})
+        if (decisionCount === 1) {
           return new Response(JSON.stringify({error: 'csrf_invalid'}), {
             status: 400,
             headers: {'content-type': 'application/json'},
@@ -1093,18 +1101,28 @@ describe('decideRunApproval', () => {
     })
     const result = await client.decideRunApproval('run-001', 'req-001', 'once', 'idem-key-retry-test', 'csrf-token-xyz')
     expect(result.success).toBe(true)
-    expect(callCount).toBe(2)
-    // Both calls must use the SAME idempotency key
-    expect(capturedKeys).toHaveLength(2)
-    expect(capturedKeys[0]).toBe('idem-key-retry-test')
-    expect(capturedKeys[1]).toBe('idem-key-retry-test')
+    expect(decisionCount).toBe(2)
+    expect(csrfCalls).toBe(1)
+    expect(decisionCalls[0]).toEqual({idemKey: 'idem-key-retry-test', csrf: 'csrf-token-xyz'})
+    // The retry carries the REFRESHED token (re-sending the rejected one is a no-op)
+    // but the SAME idempotency key (retry semantics, not a duplicate decision).
+    expect(decisionCalls[1]).toEqual({idemKey: 'idem-key-retry-test', csrf: 'csrf-token-fresh'})
   })
 
   it('does not retry a second time on second 400 (no third attempt)', async () => {
-    let callCount = 0
+    let decisionCount = 0
+    let csrfCalls = 0
     const client = createOperatorClient({
-      fetch: async () => {
-        callCount++
+      fetch: async input => {
+        const url = typeof input === 'string' ? input : String(input)
+        if (url === '/operator/session/csrf') {
+          csrfCalls++
+          return new Response(JSON.stringify({csrfToken: 'csrf-token-fresh'}), {
+            status: 200,
+            headers: {'content-type': 'application/json'},
+          })
+        }
+        decisionCount++
         return new Response(JSON.stringify({error: 'csrf_invalid'}), {
           status: 400,
           headers: {'content-type': 'application/json'},
@@ -1114,7 +1132,38 @@ describe('decideRunApproval', () => {
     })
     const result = await client.decideRunApproval('run-001', 'req-001', 'once', 'idem-key-abc', 'csrf-token-xyz')
     expect(result.success).toBe(false)
-    expect(callCount).toBe(2) // exactly 2: initial + one retry
+    expect(decisionCount).toBe(2) // exactly 2: initial + one retry
+    expect(csrfCalls).toBe(1) // one refresh before the single retry
+  })
+
+  it('abandons the retry and surfaces the original 400 when the csrf refresh fails', async () => {
+    let decisionCount = 0
+    const client = createOperatorClient({
+      fetch: async input => {
+        const url = typeof input === 'string' ? input : String(input)
+        if (url === '/operator/session/csrf') {
+          return new Response(JSON.stringify({error: 'unavailable'}), {
+            status: 503,
+            headers: {'content-type': 'application/json'},
+          })
+        }
+        decisionCount++
+        return new Response(JSON.stringify({error: 'csrf_invalid'}), {
+          status: 400,
+          headers: {'content-type': 'application/json'},
+        })
+      },
+      createEventStream: makeEventStream([]),
+    })
+    const result = await client.decideRunApproval('run-001', 'req-001', 'once', 'idem-key-abc', 'csrf-token-xyz')
+    expect(result.success).toBe(false)
+    expect(decisionCount).toBe(1) // no retry POST — the refresh failed first
+    // The caller sees the ORIGINAL 400, not the refresh transport error.
+    if (!result.success && result.error.kind === 'http') {
+      expect(result.error.status).toBe(400)
+    } else {
+      throw new Error('expected http error with status 400')
+    }
   })
 
   it('does not retry on non-400 errors (404 is not retried)', async () => {
@@ -3111,15 +3160,26 @@ describe('subscribePush', () => {
     }
   })
 
-  it('retries exactly once on HTTP 400, reusing the same idempotency key', async () => {
-    let callCount = 0
+  it('retries once on HTTP 400 with a refreshed token, reusing the same idempotency key', async () => {
+    let postCount = 0
+    let csrfCalls = 0
     const capturedKeys: string[] = []
+    const capturedTokens: string[] = []
     const client = createOperatorClient({
-      fetch: async (_input, init) => {
-        callCount += 1
+      fetch: async (input, init) => {
+        const url = typeof input === 'string' ? input : String(input)
+        if (url === '/operator/session/csrf') {
+          csrfCalls += 1
+          return new Response(JSON.stringify({csrfToken: 'csrf-token-fresh'}), {
+            status: 200,
+            headers: {'content-type': 'application/json'},
+          })
+        }
+        postCount += 1
         const h = init?.headers as Record<string, string> | undefined
         if (h?.['idempotency-key'] !== undefined) capturedKeys.push(h['idempotency-key'])
-        return new Response(JSON.stringify({error: 'bad_request'}), {
+        if (h?.['x-csrf-token'] !== undefined) capturedTokens.push(h['x-csrf-token'])
+        return new Response(JSON.stringify({error: 'csrf_invalid'}), {
           status: 400,
           headers: {'content-type': 'application/json'},
         })
@@ -3128,9 +3188,13 @@ describe('subscribePush', () => {
     })
     const result = await client.subscribePush(FIXTURE_PUSH_SUBSCRIPTION_JSON, 'csrf-token-xyz', 'idem-key-retry-test')
     expect(result.success).toBe(false)
-    expect(callCount).toBe(2)
+    expect(postCount).toBe(2) // exactly 2 POSTs: initial + one retry
+    expect(csrfCalls).toBe(1) // one refresh before the retry
     expect(capturedKeys[0]).toBe('idem-key-retry-test')
     expect(capturedKeys[1]).toBe('idem-key-retry-test')
+    expect(capturedTokens[0]).toBe('csrf-token-xyz')
+    // The retry carries the REFRESHED token, not the rejected one
+    expect(capturedTokens[1]).toBe('csrf-token-fresh')
   })
 
   it('returns a network error on transport failure, never treated as denial', async () => {
@@ -3234,15 +3298,26 @@ describe('unsubscribePush', () => {
     expect(fetchCalled).toBe(false)
   })
 
-  it('retries exactly once on HTTP 400, reusing the same idempotency key', async () => {
-    let callCount = 0
+  it('retries once on HTTP 400 with a refreshed token, reusing the same idempotency key', async () => {
+    let postCount = 0
+    let csrfCalls = 0
     const capturedKeys: string[] = []
+    const capturedTokens: string[] = []
     const client = createOperatorClient({
-      fetch: async (_input, init) => {
-        callCount += 1
+      fetch: async (input, init) => {
+        const url = typeof input === 'string' ? input : String(input)
+        if (url === '/operator/session/csrf') {
+          csrfCalls += 1
+          return new Response(JSON.stringify({csrfToken: 'csrf-token-fresh'}), {
+            status: 200,
+            headers: {'content-type': 'application/json'},
+          })
+        }
+        postCount += 1
         const h = init?.headers as Record<string, string> | undefined
         if (h?.['idempotency-key'] !== undefined) capturedKeys.push(h['idempotency-key'])
-        return new Response(JSON.stringify({error: 'bad_request'}), {
+        if (h?.['x-csrf-token'] !== undefined) capturedTokens.push(h['x-csrf-token'])
+        return new Response(JSON.stringify({error: 'csrf_invalid'}), {
           status: 400,
           headers: {'content-type': 'application/json'},
         })
@@ -3251,9 +3326,13 @@ describe('unsubscribePush', () => {
     })
     const result = await client.unsubscribePush('endpoint-fixture-001', 'csrf-token-xyz', 'idem-key-retry-test')
     expect(result.success).toBe(false)
-    expect(callCount).toBe(2)
+    expect(postCount).toBe(2) // exactly 2 POSTs: initial + one retry
+    expect(csrfCalls).toBe(1) // one refresh before the retry
     expect(capturedKeys[0]).toBe('idem-key-retry-test')
     expect(capturedKeys[1]).toBe('idem-key-retry-test')
+    expect(capturedTokens[0]).toBe('csrf-token-xyz')
+    // The retry carries the REFRESHED token, not the rejected one
+    expect(capturedTokens[1]).toBe('csrf-token-fresh')
   })
 
   it('returns a network error on transport failure, never treated as denial', async () => {

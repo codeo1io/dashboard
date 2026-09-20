@@ -340,6 +340,86 @@ repos:
       warnSpy.mockRestore()
     }
   })
+
+  it('a structurally-invalid PUBLIC entry (missing required fields) is skipped AND counted — not silently dropped', async () => {
+    // Object-shaped but missing node_id/discovery_channel: parses as YAML,
+    // fails the public-field guard. Must land in the same skipped-count
+    // warning as the non-object rows (rm-130: silent drops are never invisible).
+    const yaml = `
+version: 1
+repos:
+  - owner: marcusrbrown
+    name: ha-config
+    added: 2026-04-17
+    onboarding_status: onboarded
+    last_survey_at: 2026-06-10
+    last_survey_status: success
+    has_fro_bot_workflow: false
+    has_renovate: true
+    next_survey_eligible_at: 2026-07-12
+    discovery_channel: collab
+    private: false
+    node_id: R_kgDOJ_bMaQ
+  - owner: someone
+    name: missing-node-id-and-channel
+    private: false
+`
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const result = await readRepoMetadata(makeReader(yaml))
+
+      expect(isOk(result)).toBe(true)
+      if (!isOk(result)) return
+      expect(result.data.publicRepos).toHaveLength(1)
+      expect(result.data.publicRepos[0]?.name).toBe('ha-config')
+
+      const warnLine = warnSpy.mock.calls.map(c => c.join(' ')).find(l => l.includes('skipped malformed entries'))
+      expect(warnLine).toBeDefined()
+      expect(warnLine).toContain('"skippedCount":1')
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  it('a malformed entry that is private but has a usable deny key is excluded AND counted, never public', async () => {
+    // private:true + valid node_id but junk elsewhere: handled by the redacted
+    // branch (deny key retained, name never surfaced). The malformed-field
+    // counter must not mis-route it into publicRepos under any field shape.
+    const yaml = `
+version: 1
+repos:
+  - owner: marcusrbrown
+    name: ha-config
+    added: 2026-04-17
+    onboarding_status: onboarded
+    last_survey_at: 2026-06-10
+    last_survey_status: success
+    has_fro_bot_workflow: false
+    has_renovate: true
+    next_survey_eligible_at: 2026-07-12
+    discovery_channel: collab
+    private: false
+    node_id: R_kgDOJ_bMaQ
+  - private: true
+    node_id: R_kgDOOTHERkeyXX
+`
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const result = await readRepoMetadata(makeReader(yaml))
+
+      expect(isOk(result)).toBe(true)
+      if (!isOk(result)) return
+      expect(result.data.publicRepos).toHaveLength(1)
+      expect(result.data.publicRepos[0]?.name).toBe('ha-config')
+      expect(result.data.redactedNodeIds.has('R_kgDOOTHERkeyXX')).toBe(true)
+
+      // Well-formed redacted entries are not "malformed" — no skip warning.
+      const warnLine = warnSpy.mock.calls.map(c => c.join(' ')).find(l => l.includes('skipped malformed entries'))
+      expect(warnLine).toBeUndefined()
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
 })
 
 // ---------------------------------------------------------------------------

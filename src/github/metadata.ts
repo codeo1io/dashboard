@@ -340,6 +340,15 @@ export async function readRepoMetadata(reader: MetadataReader): Promise<Result<M
         node_id: entry.node_id,
         discovery_channel: entry.discovery_channel,
       })
+    } else {
+      // A non-redacted entry that reached here has an object shape but is
+      // missing (or has ill-typed) required public fields. It is skipped for
+      // the same reason as the non-object rows above — counted, never silent.
+      // Redacted/private entries with a usable deny key never reach this
+      // branch (handled above); an entry that is BOTH malformed and unusable
+      // as redacted already failed closed there.
+      skippedMalformedCount++
+      continue
     }
   }
 

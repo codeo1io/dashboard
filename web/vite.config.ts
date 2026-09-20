@@ -30,7 +30,7 @@ export default defineConfig({
       injectManifest: {
         // Exclude the SW itself and the manifest from the precache list.
         // The default globPatterns cover hashed JS/CSS/assets in web/dist.
-        globIgnores: ['**/sw.js', '**/manifest.webmanifest', '**/registerSW.js'],
+        globIgnores: ['**/sw.js', '**/manifest.webmanifest', '**/registerSW.js', '**/privacy.html'],
 
         // Rewrite the precache manifest entry for index.html → '/' so that
         // Workbox's install-time fetch hits GET / (which the Hono server serves
@@ -61,6 +61,10 @@ export default defineConfig({
     // No inline scripts are emitted by default — all JS is external chunks
     // referenced via <script type="module" src="..."> tags, satisfying CSP.
     rollupOptions: {
+      input: {
+        index: 'index.html',
+        privacy: 'privacy.html',
+      },
       output: {
         // Ensure JS chunks use content-hash filenames
         entryFileNames: 'assets/[name]-[hash].js',
