@@ -7,16 +7,16 @@ name: visual
 on:
   pull_request:
     paths:
-      - 'web/src/**'
-      - 'tests/visual/**'
-      - 'playwright.config.ts'
-      - '.github/workflows/visual.yaml'
+      - web/src/**
+      - tests/visual/**
+      - playwright.config.ts
+      - .github/workflows/visual.yaml
   push:
     branches: [main]
   workflow_dispatch:
     inputs:
       update-baselines:
-        description: 'Run with --update-snapshots and upload new baselines'
+        description: Run with --update-snapshots and upload new baselines
         type: boolean
         default: false
 

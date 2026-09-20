@@ -27,16 +27,16 @@ import process from 'node:process'
 import {defineConfig, devices} from '@playwright/test'
 
 /** Dedicated fixture-mode port (avoid 3000, which `pnpm dev` claims). */
-const port = Number.parseInt(process.env['DASHBOARD_VISUAL_PORT'] ?? '4311', 10)
+const port = Number.parseInt(process.env.DASHBOARD_VISUAL_PORT ?? '4311', 10)
 const baseURL = `http://127.0.0.1:${port}`
 
 export default defineConfig({
   testDir: './tests/visual',
   snapshotDir: './tests/visual/__screenshots__',
   fullyParallel: true,
-  forbidOnly: process.env['CI'] !== undefined,
-  retries: process.env['CI'] !== undefined ? 1 : 0,
-  workers: process.env['CI'] !== undefined ? 2 : undefined,
+  forbidOnly: process.env.CI !== undefined,
+  retries: process.env.CI === undefined ? 0 : 1,
+  workers: process.env.CI === undefined ? undefined : 2,
   reporter: [
     ['list'],
     ['html', {outputFolder: 'playwright-report', open: 'never'}],
@@ -72,7 +72,7 @@ export default defineConfig({
     command: 'pnpm build:web:fixture && node src/server.ts',
     url: `${baseURL}/api/healthz`,
     timeout: 120_000,
-    reuseExistingServer: process.env['CI'] === undefined,
+    reuseExistingServer: process.env.CI === undefined,
     env: {
       NODE_ENV: 'development',
       DASHBOARD_HOST: '127.0.0.1',

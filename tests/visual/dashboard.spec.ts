@@ -1,3 +1,4 @@
+import AxeBuilder from '@axe-core/playwright'
 /**
  * Dark (report-only) visual-regression + axe-core accessibility checks.
  *
@@ -10,7 +11,6 @@
  * or disabled inline with a justification — see `axeCommon()` below.
  */
 import {expect, test} from '@playwright/test'
-import AxeBuilder from '@axe-core/playwright'
 
 /** Impact levels that fail the gate. Everything else is report-only. */
 const FAILING_IMPACTS = new Set(['critical', 'serious'])
@@ -38,14 +38,14 @@ async function assertAccessible(
   )
 
   for (const violation of results.violations) {
-    const nodes = violation.nodes.map((node) => node.target.join(' ')).slice(0, 5)
-    console.log(
+    const nodes = violation.nodes.map(node => node.target.join(' ')).slice(0, 5)
+    console.warn(
       `[axe] ${violation.impact ?? 'unknown'} — ${violation.id}: ${violation.help} (${violation.nodes.length} node(s)) e.g. ${nodes.join(' | ')}`,
     )
   }
 
   expect(
-    failing.map((violation) => `${violation.impact}: ${violation.id} — ${violation.help}`),
+    failing.map(violation => `${violation.impact}: ${violation.id} — ${violation.help}`),
     'critical/serious axe violations (all findings logged above)',
   ).toEqual([])
 }
@@ -53,8 +53,8 @@ async function assertAccessible(
 test.beforeEach(async ({page}) => {
   // Block the PWA service worker: it precaches the SPA shell and can serve a
   // stale/intercepted response, which makes screenshots depend on prior runs.
-  await page.route('/sw.js', (route) => route.fulfill({status: 200, body: ''}))
-  await page.route('/registerSW.js', (route) => route.fulfill({status: 200, body: ''}))
+  await page.route('/sw.js', async route => route.fulfill({status: 200, body: ''}))
+  await page.route('/registerSW.js', async route => route.fulfill({status: 200, body: ''}))
   // Deterministic dark theme: tokens.css has `@media (prefers-color-scheme:
   // light) { :root { ... light tokens ... } }` which overrides dark for ALL
   // pages when the host prefers light — data-theme="dark" cannot beat it
@@ -62,7 +62,7 @@ test.beforeEach(async ({page}) => {
   // prefers-color-scheme: light, so the static privacy page rendered light.
   // Neutralize the block in whichever bundle serves it (dev: /index.css via
   // @import; built fixture: /assets/src-*.css single bundle).
-  await page.route(/\.css$/, async (route) => {
+  await page.route(/\.css$/, async route => {
     const response = await route.fetch()
     const headers = response.headers()
     if (!/css/i.test(headers['content-type'] ?? '')) {
@@ -71,8 +71,8 @@ test.beforeEach(async ({page}) => {
     }
     let css = await response.text()
     // Minified bundles write `(prefers-color-scheme:light)` — no space.
-    css = css.replace(/@media\s*\(prefers-color-scheme:\s*light\)\s*\{[\s\S]*?\n\}/g, '')
-    css = css.replace(/@media\s*\(prefers-color-scheme:\s*light\)\s*\{(?:[^{}]|\{[^{}]*\})*\}/g, '')
+    css = css.replaceAll(/@media\s*\(prefers-color-scheme:\s*light\)\s*\{[\s\S]*?\n\}/g, '')
+    css = css.replaceAll(/@media\s*\(prefers-color-scheme:\s*light\)\s*\{(?:[^{}]|\{[^{}]*\})*\}/g, '')
     await route.fulfill({response, body: css})
   })
 })
@@ -129,7 +129,7 @@ test('privacy policy page', async ({page}) => {
   const pageHeight = (await page.evaluate(
     () => (globalThis as unknown as {document: {documentElement: {scrollHeight: number}}})
       .document.documentElement.scrollHeight,
-  )) as number
+  ))
 
   await assertAccessible(page)
   await expect(page).toHaveScreenshot('privacy-dark.png', {
