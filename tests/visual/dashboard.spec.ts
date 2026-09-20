@@ -54,18 +54,18 @@ test.beforeEach(async ({page}) => {
   // stale/intercepted response, which makes screenshots depend on prior runs.
   await page.route('/sw.js', (route) => route.fulfill({status: 200, body: ''}))
   await page.route('/registerSW.js', (route) => route.fulfill({status: 200, body: ''}))
-  // Deterministic dark theme at document-start, before any CSS media-query
-  // resolution matters: the static privacy page has no theme JS, so on
-  // machines whose chromium resolves prefers-color-scheme: light it rendered
-  // light while every other view (SPA, sets data-theme via JS) stayed dark.
-  // documentElement exists at init-script time; setting the attribute
-  // synchronously wins the race with first paint.
-  await page.addInitScript(() => {
-    document.documentElement.setAttribute('data-theme', 'dark')
-    const meta = document.createElement('meta')
-    meta.name = 'color-scheme'
-    meta.content = 'dark'
-    document.addEventListener('DOMContentLoaded', () => document.head.append(meta))
+  // Deterministic dark theme: tokens.css has `@media (prefers-color-scheme:
+  // light) { :root { ... light tokens ... } }` which overrides dark for ALL
+  // pages when the host prefers light — data-theme="dark" cannot beat it
+  // (equal specificity, later position). The runner's chromium resolves
+  // prefers-color-scheme: light (context emulation notwithstanding), so the
+  // static privacy page rendered light. Neutralize the block by rewriting
+  // the stylesheet in flight.
+  await page.route('**/index.css', async (route) => {
+    const response = await route.fetch()
+    let css = await response.text()
+    css = css.replace(/@media \(prefers-color-scheme: light\) \{[\s\S]*?\n\}/, '')
+    await route.fulfill({response, body: css})
   })
 })
 
