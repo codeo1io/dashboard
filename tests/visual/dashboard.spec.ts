@@ -121,6 +121,16 @@ test('privacy policy page', async ({page}) => {
   await expect(page.locator('body')).toContainText(/privacy/i)
   await page.waitForTimeout(250)
 
+
+  // Probe: capture computed styles at screenshot time for CI diagnosis.
+  const probe = await page.evaluate(() => ({
+    theme: document.documentElement.getAttribute('data-theme'),
+    scheme: matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark',
+    bg: getComputedStyle(document.body).backgroundColor,
+    href: location.href,
+  }))
+  console.log('[theme-probe]', JSON.stringify(probe))
+
   await assertAccessible(page)
   await expect(page).toHaveScreenshot('privacy-dark.png', {fullPage: true})
 })
