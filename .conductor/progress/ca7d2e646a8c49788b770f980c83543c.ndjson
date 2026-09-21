@@ -1,0 +1,2 @@
+{"step":1,"ts":"2026-09-20T21:46:14Z","summary":"Discovered implement B2-B4 never persisted (hazard #5816 4th occ); fixed healthz pin dashboard.test.ts:590","touched":["test/dashboard.test.ts"]}
+{"step":2,"ts":"2026-09-20T21:48:43Z","summary":"B2 recovered: shared OPERATOR_FETCH_TIMEOUT_MS both clients, cancel 400-retry refreshes CSRF; specs 355/355","touched":["public/operator-stream.js","test/operator-stream-core.test.ts"]}

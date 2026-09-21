@@ -1,0 +1,5 @@
+{"step":1,"ts":"2026-09-20T21:52:16Z","summary":"full_tests frame: tree unchanged since targeted_tests recovery (fingerprint recorded), starting canonical full run","touched":[]}
+{"step":2,"ts":"2026-09-20T21:53:30Z","summary":"rm-135 recovered for real: vite.config injectManifest tuning+stale comment stripped; build:web emits kill-switch sw.js","touched":["web/vite.config.ts","web/dist/sw.js"]}
+{"step":3,"ts":"2026-09-20T21:54:23Z","summary":"B3 recovered: caddy path-trap doc written to docs/solutions/best-practices (fork conventions)","touched":["docs/solutions/best-practices/caddy-path-trap-extensionless-rewrite-2026-09-20.md"]}
+{"step":4,"ts":"2026-09-20T22:14:33Z","summary":"Canonical runner fixed: scripts/test.ts translates --runInBand→--no-file-parallelism; npm test -- --runInBand exit 0 (2026+1054)","touched":["scripts/test.ts","package.json"]}
+{"step":5,"ts":"2026-09-20T22:14:33Z","summary":"Gates green: lint+check-types clean post 3 mechanical fixes; final canonical run exit 0; fingerprint 12M+4new","touched":["test/operator-stream-core.test.ts","test/session.test.ts","scripts/test.ts"]}

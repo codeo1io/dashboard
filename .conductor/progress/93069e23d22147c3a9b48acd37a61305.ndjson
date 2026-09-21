@@ -1,0 +1,6 @@
+{"step":4,"ts":"2026-09-20T15:57:16Z","summary":"B1 wiki-writer guard: segment skips, allowlist prefix fix, dir-first check; 4/4 green","touched":["test/wiki-writer-guard.test.ts"]}
+{"step":5,"ts":"2026-09-20T15:57:16Z","summary":"B3 metadata.ts: counts object entries failing public predicate; +1 test (42/42)","touched":["src/github/metadata.ts","test/metadata.test.ts"]}
+{"step":6,"ts":"2026-09-20T15:57:16Z","summary":"B4 app-client RateLimitState + api.ts/server.ts healthz wiring","touched":["src/github/app-client.ts","src/routes/api.ts","src/server.ts"]}
+{"step":7,"ts":"2026-09-20T15:57:16Z","summary":"B4 tests: healthz 4 assertions (null/ISO/rate passthrough); dashboard.test.ts 46 green","touched":["test/dashboard.test.ts"]}
+{"step":8,"ts":"2026-09-20T16:01:23Z","summary":"B2 aggregator: bounded pool(6), 2x-interval TTL, negative cache, warm-empty preserve, cycle telemetry","touched":["src/github/aggregator.ts"]}
+{"step":9,"ts":"2026-09-20T16:03:34Z","summary":"B2 rider rm-102: deleted .github/renovate.json5, fixed stale ref in dependabot.yml header","touched":[".github/renovate.json5",".github/dependabot.yml"]}
