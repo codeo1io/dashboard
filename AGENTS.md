@@ -1,6 +1,7 @@
 # AGENTS.md
 
-Read-only Fro Bot monitoring dashboard. Two parts in one repo: a Node 24
+Fro Bot monitoring dashboard with a read-only-by-default GitHub data path and one
+isolated wiki-write capability. Two parts in one repo: a Node 24
 native-TS Hono server (`src/`, strip-only, no backend build step) that serves the
 API + GitHub OAuth, and a Vite + React 19 + Tailwind v4 PWA client (`web/`, built
 via `pnpm build:web` → `web/dist`, served at `/`). Authenticated single-operator
@@ -8,14 +9,45 @@ view of Fro Bot's cross-repo footprint.
 
 ## Critical security invariants
 
-1. **Read-only by construction.** Every GitHub App installation token is minted
-   with an explicit read-only `permissions` subset at mint time
+1. **Read-only by default, with one isolated wiki-write capability.**
+   `DASHBOARD_GITHUB_APP_*` remains strictly read-only: every installation token
+   is minted with an explicit read-only `permissions` subset at mint time
    (`pull_requests/checks/issues/contents/metadata:read`, with
-   `security_events`/`vulnerability_alerts:read` optional + graceful). The Agent
-   App's registered permissions are therefore irrelevant to effective access.
-   Never add a write code path.
+   `security_events`/`vulnerability_alerts:read` optional + graceful), and those
+   credentials may never mint write-scoped tokens.
+
+   **Today the dashboard web/runtime has no GitHub write authority at all.** The
+   `wiki-writer` service below is implemented in `wiki-writer/` but is not
+   deployed, not integrated, and holds no runtime authority: no workflow builds
+   or deploys it, nothing in `src/` reaches it, and its source never enters the
+   dashboard runtime image (`Dockerfile` copies only its `package.json`, for
+   workspace resolution). `wiki-writer/test/security-boundary.test.ts` enforces
+   that `src/` and `web/src/` cannot import writer code or key-loading symbols.
+
+   When it ships, it will be the ONLY GitHub write authority available to the
+   application: a separately deployed `wiki-writer` service authenticated as the
+   Fro Bot App — the same App `release.yaml` authenticates as via `APPLICATION_ID`,
+   distinct from the read-only Agent App behind `DASHBOARD_GITHUB_APP_*`. It will
+   target only the `fro-bot/.github` repository's `data` branch, under an explicit
+   wiki/corrections path allowlist, executing gates from the shared
+   `@fro-bot/wiki-write-core` package. The dashboard web process must never receive
+   the Fro Bot App private key or an installation token derived from it. Any
+   additional write target or credential requires explicit owner approval and a new
+   threat model.
+
+   This invariant does not govern separately credentialed repository CI/release
+   automation, which is not available to the dashboard web process. HTTP POST endpoints
+   for listener ingest/acknowledgement, logout, and
+   push-subscription lifecycle are application writes, not GitHub write authority.
+   The security cost this accepts, once the writer ships: dashboard authentication
+   compromise can produce valid wiki edits; dashboard RCE can exercise the private
+   writer API within its allowed scope; writer compromise exposes Fro Bot write
+   authority; and the deployment owns another secret, service, health boundary, and
+   incident surface. The separation prevents credential exfiltration and arbitrary GitHub
+   operations, but it cannot prevent a compromised dashboard from submitting
+   in-scope wiki edits because the dashboard is the authenticated caller.
 2. **Redaction preservation.** `src/github/metadata.ts` reads
-   `metadata/repos.yaml` from the `codeo1io/.github` `data` branch and exports
+   `metadata/repos.yaml` from the `fro-bot/.github` `data` branch and exports
    `redactedNodeIds` (node_ids of `[REDACTED]`/`private:true` entries). The
    aggregator MUST exclude denylisted repos from the installation-enumerated set
    BEFORE any per-repo GraphQL query (a query is itself a leak signal), and MUST
@@ -38,11 +70,6 @@ view of Fro Bot's cross-repo footprint.
 - `docs/solutions/` — documented solutions to past problems, organized by category
   with YAML frontmatter (`module`, `tags`, `problem_type`). Relevant when
   implementing or debugging in documented areas.
-- Validate workflows with actionlint via the container form (see
-  `docs/solutions/workflow-issues/actionlint-pipx-missing-container-form-2026-09-19.md`)
-  — the self-hosted runner has no pipx.
-- New `.yaml`/`.yml` files must single-quote string values — eslint's `yml` plugin
-  enforces `yml/quotes` repo-wide (`pnpm lint`), e.g. `patterns: ['*']` in dependabot groups.
 - `.agents/skills/` is the canonical home for cross-harness agent skills (read by
   both OpenCode and GitHub Copilot). Install shared skills there, not per-harness:
   e.g. `npx impeccable skills install --providers=agents --scope=project`. The CI
@@ -54,10 +81,11 @@ view of Fro Bot's cross-repo footprint.
   the-server pattern for subagent verification — is in
   `docs/solutions/workflow-issues/dev-server-hang-background-no-watch-kill-orphans-2026-06-25.md`.
 - A `Fro Bot` check that dies in ~34s on `Timeout waiting for server to start after
-  5000ms` is infrastructure, not review feedback — no verdict is produced. The failure
-  is absorbing: reruns re-persist the same cache and never recover. Deleting every
-  `opencode-*` Actions cache is the only known fix (the PR's alone re-inherits `main`
-  via restore-key fallback). Recipe and upstream tracking in
+  5000ms` used to mean a poisoned session cache, recoverable only by deleting every
+  `opencode-*` Actions cache. That is fixed upstream as of `fro-bot/agent` v0.107.1,
+  which repairs the restored database before bootstrap, so a poisoned cache now heals
+  on the next run. The pin is well past that, so **do not purge caches** — on a current
+  pin this signature is a new problem, not the old one. Background in
   `docs/solutions/workflow-issues/opencode-bootstrap-timeout-cache-purge-2026-08-31.md`.
 - Fro Bot's `output-mode` defaults to `auto`, which resolves to `working-dir` for
   schedule/dispatch runs — the agent edits the tree and expects a caller-side commit/PR
@@ -65,17 +93,3 @@ view of Fro Bot's cross-repo footprint.
   workflow now sets `branch-pr` for those triggers; verify delivery by confirming a
   fro-bot-authored PR exists, not by reading run status. See
   `docs/solutions/workflow-issues/workflow-output-mode-auto-discarded-agent-fixes-2026-08-31.md`.
-- The `Fro Bot` workflow on this fork is `disabled_manually` (verified 2026-09-19):
-  codeo1io/dashboard has no `FRO_BOT_PAT` secret, so the daily cron would fail on
-  every run. Re-enabling it without provisioning that secret resurrects the failing
-  cron — check `gh workflow list` state and secret presence before flipping it back on.
-
-## Cloned Dependency Source
-
-Read-only dependency source repositories are available under
-`.slim/clonedeps/repos/` for inspection. Do not edit these clones.
-
-- `.slim/clonedeps/repos/fro-bot__agent/` — `fro-bot/agent` at `v0.78.0`; the
-  gateway's operator OAuth return path contract, GitHub App client, secret
-  readers, Hono build/serve split, and runtime logger/Result primitives that
-  this app mirrors.

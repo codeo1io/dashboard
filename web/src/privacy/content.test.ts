@@ -48,9 +48,27 @@ describe('public privacy policy content', () => {
     expect(pageText).not.toMatch(/sets no explicit/i)
   })
 
+  it('discloses that a dispatch record identifies its triggering run', () => {
+    // The Gateway sets a dispatch record's correlation id to the triggering
+    // run/approval id, so the record is run-linkable. Describing it only as a
+    // "correlation identifier" reads as an opaque trace value and understates
+    // what is kept. This pins the disclosure against that regression.
+    expect(pageText).toMatch(/run or approval that triggered/i)
+    expect(pageText).not.toMatch(/never record.{0,120}run detail/i)
+  })
+
+  // UNGUARDED, deliberately: "They cover two events: a run is waiting for
+  // your approval, and a run failed." The dispatch trigger set
+  // ('approval' | 'run_failed') is Gateway-internal — not in the vendored
+  // contract (src/gateway/operator-contract/push.ts covers only the read
+  // surface: VAPID key, handoff state, subscription metadata). A test here
+  // could only assert the page says what the page says. Guardable once the
+  // trigger set is exposed in the operator contract, the way
+  // OPERATOR_CONTRACT_VERSION already is.
+
   it('does not expose private or internal values', () => {
     const urls = pageText.match(/https:\/\/[^\s<)]+/g) ?? []
-    expect(urls).toEqual(['https://github.com/codeo1io/dashboard/issues'])
+    expect(urls).toEqual(['https://github.com/fro-bot/dashboard/issues'])
     expect(pageText).not.toMatch(/[A-Za-z0-9_-]{80,}/)
     expect(pageText).not.toMatch(/\/operator\//)
     expect(pageText).not.toMatch(/(?<![\w.-])\d{7,}(?![\w.-])/)

@@ -838,8 +838,9 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   // branches via isPublicPath above), so authenticated and unauthenticated
   // visitors get byte-identical responses. Serves ONLY the clean /privacy
   // path (plus its trailing-slash variant, matching isPublicPath above) —
-  // /privacy.html itself is never registered as a route. NOTE: unlike
-  // upstream, this fork's service worker is a cacheless kill-switch that
+  // /privacy.html itself is never registered as a route, which is what keeps
+  // the service worker's precache exclusion correct (see sw.ts). NOTE: unlike
+  // upstream, this fork's service worker is a cacheless SW-off switch that
   // never serves navigations, so no SW denylist exemption is needed here.
   app.get('/privacy', serveStatic({root: webDistRoot, path: 'privacy.html'}))
   app.get('/privacy/', serveStatic({root: webDistRoot, path: 'privacy.html'}))
