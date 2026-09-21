@@ -74,8 +74,11 @@ describe('reconcile — drift matrix', () => {
     expect(reconcile('default', false, 'not_subscribed')).toEqual({uiState: 'not-requested', action: 'none'})
   })
 
-  it('granted + none + not_subscribed -> offer register', () => {
-    expect(reconcile('granted', false, 'not_subscribed')).toEqual({uiState: 'not-requested', action: 'register'})
+  it('granted + none + not_subscribed -> resting state, no auto-register', () => {
+    // Regression guard for the mirror-image #508 defect: a granted permission
+    // with no local subscription is not drift — it's the operator simply not
+    // opted in. Only the explicit button click (subscribeOptIn) may register.
+    expect(reconcile('granted', false, 'not_subscribed')).toEqual({uiState: 'not-requested', action: 'none'})
   })
 
   it('granted + none + inactive -> offer register', () => {
@@ -94,8 +97,31 @@ describe('reconcile — drift matrix', () => {
     expect(reconcile('granted', true, 'inactive')).toEqual({uiState: 'not-requested', action: 'cleanup'})
   })
 
-  it('granted + present + not_subscribed -> cleanup', () => {
-    expect(reconcile('granted', true, 'not_subscribed')).toEqual({uiState: 'not-requested', action: 'cleanup'})
+  it('granted + present + not_subscribed, CONFIRMED divergence -> cleanup', () => {
+    // notSubscribedConfirmed: true documents a genuine, correlated mismatch
+    // (metadata read + local hash both succeeded and disagreed) — the only
+    // case allowed to tear down a live local subscription.
+    expect(reconcile('granted', true, 'not_subscribed', {notSubscribedConfirmed: true})).toEqual({
+      uiState: 'not-requested',
+      action: 'cleanup',
+    })
+  })
+
+  it('granted + present + not_subscribed, UNCONFIRMED (no options passed) -> no destructive action, preserve UI', () => {
+    // Regression guard: this is the root cause of the focus-cycle incident.
+    // A caller that omits confirmation (e.g. because the metadata read was
+    // inconclusive) must never trigger cleanup — that's what orphaned a
+    // Gateway record and caused a fresh subscription to be minted on the
+    // next focus. uiState: undefined tells the caller to preserve whatever
+    // it's currently showing rather than resetting to not-requested.
+    expect(reconcile('granted', true, 'not_subscribed')).toEqual({uiState: undefined, action: 'none'})
+  })
+
+  it('granted + present + not_subscribed, explicitly UNCONFIRMED -> no destructive action', () => {
+    expect(reconcile('granted', true, 'not_subscribed', {notSubscribedConfirmed: false})).toEqual({
+      uiState: undefined,
+      action: 'none',
+    })
   })
 
   it('denied + present -> cleanup-and-unsubscribe', () => {

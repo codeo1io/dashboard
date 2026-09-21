@@ -702,7 +702,11 @@ describe('runReconcileSweep', () => {
     expect(result.uiState).not.toBe('subscribed')
   })
 
-  it('endpointless: metadata present but no local subscription -> cleans up without Gateway unsubscribe call', async () => {
+  it('regression: fresh load, granted permission, no local subscription, non-matching Gateway metadata -> no auto-register, no Gateway unsubscribe call', async () => {
+    // The production incident: hard reload, permission already granted from
+    // a prior session, no local PushSubscription, Gateway metadata present
+    // but for a different endpoint. Pre-fix this fell through to 'register'
+    // and subscribeOptIn minted a subscription with zero user action.
     const metadata: PushSubscriptionMetadata = {
       endpointHash: 'a'.repeat(64),
       keyVersion: 'v1',
@@ -724,7 +728,217 @@ describe('runReconcileSweep', () => {
       cache,
     )
 
-    expect(result.action).toBe('register')
+    expect(result.action).toBe('none')
     expect(pushClient.unsubscribePush).not.toHaveBeenCalled()
+  })
+
+  it('regression: metadata read failure (transport error) with a live local subscription does NOT cleanup or register', async () => {
+    // The scenario from the incident: the Gateway GET fails/races, but the
+    // browser still has a real, live subscription. Losing it here is what
+    // orphaned a Gateway record on every focus cycle.
+    const subscription = fakeSubscription('https://push.example/live')
+    const pushClient = fakePushClient({
+      getPushSubscriptionMetadata: vi.fn().mockResolvedValue(err({kind: 'network'})),
+    })
+
+    const result = await runReconcileSweep(
+      {
+        getLocalSubscription: () => Promise.resolve(subscription),
+        getPermission: () => 'granted',
+        pushClient,
+        getCurrentKeyVersion: () => 'v1',
+        now: () => 1,
+      },
+      cache,
+    )
+
+    expect(result.action).not.toBe('cleanup')
+    expect(result.action).not.toBe('register')
+    expect(subscription.unsubscribeMock).not.toHaveBeenCalled()
+  })
+
+  it('regression: local endpoint hash unavailable (crypto failure) with a live local subscription does NOT cleanup or register', async () => {
+    // Metadata read succeeds, but correlating it to the local subscription
+    // fails (hash computation throws). Without matching, we cannot tell the
+    // local subscription apart from a genuine mismatch — must not act.
+    const subscription = fakeSubscription('https://push.example/live')
+    const metadata: PushSubscriptionMetadata = {
+      endpointHash: 'c'.repeat(64),
+      keyVersion: 'v1',
+      active: true,
+      createdAt: '2026-07-08T00:00:00.000Z',
+      updatedAt: '2026-07-08T00:00:00.000Z',
+    }
+    const pushClient = fakePushClient({
+      getPushSubscriptionMetadata: vi.fn().mockResolvedValue(ok({pushDisabled: false, metadata})),
+    })
+
+    const digestSpy = vi.spyOn(crypto.subtle, 'digest').mockRejectedValueOnce(new Error('crypto unavailable'))
+    try {
+      const result = await runReconcileSweep(
+        {
+          getLocalSubscription: () => Promise.resolve(subscription),
+          getPermission: () => 'granted',
+          pushClient,
+          getCurrentKeyVersion: () => 'v1',
+          now: () => 1,
+        },
+        cache,
+      )
+
+      expect(result.action).not.toBe('cleanup')
+      expect(result.action).not.toBe('register')
+      expect(subscription.unsubscribeMock).not.toHaveBeenCalled()
+    } finally {
+      digestSpy.mockRestore()
+    }
+  })
+
+  it('regression: repeated focus-cycle sweeps against a healthy subscription mint no additional subscribe() calls', async () => {
+    // Reproduces the reported incident end-to-end: one real button press,
+    // then several focus cycles where the Gateway metadata read comes back
+    // empty every time (persistent propagation-delay/flakiness — the worst
+    // case). Pre-fix this loop unsubscribed locally without telling the
+    // Gateway, then re-registered on the very next sweep, minting a new
+    // endpoint per cycle. Post-fix, an unconfirmed not_subscribed must never
+    // tear down the live subscription, so subscribe() fires exactly once.
+    const ENDPOINT = 'https://push.example/healthy'
+    let localSub: MinimalPushSubscription | null = null
+    let subscribeCallCount = 0
+
+    const makeSubscription = (): MinimalPushSubscription => ({
+      endpoint: ENDPOINT,
+      toJSON: () => ({endpoint: ENDPOINT}),
+      unsubscribe: () => {
+        localSub = null
+        return Promise.resolve(true)
+      },
+    })
+
+    const registration: MinimalServiceWorkerRegistration = {
+      pushManager: {
+        subscribe: () => {
+          subscribeCallCount += 1
+          localSub = makeSubscription()
+          return Promise.resolve(localSub)
+        },
+        getSubscription: () => Promise.resolve(localSub),
+      },
+    }
+
+    const pushClient = fakePushClient({
+      // Gateway never confirms the subscription — the flaky/racing read that
+      // triggered the incident, worst case (permanent, not just transient).
+      getPushSubscriptionMetadata: vi.fn().mockResolvedValue(ok({pushDisabled: false, metadata: undefined})),
+    })
+
+    // The one real button press.
+    const outcome = await subscribeOptIn({
+      serviceWorkerReady: () => Promise.resolve(registration),
+      getSupport: () => ({supported: true, needsInstall: false}),
+      getPermission: () => 'granted',
+      requestPermission: vi.fn().mockResolvedValue('granted'),
+      pushClient,
+    })
+    expect(outcome).toEqual({kind: 'subscribed'})
+    expect(subscribeCallCount).toBe(1)
+
+    let sweepCache: ReconcileSweepCache = INITIAL_RECONCILE_SWEEP_CACHE
+    for (let cycle = 0; cycle < 4; cycle += 1) {
+      const result = await runReconcileSweep(
+        {
+          getLocalSubscription: () => registration.pushManager.getSubscription(),
+          getPermission: () => 'granted',
+          pushClient,
+          getCurrentKeyVersion: () => 'v1',
+          now: () => (cycle + 1) * 1_000_000,
+        },
+        sweepCache,
+      )
+      sweepCache = result.nextCache
+
+      if (result.action === 'cleanup') {
+        await unsubscribeOptOut({
+          getLocalSubscription: () => registration.pushManager.getSubscription(),
+          pushClient,
+        })
+      } else if (result.action === 'register') {
+        await subscribeOptIn({
+          serviceWorkerReady: () => Promise.resolve(registration),
+          getSupport: () => ({supported: true, needsInstall: false}),
+          getPermission: () => 'granted',
+          requestPermission: vi.fn().mockResolvedValue('granted'),
+          pushClient,
+        })
+      }
+    }
+
+    expect(subscribeCallCount).toBe(1)
+    expect(localSub).not.toBeNull()
+  })
+
+  it('regression: fresh load, no button press, granted permission, non-matching Gateway metadata -> zero subscribe() calls across repeated sweeps', async () => {
+    // The confirmed production scenario, end-to-end through the same
+    // action-dispatch pattern Notifications.tsx uses: no local subscription
+    // ever existed (operator never pressed Enable), permission is granted
+    // (leftover browser grant), and Gateway metadata references a different
+    // device's endpoint. Pre-fix, reconcile fell through to 'register' and
+    // the dispatch loop below would call subscribeOptIn -> pushManager.subscribe.
+    let subscribeCallCount = 0
+
+    const registration: MinimalServiceWorkerRegistration = {
+      pushManager: {
+        subscribe: () => {
+          subscribeCallCount += 1
+          return Promise.resolve(fakeSubscription())
+        },
+        getSubscription: () => Promise.resolve(null),
+      },
+    }
+
+    const metadata: PushSubscriptionMetadata = {
+      endpointHash: 'a'.repeat(64),
+      keyVersion: 'v1',
+      active: true,
+      createdAt: '2026-07-08T00:00:00.000Z',
+      updatedAt: '2026-07-08T00:00:00.000Z',
+    }
+    const pushClient = fakePushClient({
+      getPushSubscriptionMetadata: vi.fn().mockResolvedValue(ok({pushDisabled: false, metadata})),
+    })
+
+    let sweepCache: ReconcileSweepCache = INITIAL_RECONCILE_SWEEP_CACHE
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      const result = await runReconcileSweep(
+        {
+          getLocalSubscription: () => registration.pushManager.getSubscription(),
+          getPermission: () => 'granted',
+          pushClient,
+          getCurrentKeyVersion: () => 'v1',
+          now: () => (cycle + 1) * 1_000_000,
+        },
+        sweepCache,
+      )
+      sweepCache = result.nextCache
+
+      // Later cycles legitimately no-op via the unchanged-state skip (permission
+      // and local-subscription-presence never change across cycles here) —
+      // the assertion that matters is that 'register' never comes out.
+      if (!result.skipped) {
+        expect(result.action).toBe('none')
+      }
+
+      if (result.action === 'register') {
+        await subscribeOptIn({
+          serviceWorkerReady: () => Promise.resolve(registration),
+          getSupport: () => ({supported: true, needsInstall: false}),
+          getPermission: () => 'granted',
+          requestPermission: vi.fn().mockResolvedValue('granted'),
+          pushClient,
+        })
+      }
+    }
+
+    expect(subscribeCallCount).toBe(0)
   })
 })
