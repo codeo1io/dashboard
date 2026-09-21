@@ -125,15 +125,19 @@ env:
     detail for an LLM agent to act on later (see AGENT NOTES).
 
     DEPENDENCY OWNERSHIP
-    Renovate owns routine dependency and version bumps. Change dependency
-    versions only to remediate a confirmed critical/high security advisory or to
-    repair an existing security-update PR. Never open a non-security version-bump
-    PR and never batch unrelated dependency changes into a security fix.
+    Dependabot owns routine dependency and version bumps on this fork (weekly
+    grouped PRs per .github/dependabot.yml; first window opened 2026-09-19).
+    Renovate does not run here — its workflow was removed with the move to
+    self-hosted runners and its config deleted 2026-09-22. Change dependency
+    versions only to remediate a confirmed critical/high security advisory or
+    to repair an existing security-update PR. Never open a non-security
+    version-bump PR and never batch unrelated dependency changes into a
+    security fix.
 
     TRUSTED AUTHORS
     Only repair a PR branch authored by the repository owner/a collaborator with
-    write access, or an approved automation bot (renovate[bot], dependabot[bot],
-    fro-bot). If author trust cannot be established, skip the PR and log it under
+    write access, or an approved automation bot (dependabot[bot], fro-bot). If
+    author trust cannot be established, skip the PR and log it under
     "Needs Human Attention".
 
     CATEGORIES (work in order)
