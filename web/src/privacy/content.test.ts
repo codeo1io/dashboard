@@ -68,7 +68,8 @@ describe('public privacy policy content', () => {
 
   it('does not expose private or internal values', () => {
     const urls = pageText.match(/https:\/\/[^\s<)]+/g) ?? []
-    expect(urls).toEqual(['https://github.com/fro-bot/dashboard/issues'])
+    // Fork divergence: issues link points at this fork, not upstream fro-bot.
+    expect(urls).toEqual(['https://github.com/codeo1io/dashboard/issues'])
     expect(pageText).not.toMatch(/[A-Za-z0-9_-]{80,}/)
     expect(pageText).not.toMatch(/\/operator\//)
     expect(pageText).not.toMatch(/(?<![\w.-])\d{7,}(?![\w.-])/)
