@@ -76,10 +76,6 @@ export default defineConfig({
         chunkFileNames: 'assets/[name]-[hash].js',
         assetFileNames: 'assets/[name]-[hash][extname]',
       },
-      input: {
-        index: 'index.html',
-        privacy: 'privacy.html',
-      },
     },
   },
 })

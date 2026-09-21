@@ -1,0 +1,2 @@
+{"step":1,"ts":"2026-09-20T22:58:21Z","summary":"Re-dispatch after fold rejection (a081b9ea terminal lacked validation_evidence); fence rerun; fresh fingerprint == anchors","touched":["/tmp/fv-787703fe-fp.txt"]}
+{"step":2,"ts":"2026-09-20T22:58:57Z","summary":"Full PhaseResult w/ validation_evidence scope=release-integrity written+validated in spool 787703fe; PASSED","touched":["/home/agent/.hermes/conductor-delegate-spool-infra-deploy/delegate/787703fed7d74874970dae93e7a39b80.json"]}
