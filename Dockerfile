@@ -1,13 +1,12 @@
 FROM node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS builder
 
 # Enable corepack for pnpm
-RUN corepack enable && corepack prepare pnpm@11.8.0 --activate
+RUN corepack enable && corepack prepare pnpm@11.27.0 --activate
 
 WORKDIR /app
 
 # Copy manifests first for layer caching
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY wiki-writer/package.json ./wiki-writer/package.json
 
 # Install ALL deps (including devDependencies) for the build step
 RUN pnpm install --frozen-lockfile
@@ -22,21 +21,25 @@ RUN pnpm build:web
 FROM node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS prod-deps
 
 # Enable corepack for pnpm
-RUN corepack enable && corepack prepare pnpm@11.8.0 --activate
+RUN corepack enable && corepack prepare pnpm@11.27.0 --activate
 
 WORKDIR /app
 
 # Copy manifests for prod-only install
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY wiki-writer/package.json ./wiki-writer/package.json
 
 # Install production deps only (frozen lockfile) — NO dev deps, NO build tools
 RUN pnpm install --frozen-lockfile --prod
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
+# 2026-09-20: in-image libpcre2-8-0 patch retired — the pinned base digest
+# (0e0ff40, upstream #492) ships libpcre2-8-0 10.42-1+deb12u1, so the fix is
+# absorbed at the base. History: docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md
+
 FROM node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6
 
 WORKDIR /app
+
 
 # Copy only the production dependency tree. Package manifests and package-manager
 # state never enter the final image.

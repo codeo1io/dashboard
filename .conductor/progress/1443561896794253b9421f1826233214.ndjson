@@ -1,2 +1,0 @@
-{"step":1,"ts":"2026-09-20T23:00:05Z","summary":"3rd dispatch of completed review; carry chain 1443561896<-4b4d989b<-3db8b054; verifying anchor","touched":[]}
-{"step":2,"ts":"2026-09-20T23:00:05Z","summary":"Fingerprint EXACT: HEAD a3bf45a, diff sha256 337562...bfc, test.ts 4162c8...90d; prior spools parse (SHIP/6P3)","touched":[]}

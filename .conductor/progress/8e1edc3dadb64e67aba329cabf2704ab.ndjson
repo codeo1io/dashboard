@@ -1,3 +1,0 @@
-{"step":1,"ts":"2026-09-20T22:22:05Z","summary":"compound: reading ROADMAP/batch conventions + existing vitest flag doc before edits","touched":[]}
-{"step":2,"ts":"2026-09-20T22:28:56Z","summary":"ROADMAP: 4 items to implemented-pending-landing + revision note; batch outcome addendum + next-cycle heads","touched":["ROADMAP.md","docs/prioritization/2026-09-21-cycle-4-batch.md"]}
-{"step":3,"ts":"2026-09-20T22:28:56Z","summary":"Lesson doc written: canonical-test-command-vitest4-flag-rejection (fixes scripts/test.ts dangling ref); lint green","touched":["docs/solutions/workflow-issues/canonical-test-command-vitest4-flag-rejection-2026-09-20.md"]}

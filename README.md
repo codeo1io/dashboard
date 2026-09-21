@@ -16,8 +16,7 @@
 
 ## Overview
 
-Read-only by default, with one isolated wiki-write capability. The Fro Bot monitoring dashboard
-surfaces live cross-repo status (open PRs + CI state,
+Read-only Fro Bot monitoring dashboard. Surfaces live cross-repo status (open PRs + CI state,
 failing checks, open issues, security alerts) for Fro Bot's collaborator repos and Agent App
 installations, plus an authenticated single-operator control surface. Installs as a PWA.
 
@@ -60,23 +59,10 @@ cookies; logout is CSRF-protected.
 
 The dashboard mints each GitHub App installation token with an explicit read-only permissions
 subset (`pull_requests`/`checks`/`issues`/`contents`/`metadata:read`, with
-`security_events`/`vulnerability_alerts:read` optional). `DASHBOARD_GITHUB_APP_*` may never
-mint write-scoped tokens. The dashboard web/runtime has no GitHub write authority today. The
-`wiki-writer` service is implemented in `wiki-writer/` but is not deployed, not integrated, and
-holds no runtime authority — no workflow deploys it, nothing in `src/` reaches it, and its source
-never enters the dashboard runtime image. When it ships it will be the only such authority —
-separately deployed, authenticated as the Fro Bot App (the same App `release.yaml` uses via
-`APPLICATION_ID`, distinct from the read-only Agent App behind `DASHBOARD_GITHUB_APP_*`), able
-to target only the `fro-bot/.github` `data` branch under the explicit wiki/corrections path
-allowlist, executing gates from the shared `@fro-bot/wiki-write-core` package. The dashboard never receives
-the App private key or a derived installation token. Repository CI/release automation is
-separately credentialed and outside this web/runtime boundary. This separation prevents
-credential exfiltration and
-arbitrary GitHub operations, but a compromised authenticated dashboard can still submit
-in-scope wiki edits. It also adds another secret, service, health boundary, and incident surface.
-Existing application POST endpoints are not GitHub write authority.
+`security_events`/`vulnerability_alerts:read` optional). It is read-only by construction — there
+is no write code path.
 
-Redaction is enforced from `metadata/repos.yaml` on the `fro-bot/.github` `data` branch:
+Redaction is enforced from `metadata/repos.yaml` on the `codeo1io/.github` `data` branch:
 denylisted repos are excluded before any per-repo query, and the app fails closed if that read
 fails. The App private key and cookie key are never committed (`*.pem`/`*.key` are gitignored
 in-repo).

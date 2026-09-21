@@ -32,6 +32,16 @@ updates:
       npm-and-workspaces:
         patterns:
           - '*'
+    ignore:
+      # Major updates are deferred until a migration is planned (2026-09-21,
+      # cycle-5 batch B6 / rm-133). Vitest 5 removes reporters/flags the suite
+      # relies on; TypeScript 7 must be re-verified against the strip-only
+      # erasableSyntaxOnly pipeline. Minor/patch updates stay open.
+      # Re-evaluate: 2026-10-21.
+      - dependency-name: vitest
+        update-types: ['version-update:semver-major']
+      - dependency-name: typescript
+        update-types: ['version-update:semver-major']
 
   - package-ecosystem: docker
     directory: /
