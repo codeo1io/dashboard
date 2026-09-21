@@ -1,2 +1,0 @@
-{"step":1,"ts":"2026-09-20T23:03:30Z","summary":"4th dispatch of completed review (597c2a48<-1443561896<-4b4d989b<-3db8b054); anchor re-check","touched":[]}
-{"step":2,"ts":"2026-09-20T23:03:30Z","summary":"Anchor EXACT again: HEAD a3bf45a, diff 337562...bfc, test.ts 4162c8...90d; carry verdict SHIP/6P3","touched":[]}

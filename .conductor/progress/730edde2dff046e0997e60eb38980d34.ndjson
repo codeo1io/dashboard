@@ -1,2 +1,0 @@
-{"step":1,"ts":"2026-09-20T23:02:02Z","summary":"4th dispatch, carry-over: fence rerun; fresh fp anchors 33756248/4162c8cb match; zero writes since IR suite 22:43:25Z","touched":["/tmp/fv-730edde2-fp.txt"]}
-{"step":2,"ts":"2026-09-20T23:02:37Z","summary":"Full PhaseResult w/ validation_evidence scope=release-integrity written+validated in spool 730edde2; PASSED","touched":["/home/agent/.hermes/conductor-delegate-spool-infra-deploy/delegate/730edde2dff046e0997e60eb38980d34.json"]}

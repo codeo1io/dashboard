@@ -1,2 +1,0 @@
-{"step":1,"ts":"2026-09-20T22:15:49Z","summary":"Attempt 2486e1a6: prior spool write verified ABSENT (6th narration gap — cause of KTD4 reject); tree intact","touched":[]}
-{"step":2,"ts":"2026-09-20T22:19:48Z","summary":"Canonical full run green, exit 0: 29f/2026t server + 27f/1054t web = 3080; nothing changed this turn","touched":[]}
