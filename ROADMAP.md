@@ -45,6 +45,26 @@
      privacy policy, this item's stated precondition), rm-107 (healthz placeholder-null confirmation),
      rm-116 (re-probed 2026-09-20: still unprotected), rm-119 (first all-green tip discovered only
      out-of-band). Completed and superseded sections untouched.
+     manual-revision 2026-09-21 (run 5351fd4e, repository-maintenance cycle — repo research lineage
+     cycle 4; research artifact docs/ideation/2026-09-21-repository-extensions-research.md, corrected
+     same day: an initial fleet line mis-read fro-bot/agent as v0.79.0 — re-probed releases/latest and
+     the release list both return v0.113.2 (2026-09-16); rm-120's v0.113.2 stands; the same artifact
+     initially mis-read tailwind 4.2.4 — package.json:48 is 4.3.3, current): rm-125/rm-128/rm-130
+     closed as completed at f334fb2 (verified: /privacy route src/server.ts:844 + claims tests,
+     zero workbox in package.json, main.yaml:112 single-build note, metadata.ts:350 second count
+     site, operator-client.ts refresh-then-resend retry with explicit rm-130 divergence comment);
+     rm-103/rm-106/rm-108/rm-116 signals refreshed (drift 11; precondition landed; majors
+     unchanged; protection EXISTS but is a shell — empty required checks); added rm-131..rm-134
+     from the cycle-4 research (absorb #497 with #498-exclude/#499-moot ledger; aggregator refresh
+     concurrency; minimumReleaseAge gate real-or-drop; binding-docs truthfulness batch 2).
+     implementation 2026-09-21 (run 5351fd4e implement phase, compound entry): the full cycle-4
+     batch B1-B5 implemented in stewardship worktree conductor/run-5351fd4e039a at a3bf45a
+     (tree-identical to origin/main 9f978d1) — rm-126 docstring-truth + lock test, rm-131 #497
+     absorb + ledger, rm-134 binding-docs truth, rm-133 minimumReleaseAge 1440, rm-123 base-drift
+     workflow. Gates on the implemented tree: lint 0, check-types 0, 3071/3071 tests (2017+1
+     server / 1054 web), actionlint container 0, frozen install clean. NOT YET LANDED — items stay
+     'implemented pending landing'; the next cycle's assessment verifies the landing (commit sha,
+     CI at that sha, first base-drift run) and only then moves them to completed.
      hermes-roadmap render: preserve or explicitly supersede these items on the next render; do not
      silently drop them. rm-001/rm-002 remain superseded — do not resurrect vendored-path signals. -->
 
@@ -72,7 +92,7 @@
 
 ### Automated upstream-absorb cadence with drift gate
 - id: `rm-103` | track: reliability | priority: 85.0 | status: candidate
-- signals: drift recurs by design — 2 commits behind on 2026-09-19, 6 behind on 2026-09-20, 8 behind on 2026-09-20 second measure (run f69cd740 research: the two new commits 30839c6 + 3f2fbe9 are the privacy-policy feature absorbed as rm-125; everything else content-converged) (node digests churn ~daily; two tag rebuilds in 24h); absorption is manual-only; upstream PR #481 (redaction chokepoint) MERGED upstream 2026-09-19 and ported by rm-122; upstream #493 (clonedeps-skill removal) must be SKIPPED on absorb — the fork keeps its clonedep artifacts deliberately as the v0.78.0 reference source (rm-120)
+- signals: drift recurs by design — 2 commits behind on 2026-09-19, 6 behind on 2026-09-20, 8 behind on 2026-09-20 second measure (run f69cd740 research: the two new commits 30839c6 + 3f2fbe9 are the privacy-policy feature absorbed as rm-125; everything else content-converged) (node digests churn ~daily; two tag rebuilds in 24h); absorption is manual-only; re-measured 2026-09-21 (run 5351fd4e research): drift 11, the three new commits are docs-only — #497 (Caddy extensionless-rewrite trap; absorb via rm-131), #498 (wiki-writer existence claim: true upstream, FALSE for this fork which has no wiki-writer/ — never absorb verbatim, invariant), #499 (privacy plan-doc correction: moot, the fork never carried the plan doc); upstream PR #481 (redaction chokepoint) MERGED upstream 2026-09-19 and ported by rm-122; upstream #493 (clonedeps-skill removal) must be SKIPPED on absorb — the fork keeps its clonedep artifacts deliberately as the v0.78.0 reference source (rm-120)
 - implementation note (2026-09-20, f4622d7e lineage): the 2026-09-20 absorb's CONTENT (hono 4.13.8 + base digest 0e0ff40) landed as direct edits via rm-111 rather than a history merge, so upstream history stays ahead while content converged — a future history absorb must not double-apply (Dockerfile pins and pnpm-lock.yaml already sit at the upstream values)
 - acceptance: scheduled workflow compares HEAD to `autonomy-upstream/main` and opens a human-approved merge PR when behind (auto-prepare + gate, never auto-push — fork exclusions demand human review); drift past a documented threshold opens an alert issue; #481 fast-followed within one cycle of merging upstream
 - evidence: workflow run logs showing the compare step; merge PR links; `git rev-list --count HEAD..autonomy-upstream/main` → 0 (or ≤ threshold with an open alert)
@@ -91,22 +111,16 @@
 - evidence: new aggregator tests in `pnpm test` covering resolver-failure and warm-empty paths; operator view renders a stale banner against a seeded degraded snapshot
 - absorbed acceptance (f4622d7e lineage rm-118): cache TTL raised above the refresh interval or the cache removed with a comment recording why; denylistComplete comment corrected or code aligned — one truth; failed-installation resolution negatively cached with a short TTL and tested; renovate.json5 deleted or an AGENTS.md line documents its inert state
 
-### Absorb the upstream operator-push privacy policy (#495/#496)
-- id: `rm-125` | track: reliability | priority: 74.0 | status: in-progress (implemented in the run-f69cd740 worktree 2026-09-20 as B1 of docs/prioritization/2026-09-20-cycle-3-batch.md; pending landing)
-- signals: upstream drift grew 6 to 8 on 2026-09-20 and the two new commits are one feature — 30839c6 plans the public operator push privacy policy (upstream #495) and 3f2fbe9 publishes it (upstream #496: `web/privacy.html` +87, `web/src/privacy/claims.ts` +239, 258 lines of claims tests, a `/privacy` server route, an AppShell link); the fork has no first-party privacy surface (grep, 2026-09-20), and this feature is the stated precondition for rm-106's listener digest push
-- acceptance: the policy feature is hand-ported with fork layout — the fork's server.ts and web app have diverged, so port intent, not a line merge (same discipline as rm-122): a `/privacy` route serves the static policy page in fork chrome, the claims module and its tests are ported and green, the AppShell link lands, and the upstream drift accounting reflects #495/#496 absorbed while #493 stays skipped per rm-103
-- evidence: cross-ref `git show 3f2fbe9 30839c6`; the ported claims tests in `pnpm test`; `git rev-list --count HEAD..autonomy-upstream/main` re-measured after the absorb; `pnpm lint` and `pnpm check-types` green
-
 ### Reconcile drift-identity reporting: count-only promise vs full_name on discovered repos
-- id: `rm-126` | track: reliability | priority: 73.0 | status: candidate (added 2026-09-20, run f69cd740 assess F2)
+- id: `rm-126` | track: reliability | priority: 73.0 | status: implemented 2026-09-21 (run 5351fd4e implement: docstring corrected to the expose-and-document decision + driftCount/identity lock test; the `/api/monitoring` consumer decision (wire / fold into the rm-107/rm-119 status surface / delete with its tests) was NOT made — explicitly deferred to cycle-5, the B1 scope narrowed to docstring-truth + lock test only; worktree conductor/run-5351fd4e039a, pending landing + review — see cycle-4 batch addendum)
 - signals: `src/github/aggregator.ts:12-19` docstring promises snapshot drift is reported "count only, never by repo identity", but RepoStatusDto carries `full_name` (aggregator.ts:86) and installation-only discovered repos enter the snapshot labeled `discovered` (aggregator.ts:418-419) — emitted by `/api/status` and `/api/monitoring`; during a metadata staleness window that can surface an un-redacted private repo name to authenticated clients; `/api/monitoring` additionally has no SPA consumer (grep shows only self-referential comments in `src/routes/api.ts`) since the operator-first re-architecture, so its exposure surface is maintained for nothing
 - acceptance: one truth — either drift surfaces lose repo identity (count and count-by-class only, names stripped from discovered-only entries) or the docstring is corrected and an explicit operator decision to show names is recorded in the cycle batch doc; the `/api/monitoring` consumer question decided in the same change (wire it, fold it into the rm-107/rm-119 status surface, or delete it together with its tests); tests assert the chosen semantics for the discovered-only case
 - evidence: `pnpm test` covering the chosen drift semantics; grep shows the docstring and DTO behavior agree; the consumer decision recorded in docs/prioritization/
 
 ### Listener digest push
-- id: `rm-106` | track: operator-experience | priority: 70.0 | status: candidate (UNBLOCKED 2026-09-20, run f69cd740 research — the privacy-policy precondition was published upstream; absorb via rm-125, implement this item in the same or next cycle)
+- id: `rm-106` | track: operator-experience | priority: 70.0 | status: blocked-external (dependency discovery 2026-09-21, run 5351fd4e prioritize: the privacy precondition LANDED at f334fb2 as rm-125, but the push-SEND path lives in the GATEWAY, not this repo — the vendored contract src/gateway/operator-contract/push.ts models only GET /operator/push/vapid-key and GET /operator/push/subscriptions metadata; NO send/notify/dispatch endpoint exists in operator-contract/ and the dashboard never mounts /operator/push/* routes (src/server.ts:198-205, 342-347); landing digests requires a gateway-side (fro-bot/agent) contract extension FIRST — propose the digest-send contract upstream, then implement dashboard-side)
 - signals: VAPID push infra is live for run events while listener messages (deploy-health, autoheal, Daily Maintenance Report per `docs/contracts/operator-listener-channel.md`) age out silently under the 500-row/30-day retention — the channel replaced GitHub issues but kept a "must watch a surface" burden
-- unblock evidence (2026-09-20): upstream fro-bot/dashboard merged #495 (30839c6, plans the public operator push privacy policy) and #496 (3f2fbe9, publishes it: `web/privacy.html` +87, `web/src/privacy/claims.ts` +239, 258 lines of claims tests, a `/privacy` server route, AppShell link) — exactly the "published first or in the same change" precondition this item's acceptance names
+- unblock evidence (2026-09-20): upstream fro-bot/dashboard merged #495 (30839c6, plans the public operator push privacy policy) and #496 (3f2fbe9, publishes it: `web/privacy.html` +87, `web/src/privacy/claims.ts` +239, 258 lines of claims tests, a `/privacy` server route, AppShell link) — exactly the "published first or in the same change" precondition this item's acceptance names; landed 2026-09-20: rm-125 completed at f334fb2 (/privacy route at src/server.ts:844, claims module + tests in-tree, suite 3070)
 - acceptance: push (rate-capped) or daily digest delivered on listener messages; noise calibration documented (what triggers immediate vs digest); upstream #238-style public push privacy policy published first or in the same change
 - evidence: integration test covering the notify path in `pnpm test`; one live verified delivery to the operator's subscription; policy doc merged
 
@@ -116,15 +130,21 @@
 - acceptance: one status surface composes snapshot freshness, rate-limit budget, listener store depth/age, and last refresh failures (fail-closed events); each composed signal has a test; no duplication of `/healthz` liveness semantics
 - evidence: `pnpm test` includes tests for each composed signal; operator verification against a seeded stale snapshot renders the panel correctly
 
+### Absorb upstream #497 with an exclusion ledger for #498/#499
+- id: `rm-131` | track: reliability | priority: 62.0 | status: implemented 2026-09-21 (run 5351fd4e implement: #497 applied verbatim via `git apply`, #498-EXCLUDE/#499-MOOT ledger in batch doc; worktree, pending landing + review)
+- signals: drift measured 11 on 2026-09-21 (`git log origin/main..autonomy-upstream/main`); the three new commits since the 2026-09-20 research are all docs — #497 (2941af0) adds docs/solutions/integration-issues/public-route-swallowed-by-caddy-extensionless-rewrite-2026-09-20.md (+128, absent fork-side) plus 6-line touch-ups to two solutions docs the fork carries (pwa-sw-registration, unit-green-not-done), and the fork serves `/privacy` + `public/` statics behind the same Caddy-class proxy topology the doc describes; #498 (d2510df) corrects a wiki-writer existence claim that is TRUE upstream but FALSE for this fork (no `wiki-writer/` exists here — verified `ls` + binding-docs grep zero — and the fork keeps stricter read-only wording by invariant, so absorbing it verbatim would corrupt the binding docs); #499 (d207fc7) corrects the upstream privacy PLAN doc the fork never carried (no docs/plans/2026-09-19* — moot)
+- acceptance: #497's solutions doc hand-ported verbatim (docs-only, no executable surface); the two doc touch-ups applied where the fork's copies still carry pre-#497 text; the #498-EXCLUDE and #499-MOOT decisions recorded in the cycle batch doc's absorb ledger (rm-103 discipline) so a future history merge cannot re-apply them blindly; `pnpm lint` green (markdown rules)
+- evidence: diff of the ported doc vs `git show 2941af0`; batch-doc ledger lines quoting the two decisions; grep shows the fork's binding docs still carry zero wiki-writer references post-port
+
 ### Dated major-upgrade decision matrix
 - id: `rm-108` | track: reliability | priority: 60.0 | status: candidate (reframed 2026-09-20 from open-ended watchlist)
-- signals: measured 2026-09-20 — typescript 6.0.3 → 7.0.2 (native compiler, announced 2026-07-08; 7.0 ships no programmatic API — typescript-eslint still needs 6.x via the `@typescript/typescript6` side-by-side package); vitest 4.1.11 → 5.0.1 (the 3→4 migration already cost a cycle; flags/`basic`-reporter breaks documented in solutions docs); jsdom 29.1.1 → 30.1.0; Node 26 enters LTS 2026-10 under the new annual schedule (every release LTS 30 months) while the image pins node:24-slim; everything else measured current (octokit modular, vite 8.3.0, react 19.3.0, tailwind 4.3.3, workbox 7.4.1)
+- signals: measured 2026-09-20 — typescript 6.0.3 → 7.0.2 (native compiler, announced 2026-07-08; 7.0 ships no programmatic API — typescript-eslint still needs 6.x via the `@typescript/typescript6` side-by-side package); vitest 4.1.11 → 5.0.1 (the 3→4 migration already cost a cycle; flags/`basic`-reporter breaks documented in solutions docs); jsdom 29.1.1 → 30.1.0; Node 26 enters LTS 2026-10 under the new annual schedule (every release LTS 30 months) while the image pins node:24-slim; everything else measured current (octokit modular, vite 8.3.0, react 19.3.0, tailwind 4.3.3, workbox 7.4.1); re-measured 2026-09-21 (run 5351fd4e research): majors unchanged (typescript 7.0.2, vitest 5.0.1, jsdom 30.1.0); minors available: eslint 10.11.0 vs fork 10.10.0; hono 4.13.8 = fork, vite 8.3.0 = fork, react 19.3.0 = fork, tailwind 4.3.3 = fork; node:24-slim live digest 5cbc7cab vs pinned 0e0ff40 (unchanged since 2026-09-20; rm-123)
 - acceptance: this roadmap or a linked doc carries an adopted-vs-available table refreshed each maintenance cycle, each row with a trigger date, blast radius, and go/no-go decision recorded at the date; majors absorb via upstream merges where possible, otherwise explicit upgrade PRs — never a silent ride; REST API-version pin (`X-GitHub-Api-Version: 2022-11-28`, src/auth/oauth.ts:130) reviewed on the same cadence (protective pin — 2026-03-10 REST removals verified unexposed)
 - evidence: `npm view <pkg> version` outputs cited at each refresh; each adopted-major bump shows a green Main run before merge
 
 ### Merge-hygiene baseline: required checks on main plus drift alert
 - id: `rm-116` | track: reliability | priority: 58.0 | status: candidate
-- signals: `gh api /repos/codeo1io/dashboard/branches/main/protection` returns 404 "Branch not protected" and `/rulesets` is empty (probed 2026-09-20; re-probed 2026-09-20 run f69cd740 — still 404); nothing structurally blocks red-check merges — PR #4 merged 2026-09-19 17:51Z with TWO red checks on its own run (35459324430) and its defects became the cycle's P1 findings (rm-100); repo is public on a User account, where required status checks and rulesets are available; SECOND INSTANCE 2026-09-20 (f4622d7e review): the fleet render 2f3a884 landed by direct push with its own run already red — a second red landing after PR #4's red merge
+- signals: `gh api /repos/codeo1io/dashboard/branches/main/protection` returns 404 "Branch not protected" and `/rulesets` is empty (probed 2026-09-20; re-probed 2026-09-20 run f69cd740 — still 404); nothing structurally blocks red-check merges — PR #4 merged 2026-09-19 17:51Z with TWO red checks on its own run (35459324430) and its defects became the cycle's P1 findings (rm-100); repo is public on a User account, where required status checks and rulesets are available; SECOND INSTANCE 2026-09-20 (f4622d7e review): the fleet render 2f3a884 landed by direct push with its own run already red — a second red landing after PR #4's red merge; THIRD probe 2026-09-21 (run 5351fd4e roadmap): branch protection NOW EXISTS (API 200 where both 2026-09-20 probes returned 404) but is a shell — required_status_checks empty, enforce_admins disabled, zero rulesets, so nothing yet enforces any check; live corroboration: open PR #6's Main workflow failed twice on its own branch (runs 35536757064/35537213618, 2026-09-20) with nothing structural gating that state
 - acceptance:
   - main protected (classic branch protection or a ruleset) with required status checks covering the Main workflow's job set (Test, Check Types, Check Workflows, Lint, Test Scripts Load, Design Check) plus CodeQL; strict-on-required-context where feasible
   - a periodic (weekly) workflow snapshots the protection/ruleset API state and alerts (open issue or failing check) on drift from the codified baseline
@@ -147,10 +167,16 @@
 - evidence: pnpm test for the roll-up path; fixture with multiple runs per workflow; manual verification against the live red Main/CodeQL state shows both surfaced
 
 ### Base-digest drift visibility: weekly read-only pin check
-- id: `rm-123` | track: reliability | priority: 48.0 | status: candidate
+- id: `rm-123` | track: reliability | priority: 48.0 | status: implemented 2026-09-21 (run 5351fd4e implement: .github/workflows/base-drift.yaml, actionlint container exit 0; first run pending — Monday 04:13 UTC or dispatch; worktree, pending landing + review)
 - signals: node:24-slim moved through four digests in ~8 days (2fe369e → a9d7043 #491 → 0e0ff40 #492 (the pin since rm-111 landed) → live 5cbc7cab at 2026-09-20, `docker manifest inspect`); dependabot docker updates are weekly (rm-102), so the pin can silently trail a rebuilt, security-fixed base for days — drift is detectable today only by hand-run manifest inspection (exactly how the 779e7271 assess found the old pinned 2fe369e shipping libpcre2 10.42-1 while the live base shipped 10.42-1+deb12u1)
 - acceptance: weekly scheduled workflow compares each Dockerfile pin to the live tag digest and opens/updates ONE tracking issue on drift (title carries pinned→live digests); GITHUB_TOKEN only — the fork has no secrets; strictly read-only — it never bumps the pin itself (dependabot owns bump PRs, rm-102); the workflow passes the actionlint container gate
 - evidence: actionlint container exit 0 on the new workflow; first run log shows pinned digest, live digest, drift verdict; a dry-run mode prints the issue text verbatim for review
+
+### Aggregator refresh concurrency: bounded parallel per-repo fetches
+- id: `rm-132` | track: reliability | priority: 47.0 | status: candidate (added 2026-09-21, run 5351fd4e research R3)
+- signals: the refresh loop resolves every installation repo sequentially inside one cycle (src/github/aggregator.ts resolver path), so fleet growth linearly stretches snapshot wall-time and the refreshedAt freshness contract; the cache-TTL-equals-refresh-interval half of the scalability problem is already tracked by rm-112's absorbed acceptance — this item covers the serialization half; today's fleet tolerates it (small fleet, 60s cadence), which is why it is candidate-tier not urgent
+- acceptance: per-repo resolution runs under a small bounded-concurrency pool (one documented bound, e.g. 4–8) with per-repo failure isolation preserved (one repo's failure never fails the whole refresh); refresh wall-time measured before/after on the fixture fleet; no new secondary-rate-limit hits in a normal cycle (app-client onSecondaryRateLimit log stays empty)
+- evidence: `pnpm test` covering the pool's bound and failure-isolation behavior; a before/after timing note in the cycle batch doc; grep shows the bound constant defined exactly once
 
 ### Single-source the SSE parser invariants
 - id: `rm-114` | track: reliability | priority: 45.0 | status: candidate (from run 270220e7 assess F5/F6)
@@ -167,6 +193,12 @@
   - the 10 standing open code-scanning alerts are triaged (dismissed with reason or routed to fix work) and the panel reflects the triaged state — surfacing is the feature, triage is the operator decision it enables
   - rate-limit cost documented: one REST call per repo per cycle, batched with the same pagination/ceiling discipline as the check-suite query (rm-110 family)
 - evidence: pnpm test coverage for both alert paths including the graceful-fallback case; seeded fixture with alert counts; operator verification against live data shows the triaged state
+
+### Make the pnpm minimumReleaseAge gate real or drop its exclude list
+- id: `rm-133` | track: security | priority: 43.0 | status: implemented 2026-09-21 (run 5351fd4e implement: minimumReleaseAge: 1440 with policy comment, @bfra.me excludes kept, `pnpm config get` → 1440; worktree, pending landing + review) — 7d form rejected: would block weekly dependabot PRs from merging until ~2026-10-03+
+- signals: pnpm-workspace.yaml:8 declares `minimumReleaseAgeExclude` (@bfra.me pinned versions) but `minimumReleaseAge` is set NOWHERE — `pnpm config get minimumReleaseAge` → undefined; repo-wide grep (yml/yaml/json/ts/md, .github/, scripts/) finds exactly one hit (the exclude line itself); no env/npmrc override exists — the exclude list is inert config implying a supply-chain release-age gate that does not exist (autonomy-upstream/main carries the identical shape)
+- acceptance: either `minimumReleaseAge` is set to a documented value (e.g. 7d) with the @bfra.me pins remaining excluded and a comment naming the policy, or the exclude block is deleted with a comment recording why the repo does not use the gate; frozen-lockfile install + full `pnpm test` prove the chosen shape; the decision recorded in the cycle batch doc
+- evidence: pnpm-workspace.yaml diff; `pnpm config get minimumReleaseAge` output at the landing tree; suite green at the pushed sha
 
 ### Per-repo scoped installation tokens
 - id: `rm-118` | track: security | priority: 42.0 | status: candidate
@@ -185,15 +217,15 @@
 
 ### Gateway-contract drift watch for the mirrored agent source
 - id: `rm-120` | track: reliability | priority: 36.0 | status: candidate
-- signals: the cloned dependency source pins fro-bot/agent at v0.78.0 while upstream is at v0.113.2 — 75 releases of drift, with release bodies at v0.113.1, v0.113.0, v0.109.3, v0.107.1, v0.106.2 touching operator/gateway surfaces (gh api repos/fro-bot/agent/releases, 2026-09-20); AGENTS.md names this clone as the reference for the operator OAuth return path, GitHub App client, secret readers, and logger/Result primitives this app mirrors — and no process notices when that contract moves underneath the conformance tests
+- signals: the cloned dependency source pins fro-bot/agent at v0.78.0 while upstream is at v0.113.2 — 75 releases of drift, with release bodies at v0.113.1, v0.113.0, v0.109.3, v0.107.1, v0.106.2 touching operator/gateway surfaces (gh api repos/fro-bot/agent/releases, 2026-09-20); AGENTS.md names this clone as the reference for the operator OAuth return path, GitHub App client, secret readers, and logger/Result primitives this app mirrors — and no process notices when that contract moves underneath the conformance tests; re-probed 2026-09-21 (run 5351fd4e roadmap): releases/latest AND the release list both return v0.113.2 (2026-09-16, prerelease=false) — unchanged since the 2026-09-20 probe, no new operator/gateway-touching releases
 - acceptance: a periodic watch (checklist item in the maintenance cycle or a small workflow) compares the clonedep pin to the upstream latest tag; on drift, diffs the mirrored contract surfaces and records a short delta note (docs/solutions/ or the cycle batch doc) flagging conformance-test impact explicitly; the clonedep is refreshed on cadence, never auto-merged
 - evidence: first watch output showing the v0.78.0→v0.113.2 delta summary with the operator/gateway-touching releases called out; the checklist/workflow merged
 
-### Drop the eight unused workbox runtime dependencies
-- id: `rm-128` | track: reliability | priority: 34.0 | status: in-progress (implemented in the run-f69cd740 worktree 2026-09-20 as B2 of docs/prioritization/2026-09-20-cycle-3-batch.md; pending landing)
-- signals: package.json declares eight `workbox-*` packages (`workbox-window` included — the research-time count of seven missed it) alongside `vite-plugin-pwa` while zero `workbox-*` imports exist anywhere in the repo (repo-wide runtime-import scan, 2026-09-20) — the service worker is a cacheless kill-switch (`web/src/sw.ts` performs no precaching), so the workbox runtime surface is dead weight; any workbox code the PWA plugin itself needs arrives as its own transitive dependencies, not via these direct devDependencies
-- acceptance: the eight direct `workbox-*` devDependencies are removed (`vite-plugin-pwa` retained only if the vite config still consumes it — verify first); frozen-lockfile install clean; `pnpm lint`, `pnpm check-types`, and `pnpm test` green; the repo-wide grep still shows zero workbox imports
-- evidence: package.json and pnpm-lock.yaml diff; a green Main run at the pushed sha; the import grep re-run at the landing tree
+### Binding-docs truthfulness micro-batch 2 (badges, endpoints, stale comments)
+- id: `rm-134` | track: reliability | priority: 32.0 | status: implemented 2026-09-21 (run 5351fd4e implement: badges → codeo1io/dashboard, Endpoints completed with /privacy + all four /api/listener routes, dependabot comment truthed, vite.config kill-switch comment; worktree, pending landing + review)
+- signals: README.md badges point at fro-bot/dashboard (upstream) Actions/Scorecard, so the fork's README displays UPSTREAM health; the README Endpoints section omits `/privacy` and `/api/listener/*` (the operator push proxy routes correctly stay omitted — the server never mounts `/operator/push/*`, they live in the external gateway, src/server.ts:198-205); `.github/dependabot.yml` still says the shared fro-bot config in `.github/renovate.json5` — stale since 9f978d1 retargeted it to codeo1io/renovate-config; web/vite.config.ts:40 still says `createHandlerBoundToURL in sw.ts MUST reference the same URL` but sw.ts is the kill-switch with no precache handler (rm-128 residue)
+- acceptance: badge URLs point at codeo1io/dashboard; the Endpoints section inventories every public + authenticated route at HEAD (cross-checked against isPublicPath and route registrations); the dependabot comment names the retargeted config and its inert state (Renovate never runs — rm-112); the vite.config comment rewritten for the kill-switch reality; `pnpm lint` green
+- evidence: README/dependabot.yml/vite.config diffs; grep shows zero upstream badge URLs and zero stale-comment strings post-change; a route-inventory cross-check note in the batch doc
 
 ### CSRF tokens for listener ack mutations
 - id: `rm-115` | track: security | priority: 30.0 | status: candidate (hardening; low severity)
@@ -201,13 +233,25 @@
 - acceptance: ack mutations require the same csrf-token pattern as logout (or equivalent origin check), with tests for the rejected cross-origin case; no behavior change for the operator's own client
 - evidence: route tests in `pnpm test` covering token-missing rejection; manual operator flow unchanged
 
-### Server and CI hygiene batch 3
-- id: `rm-130` | track: reliability | priority: 24.0 | status: in-progress (implemented in the run-f69cd740 worktree 2026-09-20 as B3 of docs/prioritization/2026-09-20-cycle-3-batch.md; pending landing)
-- signals: three verified small defects — the Main test job builds the web client twice (`.github/workflows/main.yaml:112` Build web step plus the pretest hook at package.json:17 — redundant on the serialized single runner); `src/github/metadata.ts:331-344` silently skips structurally-invalid PUBLIC entries while `skippedMalformedCount` (metadata.ts:281) counts only non-objects, so malformed-input volume stays invisible to monitoring; the documented CSRF-400 retry (src/gateway/operator-client.ts:675-681) re-sends the identical request with the same token although the client exposes a `refreshCsrf` seam (operator-client.ts:522,805) — the stale-token cause the retry names can never be fixed by the retry as written
-- acceptance: one web build per test job (drop the redundant step; pretest stays the single build path) with job time measured before/after; metadata skip counting extended to object-shape failures with a test; the CSRF-400 retry either re-fetches a fresh token via the existing seam before retrying or does not retry token rejections, with a test pinning the chosen behavior; all gates green
-- evidence: main.yaml diff plus gh run timing for the test job; the metadata counting test and operator-client retry test in `pnpm test`; `pnpm lint`/`pnpm check-types` green
-
 ## Completed items
+
+### Absorb the upstream operator-push privacy policy (#495/#496)
+- id: `rm-125` | track: reliability | priority: 74.0 | status: completed (2026-09-20; landed at f334fb2 — commit names rm-125; Main/CodeQL/Scorecard green at 9f978d1, Release green at f334fb2 run 35523081051)
+- signals: upstream drift grew 6 to 8 on 2026-09-20 and the two new commits were one feature — 30839c6 plans the public operator push privacy policy (upstream #495) and 3f2fbe9 publishes it (upstream #496); the fork had no first-party privacy surface, and the feature is the stated precondition for rm-106's listener digest push
+- acceptance was: the policy feature hand-ported with fork layout (port intent, not a line merge — rm-122 discipline): a `/privacy` route serving the static policy page, claims module and tests green, AppShell link landed, drift accounting reflecting #495/#496 absorbed while #493 stays skipped per rm-103
+- completion evidence: `/privacy` route at src/server.ts:844 serving web/privacy.html; web/src/privacy/claims.ts + claims.test.ts in-tree; AppShell privacy link present; suite 3018→3070 at f334fb2 (CI-confirmed on origin/main); Release run 35523081051 success at f334fb2
+- implementation note (2026-09-21, run 5351fd4e roadmap verification): the fork diverged structurally from upstream — the kill-switch SW (web/src/sw.ts) has no NavigationRoute denylist (grep zero) and the upstream plan doc was never carried (no docs/plans/2026-09-19*), so upstream #499's plan-doc corrections are moot here; drift accounting at 2026-09-21: 11 upstream, #495/#496 content-converged, #493 skipped, #497/#498/#499 open (see rm-131)
+
+### Drop the eight unused workbox runtime dependencies
+- id: `rm-128` | track: reliability | priority: 34.0 | status: completed (2026-09-20; landed at f334fb2 — commit names rm-128; suite 3070 at f334fb2)
+- acceptance was: the eight direct `workbox-*` devDependencies removed; vite-plugin-pwa retained only if still consumed; frozen-lockfile install clean; lint/check-types/test green; zero workbox imports repo-wide
+- completion evidence: zero `workbox` hits in package.json at 9f978d1 (grep exit 1, re-run 2026-09-21); vite-plugin-pwa 1.3.0 retained and still consumed (web/vite.config.ts VitePWA injectManifest); gates green at 9f978d1 (check-types, lint, 3070/3070 tests — run 5351fd4e assess)
+- residue note (2026-09-21, folded into rm-134): web/vite.config.ts:40 still says `createHandlerBoundToURL in sw.ts MUST reference the same URL` — sw.ts is the kill-switch with no precache handler; the comment describes code that no longer exists
+
+### Server and CI hygiene batch 3
+- id: `rm-130` | track: reliability | priority: 24.0 | status: completed (2026-09-20; landed at f334fb2 — commit names rm-130)
+- acceptance was: one web build per test job; metadata skip counting extended to object-shape failures; CSRF-400 retry refresh-then-resend (or no retry) with a pinning test; gates green
+- completion evidence (re-verified 2026-09-21 at 9f978d1): `.github/workflows/main.yaml:112` comment records the single-build decision ("No explicit Build web step: the pretest hook builds the client"); `src/github/metadata.ts:350` counts object-shape failures into skippedMalformedCount (increment sites :281/:350, warn at :355-357); `src/gateway/operator-client.ts:681-694` CSRF-400 retry refreshes via refreshCsrf() then re-sends with the SAME idempotency key, the v0.78.0-mirror divergence documented in the comment; suite 3070 at f334fb2
 
 ### Port upstream security fix #481 — global redaction chokepoint
 - id: `rm-122` | track: security | priority: 76.0 | status: completed (landed at 7de0de3 2026-09-20 — commit names rm-122 onError port; Main/CodeQL/Release/Scorecard all green at 7de0de3 06:14Z, verified run-f69cd740 prioritize)

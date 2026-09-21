@@ -25,6 +25,8 @@ Yet the service worker **never registered** — twice, in two distinct ways, eac
 
 **Treat real-browser SW registration as a required definition-of-done gate for any PWA / service-worker work. Build-output tests are necessary, not sufficient** — they prove the config was written into the bundle, not that the browser installs and activates the SW. This is the SW-layer instance of the `unit-green-is-not-feature-done` lesson: for an SPA, "open the page"; for a PWA, "open the page **and** verify the SW registered, activated, controlling, with the precache populated and auth routes still hitting the network."
 
+This gate covers the service-worker layer this repo owns. It does not prove the route is reachable in production — a reverse proxy configured elsewhere can rewrite the path before it ever reaches the app, and a local browser has no proxy in front of it. See `integration-issues/public-route-swallowed-by-caddy-extensionless-rewrite-2026-09-20.md`.
+
 Three footguns account for nearly every silent-failure case; check all three.
 
 ### 1. precacheAndRoute must run before createHandlerBoundToURL
@@ -38,10 +40,12 @@ cleanupOutdatedCaches()
 
 registerRoute(                          // 5. then the navigation handler
   new NavigationRoute(createHandlerBoundToURL('/'), {
-    denylist: [/^\/auth(\/|$)/, /^\/api(\/|$)/],
+    denylist: [/^\/auth(\/|$)/, /^\/operator\/auth(\/|$)/, /^\/api(\/|$)/, /^\/privacy(\/|$)/],
   }),
 )
 ```
+
+(Fork note, 2026-09-21: the `/operator/auth` and `/privacy` denylist entries in this example are upstream's later sw.ts shape — they never existed in this fork, whose `web/src/sw.ts` is a kill-switch with no NavigationRoute at all. The doc is absorbed verbatim for the class of trap; cross-check code shapes against this fork before treating examples as current.)
 
 ### 2. The precached shell URL must match what the server serves with a 200
 
@@ -50,7 +54,7 @@ injectManifest precaches `index.html` by default. If the server serves the shell
 ```ts
 // web/vite.config.ts — rewrite the manifest entry
 injectManifest: {
-  globIgnores: ['**/sw.js', '**/manifest.webmanifest', '**/registerSW.js'],
+  globIgnores: ['**/sw.js', '**/manifest.webmanifest', '**/registerSW.js', '**/privacy.html'],
   manifestTransforms: [
     entries => ({
       manifest: entries.map(e => (e.url === 'index.html' ? {...e, url: '/'} : e)),
