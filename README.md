@@ -67,6 +67,15 @@ denylisted repos are excluded before any per-repo query, and the app fails close
 fails. The App private key and cookie key are never committed (`*.pem`/`*.key` are gitignored
 in-repo).
 
+### Environment variables (delta this change unit)
+
+| Variable | Read at | Default / behavior |
+| --- | --- | --- |
+| `DASHBOARD_GATEWAY_PROXY_ACK` | `src/server.ts` (startup config) | Unset. Gateway operator-session mode **fails fast at boot** unless set to `same-origin` — an explicit acknowledgement that the reverse proxy collapses the gateway login redirect onto this origin (without it the redirect loop cannot be proven to terminate; see `docs/runbooks/gateway-access.md`). |
+
+All other `DASHBOARD_*` / `RATE_LIMIT_*` variables are documented in the configuration table
+maintained on `main`; this table records only what this change unit adds.
+
 ## Development
 
 ```sh
