@@ -26,7 +26,7 @@ jobs:
     name: Lint
     permissions:
       contents: read
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch
@@ -48,7 +48,7 @@ jobs:
     name: Design Check
     permissions:
       contents: read
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch
@@ -76,7 +76,7 @@ jobs:
     name: Check Types
     permissions:
       contents: read
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch
@@ -96,7 +96,7 @@ jobs:
     name: Test
     permissions:
       contents: read
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch
@@ -118,7 +118,7 @@ jobs:
     name: Check Workflows
     permissions:
       contents: read
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch
@@ -140,7 +140,7 @@ jobs:
     name: Test Scripts Load
     permissions:
       contents: read
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch
