@@ -1,4 +1,4 @@
-FROM node:24-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS builder
+FROM node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS builder
 
 # Enable corepack for pnpm
 RUN corepack enable && corepack prepare pnpm@11.27.0 --activate
@@ -18,7 +18,7 @@ COPY web/ ./web/
 RUN pnpm build:web
 
 # ── Production dependency stage ───────────────────────────────────────────────
-FROM node:24-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS prod-deps
+FROM node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS prod-deps
 
 # Enable corepack for pnpm
 RUN corepack enable && corepack prepare pnpm@11.27.0 --activate
@@ -32,22 +32,18 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --prod
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
-FROM node:24-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
+FROM node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6
 
 WORKDIR /app
 
-# Patch OS packages that have a published distro fix the pinned base digest has
-# not yet absorbed (digest verified current against the registry). Dependabot's
-# docker ecosystem (.github/dependabot.yml, staged 2026-09-19) proposes base-digest
-# bump PRs once it lands — review rule: the pin holds until a REBUILT base both
-# clears the Trivy gate and lets this in-image delta be re-audited/absorbed
-# (pin-and-patch by design, per the triage doc below). Only packages named here are
-# upgraded — the delta stays auditable against the pinned digest. Triage order:
-# docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md
-# 2026-09-17: libpcre2-8-0 10.42-1 -> 10.42-1+deb12u1 (CVE-2026-86145/89157/89161, HIGH, fixed)
-RUN apt-get update \
-      && apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0 \
-      && rm -rf /var/lib/apt/lists/*
+# No in-image OS-package patching since 2026-09-20: digest 0e0ff40 ships
+# libpcre2-8-0 10.42-1+deb12u1 (the last patched CVE set — CVE-2026-86145/89157/
+# 89161), so the pin absorbs what Trivy flags at the base. Dependabot's docker
+# ecosystem (.github/dependabot.yml) proposes weekly digest-bump PRs — review each
+# against the Release Trivy gate, and re-add a patch here ONLY for a package with
+# a published distro fix the current digest has not yet absorbed (pin-and-patch
+# by design; triage order in
+# docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md).
 
 # Copy only the production dependency tree. Package manifests and package-manager
 # state never enter the final image.

@@ -1703,3 +1703,46 @@ describe('P1 regression — per-install token cache: no cross-install reuse', ()
     expect(mintFn).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('P2 regression — checkSuites pagination: >10 suites fully counted (rm-110)', () => {
+  it('queries checkSuites(first: 100) and sums failing runs across 12 suites', async () => {
+    const repo = makeRepo({node_id: 'NODE_SUITES', owner: 'org', name: 'repo-suites'})
+    // 12 suites on the default branch: suite 0 has 2 failing runs, each of the
+    // other 11 has 1 → total 13. At first: 10 the 11th and 12th suites were
+    // silently truncated, undercounting failures for busy monorepo branches.
+    const suites = Array.from({length: 12}, (_, i) => ({checkRuns: {totalCount: i === 0 ? 2 : 1}}))
+    const graphql = vi.fn().mockResolvedValue({
+      repository: {
+        defaultBranchRef: {
+          target: {
+            statusCheckRollup: {state: 'FAILURE'},
+            checkSuites: {nodes: suites},
+          },
+        },
+        pullRequests: {totalCount: 0},
+        issues: {totalCount: 0},
+        vulnerabilityAlerts: null,
+      },
+    })
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_SUITES', owner: 'org', name: 'repo-suites'})],
+      }))),
+      graphqlQueryForInstallation: graphql,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    // The pagination fix itself: the query asks for 100 suites, never 10.
+    // (graphqlQueryForInstallation signature: (installationId, query, variables).)
+    const query = graphql.mock.calls[0]?.[1] as string
+    expect(query).toContain('checkSuites(first: 100)')
+    expect(query).not.toContain('checkSuites(first: 10)')
+    // The mapper counts every returned suite — nothing past #10 is dropped.
+    expect(snap.repos[0]?.status.failingChecks).toBe(13)
+    expect(snap.repos[0]?.status.rollupState).toBe('red')
+  })
+})

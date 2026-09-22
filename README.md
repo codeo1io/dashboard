@@ -62,7 +62,7 @@ subset (`pull_requests`/`checks`/`issues`/`contents`/`metadata:read`, with
 `security_events`/`vulnerability_alerts:read` optional). It is read-only by construction — there
 is no write code path.
 
-Redaction is enforced from `metadata/repos.yaml` on the `fro-bot/.github` `data` branch:
+Redaction is enforced from `metadata/repos.yaml` on the `codeo1io/.github` `data` branch:
 denylisted repos are excluded before any per-repo query, and the app fails closed if that read
 fails. The App private key and cookie key are never committed (`*.pem`/`*.key` are gitignored
 in-repo).

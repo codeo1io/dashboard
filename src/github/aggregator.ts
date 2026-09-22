@@ -134,7 +134,7 @@ const REPO_STATUS_QUERY = `
             statusCheckRollup {
               state
             }
-            checkSuites(first: 10) {
+            checkSuites(first: 100) {
               nodes {
                 checkRuns(first: 50, filterBy: { status: COMPLETED, conclusions: [FAILURE, TIMED_OUT, CANCELLED, ACTION_REQUIRED, STARTUP_FAILURE] }) {
                   totalCount
@@ -171,7 +171,7 @@ const REPO_STATUS_QUERY_NO_ALERTS = `
             statusCheckRollup {
               state
             }
-            checkSuites(first: 10) {
+            checkSuites(first: 100) {
               nodes {
                 checkRuns(first: 50, filterBy: { status: COMPLETED, conclusions: [FAILURE, TIMED_OUT, CANCELLED, ACTION_REQUIRED, STARTUP_FAILURE] }) {
                   totalCount

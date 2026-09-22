@@ -15,7 +15,7 @@ view of Fro Bot's cross-repo footprint.
    App's registered permissions are therefore irrelevant to effective access.
    Never add a write code path.
 2. **Redaction preservation.** `src/github/metadata.ts` reads
-   `metadata/repos.yaml` from the `fro-bot/.github` `data` branch and exports
+   `metadata/repos.yaml` from the `codeo1io/.github` `data` branch and exports
    `redactedNodeIds` (node_ids of `[REDACTED]`/`private:true` entries). The
    aggregator MUST exclude denylisted repos from the installation-enumerated set
    BEFORE any per-repo GraphQL query (a query is itself a leak signal), and MUST

@@ -256,16 +256,38 @@ env:
     ### Needs Human Attention
 
 jobs:
+  # 2026-09-20: a job-level `if:` may reference only the github/inputs/needs/
+  # vars contexts — not `secrets` and not `env` (the workflow schema rejects
+  # the whole file on either; this fork's Check Workflows gate went red when
+  # PR #4 referenced secrets.FRO_BOT_PAT at job level). Canonical escape:
+  # compute secret presence in this tiny gate job — step-level `env` MAY use
+  # the secrets context — and branch the real job on needs.*.outputs.
+  secret-gate:
+    name: Fro Bot secret gate
+    runs-on: self-hosted
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      has_pat: ${{ steps.gate.outputs.has_pat }}
+    steps:
+      - name: Detect FRO_BOT_PAT presence
+        id: gate
+        env:
+          FRO_BOT_PAT: ${{ secrets.FRO_BOT_PAT }}
+        run: >
+          echo "has_pat=$([ -n "$FRO_BOT_PAT" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
   fro-bot:
     name: Fro Bot
     runs-on: self-hosted
+    needs: secret-gate
     # 2026-09-19: this repo has no FRO_BOT_PAT secret configured, so the job's
     # token input is empty and every scheduled run fails at input validation
     # ("Input required and not supplied: token"). Skip scheduled runs until the
     # secret exists (manual dispatch with the secret set still runs).
     if: >-
       (
-      (github.event_name != 'schedule' || secrets.FRO_BOT_PAT != '') &&
+      (github.event_name != 'schedule' || needs.secret-gate.outputs.has_pat == 'true') &&
       (
         github.event.pull_request == null ||
         (

@@ -1,7 +1,7 @@
 /**
  * Repo metadata reader for the dashboard.
  *
- * Reads `metadata/repos.yaml` from the `fro-bot/.github` `data` branch and
+ * Reads `metadata/repos.yaml` from the `codeo1io/.github` `data` branch and
  * exports a denylist of redacted node_ids for the aggregator.
  *
  * Security invariants:
