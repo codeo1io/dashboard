@@ -420,6 +420,34 @@ describe('aggregator — edge cases', () => {
     expect(snap.driftCount).toBe(1)
   })
 
+  it('driftCount equals installation-only, non-denylisted repos and discovered rows keep full identity (rm-126)', async () => {
+    const discoveredA = makeRepo({node_id: 'NODE_D_A', owner: 'org', name: 'drift-a'})
+    const discoveredB = makeRepo({node_id: 'NODE_D_B', owner: 'org', name: 'drift-b'})
+    const redacted = makeRepo({node_id: 'NODE_REDACTED', owner: 'org', name: 'hidden'})
+    const listed = makeRepo({node_id: 'NODE_LISTED', owner: 'org', name: 'listed'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([discoveredA, discoveredB, redacted, listed])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_LISTED', owner: 'org', name: 'listed'})],
+        redactedNodeIds: ['NODE_REDACTED'],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse()),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    // Listed repo + two installation-only repos; the denylisted repo is
+    // filtered BEFORE any query and counts toward nothing.
+    expect(snap.repos.map(repo => repo.full_name).sort()).toEqual(['org/drift-a', 'org/drift-b', 'org/listed'])
+    expect(snap.repos.find(repo => repo.full_name === 'org/drift-a')?.discovery_channel).toBe('discovered')
+    expect(snap.repos.find(repo => repo.full_name === 'org/drift-b')?.discovery_channel).toBe('discovered')
+    // driftCount is the bare size of the installation-only gap — denylisted
+    // and metadata-listed repos never contribute.
+    expect(snap.driftCount).toBe(2)
+  })
+
   it('metadata publicRepos carry their discovery_channel label', async () => {
     const repo = makeRepo({node_id: 'NODE_COLLAB', owner: 'org', name: 'collab-repo'})
     const deps = makeDeps({

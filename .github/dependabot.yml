@@ -1,9 +1,11 @@
 # Dependency automation for codeo1io/dashboard.
 #
-# Why this exists: Renovate has never run on this fork (shared fro-bot config in
-# .github/renovate.json5, but no Renovate app installation — 1 PR total in repo
-# history, manual). Upstream fro-bot/dashboard receives automated dependency PRs
-# continuously; this fork moves only by manual upstream merges without this file.
+# Why this exists: Renovate never runs on this fork — PR #1 deleted
+# .github/workflows/renovate.yaml under the self-hosted-runners-only CI
+# policy, no Renovate app installation exists, and the orphaned
+# .github/renovate.json5 was deleted 2026-09-22 (rm-136). This dependabot
+# config IS the fork's dependency automation: weekly grouped PRs, with the
+# first expected from the 2026-09-19 enable window (~2026-10-03).
 #
 # Conventions honored:
 # - GitHub Actions updates preserve the repo's commit-SHA pinning style.

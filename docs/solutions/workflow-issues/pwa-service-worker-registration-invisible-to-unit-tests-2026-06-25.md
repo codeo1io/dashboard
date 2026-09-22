@@ -45,6 +45,8 @@ registerRoute(                          // 5. then the navigation handler
 )
 ```
 
+(Fork note, 2026-09-21: the `/operator/auth` and `/privacy` denylist entries in this example are upstream's later sw.ts shape — they never existed in this fork, whose `web/src/sw.ts` is a kill-switch with no NavigationRoute at all. The doc is absorbed verbatim for the class of trap; cross-check code shapes against this fork before treating examples as current.)
+
 ### 2. The precached shell URL must match what the server serves with a 200
 
 injectManifest precaches `index.html` by default. If the server serves the shell only at `/` and 404s on `/index.html` (the common SPA-fallback case — here Hono's `app.get('/', serveStatic({path: 'index.html'}))`), Workbox's install-time `fetch('index.html')` 404s, the SW goes `redundant`, and registration aborts. Both halves of the contract must agree on `/`:

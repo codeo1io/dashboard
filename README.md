@@ -6,7 +6,7 @@
 
 > Command center for Fro Bot operations.
 
-[![Build Status](https://img.shields.io/github/actions/workflow/status/fro-bot/dashboard/main.yaml?style=for-the-badge&label=Build&labelColor=0D0216&color=00BCD4)](https://github.com/fro-bot/dashboard/actions) [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/fro-bot/dashboard/badge?style=for-the-badge&labelColor=0D0216&color=E91E63)](https://securityscorecards.dev/viewer/?uri=github.com/fro-bot/dashboard) [![Node](https://img.shields.io/badge/Node-%3E%3D24-FFC107?style=for-the-badge&labelColor=0D0216&color=FFC107)](https://nodejs.org)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/codeo1io/dashboard/main.yaml?style=for-the-badge&label=Build&labelColor=0D0216&color=00BCD4)](https://github.com/codeo1io/dashboard/actions) [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/codeo1io/dashboard/badge?style=for-the-badge&labelColor=0D0216&color=E91E63)](https://securityscorecards.dev/viewer/?uri=github.com/codeo1io/dashboard) [![Node](https://img.shields.io/badge/Node-%3E%3D24-FFC107?style=for-the-badge&labelColor=0D0216&color=FFC107)](https://nodejs.org)
 
 [Overview](#overview) · [Quick Start](#quick-start) · [Usage](#usage) · [Configuration](#configuration) · [Development](#development)
 
@@ -48,6 +48,10 @@ client changes). The test suite rebuilds the client automatically via `pretest`.
 - `GET /api/healthz` — public health check; returns `{ ok, lastFetch, rateLimit }`.
 - `GET /api/monitoring` — minimized monitoring snapshot for the client (authenticated).
 - `GET /api/status` — full internal snapshot (authenticated).
+- `GET /api/listener/messages` — operator listener-channel digest feed (authenticated; mounted only when the ingest store is configured).
+- `POST /api/listener/ingest` — gateway-to-dashboard message ingest, HMAC-signed via the listener ingest key (not operator-session auth).
+- `POST /api/listener/messages/:id/ack` · `POST /api/listener/ack-all` — digest acknowledgements (authenticated).
+- `GET /privacy` — public privacy policy for the push/listener surfaces.
 - `GET /auth/login` · `GET /auth/callback` · `POST /auth/logout` — GitHub OAuth session flow.
 - `/manifest.webmanifest`, `/sw.js` — PWA manifest and service worker.
 

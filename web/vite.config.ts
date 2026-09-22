@@ -37,12 +37,12 @@ export default defineConfig({
           '**/privacy.html',
         ],
 
-        // Rewrite the precache manifest entry for index.html → '/' so that
-        // Workbox's install-time fetch hits GET / (which the Hono server serves
-        // at 200) instead of GET /index.html (which has no route and 404s,
-        // causing the SW to go redundant and never register).
-        //
-        // createHandlerBoundToURL in sw.ts MUST reference the same URL ('/').
+        // Rewrite the precache manifest entry for index.html → '/' so the
+        // generated workbox manifest stays consistent with the server's '/'
+        // route (GET /index.html has no route and 404s). The deployed SW is a
+        // kill-switch (web/src/sw.ts) that purges caches, unregisters itself,
+        // and never precaches or serves — this transform only shapes the
+        // manifest the build emits.
         manifestTransforms: [
           (entries) => {
             const manifest = entries.map((entry) =>
