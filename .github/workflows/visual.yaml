@@ -29,14 +29,12 @@ concurrency:
 
 jobs:
   visual:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
-      # pnpm via pnpm/action-setup (repo convention, see .github/actions/setup):
-      # self-hosted runners run unprivileged, so `corepack enable` fails with
-      # EACCES symlinking into /usr/bin.
+      # pnpm via pnpm/action-setup (repo convention, see .github/actions/setup).
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
       - uses: actions/setup-node@v5
         with:
