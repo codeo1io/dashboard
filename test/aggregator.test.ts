@@ -1745,3 +1745,233 @@ describe('aggregator — check-suite cap (rm-110)', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// Cycle-3 hardening (rm-112 + rm-128): bounded concurrency, cache bridging,
+// negative cache, warm-empty preserve, cycle telemetry
+// ---------------------------------------------------------------------------
+
+describe('cycle-3 hardening — bounded concurrency + cache + telemetry', () => {
+  it('per-repo fetches run with bounded concurrency (pool cap respected, all repos fetched)', async () => {
+    const repos = Array.from({length: 12}, (_, k) =>
+      makeRepo({node_id: `NODE_C${k}`, owner: 'org', name: `repo-c${k}`, full_name: `org/repo-c${k}`}),
+    )
+    let inFlight = 0
+    let maxInFlight = 0
+    let calls = 0
+    const graphql: GraphqlQueryForInstallationFn = vi.fn().mockImplementation(async () => {
+      calls += 1
+      inFlight += 1
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      await new Promise(resolve => setTimeout(resolve, 5))
+      inFlight -= 1
+      return makeGraphqlResponse({rollupState: 'SUCCESS'})
+    })
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult(repos)),
+      readMetadata: vi.fn().mockResolvedValue(
+        ok(makeMetadataResult({publicRepos: repos.map(r => makePublicRepo({node_id: r.node_id, owner: r.owner, name: r.name}))})),
+      ),
+      graphqlQueryForInstallation: graphql,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.start()
+    const snap = agg.getSnapshot()
+    expect(snap.repos).toHaveLength(12)
+    expect(calls).toBe(12)
+    expect(maxInFlight).toBeGreaterThan(1)
+    expect(maxInFlight).toBeLessThanOrEqual(6)
+    agg.stop()
+  })
+
+  it('status cache bridges one refresh cycle and expires after two', async () => {
+    vi.useFakeTimers()
+    try {
+      const repo = makeRepo({node_id: 'NODE_TTL', owner: 'org', name: 'ttl-repo'})
+      let nowMs = 0
+      let calls = 0
+      const graphql: GraphqlQueryForInstallationFn = vi.fn().mockImplementation(async () => {
+        calls += 1
+        return makeGraphqlResponse({rollupState: 'SUCCESS'})
+      })
+      const deps = makeDeps({
+        enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+        readMetadata: vi.fn().mockResolvedValue(
+          ok(makeMetadataResult({publicRepos: [makePublicRepo({node_id: 'NODE_TTL', owner: 'org', name: 'ttl-repo'})]})),
+        ),
+        graphqlQueryForInstallation: graphql,
+        now: () => nowMs,
+      })
+
+      const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+      await agg.start()
+      expect(calls).toBe(1)
+
+      // One interval later: age 61s < 120s TTL → served from cache, no refetch.
+      nowMs = 61_000
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(calls).toBe(1)
+      expect(agg.getSnapshot().repos[0]?.status.rollupState).toBe('green')
+
+      // Two intervals later: age 125s > 120s TTL → expired, refetched.
+      nowMs = 125_000
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(calls).toBe(2)
+      agg.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('failed fetches are negative-cached (no per-cycle retry storm) and retried after the window', async () => {
+    vi.useFakeTimers()
+    try {
+      const repo = makeRepo({node_id: 'NODE_NEG', owner: 'org', name: 'neg-repo'})
+      let nowMs = 0
+      let calls = 0
+      const graphql: GraphqlQueryForInstallationFn = vi.fn().mockImplementation(async () => {
+        calls += 1
+        if (calls === 1) throw new Error('graphql boom')
+        return makeGraphqlResponse({rollupState: 'SUCCESS'})
+      })
+      const deps = makeDeps({
+        enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+        readMetadata: vi.fn().mockResolvedValue(
+          ok(makeMetadataResult({publicRepos: [makePublicRepo({node_id: 'NODE_NEG', owner: 'org', name: 'neg-repo'})]})),
+        ),
+        graphqlQueryForInstallation: graphql,
+        now: () => nowMs,
+      })
+
+      const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+      await agg.start()
+      expect(calls).toBe(1)
+      expect(agg.getSnapshot().repos[0]?.status.stale).toBe(true)
+
+      // Within the 10-minute negative window: no retry.
+      nowMs = 61_000
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(calls).toBe(1)
+
+      // Past the negative window: retried and healthy.
+      nowMs = 700_000
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(calls).toBe(2)
+      expect(agg.getSnapshot().repos[0]?.status.stale).toBe(false)
+      agg.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('enumeration failure with warm data preserves last-good repos under the stale banner', async () => {
+    vi.useFakeTimers()
+    try {
+      const repo = makeRepo({node_id: 'NODE_WARM', owner: 'org', name: 'warm-repo'})
+      let nowMs = 0
+      let enumOk = true
+      const enumerate = vi.fn().mockImplementation(async () =>
+        enumOk
+          ? Promise.resolve(makeEnumerateResult([repo]))
+          : Promise.resolve(err(new FetchInstallationsError('enum down'))),
+      )
+      const deps = makeDeps({
+        enumerate,
+        readMetadata: vi.fn().mockResolvedValue(
+          ok(makeMetadataResult({publicRepos: [makePublicRepo({node_id: 'NODE_WARM', owner: 'org', name: 'warm-repo'})]})),
+        ),
+        graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+        now: () => nowMs,
+      })
+
+      const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+      await agg.start()
+      const snap1 = agg.getSnapshot()
+      expect(snap1.repos).toHaveLength(1)
+      expect(snap1.staleBanner).toBe(false)
+
+      enumOk = false
+      nowMs = 200_000 // also expires the per-repo cache so the cycle reaches the fetch stage
+      await vi.advanceTimersByTimeAsync(60_000)
+
+      const snap2 = agg.getSnapshot()
+      expect(snap2.repos).toHaveLength(1) // preserved, not wiped
+      expect(snap2.staleBanner).toBe(true)
+      agg.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('overlapping ticks increment skippedCycles and completed cycles report cycleMs', async () => {
+    vi.useFakeTimers()
+    try {
+      const repo = makeRepo({node_id: 'NODE_SKIP', owner: 'org', name: 'skip-repo'})
+      let nowMs = 0
+      let slow = false
+      let releaseSlow: (() => void) | null = null
+      const graphql: GraphqlQueryForInstallationFn = vi.fn().mockImplementation(async () => {
+        if (slow) {
+          await new Promise<void>(resolve => {
+            releaseSlow = resolve
+          })
+        }
+        return makeGraphqlResponse({rollupState: 'SUCCESS'})
+      })
+      const deps = makeDeps({
+        enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+        readMetadata: vi.fn().mockResolvedValue(
+          ok(makeMetadataResult({publicRepos: [makePublicRepo({node_id: 'NODE_SKIP', owner: 'org', name: 'skip-repo'})]})),
+        ),
+        graphqlQueryForInstallation: graphql,
+        now: () => nowMs,
+      })
+
+      const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+      await agg.start()
+      const snap1 = agg.getSnapshot()
+      expect(typeof snap1.cycleMs).toBe('number')
+      expect(snap1.skippedCycles).toBe(0)
+
+      // Slow cycle 2 starts at the first tick and stays in flight...
+      slow = true
+      nowMs = 125_000 // past the 2-interval TTL so the cycle actually fetches
+      await vi.advanceTimersByTimeAsync(60_000)
+
+      // ...so the next tick is skipped (in-flight guard) and counted.
+      nowMs = 185_000
+      await vi.advanceTimersByTimeAsync(60_000)
+
+      // Complete the slow cycle and let the snapshot update. (The resolver
+      // callback assignment above isn't tracked by control-flow analysis, so
+      // re-widen the type explicitly before the optional call.)
+      const release = releaseSlow as (() => void) | null
+      release?.()
+      await vi.advanceTimersByTimeAsync(1)
+
+      const snap2 = agg.getSnapshot()
+      expect(snap2.skippedCycles).toBe(1)
+      expect(snap2.cycleMs).toBe(60_000)
+      agg.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('unresolved metadata-only repos are counted in unresolvedCount', async () => {
+    const metaOnly = makePublicRepo({node_id: 'NODE_UNRES', owner: 'org', name: 'unres-repo'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({publicRepos: [metaOnly]}))),
+      resolveInstallationIdForRepo: vi.fn().mockRejectedValue(new Error('cannot resolve')),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.start()
+    const snap = agg.getSnapshot()
+    expect(snap.repos).toHaveLength(0)
+    expect(snap.unresolvedCount).toBe(1)
+    agg.stop()
+  })
+})

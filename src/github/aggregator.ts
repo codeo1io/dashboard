@@ -110,6 +110,22 @@ export interface AggregatorSnapshot {
   readonly driftCount: number
   /** When the snapshot was last successfully refreshed (ms since epoch) */
   readonly refreshedAt: number | null
+  /**
+   * Duration of the last completed refresh cycle in ms (cycle telemetry).
+   * Absent until the first cycle completes. A cycle persistently approaching
+   * REFRESH_INTERVAL_MS means ticks are being skipped by the in-flight guard.
+   */
+  readonly cycleMs?: number
+  /**
+   * Interval ticks skipped because the previous cycle was still in flight
+   * (cumulative since aggregator start). Skips are also warned in logs.
+   */
+  readonly skippedCycles?: number
+  /**
+   * Metadata-only repos skipped in the last completed cycle because their
+   * installation could not be resolved (no safe auth context to query with).
+   */
+  readonly unresolvedCount?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +135,8 @@ export interface AggregatorSnapshot {
 interface CacheEntry {
   readonly fetchedAt: number
   readonly payload: RepoCiStatus
+  /** True when the fetch failed (payload is the stale/unknown placeholder). */
+  readonly fetchFailed?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -583,6 +601,44 @@ async function fetchRepoStatus(
 }
 
 // ---------------------------------------------------------------------------
+// Refresh cadence constants (single source of truth for interval, cache, pool)
+// ---------------------------------------------------------------------------
+
+/** Background refresh interval (start()). */
+const REFRESH_INTERVAL_MS = 60_000
+
+/**
+ * Per-repo status cache TTL. MUST EXCEED the refresh interval: with TTL equal
+ * to the interval, every entry is already expired by the time the next tick
+ * reads it (age ≥ interval), so the cache never bridges cycles and every cycle
+ * re-fetches every repo. Two intervals leave one full cycle of slack.
+ */
+const CACHE_TTL_MS = 2 * REFRESH_INTERVAL_MS
+
+/**
+ * Negative-cache TTL for repos whose last fetch FAILED (payload is the
+ * stale/unknown placeholder). Retrying a failing repo every interval multiplies
+ * GitHub errors and can itself trigger secondary rate limits, so failed entries
+ * are held longer before retry.
+ */
+const NEGATIVE_CACHE_TTL_MS = 10 * REFRESH_INTERVAL_MS
+
+/**
+ * Cycles slower than half the interval are warned: at that duration the next
+ * tick is at risk of being skipped by the in-flight guard (invisible without
+ * telemetry — see skippedCycles).
+ */
+const SLOW_CYCLE_WARN_MS = REFRESH_INTERVAL_MS / 2
+
+/**
+ * Bounded fan-out for per-repo status fetches. Replaces the fully sequential
+ * loop: at scale (dozens of repos) one slow repo delays the whole snapshot.
+ * Small enough to respect secondary-rate-limit pressure, large enough that a
+ * typical fleet finishes in a few rounds.
+ */
+const FETCH_CONCURRENCY = 6
+
+// ---------------------------------------------------------------------------
 // Aggregator factory
 // ---------------------------------------------------------------------------
 
@@ -618,6 +674,17 @@ export function createAggregator(
   // longer than the 60s interval, the next tick is skipped rather than piling
   // up concurrent refreshes that race on lastGoodSnapshot and the per-repo cache.
   let refreshing = false
+
+  // Cycle telemetry (exposed on the snapshot): duration of the last completed
+  // cycle, interval ticks skipped by the in-flight guard, and metadata-only
+  // repos skipped because installation resolution failed.
+  let lastCycleMs: number | null = null
+  let skippedCycles = 0
+  let lastUnresolvedCount = 0
+  // Start time of the cycle currently in progress (null before the first).
+  // The snapshot's cycleMs is computed from this so it reflects the cycle that
+  // produced the snapshot, not the previous one.
+  let cycleStartMs: number | null = null
 
   /**
    * Perform a full refresh cycle.
@@ -672,9 +739,11 @@ export function createAggregator(
     if (deps.resolveInstallationIdForRepo === undefined) {
       // No resolver: filter out repos with no installation_id (cannot query safely)
       workingSet = rawWorkingSet.filter(e => e.installation_id !== null)
+      lastUnresolvedCount = rawWorkingSet.length - workingSet.length
     } else {
       const resolveInstallation = deps.resolveInstallationIdForRepo
       const resolvedEntries: WorkingSetEntry[] = []
+      let unresolved = 0
       for (const entry of rawWorkingSet) {
         if (entry.installation_id !== null) {
           resolvedEntries.push(entry)
@@ -685,11 +754,13 @@ export function createAggregator(
           const resolvedId = await resolveInstallation(entry.owner, entry.name)
           resolvedEntries.push({...entry, installation_id: resolvedId})
         } catch (resolveError) {
+          unresolved += 1
           logger.warning('Could not resolve installation for metadata-only repo; skipping', safeRepoErrorContext(entry, resolveError))
           // Skip: no valid auth context — do NOT query with an ambient token
         }
       }
       workingSet = resolvedEntries
+      lastUnresolvedCount = unresolved
     }
 
     // Warn if cross-format denylist protection is partial (new-format node_ids that
@@ -704,47 +775,90 @@ export function createAggregator(
     }
 
     if (workingSet.length === 0) {
+      // Fail-closed nuance (rm-112): enumeration failed AND we have warm data —
+      // keep serving the last-good snapshot with the stale banner rather than
+      // wiping to an empty list (an empty enumeration result is indistinguishable
+      // from a partial outage at this point). A successful enumeration that
+      // legitimately returns zero repos still replaces the snapshot.
+      if (enumerationFailed && lastGoodSnapshot !== null && lastGoodSnapshot.repos.length > 0) {
+        lastGoodSnapshot = {...lastGoodSnapshot, staleBanner: true}
+        logger.warning('Enumeration failed with warm snapshot available; preserving last-good repos with stale banner', {
+          preservedRepoCount: lastGoodSnapshot.repos.length,
+        })
+        return
+      }
       // staleBanner=true if enumeration failed (data is incomplete — install repos missing)
-      lastGoodSnapshot = {repos: [], staleBanner: enumerationFailed, driftCount, refreshedAt: now()}
+      lastGoodSnapshot = {
+        repos: [],
+        staleBanner: enumerationFailed,
+        driftCount,
+        refreshedAt: now(),
+        cycleMs: cycleStartMs === null ? undefined : Math.max(0, now() - cycleStartMs),
+        skippedCycles,
+        unresolvedCount: lastUnresolvedCount,
+      }
       return
     }
 
-    // 4. Fetch per-repo status — only for repos that survived the denylist filter
-    const dashboardRepos: DashboardRepo[] = []
-    for (const entry of workingSet) {
-      // Check cache first (60s TTL)
+    // 4. Fetch per-repo status — only for repos that survived the denylist filter.
+    // Cache hits are resolved inline (no async work). Misses go through a bounded
+    // worker pool (FETCH_CONCURRENCY) pulling from a shared index; results are
+    // written by index so the output order matches the working set exactly.
+    const statuses: RepoCiStatus[] = Array.from({length: workingSet.length})
+    const needFetch: number[] = []
+    for (const [i, element] of workingSet.entries()) {
+      const entry = element
       const cached = cache.get(entry.node_id)
-      const CACHE_TTL_MS = 60_000
-      if (cached !== undefined && now() - cached.fetchedAt < CACHE_TTL_MS) {
-        dashboardRepos.push({
-          node_id: entry.node_id,
-          owner: entry.owner,
-          name: entry.name,
-          full_name: entry.full_name,
-          discovery_channel: entry.discovery_channel,
-          status: cached.payload,
-        })
+      // Failed fetches are negative-cached on a longer window before retry.
+      const ttl = cached?.fetchFailed === true ? NEGATIVE_CACHE_TTL_MS : CACHE_TTL_MS
+      if (cached !== undefined && now() - cached.fetchedAt < ttl) {
+        statuses[i] = cached.payload
         continue
       }
-
-      const status = await fetchRepoStatus(entry, graphqlQueryForInstallation, now)
-      cache.set(entry.node_id, {fetchedAt: status.fetchedAt, payload: status})
-      dashboardRepos.push({
-        node_id: entry.node_id,
-        owner: entry.owner,
-        name: entry.name,
-        full_name: entry.full_name,
-        discovery_channel: entry.discovery_channel,
-        status,
-      })
+      needFetch.push(i)
     }
+
+    let nextFetchSlot = 0
+    async function fetchWorker(): Promise<void> {
+      while (true) {
+        const slot = nextFetchSlot
+        nextFetchSlot += 1
+        if (slot >= needFetch.length) return
+        const i = needFetch[slot] as number
+        const entry = workingSet[i] as WorkingSetEntry
+        const status = await fetchRepoStatus(entry, graphqlQueryForInstallation, now)
+        cache.set(entry.node_id, {fetchedAt: status.fetchedAt, payload: status, fetchFailed: status.stale})
+        statuses[i] = status
+      }
+    }
+    const workerCount = Math.min(FETCH_CONCURRENCY, needFetch.length)
+    await Promise.all(Array.from({length: workerCount}, async () => fetchWorker()))
+
+    const dashboardRepos: DashboardRepo[] = workingSet.map((entry, i) => ({
+      node_id: entry.node_id,
+      owner: entry.owner,
+      name: entry.name,
+      full_name: entry.full_name,
+      discovery_channel: entry.discovery_channel,
+      // Every index is filled: cache hits inline, misses by the pool over ALL
+      // of needFetch before Promise.all resolves.
+      status: statuses[i] as RepoCiStatus,
+    }))
 
     // 5. Sort attention-first and store snapshot
     const sorted = sortAttentionFirst(dashboardRepos)
     // staleBanner=true if enumeration failed — data is incomplete (install repos missing).
     // We still show metadata publicRepos (they are public and safe), but the operator
     // must know the installation channel data is absent.
-    lastGoodSnapshot = {repos: sorted, staleBanner: enumerationFailed, driftCount, refreshedAt: now()}
+    lastGoodSnapshot = {
+      repos: sorted,
+      staleBanner: enumerationFailed,
+      driftCount,
+      refreshedAt: now(),
+      cycleMs: cycleStartMs === null ? undefined : Math.max(0, now() - cycleStartMs),
+      skippedCycles,
+      unresolvedCount: lastUnresolvedCount,
+    }
 
     logger.info('Aggregator refresh complete', {
       repoCount: sorted.length,
@@ -760,14 +874,29 @@ export function createAggregator(
    */
   async function refresh(): Promise<void> {
     if (refreshing) {
-      logger.debug('Refresh already in flight; skipping overlapping cycle')
+      skippedCycles += 1
+      logger.warning('Refresh tick skipped: previous cycle still in flight', {
+        skippedCycles,
+        lastCycleMs,
+        intervalMs: REFRESH_INTERVAL_MS,
+      })
       return
     }
     refreshing = true
+    const cycleStart = now()
+    cycleStartMs = cycleStart
     try {
       await runRefresh()
     } finally {
+      lastCycleMs = now() - cycleStart
       refreshing = false
+      if (lastCycleMs > SLOW_CYCLE_WARN_MS) {
+        logger.warning('Slow aggregator cycle (next tick at risk of being skipped)', {
+          cycleMs: lastCycleMs,
+          intervalMs: REFRESH_INTERVAL_MS,
+          slowWarnThresholdMs: SLOW_CYCLE_WARN_MS,
+        })
+      }
     }
   }
 
@@ -792,7 +921,7 @@ export function createAggregator(
           error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
         })
       })
-    }, 60_000)
+    }, REFRESH_INTERVAL_MS)
   }
 
   /**

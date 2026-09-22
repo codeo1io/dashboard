@@ -33,6 +33,19 @@ export interface AppClientOptions {
   readonly privateKey: string
 }
 
+/**
+ * Observable GitHub API rate-limit pressure for health reporting.
+ * `hits` counts primary + secondary rate-limit events observed by the Octokit
+ * throttling plugin since process start; `lastHitAt` is the epoch-ms timestamp
+ * of the most recent event (null before any hit). No remaining-quota data is
+ * tracked — the dashboard mints short-lived installation tokens and has no
+ * stable quota identity to report.
+ */
+export interface RateLimitState {
+  readonly hits: number
+  readonly lastHitAt: number | null
+}
+
 export interface DashboardAppClient {
   /**
    * The underlying Octokit instance authenticated as the App (JWT-level).
@@ -51,6 +64,11 @@ export interface DashboardAppClient {
     installationId: number,
     permissions: Record<string, 'read'>,
   ) => Promise<string>
+  /**
+   * Current rate-limit pressure observed on the App-level client.
+   * See RateLimitState. Used by /api/healthz (`rateLimit`).
+   */
+  readonly getRateLimitState: () => RateLimitState
 }
 
 // ---------------------------------------------------------------------------
@@ -66,15 +84,22 @@ export interface DashboardAppClient {
 export function createDashboardAppClient(options: AppClientOptions): DashboardAppClient {
   const {appId, privateKey} = options
 
+  let rateLimitHits = 0
+  let lastRateLimitAt: number | null = null
+
   const octokit = new ThrottledOctokit({
     authStrategy: createAppAuth,
     auth: {appId, privateKey},
     throttle: {
       onRateLimit: (retryAfter: number, opts: Record<string, unknown>, _octokit: unknown, retryCount: number) => {
+        rateLimitHits += 1
+        lastRateLimitAt = Date.now()
         logger.warning('GitHub rate limit hit', {retryAfter, url: opts.url, retryCount})
         return retryCount < 2
       },
       onSecondaryRateLimit: (retryAfter: number, opts: Record<string, unknown>, _octokit: unknown) => {
+        rateLimitHits += 1
+        lastRateLimitAt = Date.now()
         logger.warning('GitHub secondary rate limit hit', {retryAfter, url: opts.url})
         return false
       },
@@ -93,7 +118,11 @@ export function createDashboardAppClient(options: AppClientOptions): DashboardAp
     return result.token
   }
 
-  return {octokit, mintInstallationToken}
+  return {
+    octokit,
+    mintInstallationToken,
+    getRateLimitState: () => ({hits: rateLimitHits, lastHitAt: lastRateLimitAt}),
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -1,8 +1,12 @@
 import type {AggregatorSnapshot, DashboardRepo, RepoCiStatus} from '../github/aggregator.ts'
+import type {RateLimitState} from '../github/app-client.ts'
 import {Hono} from 'hono'
 
 /** Injectable snapshot provider — returns the current aggregator snapshot. */
 export type SnapshotProvider = () => AggregatorSnapshot
+
+/** Injectable rate-limit state provider (from the App client). */
+export type RateLimitStateProvider = () => RateLimitState
 
 /** Empty snapshot returned when no provider is configured. */
 const EMPTY_SNAPSHOT: AggregatorSnapshot = {
@@ -73,11 +77,26 @@ function toMonitoringDto(snapshot: AggregatorSnapshot): MonitoringDto {
  *   In production, the real aggregator's `getSnapshot` is injected via server.ts.
  *   Tests inject a fake.
  */
-export function buildApiRouter(getSnapshot?: SnapshotProvider): Hono {
+export function buildApiRouter(
+  getSnapshot?: SnapshotProvider,
+  getRateLimitState?: RateLimitStateProvider,
+): Hono {
   const api = new Hono()
 
+  // README.md documents this contract as `{ ok, lastFetch, rateLimit }` — the
+  // two data fields are populated from real state, never hardcoded:
+  // - lastFetch: ISO-8601 timestamp of the last completed aggregator refresh
+  //   (snapshot.refreshedAt); null until the first refresh completes.
+  // - rateLimit: GitHub rate-limit pressure observed by the App client
+  //   (hits since process start + epoch-ms of the most recent hit); null when
+  //   no App client is wired (no credentials / test seam).
   api.get('/healthz', c => {
-    return c.json({ok: true, lastFetch: null, rateLimit: null})
+    const snapshot = getSnapshot === undefined ? EMPTY_SNAPSHOT : getSnapshot()
+    return c.json({
+      ok: true,
+      lastFetch: snapshot.refreshedAt === null ? null : new Date(snapshot.refreshedAt).toISOString(),
+      rateLimit: getRateLimitState === undefined ? null : getRateLimitState(),
+    })
   })
 
   /**

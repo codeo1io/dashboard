@@ -1,0 +1,8 @@
+{"step":1,"ts":"2026-09-21T00:00:00Z","summary":"Frame fingerprint: HEAD==origin/main==7de0de3; 10 M + D renovate.json5 + 4 untracked; diff 640+/61-","touched":[".conductor/progress/371bf65f45694350ab30b9cc6d9fb493.ndjson"]}
+{"step":3,"ts":"2026-09-21T16:31:00Z","summary":"B2 aggregator diff reviewed: pool/TTL/negcache/warm-empty sound; stale=failure-only verified","touched":[]}
+{"step":4,"ts":"2026-09-21T16:32:00Z","summary":"B4+app-client+server reviewed: no write path; healthz matches README:48","touched":[]}
+{"step":5,"ts":"2026-09-21T16:33:00Z","summary":"B1 guard test + vitest wiring reviewed; 153/153 targeted tests green","touched":[]}
+{"step":6,"ts":"2026-09-21T16:34:00Z","summary":"B3+rider reviewed: else-count correct; renovate residue swept","touched":[]}
+{"step":7,"ts":"2026-09-21T16:35:00Z","summary":"ROADMAP registry audited: 23 open desc; rm-112 acceptance gaps + closure line drift found","touched":[]}
+{"step":8,"ts":"2026-09-21T16:36:00Z","summary":"Gates re-verified: 153/153 targeted, check-types 0, lint 0; guard mutation-proven red; fingerprint unchanged","touched":[]}
+{"step":9,"ts":"2026-09-21T16:38:00Z","summary":"PhaseResult (verdict: request_changes, 1 P1 registry integrity) written to delegate spool; phase complete","touched":[".conductor/progress/371bf65f45694350ab30b9cc6d9fb493.ndjson","/home/agent/.hermes/conductor-delegate-spool-infra-deploy/delegate/371bf65f45694350b9cc6d9fb493.json"]}

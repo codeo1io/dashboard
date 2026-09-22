@@ -1,0 +1,3 @@
+{"step":1,"ts":"2026-09-20T15:50:44Z","summary":"re-dispatch: B0 done+verified, B1 written w/ 2 gaps; resuming B1 fix -> B3 -> B4 -> B2 -> gates","touched":[]}
+{"step":2,"ts":"2026-09-20T15:53:07Z","summary":"B1 done: wiki-writer guard 4/4 green (allowlist slash bug fixed, dir-level flag, scratch red-proof)","touched":["test/wiki-writer-guard.test.ts"]}
+{"step":3,"ts":"2026-09-20T15:53:50Z","summary":"B3 done: metadata.ts trailing-else counts object junk; new rm-129 test asserts skippedCount:2","touched":["src/github/metadata.ts","test/metadata.test.ts"]}

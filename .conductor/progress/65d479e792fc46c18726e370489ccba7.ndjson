@@ -1,0 +1,4 @@
+{"step":1,"ts":"2026-09-20T15:40:11Z","summary":"Implement phase opened: worktrees+frame verified","touched":[".conductor/progress/65d479e792fc46c18726e370489ccba7.ndjson"]}
+{"step":2,"ts":"2026-09-20T15:40:47Z","summary":"rm-121/122/124 landing verified at 7de0de3 via greps","touched":[".conductor/progress/65d479e792fc46c18726e370489ccba7.ndjson"]}
+{"step":2,"ts":"2026-09-20T15:41:36Z","summary":"rm-121/122/124 landing verified at 7de0de3; no fro-bot/.github refs remain","touched":[]}
+{"step":3,"ts":"2026-09-20T15:47:12Z","summary":"B0 done: ROADMAP rm-125..131 added, rm-121/122/124 closed at 7de0de3, queue priority-desc","touched":["ROADMAP.md"]}

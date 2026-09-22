@@ -340,6 +340,51 @@ repos:
       warnSpy.mockRestore()
     }
   })
+
+  it('malformed OBJECT entries failing the public predicate are counted too (rm-129)', async () => {
+    // One well-formed entry + one object entry with wrong field types + one
+    // object entry missing a required field. Objects failing the public-entry
+    // predicate fall to the trailing else and increment the same counter as
+    // scalar/array junk — no silently-uncounted drop path remains.
+    const yaml = `
+version: 1
+repos:
+  - owner: marcusrbrown
+    name: ha-config
+    added: 2026-04-17
+    onboarding_status: onboarded
+    last_survey_at: 2026-06-10
+    last_survey_status: success
+    has_fro_bot_workflow: false
+    has_renovate: true
+    next_survey_eligible_at: 2026-07-12
+    discovery_channel: collab
+    private: false
+    node_id: R_kgDOJ_bMaQ
+  - owner: 123
+    name: wrong-typed-owner
+    discovery_channel: collab
+    node_id: R_kgDOJ_bMbQ
+  - owner: marcusrbrown
+    name: missing-discovery-channel
+    node_id: R_kgDOJ_bMcQ
+`
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const result = await readRepoMetadata(makeReader(yaml))
+
+      expect(isOk(result)).toBe(true)
+      if (!isOk(result)) return
+      expect(result.data.publicRepos).toHaveLength(1)
+      expect(result.data.publicRepos[0]?.name).toBe('ha-config')
+
+      const warnLine = warnSpy.mock.calls.map(c => c.join(' ')).find(l => l.includes('skipped malformed entries'))
+      expect(warnLine).toBeDefined()
+      expect(warnLine).toContain('"skippedCount":2')
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
 })
 
 // ---------------------------------------------------------------------------

@@ -340,6 +340,12 @@ export async function readRepoMetadata(reader: MetadataReader): Promise<Result<M
         node_id: entry.node_id,
         discovery_channel: entry.discovery_channel,
       })
+    } else {
+      // Object entry that is neither private/redacted nor a well-formed public
+      // entry (wrong field types, missing required fields). Counted with the
+      // scalar/array junk above — one counter, one truth — so silent drops are
+      // never invisible in the logs.
+      skippedMalformedCount++
     }
   }
 

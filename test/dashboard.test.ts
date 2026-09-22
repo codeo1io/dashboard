@@ -76,13 +76,18 @@ function makeSnapshot(overrides: Partial<AggregatorSnapshot> = {}): AggregatorSn
 }
 
 /** Build a test app with injected snapshot + minimal auth config. */
-async function buildTestApp(snapshot: AggregatorSnapshot, operatorLogin: string = TEST_OPERATOR) {
+async function buildTestApp(
+  snapshot: AggregatorSnapshot,
+  operatorLogin: string = TEST_OPERATOR,
+  extra?: {getRateLimitState?: (() => {hits: number; lastHitAt: number | null}) | undefined},
+) {
   return buildDashboardApp({
     operatorLogin,
     cookieKey: TEST_KEY,
     oauthClient: makeFakeOAuthClient(),
     fetchUserLogin: async (_token: string) => operatorLogin,
     getSnapshot: () => snapshot,
+    getRateLimitState: extra?.getRateLimitState,
   })
 }
 
@@ -588,6 +593,31 @@ describe('/api/healthz remains public', () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body).toEqual({ok: true, lastFetch: null, rateLimit: null})
+  })
+
+  it('lastFetch is populated from the snapshot refresh timestamp', async () => {
+    const app = await buildTestApp(makeSnapshot({refreshedAt: Date.UTC(2026, 8, 20, 12, 0, 0)}))
+    const res = await app.request('/api/healthz')
+    expect(res.status).toBe(200)
+    const body = await res.json() as {ok: boolean; lastFetch: string | null; rateLimit: unknown}
+    expect(body.ok).toBe(true)
+    expect(body.lastFetch).toBe('2026-09-20T12:00:00.000Z')
+  })
+
+  it('rateLimit reports the injected App-client state', async () => {
+    const app = await buildTestApp(makeSnapshot(), TEST_OPERATOR, {getRateLimitState: () => ({hits: 2, lastHitAt: 1758352800000})})
+    const res = await app.request('/api/healthz')
+    expect(res.status).toBe(200)
+    const body = await res.json() as {ok: boolean; lastFetch: string | null; rateLimit: {hits: number; lastHitAt: number | null}}
+    expect(body.rateLimit).toEqual({hits: 2, lastHitAt: 1758352800000})
+  })
+
+  it('rateLimit stays null when no App client is wired', async () => {
+    const app = await buildTestApp(makeSnapshot({refreshedAt: 1758352800000}))
+    const res = await app.request('/api/healthz')
+    expect(res.status).toBe(200)
+    const body = await res.json() as {rateLimit: unknown}
+    expect(body.rateLimit).toBeNull()
   })
 })
 

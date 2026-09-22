@@ -16,6 +16,7 @@ import type {ServerType} from '@hono/node-server'
 import type {GitHubOAuthClient} from './auth/oauth.ts'
 import type {OperatorClient, SessionDto} from './gateway/operator-client.ts'
 import type {AggregatorSnapshot} from './github/aggregator.ts'
+import type {RateLimitState} from './github/app-client.ts'
 import type {MetadataReader} from './github/metadata.ts'
 import type {ListenerStore} from './listener/store.ts'
 import {Buffer} from 'node:buffer'
@@ -182,6 +183,13 @@ export interface DashboardAppConfig {
    * Tests inject a fake snapshot provider.
    */
   getSnapshot?: (() => AggregatorSnapshot) | undefined
+  /**
+   * GitHub rate-limit state provider from the App client (see app-client.ts
+   * RateLimitState). When provided, /api/healthz reports real rate-limit
+   * pressure instead of null. Production wires the real client's
+   * getRateLimitState via createDashboardServer; tests inject a fake.
+   */
+  getRateLimitState?: (() => RateLimitState) | undefined
   /**
    * Whether to mount the operator UI skeleton at /operator.
    * If undefined, reads from DASHBOARD_OPERATOR_UI_ENABLED env (default: false).
@@ -718,7 +726,7 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   }
 
   // ── API routes ───────────────────────────────────────────────────────────────
-  app.route('/api', buildApiRouter(getSnapshot))
+  app.route('/api', buildApiRouter(getSnapshot, opts?.getRateLimitState))
 
   // ── Operator listener channel ───────────────────────────────────────────────
   // Only mounted when a store is injected. /ingest is public-before-session
@@ -875,6 +883,7 @@ export interface SnapshotProviderDeps {
  */
 export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
   getSnapshot: () => AggregatorSnapshot
+  getRateLimitState: () => RateLimitState
   start: () => Promise<void>
   stop: () => void
 } {
@@ -954,6 +963,7 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
 
   return {
     getSnapshot: aggregator.getSnapshot,
+    getRateLimitState: appClient.getRateLimitState,
     start: aggregator.start,
     stop: aggregator.stop,
   }
@@ -1061,7 +1071,13 @@ async function createDashboardServer(): Promise<ServerType> {
     })
   }
 
-  const app = await buildDashboardApp({cookieKey, getSnapshot, listenerStore, listenerIngestKey})
+  const app = await buildDashboardApp({
+    cookieKey,
+    getSnapshot,
+    getRateLimitState: provider?.getRateLimitState,
+    listenerStore,
+    listenerIngestKey,
+  })
 
   const {host, port} = readServerBindConfig()
 
