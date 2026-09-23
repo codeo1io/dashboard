@@ -5,10 +5,16 @@
 # live tag digest every Monday and opens an issue on drift — it never bumps
 # anything (auto-bumping a base image would skip the Release scan gate).
 #
-# Digest parsing uses the manifest pretty-dump `Digest:` line, NOT
+# Digest readback uses the registry-1 API with an explicit keyless
+# auth.docker.io token (2026-09-24, rm-123): the previous anonymous
+# `docker manifest inspect node:24-slim` readback is silently rate-limited by
+# Docker Hub — it returns an empty digest while still exiting 0, which the
+# compare loop then misreports as drift (run 5002272643). The header is parsed
+# for the Docker-Content-Digest line — NOT
 # `docker buildx imagetools inspect --format '{{.Manifest.Digest}}'` — that
 # template is silently ignored for attestation-bearing OCI indexes and prints
 # the full default dump instead (see docs/solutions/, Release workflow fix).
+# An empty readback fails loudly as an infrastructure error, never as drift.
 name: Base image drift check
 
 on:
@@ -22,9 +28,12 @@ permissions:
 
 jobs:
   drift:
-    # 2026-09-22: ubuntu-latest per the hosted-runner CI policy (PR #11/#12)
+    # 2026-09-22: hosted per the hosted-runner CI policy (PR #11/#12)
     # — this file was authored under the retired self-hosted-only policy.
-    runs-on: ubuntu-latest
+    # 2026-09-24 (rm-150): pinned to ubuntu-24.04 ahead of the announced
+    # ubuntu-26 `ubuntu-latest` migration (2026-09-17 GA announcement) so the
+    # runner image this check sees is deliberate, not re-resolved weekly.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -36,8 +45,29 @@ jobs:
         run: |
           set -euo pipefail
 
-          LIVE_DIGEST="$(docker manifest inspect node:24-slim | awk '/^Digest:/{print $2; exit}')"
+          # Keyless anonymous token (rm-123): Docker Hub rate-limits unauthenticated
+          # manifest reads to near-zero, which reads as an EMPTY digest — an infra
+          # failure, not drift. Authenticated readback via the registry API is not
+          # subject to the anonymous pull limits.
+          TOKEN="$(curl -fsSL --get \
+            --data-urlencode 'service=registry.docker.io' \
+            --data-urlencode 'scope=repository:library/node:pull' \
+            https://auth.docker.io/token | jq -r '.token // empty')"
+          LIVE_DIGEST="$(curl -fsSL -o /dev/null -D - \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+            https://registry-1.docker.io/v2/library/node/manifests/24-slim \
+            | tr -d '\r' \
+            | awk 'tolower($1) == "docker-content-digest:" {print $2; exit}')"
           echo "live node:24-slim digest: $LIVE_DIGEST"
+
+          # Empty readback = infrastructure failure (bad token, registry
+          # outage, rate limit). Fail as an explicit error instead of letting
+          # the compare loop below misreport every pin as drifted.
+          if [ -z "$LIVE_DIGEST" ]; then
+            echo '::error::live digest readback EMPTY (token/registry failure) — infrastructure error, not drift; no drift claim is made'
+            exit 1
+          fi
 
           PINNED="$(grep -oE 'sha256:[0-9a-f]{64}' Dockerfile | sort -u)"
           if [ -z "$PINNED" ]; then

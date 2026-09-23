@@ -262,7 +262,7 @@ env:
 jobs:
   fro-bot:
     name: Fro Bot
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # 2026-09-19: this repo has no FRO_BOT_PAT secret configured, so the job's
     # token input is empty and every scheduled run fails at input validation
     # ("Input required and not supplied: token"). Skip scheduled runs until the
