@@ -584,7 +584,7 @@ describe('enumerateRepos — installation_id flows correctly', () => {
         {id: 10, account: 'org-a'},
         {id: 20, account: 'org-b'},
       ]),
-      mintInstallationToken: vi.fn().mockResolvedValue('ghs_fake_token'),
+      mintInstallationToken: vi.fn().mockResolvedValue({token: 'ghs_fake_token', expiresAt: null}),
       listInstallationRepos: vi.fn()
         .mockResolvedValueOnce([repoA])
         .mockResolvedValueOnce([repoB]),
@@ -613,7 +613,7 @@ describe('enumerateRepos — installation_id flows correctly', () => {
         {id: 10, account: 'org-a'},
         {id: 20, account: 'org-b'},
       ]),
-      mintInstallationToken: vi.fn().mockResolvedValue('ghs_fake_token'),
+      mintInstallationToken: vi.fn().mockResolvedValue({token: 'ghs_fake_token', expiresAt: null}),
       listInstallationRepos: vi.fn()
         .mockResolvedValueOnce([sharedRepo]) // install 10 sees it first
         .mockResolvedValueOnce([sharedRepo]), // install 20 also sees it

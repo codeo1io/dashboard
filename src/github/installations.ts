@@ -108,12 +108,13 @@ export interface InstallationsClient {
   readonly listInstallations: () => Promise<readonly InstallationRecord[]>
   /**
    * Mint a read-only installation token for the given installation ID.
-   * Returns the raw token string. NEVER log this value.
+   * Returns the token together with its GitHub-reported expiry (`null` when
+   * the mint result carries no expiry). NEVER log the token value.
    */
   readonly mintInstallationToken: (
     installationId: number,
     permissions: Record<string, 'read'>,
-  ) => Promise<string>
+  ) => Promise<MintedToken>
   /**
    * List all repos accessible to the given installation token.
    * Returns records without installation_id — enumerateRepos attaches it.
@@ -124,6 +125,12 @@ export interface InstallationsClient {
 // ---------------------------------------------------------------------------
 // In-memory token cache
 // ---------------------------------------------------------------------------
+
+/** A minted installation token plus its reported expiry (null when unknown). */
+export interface MintedToken {
+  readonly token: string
+  readonly expiresAt: Date | null
+}
 
 interface CachedToken {
   readonly token: string
@@ -162,7 +169,7 @@ function setCachedToken(installationId: number, token: string, expiresAt: Date |
  */
 export async function mintReadOnlyToken(
   installationId: number,
-  mintFn: (installationId: number, permissions: Record<string, 'read'>) => Promise<string>,
+  mintFn: (installationId: number, permissions: Record<string, 'read'>) => Promise<MintedToken>,
 ): Promise<string> {
   // Check cache first
   const cached = getCachedToken(installationId)
@@ -170,10 +177,12 @@ export async function mintReadOnlyToken(
 
   // Try full permissions first
   try {
-    const token = await mintFn(installationId, FULL_READ_PERMISSIONS)
-    // Cache with a default expiry (we don't have expiry info from the injected fn)
-    setCachedToken(installationId, token, null)
-    return token
+    const minted = await mintFn(installationId, FULL_READ_PERMISSIONS)
+    // Cache until the mint-reported expiry (rm-154: the seam previously
+    // discarded expiresAt, forcing every cache entry onto the 55-min default —
+    // tokens minted with a shorter TTL would be reused past their real expiry).
+    setCachedToken(installationId, minted.token, minted.expiresAt)
+    return minted.token
   } catch (fullError) {
     logger.warning('Failed to mint token with optional scopes; retrying with core scopes only', {
       installationId,
@@ -182,9 +191,9 @@ export async function mintReadOnlyToken(
   }
 
   // Retry with core-only permissions
-  const token = await mintFn(installationId, CORE_READ_PERMISSIONS)
-  setCachedToken(installationId, token, null)
-  return token
+  const minted = await mintFn(installationId, CORE_READ_PERMISSIONS)
+  setCachedToken(installationId, minted.token, minted.expiresAt)
+  return minted.token
 }
 
 /**

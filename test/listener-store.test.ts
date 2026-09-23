@@ -35,9 +35,9 @@ describe('listener store', () => {
     expect(unreadCount).toBe(1)
   })
 
-  it('dedupe: two inserts same (source,dedupeKey) upsert to one row, id preserved, reset to unread', () => {
+  it('dedupe: two inserts same (source,dedupeKey) upsert to one row, id preserved, read state preserved (rm-154)', () => {
     const first = store.insert(makeMessage({dedupeKey: 'deploy-health-2026-07-11', title: 'First'}))
-    store.ack(first.id)
+    expect(store.ack(first.id).acked).toBe(true)
 
     const second = store.insert(
       makeMessage({dedupeKey: 'deploy-health-2026-07-11', title: 'Second', body: 'updated body content here'}),
@@ -45,11 +45,22 @@ describe('listener store', () => {
 
     expect(second.id).toBe(first.id)
 
-    const {messages} = store.list({})
+    const {messages, unreadCount} = store.list({})
     expect(messages).toHaveLength(1)
     expect(messages[0]?.title).toBe('Second')
     expect(messages[0]?.body).toBe('updated body content here')
+    // rm-154: a replayed webhook refreshes content but must NEVER re-unread a
+    // message the operator already acked — ingest dedupe is idempotent on the
+    // read state too.
+    expect(messages[0]?.read).toBe(true)
+    expect(unreadCount).toBe(0)
+  })
+
+  it('a first-seen dedupe insert is still unread (regression guard for rm-154)', () => {
+    store.insert(makeMessage({dedupeKey: 'fresh-delivery'}))
+    const {messages, unreadCount} = store.list({})
     expect(messages[0]?.read).toBe(false)
+    expect(unreadCount).toBe(1)
   })
 
   it('different dedupeKey or source creates a separate row', () => {
