@@ -125,15 +125,19 @@ env:
     detail for an LLM agent to act on later (see AGENT NOTES).
 
     DEPENDENCY OWNERSHIP
-    Renovate owns routine dependency and version bumps. Change dependency
-    versions only to remediate a confirmed critical/high security advisory or to
-    repair an existing security-update PR. Never open a non-security version-bump
-    PR and never batch unrelated dependency changes into a security fix.
+    Dependabot owns routine dependency and version bumps on this fork (weekly
+    grouped PRs per .github/dependabot.yml; first window opened 2026-09-19).
+    Renovate does not run here — its workflow was retired during CI migration
+    and its config deleted 2026-09-22. Change dependency
+    versions only to remediate a confirmed critical/high security advisory or
+    to repair an existing security-update PR. Never open a non-security
+    version-bump PR and never batch unrelated dependency changes into a
+    security fix.
 
     TRUSTED AUTHORS
     Only repair a PR branch authored by the repository owner/a collaborator with
-    write access, or an approved automation bot (renovate[bot], dependabot[bot],
-    fro-bot). If author trust cannot be established, skip the PR and log it under
+    write access, or an approved automation bot (dependabot[bot], fro-bot). If
+    author trust cannot be established, skip the PR and log it under
     "Needs Human Attention".
 
     CATEGORIES (work in order)
@@ -330,7 +334,7 @@ jobs:
       - name: Run Fro Bot
         if: github.event_name != 'schedule' || env.HAS_FRO_BOT_PAT == 'true'
         id: fro-bot-agent
-        uses: fro-bot/agent@b711f08e4049ff0add1ec06859743b2dcb7764ce # v0.114.0
+        uses: fro-bot/agent@dd5b53439608e481fbbf20382b79d046f1fe9cbe # v0.114.1
         env:
           OPENCODE_PROMPT_ARTIFACT: 'true'
           TASK_PROMPT: >-
