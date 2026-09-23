@@ -6,6 +6,7 @@ import {Buffer} from 'node:buffer'
 import {createHmac} from 'node:crypto'
 import {beforeEach, describe, expect, it} from 'vitest'
 import {createListenerStore} from '../src/listener/store.ts'
+import {deriveAckCsrfToken} from '../src/routes/listener.ts'
 import {buildDashboardApp} from '../src/server.ts'
 import {SessionManager} from '../src/session.ts'
 
@@ -47,6 +48,13 @@ async function buildTestApp(opts: {listenerStore?: ListenerStore; listenerIngest
 function sessionCookieHeader(): string {
   const sm = new SessionManager(TEST_KEY)
   return `session=${sm.sign('octocat')}`
+}
+
+function ackHeaders(now: number = Date.now()): Record<string, string> {
+  return {
+    cookie: sessionCookieHeader(),
+    'x-csrf-token': deriveAckCsrfToken({cookieKey: TEST_KEY, operatorLogin: 'octocat'}, now),
+  }
 }
 
 describe('operator listener channel routes', () => {
@@ -242,7 +250,7 @@ describe('operator listener channel routes', () => {
     expect(json.unreadCount).toBe(0)
   })
 
-  it('POST ack with session → 202; ack unknown id → 404', async () => {
+  it('POST ack with session + CSRF token → 202; ack unknown id → 404', async () => {
     const app = await buildTestApp({listenerStore: store, listenerIngestKey: INGEST_KEY})
     const ingestRes = await app.request('/api/listener/ingest', {
       method: 'POST',
@@ -253,18 +261,18 @@ describe('operator listener channel routes', () => {
 
     const ackRes = await app.request(`/api/listener/messages/${id}/ack`, {
       method: 'POST',
-      headers: {cookie: sessionCookieHeader()},
+      headers: ackHeaders(),
     })
     expect(ackRes.status).toBe(202)
 
     const notFoundRes = await app.request('/api/listener/messages/does-not-exist/ack', {
       method: 'POST',
-      headers: {cookie: sessionCookieHeader()},
+      headers: ackHeaders(),
     })
     expect(notFoundRes.status).toBe(404)
   })
 
-  it('POST ack-all with session → 202', async () => {
+  it('POST ack-all with session + CSRF token → 202', async () => {
     const app = await buildTestApp({listenerStore: store, listenerIngestKey: INGEST_KEY})
     await app.request('/api/listener/ingest', {
       method: 'POST',
@@ -274,7 +282,7 @@ describe('operator listener channel routes', () => {
 
     const res = await app.request('/api/listener/ack-all', {
       method: 'POST',
-      headers: {cookie: sessionCookieHeader()},
+      headers: ackHeaders(),
     })
     expect(res.status).toBe(202)
     const json = (await res.json()) as {acked: number}
@@ -285,6 +293,80 @@ describe('operator listener channel routes', () => {
     const app = await buildTestApp({listenerStore: store, listenerIngestKey: INGEST_KEY})
     const res = await app.request('/api/listener/ack-all', {method: 'POST'})
     expect([401, 302, 303]).toContain(res.status)
+  })
+
+  // ---------------------------------------------------------------------------
+  // ack CSRF (rm-115) — the session-authenticated mutations require a
+  // listener-ack CSRF token fetched from GET /api/listener/csrf.
+  // ---------------------------------------------------------------------------
+
+  it('GET /api/listener/csrf with session → 200 + token; without session → denied', async () => {
+    const app = await buildTestApp({listenerStore: store, listenerIngestKey: INGEST_KEY})
+
+    const authedRes = await app.request('/api/listener/csrf', {
+      headers: {cookie: sessionCookieHeader()},
+    })
+    expect(authedRes.status).toBe(200)
+    const json = (await authedRes.json()) as {csrfToken: string}
+    expect(typeof json.csrfToken).toBe('string')
+    expect(json.csrfToken.length).toBe(32)
+    expect(json.csrfToken).toBe(deriveAckCsrfToken({cookieKey: TEST_KEY, operatorLogin: 'octocat'}))
+
+    const anonRes = await app.request('/api/listener/csrf')
+    expect([401, 302, 303]).toContain(anonRes.status)
+  })
+
+  it('POST ack with session but NO x-csrf-token header → 403', async () => {
+    const app = await buildTestApp({listenerStore: store, listenerIngestKey: INGEST_KEY})
+    const res = await app.request('/api/listener/ack-all', {
+      method: 'POST',
+      headers: {cookie: sessionCookieHeader()},
+    })
+    expect(res.status).toBe(403)
+    const json = (await res.json()) as {error: string}
+    expect(json.error).toBe('csrf missing')
+  })
+
+  it('POST ack with a WRONG token → 403 (token bound to another operator)', async () => {
+    const app = await buildTestApp({listenerStore: store, listenerIngestKey: INGEST_KEY})
+    const res = await app.request('/api/listener/ack-all', {
+      method: 'POST',
+      headers: {
+        cookie: sessionCookieHeader(),
+        'x-csrf-token': deriveAckCsrfToken({cookieKey: TEST_KEY, operatorLogin: 'someone-else'}),
+      },
+    })
+    expect(res.status).toBe(403)
+    const json = (await res.json()) as {error: string}
+    expect(json.error).toBe('csrf invalid')
+  })
+
+  it('POST ack with a previous-window token → 202 (one window of clock skew)', async () => {
+    const app = await buildTestApp({listenerStore: store, listenerIngestKey: INGEST_KEY})
+    await app.request('/api/listener/ingest', {
+      method: 'POST',
+      headers: ingestHeaders(VALID_BODY),
+      body: VALID_BODY,
+    })
+
+    const res = await app.request('/api/listener/ack-all', {
+      method: 'POST',
+      headers: ackHeaders(Date.now() - 60 * 60 * 1000),
+    })
+    expect(res.status).toBe(202)
+  })
+
+  it('router built WITHOUT ackCsrf config fails closed: mutations 403, token endpoint 503', async () => {
+    // Standalone router (no server.ts wiring) — proves the fail-closed default:
+    // CSRF is structural, not an optional feature of the mount site.
+    const {buildListenerRouter} = await import('../src/routes/listener.ts')
+    const router = buildListenerRouter({store, ingestKey: null, ackCsrf: null})
+
+    const ackRes = await router.request('/ack-all', {method: 'POST'})
+    expect(ackRes.status).toBe(403)
+
+    const csrfRes = await router.request('/csrf')
+    expect(csrfRes.status).toBe(503)
   })
 
   it('when no ingest key is configured, POST /api/listener/ingest → 404', async () => {
