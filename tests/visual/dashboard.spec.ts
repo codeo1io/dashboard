@@ -6,6 +6,14 @@ import AxeBuilder from '@axe-core/playwright'
  * (synthetic operator data via /__fixture/operator; no live gateway/GitHub).
  *
  * Screenshots: full-page baselines under tests/visual/__screenshots__.
+ *
+ * Baseline provenance (rm-142): all three dark baselines are regenerated
+ * inside the same pinned container image the visual job runs in —
+ * mcr.microsoft.com/playwright:v1.63.0-noble (digest sha256:eff16c30…,
+ * 2026-09-22) — so baseline capture and comparison share one deterministic
+ * render environment. Regen procedure: delete the baseline PNGs, then run
+ * `pnpm exec playwright test --update-snapshots` inside that image (the
+ * container block in .github/workflows/visual.yaml documents the same).
  * Axe: fails only on `critical`/`serious` impact violations (moderate/minor are
  * logged for visibility). Any pre-existing fixture-page violations are scoped
  * or disabled inline with a justification — see `axeCommon()` below.

@@ -31,6 +31,21 @@ jobs:
   visual:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Deterministic render environment (rm-142): the pinned Playwright image
+    # bundles the chromium build that matches the @playwright/test 1.63.0 pin,
+    # so baselines render identically across runner generations. The rolling
+    # ubuntu-latest + runtime `playwright install` mix already reddened this
+    # gate once (run 35678222963, cloud font stack vs workstation-captured
+    # baselines). No runtime browser-install step belongs below: browsers live
+    # at /ms-playwright inside the image (PLAYWRIGHT_BROWSERS_PATH preset).
+    # Digest-pinned (not just tag-pinned): a mutable tag can be re-pushed
+    # under the same version, silently changing the render environment and
+    # invalidating baselines — the digest makes the compare environment
+    # bit-identical forever. Dependabot (docker ecosystem) owns bumping the
+    # tag+digest pair together; on landing, regenerate all baselines in the
+    # new image (see the provenance spec in the rm-142 acceptance).
+    container:
+      image: mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -44,8 +59,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install Playwright chromium
-        run: pnpm exec playwright install chromium --with-deps
+      # Chromium ships with the container image (see the container block above) —
+      # the old `pnpm exec playwright install chromium --with-deps` step is
+      # deliberately absent: installing on top of the pinned image would
+      # reintroduce exactly the environment drift this job exists to prevent.
 
       - name: Run visual-regression + axe suite
         run: >

@@ -20,6 +20,9 @@ Read-only Fro Bot monitoring dashboard. Surfaces live cross-repo status (open PR
 failing checks, open issues, security alerts) for Fro Bot's collaborator repos and Agent App
 installations, plus an authenticated single-operator control surface. Installs as a PWA.
 
+Security posture: the repo carries its own [OpenSSF Scorecard](https://securityscorecards.dev/viewer/?uri=github.com/codeo1io/dashboard)
+and names every by-design deviation in [docs/runbooks/security-posture.md](docs/runbooks/security-posture.md).
+
 ### Stack
 
 - **Server** — [Hono](https://hono.dev) + `@hono/node-server` on Node 24 native TypeScript
