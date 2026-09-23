@@ -110,6 +110,10 @@ export interface AggregatorSnapshot {
   readonly driftCount: number
   /** When the snapshot was last successfully refreshed (ms since epoch) */
   readonly refreshedAt: number | null
+  /** Wall-clock duration (ms) of the last completed refresh attempt (null before the first attempt finishes) (rm-156) */
+  readonly refreshDurationMs: number | null
+  /** True when the last refresh attempt exceeded the watchdog ceiling — data is being served but the walk is degraded (rm-156) */
+  readonly refreshDegraded: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +261,8 @@ export interface AggregatorDeps {
   readonly setIntervalFn?: (fn: () => void, ms: number) => ReturnType<typeof setInterval>
   /** Injectable clearInterval (defaults to global clearInterval) */
   readonly clearIntervalFn?: (id: ReturnType<typeof setInterval>) => void
+  /** Watchdog ceiling (ms) — a refresh attempt running longer than this marks the snapshot degraded (rm-156). Test-injectable. */
+  readonly watchdogCeilingMs?: number
   /**
    * Optional: resolve the installation ID for a repo by owner/name.
    * Used for metadata-only public repos that have no installation_id from the
@@ -292,6 +298,15 @@ interface WorkingSetEntry {
  * sites (safeRepoLogIdentity / safeRepoErrorContext) so the two can never drift.
  */
 const DISCOVERED_CHANNEL = 'discovered'
+
+/**
+ * Refresh watchdog ceiling (rm-156): a refresh attempt that runs longer than
+ * this marks the snapshot `refreshDegraded` so clients can see the walk is
+ * degraded even while last-good data is served. Per-request HTTP calls are
+ * bounded by GITHUB_HTTP_TIMEOUT_MS (app-client.ts); this ceiling bounds the
+ * whole serial walk (default 90s ≈ six hung per-request timeouts).
+ */
+export const REFRESH_WATCHDOG_CEILING_MS = 90_000
 
 /** A repo is known-public only if it came from the metadata public set. */
 function isKnownPublic(discoveryChannel: string): boolean {
@@ -602,6 +617,7 @@ export function createAggregator(
 ) {
   const {graphqlQueryForInstallation} = deps
   const now = deps.now ?? (() => Date.now())
+  const watchdogCeilingMs = deps.watchdogCeilingMs ?? REFRESH_WATCHDOG_CEILING_MS
   const setIntervalFn = deps.setIntervalFn ?? ((fn, ms) => setInterval(fn, ms))
   const clearIntervalFn = deps.clearIntervalFn ?? (id => clearInterval(id))
 
@@ -626,6 +642,16 @@ export function createAggregator(
    * a fresh union. We serve last-good cache + staleBanner, or empty on cold start.
    */
   async function runRefresh(): Promise<void> {
+    const refreshStartedAt = now()
+
+    /** Stamp watchdog fields onto a snapshot before storing it (rm-156). */
+    const finishSnapshot = (
+      snapshot: Omit<AggregatorSnapshot, 'refreshDurationMs' | 'refreshDegraded'>,
+    ): AggregatorSnapshot => {
+      const refreshDurationMs = now() - refreshStartedAt
+      return {...snapshot, refreshDurationMs, refreshDegraded: refreshDurationMs > watchdogCeilingMs}
+    }
+
     // 1. Read metadata + denylist FIRST
     const metadataResult = await deps.readMetadata(metadataReader)
 
@@ -637,10 +663,10 @@ export function createAggregator(
 
       if (lastGoodSnapshot === null) {
         // Cold start with no cache — serve empty with banner
-        lastGoodSnapshot = {repos: [], staleBanner: true, driftCount: 0, refreshedAt: null}
+        lastGoodSnapshot = finishSnapshot({repos: [], staleBanner: true, driftCount: 0, refreshedAt: null})
       } else {
         // Serve last-good with staleBanner
-        lastGoodSnapshot = {...lastGoodSnapshot, staleBanner: true}
+        lastGoodSnapshot = finishSnapshot({...lastGoodSnapshot, staleBanner: true})
       }
       return
     }
@@ -705,7 +731,7 @@ export function createAggregator(
 
     if (workingSet.length === 0) {
       // staleBanner=true if enumeration failed (data is incomplete — install repos missing)
-      lastGoodSnapshot = {repos: [], staleBanner: enumerationFailed, driftCount, refreshedAt: now()}
+      lastGoodSnapshot = finishSnapshot({repos: [], staleBanner: enumerationFailed, driftCount, refreshedAt: now()})
       return
     }
 
@@ -744,7 +770,7 @@ export function createAggregator(
     // staleBanner=true if enumeration failed — data is incomplete (install repos missing).
     // We still show metadata publicRepos (they are public and safe), but the operator
     // must know the installation channel data is absent.
-    lastGoodSnapshot = {repos: sorted, staleBanner: enumerationFailed, driftCount, refreshedAt: now()}
+    lastGoodSnapshot = finishSnapshot({repos: sorted, staleBanner: enumerationFailed, driftCount, refreshedAt: now()})
 
     logger.info('Aggregator refresh complete', {
       repoCount: sorted.length,
@@ -776,7 +802,7 @@ export function createAggregator(
    */
   function getSnapshot(): AggregatorSnapshot {
     if (lastGoodSnapshot === null) {
-      return {repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}
+      return {repos: [], staleBanner: false, driftCount: 0, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}
     }
     return lastGoodSnapshot
   }

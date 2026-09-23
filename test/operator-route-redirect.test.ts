@@ -56,7 +56,7 @@ async function buildArcticApp(operatorUiEnabled: boolean) {
     cookieKey: TEST_KEY,
     oauthClient: makeFakeOAuthClient(),
     fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
     operatorUiEnabled,
   })
 }
@@ -108,7 +108,7 @@ async function buildGatewayApp(client: OperatorClient) {
     cookieKey: TEST_KEY,
     oauthClient: makeFakeOAuthClient(),
     fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
     operatorUiEnabled: false,
     gatewayOperatorSessionEnabled: true,
     gatewayOperatorOrigin: 'https://dashboard.fro.bot',

@@ -1,4 +1,4 @@
-import {render, screen, waitFor} from '@testing-library/react'
+import {render, screen, waitFor, act} from '@testing-library/react'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import App from './App.tsx'
 
@@ -122,6 +122,67 @@ describe('App', () => {
     // but it must be mounted so the SW registration hook runs.
     // We verify AppShell is present (which always mounts ReloadPrompt).
     expect(screen.getByTestId('app-shell')).toBeInTheDocument()
+  })
+  // rm-155/rm-158: unread-poll hygiene — surface failures once, keep polling,
+  // badge follows the count, and hidden tabs pause the poll.
+  describe('unread poll hygiene (rm-155/rm-158)', () => {
+    function stubBadgeApis() {
+      const setAppBadge = vi.fn().mockResolvedValue(undefined)
+      const clearAppBadge = vi.fn().mockResolvedValue(undefined)
+      Object.defineProperty(Navigator.prototype, 'setAppBadge', {value: setAppBadge, configurable: true})
+      Object.defineProperty(Navigator.prototype, 'clearAppBadge', {value: clearAppBadge, configurable: true})
+      return {setAppBadge, clearAppBadge}
+    }
+
+    function stubHidden(hidden: boolean) {
+      Object.defineProperty(document, 'hidden', {value: hidden, configurable: true, writable: true})
+      Object.defineProperty(document, 'visibilityState', {value: hidden ? 'hidden' : 'visible', configurable: true, writable: true})
+    }
+
+    it('sets the app badge from the unread count and clears it at zero', async () => {
+      const {setAppBadge, clearAppBadge} = stubBadgeApis()
+      const listenerApi = await import('./api/listener.ts')
+      const spy = vi.mocked(listenerApi.fetchListenerMessages)
+      spy.mockResolvedValue({ok: true, data: {messages: [], unreadCount: 3}})
+
+      render(<App />)
+      await waitFor(() => expect(setAppBadge).toHaveBeenCalledWith(3))
+
+      spy.mockResolvedValue({ok: true, data: {messages: [], unreadCount: 0}})
+      stubHidden(false)
+      act(() => { window.dispatchEvent(new Event('focus')) })
+      await waitFor(() => expect(clearAppBadge).toHaveBeenCalled())
+    })
+
+    it('surfaces the unread poll failure once and recovers silently', async () => {
+      stubBadgeApis()
+      const listenerApi = await import('./api/listener.ts')
+      const spy = vi.mocked(listenerApi.fetchListenerMessages)
+      spy.mockResolvedValue({ok: false, reason: 'network'})
+
+      render(<App />)
+      await waitFor(() => expect(screen.getByTestId('unread-poll-error')).toBeInTheDocument())
+
+      // Recovery: a successful poll clears the error without any user action.
+      spy.mockResolvedValue({ok: true, data: {messages: [], unreadCount: 0}})
+      act(() => { window.dispatchEvent(new Event('focus')) })
+      await waitFor(() => expect(screen.queryByTestId('unread-poll-error')).not.toBeInTheDocument())
+    })
+
+    it('skips polling while the tab is hidden and resumes on visibilitychange', async () => {
+      stubBadgeApis()
+      stubHidden(true)
+      const listenerApi = await import('./api/listener.ts')
+      const spy = vi.mocked(listenerApi.fetchListenerMessages)
+
+      render(<App />)
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)) })
+      expect(spy.mock.calls.length).toBe(0)
+
+      stubHidden(false)
+      act(() => { document.dispatchEvent(new Event('visibilitychange')) })
+      await waitFor(() => expect(spy.mock.calls.length).toBeGreaterThanOrEqual(1))
+    })
   })
 })
 
