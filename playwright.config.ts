@@ -21,7 +21,7 @@
  *   listener channel mounts (empty state) instead of failing on /data perms.
  *
  * Screenshot baselines live in tests/visual/__screenshots__ (committed).
- * This suite is intentionally NOT a required check (see .github/workflows/visual.yml).
+ * This suite is intentionally NOT a required check (see .github/workflows/visual.yaml).
  */
 import process from 'node:process'
 import {defineConfig, devices} from '@playwright/test'

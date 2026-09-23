@@ -42,7 +42,8 @@ export interface DashboardAppClient {
   readonly octokit: InstanceType<typeof ThrottledOctokit>
   /**
    * Mint a read-only installation token for the given installation ID.
-   * Returns the raw token string. NEVER log this value.
+   * Returns the token plus its GitHub-reported expiry (null when the mint
+   * result carries none). NEVER log the token value.
    *
    * The permissions type is `Record<string, 'read'>` — write/admin scopes are
    * unrepresentable at the dashboard boundary by construction.
@@ -50,7 +51,7 @@ export interface DashboardAppClient {
   readonly mintInstallationToken: (
     installationId: number,
     permissions: Record<string, 'read'>,
-  ) => Promise<string>
+  ) => Promise<{token: string; expiresAt: Date | null}>
 }
 
 // ---------------------------------------------------------------------------
@@ -84,13 +85,17 @@ export function createDashboardAppClient(options: AppClientOptions): DashboardAp
   async function mintInstallationToken(
     installationId: number,
     permissions: Record<string, 'read'>,
-  ): Promise<string> {
+  ): Promise<{token: string; expiresAt: Date | null}> {
     const installAuth = createAppAuth({appId, privateKey, installationId})
     const result = await installAuth({
       type: 'installation',
       permissions,
     })
-    return result.token
+    // The auth result carries expiresAt as an ISO string; parse defensively
+    // (rm-154: this expiry was previously discarded, forcing the token cache
+    // onto its 55-minute default regardless of the real token TTL).
+    const expiresAt = typeof result.expiresAt === 'string' ? new Date(result.expiresAt) : null
+    return {token: result.token, expiresAt}
   }
 
   return {octokit, mintInstallationToken}
