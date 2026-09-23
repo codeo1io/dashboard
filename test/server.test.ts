@@ -568,6 +568,74 @@ describe('GET /privacy — public policy route', () => {
 })
 
 // ---------------------------------------------------------------------------
+// /.well-known/security.txt — RFC 9116 security contact (rm-161)
+//
+// Mirrors the /privacy posture: public in every deployment mode, never a
+// prefix match. Served inline so the response carries no web/dist dependency.
+// ---------------------------------------------------------------------------
+
+describe('GET /.well-known/security.txt — RFC 9116 security contact', () => {
+  const TEST_KEY = Buffer.from('testkey-ABCDEFGHIJKLMNOPQRSTUV12', 'utf8') // 32 bytes
+  const TEST_OPERATOR = 'octocat'
+
+  it('returns 200 + text/plain with Contact and Expires fields (unauthenticated)', async () => {
+    const app = await buildDashboardApp()
+    const res = await app.request('/.well-known/security.txt')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('text/plain')
+
+    const body = await res.text()
+    expect(body).toMatch(/^Contact: https:\/\/github\.com\/codeo1io\/dashboard\//m)
+    expect(body).toMatch(/^Expires: /m)
+    expect(body).toMatch(/^Preferred-Languages: en$/m)
+  })
+
+  it('Expires is a valid RFC 9116 timestamp in the future, at most a year out', async () => {
+    const app = await buildDashboardApp()
+    const res = await app.request('/.well-known/security.txt')
+    const body = await res.text()
+    const match = body.match(/^Expires: (.+)$/m)
+    expect(match).not.toBeNull()
+
+    const expiresValue = match?.[1]
+    expect(typeof expiresValue).toBe('string')
+    const expires = Date.parse(expiresValue ?? '')
+    expect(Number.isNaN(expires)).toBe(false)
+    const now = Date.now()
+    expect(expires).toBeGreaterThan(now)
+    expect(expires).toBeLessThanOrEqual(now + 366 * 24 * 60 * 60 * 1000)
+  })
+
+  it('returns the identical body for an authenticated operator session', async () => {
+    const anonApp = await buildDashboardApp()
+    const anonRes = await anonApp.request('/.well-known/security.txt')
+    const anonBody = await anonRes.text()
+
+    const authedApp = await buildDashboardApp({operatorLogin: TEST_OPERATOR, cookieKey: TEST_KEY})
+    const sm = new SessionManager(TEST_KEY)
+    const cookieValue = sm.sign(TEST_OPERATOR)
+    const authedRes = await authedApp.request('/.well-known/security.txt', {
+      headers: {cookie: `session=${cookieValue}`},
+    })
+    expect(authedRes.status).toBe(200)
+    expect(await authedRes.text()).toBe(anonBody)
+  })
+
+  it('a /.well-known sibling sharing the prefix is still auth-gated (not a prefix match)', async () => {
+    const app = await buildDashboardApp()
+    const res = await app.request('/.well-known/security-policy-internal')
+    expect(res.status).not.toBe(200)
+    expect(res.status).toBe(401)
+  })
+
+  it('stays public when the operator-UI and fixture-harness flags are off', async () => {
+    const app = await buildDashboardApp({operatorUiEnabled: false, fixtureHarnessEnabled: false})
+    const res = await app.request('/.well-known/security.txt')
+    expect(res.status).toBe(200)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // P1 Regression tests: enumerateRepos installation_id flow
 // ---------------------------------------------------------------------------
 

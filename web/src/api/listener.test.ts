@@ -111,26 +111,51 @@ describe('listener API', () => {
   })
 
   describe('ackListenerMessage', () => {
-    it('returns true on 202', async () => {
+    it('returns true on 202, submitting the fetched CSRF token header', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ csrfToken: 'tok-abc' }), { status: 200 }))
       vi.mocked(fetch).mockResolvedValueOnce(new Response('{}', { status: 202 }))
       const res = await ackListenerMessage('test-id')
       expect(res).toBe(true)
-      expect(fetch).toHaveBeenCalledWith('/api/listener/messages/test-id/ack', expect.objectContaining({ method: 'POST' }))
+      expect(fetch).toHaveBeenCalledWith('/api/listener/csrf', expect.objectContaining({ method: 'GET' }))
+      expect(fetch).toHaveBeenCalledWith('/api/listener/messages/test-id/ack', expect.objectContaining({
+        method: 'POST',
+        headers: { 'x-csrf-token': 'tok-abc' },
+      }))
     })
 
     it('returns false on other statuses', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ csrfToken: 'tok-abc' }), { status: 200 }))
       vi.mocked(fetch).mockResolvedValueOnce(new Response('{}', { status: 404 }))
       const res = await ackListenerMessage('test-id')
       expect(res).toBe(false)
     })
+
+    it('fails closed without posting when the CSRF token fetch fails', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(new Response('error', { status: 500 }))
+      const res = await ackListenerMessage('test-id')
+      expect(res).toBe(false)
+      expect(fetch).toHaveBeenCalledTimes(1)
+    })
+
+    it('fails closed on a contract-drift CSRF payload', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ bad: 'shape' }), { status: 200 }))
+      const res = await ackListenerMessage('test-id')
+      expect(res).toBe(false)
+      expect(fetch).toHaveBeenCalledTimes(1)
+    })
   })
 
   describe('ackAllListenerMessages', () => {
-    it('returns true on 202', async () => {
+    it('returns true on 202, submitting the fetched CSRF token header', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ csrfToken: 'tok-xyz' }), { status: 200 }))
       vi.mocked(fetch).mockResolvedValueOnce(new Response('{}', { status: 202 }))
       const res = await ackAllListenerMessages()
       expect(res).toBe(true)
-      expect(fetch).toHaveBeenCalledWith('/api/listener/ack-all', expect.objectContaining({ method: 'POST' }))
+      expect(fetch).toHaveBeenCalledWith('/api/listener/csrf', expect.objectContaining({ method: 'GET' }))
+      expect(fetch).toHaveBeenCalledWith('/api/listener/ack-all', expect.objectContaining({
+        method: 'POST',
+        headers: { 'x-csrf-token': 'tok-xyz' },
+      }))
     })
   })
 })
