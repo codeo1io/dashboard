@@ -29,7 +29,7 @@ concurrency:
 
 jobs:
   visual:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # Deterministic render environment (rm-142): the pinned Playwright image
     # bundles the chromium build that matches the @playwright/test 1.63.0 pin,

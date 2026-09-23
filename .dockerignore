@@ -1,0 +1,21 @@
+# Docker build context (rm-152): allowlist — only what the Dockerfile COPYs
+# from the context ever enters the daemon. The tree (394MB node_modules, .git,
+# engine state, docs, tests) shrank local context from ~358MB to ~3MB.
+#
+# COPY set (Dockerfile:9,15,29,46,49,50,53): package.json, pnpm-lock.yaml,
+# pnpm-workspace.yaml, src/, public/, web/ — keep this list in sync with any
+# new COPY. Later rules override earlier ones, so the web/dist and
+# web/node_modules re-ignores must stay AFTER the !web re-includes: the builder
+# rebuilds web/dist itself and must not bake a stale local one.
+*
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!src
+!src/**
+!public
+!public/**
+!web
+!web/**
+web/dist
+web/node_modules
