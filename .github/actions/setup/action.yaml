@@ -2,17 +2,14 @@
 name: Setup
 description: Setup build environment and install dependencies
 
-inputs:
-  cache-version:
-    default: '0'
-    description: Cache version. Can be incremented to invalidate the cache.
-    required: false
-
-# 2026-09-19: the pnpm-store actions/cache round-trip was removed. This action
-# runs on a self-hosted runner whose pnpm store persists on local disk across
-# jobs, so the GitHub cache-service upload/download was pure overhead (each of
-# the six jobs in Main paid it; measured 1-3 min per job of cache restore+save
-# against a store that was already warm on disk).
+# 2026-09-22 (rm-145): CI runs on GitHub-hosted ubuntu-latest runners (moved
+# off the single self-hosted runner by PR #11/#12), so nothing persists on
+# disk between jobs and every job cold-installed the full dependency tree
+# (Main jobs measured 5-84s at aa9937f, run 35688534671). The setup-node
+# managed pnpm-store cache below restores the warm-store economics the
+# self-hosted era got for free. It keys on the pnpm-lockfile hash + node
+# version, so there is no manual cache-version input to maintain — bump the
+# lockfile (or the node pin) and the cache keys rotate themselves.
 runs:
   steps:
     - name: Install pnpm
@@ -22,6 +19,7 @@ runs:
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version: '24'
+        cache: pnpm
 
     - name: Install dependencies
       run: pnpm install --frozen-lockfile

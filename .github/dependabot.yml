@@ -9,9 +9,11 @@
 #
 # Conventions honored:
 # - GitHub Actions updates preserve the repo's commit-SHA pinning style.
-# - Grouped updates: the fork has ONE self-hosted runner, so every PR's checks
-#   serialize behind everything else — one grouped PR per ecosystem per week
-#   instead of a PR per dependency.
+# - Grouped updates: one grouped PR per ecosystem per week instead of a PR
+#   per dependency, keeping review load proportional to the weekly cadence.
+#   (The original 2026-09 rationale — every PR's checks serializing behind
+#   the fork's single self-hosted runner — became historical when PR #11/#12
+#   moved CI to GitHub-hosted runners on 2026-09-22.)
 # - Weekly cadence, low open-PR cap, to keep the runner queue shallow.
 version: 2
 updates:
