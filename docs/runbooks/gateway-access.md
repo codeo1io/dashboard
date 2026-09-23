@@ -73,6 +73,36 @@ Restore from backup instead.
 
 ---
 
+## Trusted proxies — `GATEWAY_OPERATOR_TRUSTED_PROXIES`
+
+Since `fro-bot/agent` v0.114.1 (PR #1651), the gateway's operator surfaces
+behind a reverse proxy **require** the `GATEWAY_OPERATOR_TRUSTED_PROXIES`
+environment variable to be set. Operator sign-in and rate limits are keyed on
+the resolved client address; when the request arrives through the proxy, the
+gateway must be told the proxy is trusted before it will use the forwarded
+client address (`X-Forwarded-For`) instead of the proxy's own address.
+
+- **Without it** every proxied operator shares the proxy's address: rate-limit
+  buckets and OAuth attempt caps collide across operators, and sign-in can
+  fail in ways that look like credential problems.
+- **Symptom signature**: operator auth `start` events with neither a success
+  nor a failure following (see *Reading logs effectively* below), or rate-limit
+  rejections keyed on a single address during normal single-operator traffic.
+- **Set it on the droplet** — the gateway runs from `/opt/gateway/deploy` via
+  docker compose; the variable belongs in that deployment's environment, not
+  in this dashboard repo. List the proxy address/CIDR explicitly (never
+  `0.0.0.0/0` — that re-opens address spoofing).
+- **Scope**: this dashboard proxies its `/operator/*` surface to the gateway,
+  so the requirement applies whenever the dashboard (or any other reverse
+  proxy) sits in front of it. Direct (non-proxied) access is unaffected.
+- **Verify** after a change: `docker compose restart gateway` (see above), then
+  exercise operator sign-in and confirm the audit log's `auth.callback.success`
+  events follow their `auth.start` events, and that two different clients get
+  separate rate-limit buckets (check the resolved address in the log line, not
+  the proxy's).
+
+---
+
 ## Traps
 
 **Wrong remote user.** `ssh "$GATEWAY_HOST"` uses your local username. With several keys in your

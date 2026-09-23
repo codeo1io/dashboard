@@ -19,6 +19,7 @@ import {
   MetadataTransportError,
   MetadataUnavailableError,
   readRepoMetadata,
+  redactedDatabaseIdIn,
 } from '../src/github/metadata.ts'
 import {isErr, isOk} from '../src/result.ts'
 
@@ -978,5 +979,189 @@ describe('security — token-shaped secrets redacted in error log paths', () => 
       warnSpy.mockRestore()
       errorSpy.mockRestore()
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-152 — private flag normalization (quoted strings must not fail open)
+// ---------------------------------------------------------------------------
+
+describe('rm-152 — private flag normalization', () => {
+  const baseEntry = (overrides: Record<string, string> = {}) => `
+  - owner: some-org
+    name: secret-repo
+    added: 2026-01-01
+    onboarding_status: pending
+    last_survey_at: null
+    last_survey_status: null
+    has_fro_bot_workflow: false
+    has_renovate: false
+    discovery_channel: collab
+    next_survey_eligible_at: null
+    node_id: R_kgDOQuotedPrivate
+${Object.entries(overrides).map(([k, v]) => `    ${k}: ${v}`).join('\n')}
+`
+
+  const yamlWith = (entryYaml: string) => `
+version: 1
+repos:
+${entryYaml}
+`
+
+  it("private: 'true' (YAML-quoted) is classified private — denylisted, never publicRepos", async () => {
+    const result = await readRepoMetadata(makeReader(yamlWith(baseEntry({private: "'true'"}))))
+
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+    expect(result.data.redactedNodeIds.has('R_kgDOQuotedPrivate')).toBe(true)
+    expect(result.data.publicRepos).toHaveLength(0)
+  })
+
+  it("private: 'True ' (quoted, mixed case, padded) is still classified private", async () => {
+    const result = await readRepoMetadata(makeReader(yamlWith(baseEntry({private: "'True '"}))))
+
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+    expect(result.data.redactedNodeIds.has('R_kgDOQuotedPrivate')).toBe(true)
+    expect(result.data.publicRepos).toHaveLength(0)
+  })
+
+  it("private: 'false' (quoted falsy) with a complete public shape stays public", async () => {
+    const result = await readRepoMetadata(makeReader(yamlWith(`
+  - owner: some-org
+    name: openly-quoted
+    added: 2026-01-01
+    onboarding_status: pending
+    last_survey_at: null
+    last_survey_status: null
+    has_fro_bot_workflow: false
+    has_renovate: false
+    discovery_channel: collab
+    next_survey_eligible_at: null
+    private: 'false'
+    node_id: R_kgDOQuotedPublic
+`)))
+
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+    expect(result.data.publicRepos).toHaveLength(1)
+    expect(result.data.publicRepos[0]?.node_id).toBe('R_kgDOQuotedPublic')
+    expect(result.data.redactedNodeIds.size).toBe(0)
+  })
+
+  it("private: 'yes' (unrecognized value) is skipped as malformed — never silently public", async () => {
+    const result = await readRepoMetadata(makeReader(yamlWith(baseEntry({private: "'yes'"}))))
+
+    // The entry has a complete public shape, so the pre-fix behavior leaked it
+    // into publicRepos. It must now land in NEITHER set.
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+    expect(result.data.publicRepos).toHaveLength(0)
+    expect(result.data.redactedNodeIds.size).toBe(0)
+  })
+
+  it('private: 1 (numeric junk) with a complete public shape is skipped as malformed', async () => {
+    const result = await readRepoMetadata(makeReader(yamlWith(baseEntry({private: '1'}))))
+
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+    expect(result.data.publicRepos).toHaveLength(0)
+    expect(result.data.redactedNodeIds.size).toBe(0)
+  })
+
+  it('fail-closed still applies: quoted-true entry with no usable deny key returns err', async () => {
+    const result = await readRepoMetadata(makeReader(yamlWith(`
+  - owner: '[REDACTED]'
+    name: quoted-no-key
+    added: 2026-01-01
+    onboarding_status: pending
+    last_survey_at: null
+    last_survey_status: null
+    has_fro_bot_workflow: false
+    has_renovate: false
+    discovery_channel: collab
+    next_survey_eligible_at: null
+    private: 'true'
+`)))
+
+    expect(isErr(result)).toBe(true)
+    if (!isErr(result)) return
+    expect(result.error).toBeInstanceOf(MetadataSchemaError)
+    expect(result.error.message).not.toContain('quoted-no-key')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-151 — int64-safe denylist membership helper
+// ---------------------------------------------------------------------------
+
+describe('rm-151 — redactedDatabaseIdIn', () => {
+  const denylist = new Set([186915400, 42])
+
+  it('number members match directly', () => {
+    expect(redactedDatabaseIdIn(denylist, 186915400)).toBe(true)
+    expect(redactedDatabaseIdIn(denylist, 999)).toBe(false)
+  })
+
+  it('bigint-widened ids normalize to number and match (SameValueZero never would)', () => {
+    expect(redactedDatabaseIdIn(denylist, 186915400n)).toBe(true)
+    expect(redactedDatabaseIdIn(denylist, 42n)).toBe(true)
+    expect(redactedDatabaseIdIn(denylist, 999n)).toBe(false)
+  })
+
+  it('null/undefined ids never match', () => {
+    expect(redactedDatabaseIdIn(denylist, null)).toBe(false)
+    expect(redactedDatabaseIdIn(denylist, undefined)).toBe(false)
+  })
+
+  it('a bigint beyond the denylist never throws and never matches', () => {
+    expect(redactedDatabaseIdIn(denylist, 2n ** 63n)).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-154 — databaseId coverage accounting for the partial-protection warning
+// ---------------------------------------------------------------------------
+
+describe('rm-154 — redactedEntriesMissingDatabaseId accounting', () => {
+  const redactedEntry = (extra: Record<string, string> = {}) => `
+  - owner: '[REDACTED]'
+    name: R_kgDOSomePrivate
+    added: 2026-01-01
+    onboarding_status: pending
+    last_survey_at: null
+    last_survey_status: null
+    has_fro_bot_workflow: false
+    has_renovate: false
+    discovery_channel: collab
+    next_survey_eligible_at: null
+    private: true
+    node_id: R_kgDOSomePrivate
+${Object.entries(extra).map(([k, v]) => `    ${k}: ${v}`).join('\n')}
+`
+
+  it('an R_ node_id WITH an explicit database_id is fully covered (missing count 0)', async () => {
+    const result = await readRepoMetadata(makeReader(`
+version: 1
+repos:
+${redactedEntry({database_id: '186915400'})}
+`))
+
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+    expect(result.data.redactedEntriesMissingDatabaseId).toBe(0)
+    expect(result.data.redactedDatabaseIds.has(186915400)).toBe(true)
+  })
+
+  it('an R_ node_id WITHOUT any database_id counts as uncovered', async () => {
+    const result = await readRepoMetadata(makeReader(`
+version: 1
+repos:
+${redactedEntry()}
+`))
+
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+    expect(result.data.redactedEntriesMissingDatabaseId).toBe(1)
   })
 })

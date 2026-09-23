@@ -89,9 +89,12 @@ export function createListenerStore(dbPath: string): ListenerStore {
     INSERT INTO messages (id, source, kind, severity, title, body, links, dedupe_key, created_at, received_at, read_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
   `)
+  // rm-154: a dedupe-key re-delivery refreshes the message CONTENT but
+  // deliberately does NOT touch read_at — a replayed webhook must never
+  // re-unread a message the operator already acked (ingest idempotency).
   const updateByIdStmt = db.prepare(`
     UPDATE messages
-    SET kind = ?, severity = ?, title = ?, body = ?, links = ?, created_at = ?, received_at = ?, read_at = NULL
+    SET kind = ?, severity = ?, title = ?, body = ?, links = ?, created_at = ?, received_at = ?
     WHERE id = ?
   `)
   const selectAllStmt = db.prepare('SELECT * FROM messages ORDER BY received_at DESC LIMIT ?')
