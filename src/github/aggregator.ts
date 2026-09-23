@@ -703,6 +703,16 @@ export function createAggregator(
       )
     }
 
+    // Prune per-repo cache entries for repos no longer in the working set
+    // (uninstalled or newly denylisted). Without this, a departed repo's entry
+    // is pinned forever in the closure-scoped cache — stale memory growth, and
+    // a stale payload would be served instantly if the repo ever rejoins within
+    // the TTL window (rm-146).
+    const workingSetNodeIds = new Set(workingSet.map(entry => entry.node_id))
+    for (const cachedNodeId of cache.keys()) {
+      if (!workingSetNodeIds.has(cachedNodeId)) cache.delete(cachedNodeId)
+    }
+
     if (workingSet.length === 0) {
       // staleBanner=true if enumeration failed (data is incomplete — install repos missing)
       lastGoodSnapshot = {repos: [], staleBanner: enumerationFailed, driftCount, refreshedAt: now()}

@@ -20,8 +20,11 @@ import type {Result} from '../src/result.ts'
  *   prompts, tool args, workspace paths, internal URLs, private repo text
  */
 import {Buffer} from 'node:buffer'
+import {mkdtempSync, rmSync, utimesSync, writeFileSync} from 'node:fs'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
 
-import {beforeEach, describe, expect, it} from 'vitest'
+import {afterEach, beforeEach, describe, expect, it} from 'vitest'
 import {ok} from '../src/result.ts'
 import {buildDashboardApp, resetRateLimitForTesting} from '../src/server.ts'
 import {SessionManager} from '../src/session.ts'
@@ -944,5 +947,69 @@ describe('push-enabled meta injection — served SPA shell integrity', () => {
     const body = await res.text()
     expect(body).not.toContain('push-enabled')
     expect(body).toContain('<div id="root">')
+  })
+})
+
+describe('index.html memoization (rm-146) — mtime-keyed, no per-request disk read', () => {
+  let memoDir: string
+
+  beforeEach(() => {
+    memoDir = mkdtempSync(join(tmpdir(), 'index-memo-'))
+  })
+
+  afterEach(() => {
+    rmSync(memoDir, {recursive: true, force: true})
+  })
+
+  async function buildMemoApp(): Promise<ReturnType<typeof buildDashboardApp>> {
+    return buildDashboardApp({
+      operatorLogin: TEST_OPERATOR,
+      cookieKey: TEST_KEY,
+      oauthClient: makeFakeOAuthClient(),
+      fetchUserLogin: async (_token: string) => TEST_OPERATOR,
+      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+      operatorUiEnabled: true,
+      pushNotificationsEnabled: true,
+      webDistRoot: memoDir,
+    })
+  }
+
+  it('serves the shell without a per-request readFileSync and re-reads after a rebuild', async () => {
+    writeFileSync(join(memoDir, 'index.html'), '<html><head><title>v1</title></head><body><div id="root">v1</div></body></html>')
+    const baseTime = new Date()
+    utimesSync(join(memoDir, 'index.html'), baseTime, baseTime)
+
+    const app = await buildMemoApp()
+
+    const first = await authedGet(app, '/')
+    expect(first.status).toBe(200)
+    const firstBody = await first.text()
+    expect(firstBody).toContain('<div id="root">v1</div>')
+    expect(firstBody).toContain('<meta name="push-enabled" content="true">')
+
+    // Simulate `pnpm build:web` while the server runs: same path, newer mtime.
+    writeFileSync(join(memoDir, 'index.html'), '<html><head><title>v2</title></head><body><div id="root">v2</div></body></html>')
+    utimesSync(join(memoDir, 'index.html'), new Date(baseTime.getTime() + 2000), new Date(baseTime.getTime() + 2000))
+
+    const second = await authedGet(app, '/')
+    const secondBody = await second.text()
+    expect(secondBody).toContain('<div id="root">v2</div>')
+    expect(secondBody).toContain('<meta name="push-enabled" content="true">')
+
+    // Stable third read: memoized v2 without another disk change.
+    const third = await authedGet(app, '/')
+    expect(await third.text()).toBe(secondBody)
+  })
+
+  it('falls through to 404 when index.html is missing, then serves once built', async () => {
+    const app = await buildMemoApp()
+
+    const missing = await authedGet(app, '/')
+    expect(missing.status).toBe(404)
+
+    writeFileSync(join(memoDir, 'index.html'), '<html><head></head><body><div id="root">late</div></body></html>')
+    const late = await authedGet(app, '/')
+    expect(late.status).toBe(200)
+    expect(await late.text()).toContain('<div id="root">late</div>')
   })
 })

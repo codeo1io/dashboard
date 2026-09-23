@@ -2,8 +2,11 @@
  * Typed Gateway operator API client contract.
  *
  * @contract-churn-prone — several gateway operator routes have not landed yet.
- * This module defines the mocked boundary contract only; no live /operator/* calls
- * are made until the gateway operator surface is ready and verified.
+ * This module is the live typed client for the gateway /operator/* surface:
+ * src/server.ts's gateway-auth middleware calls getCurrentSession() against the
+ * real gateway on every operator request via the injectable fetch transport.
+ * SSE transport is NOT used server-side — the server wires a throwing noop
+ * stub (see src/server.ts); only browser consumers provide an EventSource.
  *
  * Security invariants:
  * - All paths must be relative (/operator/*); absolute URLs are rejected.

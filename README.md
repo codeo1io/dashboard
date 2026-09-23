@@ -45,7 +45,8 @@ client changes). The test suite rebuilds the client automatically via `pretest`.
 ### Endpoints
 
 - `GET /` — operator PWA shell (requires a valid operator session).
-- `GET /api/healthz` — public health check; returns `{ ok, lastFetch, rateLimit }`.
+- `GET /api/healthz` — public health check; returns `{ ok: true, lastFetch: null, rateLimit: null }`
+  (`lastFetch`/`rateLimit` are placeholder nulls pending rm-116 — real values are not wired yet).
 - `GET /api/monitoring` — minimized monitoring snapshot for the client (authenticated).
 - `GET /api/status` — full internal snapshot (authenticated).
 - `GET /auth/login` · `GET /auth/callback` · `POST /auth/logout` — GitHub OAuth session flow.

@@ -1745,3 +1745,91 @@ describe('aggregator — check-suite cap (rm-110)', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// rm-146: per-repo cache eviction for departed repos
+// ---------------------------------------------------------------------------
+
+describe('aggregator — cache eviction (rm-146): departed repos do not pin cache entries', () => {
+  it('prunes entries for repos that leave the working set, so a repo that rejoins is re-fetched, not served stale', async () => {
+    const repoA = makeRepo({node_id: 'NODE_A', owner: 'org', name: 'repo-a'})
+    const repoB = makeRepo({node_id: 'NODE_B', owner: 'org', name: 'repo-b'})
+    const publicRepos = [
+      makePublicRepo({node_id: 'NODE_A', owner: 'org', name: 'repo-a'}),
+      makePublicRepo({node_id: 'NODE_B', owner: 'org', name: 'repo-b'}),
+    ]
+
+    // Simulate: tick 1 sees A+B; tick 2 sees A only (B uninstalled AND dropped
+    // from metadata); tick 3 sees A+B again (B restored). All within the 60s
+    // cache TTL (the injected now() advances 1ms per call), so the ONLY way
+    // tick 3 re-fetches B is if tick 2's refresh evicted B's cache entry.
+    const seesB = {now: true}
+    const visibleRepos = () => (seesB.now ? [repoA, repoB] : [repoA])
+    const visiblePublic = () => publicRepos.filter(p => p.node_id !== 'NODE_B')
+    const graphql = vi.fn().mockImplementation(async (_installId: unknown, _query: unknown, vars: unknown) => {
+      return makeGraphqlResponse({rollupState: (vars as {name: string}).name === 'repo-b' ? 'FAILURE' : 'SUCCESS'})
+    })
+    const deps = makeDeps({
+      enumerate: vi.fn().mockImplementation(async () => makeEnumerateResult(visibleRepos())),
+      readMetadata: vi.fn().mockImplementation(async () => ok(makeMetadataResult({publicRepos: visiblePublic()}))),
+      graphqlQueryForInstallation: graphql,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+
+    // Tick 1: both fetched fresh.
+    await agg.refresh()
+    expect(agg.getSnapshot().repos.map(r => r.name).sort()).toEqual(['repo-a', 'repo-b'])
+    expect(graphql).toHaveBeenCalledTimes(2)
+
+    // Tick 2: B is gone from the working set — its cache entry must be evicted.
+    seesB.now = false
+    await agg.refresh()
+    expect(agg.getSnapshot().repos.map(r => r.name)).toEqual(['repo-a'])
+    expect(graphql).toHaveBeenCalledTimes(2) // A still within TTL; B pruned, not fetched
+
+    // Tick 3: B rejoins within TTL. Without eviction B would be served from its
+    // stale cached payload (zero fetches); with eviction B is re-fetched.
+    seesB.now = true
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+    expect(snap.repos.map(r => r.name).sort()).toEqual(['repo-a', 'repo-b'])
+    expect(graphql).toHaveBeenCalledTimes(3)
+    // The eviction proof is the call count above (3 ≠ 2: B was re-fetched,
+    // not cache-served). The red assertion below does NOT distinguish — the
+    // mock returns FAILURE for repo-b unconditionally, so B's tick-1 cached
+    // payload would also be red; it only confirms the re-fetched payload is
+    // plumbed through live.
+    expect(snap.repos.find(r => r.name === 'repo-b')?.status.rollupState).toBe('red')
+  })
+
+  it('clears the cache entirely when the working set becomes empty', async () => {
+    const repoA = makeRepo({node_id: 'NODE_A', owner: 'org', name: 'repo-a'})
+    const seesA = {now: true}
+    const graphql = vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'}))
+    const deps = makeDeps({
+      enumerate: vi.fn().mockImplementation(async () => makeEnumerateResult(seesA.now ? [repoA] : [])),
+      readMetadata: vi.fn().mockImplementation(async () => ok(makeMetadataResult({
+        publicRepos: seesA.now
+          ? [makePublicRepo({node_id: 'NODE_A', owner: 'org', name: 'repo-a'})]
+          : [],
+      }))),
+      graphqlQueryForInstallation: graphql,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    expect(graphql).toHaveBeenCalledTimes(1)
+
+    // Working set empty (e.g. app uninstalled everywhere): cache fully pruned.
+    seesA.now = false
+    await agg.refresh()
+    expect(agg.getSnapshot().repos).toEqual([])
+
+    // Repo rejoins within TTL → must be re-fetched (cache was cleared).
+    seesA.now = true
+    await agg.refresh()
+    expect(agg.getSnapshot().repos).toHaveLength(1)
+    expect(graphql).toHaveBeenCalledTimes(2)
+  })
+})

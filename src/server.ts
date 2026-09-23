@@ -19,7 +19,7 @@ import type {AggregatorSnapshot} from './github/aggregator.ts'
 import type {MetadataReader} from './github/metadata.ts'
 import type {ListenerStore} from './listener/store.ts'
 import {Buffer} from 'node:buffer'
-import {existsSync, readFileSync} from 'node:fs'
+import {existsSync, readFileSync, statSync} from 'node:fs'
 import {join} from 'node:path'
 import process from 'node:process'
 import {serve} from '@hono/node-server'
@@ -747,10 +747,35 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     // response leaves a stale Content-Length that truncates the injected HTML
     // and drops the <div id="root"> mount target. Reading + injecting + c.html()
     // recomputes the length. Fall through to serveStatic if the file is missing.
+    //
+    // The file read is memoized by (mtimeMs, size) so the per-request handler
+    // does no synchronous file-content read in the steady state (rm-146) — one
+    // statSync metadata check per request remains. A rebuild that
+    // changes either stamp re-reads the file, so `pnpm build:web` while the
+    // server is running still serves the new bundle on the next request.
     const indexHtmlPath = join(webDistRoot, 'index.html')
-    app.get('/', async c => {
-      if (!existsSync(indexHtmlPath)) return c.notFound()
+    let indexHtmlMemo: {mtimeMs: number; size: number; html: string} | null = null
+    const readIndexHtmlMemoized = (): string | null => {
+      let stat: ReturnType<typeof statSync>
+      try {
+        stat = statSync(indexHtmlPath)
+      } catch {
+        indexHtmlMemo = null
+        // Missing OR unstat-able (e.g. EACCES) → 404. Drift vs old code: an
+        // existing-but-unreadable file used to throw 500 via readFileSync;
+        // grouping it with the missing path is accepted (pathological path).
+        return null
+      }
+      if (indexHtmlMemo !== null && indexHtmlMemo.mtimeMs === stat.mtimeMs && indexHtmlMemo.size === stat.size) {
+        return indexHtmlMemo.html
+      }
       const html = readFileSync(indexHtmlPath, 'utf8')
+      indexHtmlMemo = {mtimeMs: stat.mtimeMs, size: stat.size, html}
+      return html
+    }
+    app.get('/', async c => {
+      const html = readIndexHtmlMemoized()
+      if (html === null) return c.notFound()
       const injected = html.includes('<meta name="push-enabled"')
         ? html
         : html.replace('</head>', '<meta name="push-enabled" content="true"></head>')
@@ -1094,7 +1119,7 @@ async function createDashboardServer(): Promise<ServerType> {
       port,
     },
     info => {
-      console.warn(`Dashboard listening on http://${info.address}:${info.port}`)
+      logger.info(`Dashboard listening on http://${info.address}:${info.port}`)
     },
   )
 

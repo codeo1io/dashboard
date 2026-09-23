@@ -226,6 +226,60 @@
 - signals: .github/dependabot.yml (landed as rm-102) carries no ignore rules while majors are already out — vitest 5.0.1 versus repo 4.1.11 (vitest 4 removed the `basic` reporter and its CLI rejects jest-style flags: documented constraints), TypeScript 7.0.2 versus repo 6.0.3 on the erasableSyntaxOnly pipeline, pnpm 12.5.1 versus the Dockerfile-pinned 11.27.0; the first grouped major PR from the 2026-09-19 window is expected around 2026-10-03 and will red the suite unbidden; npm view probes 2026-09-21: hono 4.13.8, playwright 1.63.0, tailwind 4.3.3, vite 8.3.0 all current within the majors in use — no minor drift (2026-09-21 compound, run 87e3c32f implement c6a1806d: IMPLEMENTED in .github/dependabot.yml — npm ignore for vitest+typescript majors, re-evaluation comment dated 2026-10-21; pnpm majors are NOT a dependabot surface (no ecosystem covers the corepack/Dockerfile pin) so that pin is guarded by rm-131’s 11.27.0 assertions instead)
 - acceptance: dependabot.yml ignore rules for major-version updates of vitest, typescript and pnpm with a dated re-evaluation comment naming the migration owner; a docs decision note recording which majors are deliberately deferred and why; minor and patch updates stay open
 - evidence: dependabot.yml diff plus actionlint container validation (repo convention); gh api on the config returns the ignore list; first weekly PRs after the change propose minor/patch only
+
+<!-- cycle-7 extension (2026-09-23, conductor run 8f151ba4ac474aeab0e71a6ec90321ed; sources: assess attempt 242fac43 (17 findings), research attempt 28c14fe2 (12 evidence-backed candidates), roadmap attempt 2ea24d0b. Every candidate was re-measured against origin/main 64024a5 before id assignment: assess F1 (visual.yaml tag pins) is ALREADY FIXED on main via 37f28e7 — absorbed at merge, no id; research C7 folds into the rm-137 truthing signal below. New ids start at rm-142 because origin/main already carries rm-134..rm-141 from run 2ae7d10a cycle-6. Existing items preserved verbatim.) -->
+
+### Setup-composite pnpm cache on ephemeral CI runners
+- id: `rm-142` | track: performance | priority: 56.0 | status: in-progress (implemented 2026-09-23, cycle-7 batch B1, unlanded)
+- signals: `.github/actions/setup/action.yaml:11-17` on origin/main still justifies skipping the pnpm cache with "runs on a self-hosted runner whose pnpm store persists across runs" — false since d73fbe7/aa9937f moved every job to ephemeral ubuntu-latest; measured 2026-09-23: Main run 27610828410 `test` job "Install dependencies" step = 5m0s of an 11m15s total across 6 jobs; visual.yaml already sets `cache: pnpm` locally (bypassing the composite), proving the intended pattern
+- acceptance: the composite sets `cache: pnpm` alongside the existing node-version wiring and the stale rationale comment is replaced; every workflow that installs dependencies goes through the composite (or carries an explicit local cache); actionlint + `pnpm lint` + full suite green
+- evidence: composite diff plus one post-merge Main run with warm Actions cache showing the install step under 1m (record a cold-cache run too if observed; cold stays registry-bound by design)
+
+### Direct test coverage for src/secrets.ts hardening branches
+- id: `rm-143` | track: reliability | priority: 54.0 | status: in-progress (implemented 2026-09-23, cycle-7 batch B2, unlanded)
+- signals: `src/secrets.ts` implements symlink-follow refusal (O_NOFOLLOW), the ELOOP guard, FIFO rejection, a size cap, and trailing-newline strip — but no test file exercises it (`git ls-tree origin/main test/` has no secrets test; grep over test/ = 0 hits) despite it being the load-bearing file for critical invariant #3 (never commit or leak the App private key / cookie key)
+- acceptance: new `test/secrets.test.ts` covering each branch — symlink refusal, ELOOP guard, FIFO rejection, oversize abort, trailing-newline strip, happy path — with ZERO executable changes to `src/secrets.ts`
+- evidence: `git diff src/secrets.ts` empty; suite count grows by exactly the added cases; targeted `pnpm exec vitest run --pool=forks --maxWorkers=1 test/secrets.test.ts` green
+
+### Latest-release column (per-repo releases datum)
+- id: `rm-144` | track: capability | priority: 52.0 | status: candidate (added 2026-09-23, cycle-7)
+- signals: research introspection (gh api graphql __type Repository) confirms `releases` is a readable field and `contents:read` is already minted (app-client.ts permission map) — zero permission change needed; the niche's reference tools treat release freshness as first-class (gh-dash 24.2k★, release-argus 5.3k★, both measured live 2026-09-23); origin/main aggregator query has no releases field
+- acceptance: per-repo GraphQL query gains `releases(first: 1)` (name/tag/publishedAt/isLatest), DTO + UI column + README/API docs updated; denylist fail-closed and negative-cache semantics unchanged
+- evidence: aggregator query diff + snapshot fixture deltas + aggregator suite green; one UI screenshot in the cycle batch doc
+
+### Operator-contract lifecycle reconciliation with agent v0.114.x
+- id: `rm-145` | track: reliability | priority: 50.0 | status: candidate (added 2026-09-23, cycle-7)
+- signals: gateway runtime is fro-bot/agent v0.114.1 (origin/main #517) and its v0.114.0 release introduces background-task subagents on gateway surfaces plus "incomplete invocation" lifecycle-evidence semantics (gh api repos/fro-bot/agent/releases/tags/v0.114.0), but `src/gateway/operator-contract.ts` on origin/main contains no lifecycle/incomplete vocabulary — the dashboard's run-state model predates the gateway's
+- acceptance: operator-contract run-state model reconciled against v0.107.1..v0.114.1 semantics (incomplete invocation, background subagent sessions); unknown or unversioned states render fail-closed with no invented transitions; contract types carry a version marker
+- evidence: contract diff + a delta note vs the v0.78.0 reference recorded with the rm-147 refresh or in the cycle batch doc
+
+### Server runtime hygiene batch
+- id: `rm-146` | track: reliability | priority: 46.0 | status: in-progress (implemented 2026-09-23, cycle-7 batch B3, unlanded)
+- signals: push-enabled `/` handler does a synchronous `readFileSync` + regex replace per request (`src/server.ts:753` on main); the startup banner uses `console.warn` instead of the logger (`src/server.ts:1097`); the aggregator cache Map never evicts entries for repos that leave the working set (unbounded growth, tiny footprint); `src/gateway/operator-client.ts:4-6` header doc claims "no live /operator/* calls" contradicting the live per-request session call (assess F4)
+- acceptance: `/` HTML read memoized (startup render or mtime-keyed) with behavior locked by a test; `console.warn` → logger; cache eviction on working-set exit; stale operator-client header corrected — no other behavior change
+- evidence: diffs + full suite green + a one-line timing note for the `/` handler before/after
+
+### Cloned dependency source refresh (fro-bot__agent v0.78.0 → v0.114.1)
+- id: `rm-147` | track: reliability | priority: 44.0 | status: candidate (added 2026-09-23, cycle-7)
+- signals: AGENTS.md:83 pins the cloned reference at v0.78.0 while the runtime pin on origin/main is v0.114.1 (#517) — reference and runtime drifted 36 releases; releases are publicly readable (gh api repos/fro-bot/agent/releases → v0.114.1); supersedes the refresh half of rm-120's acceptance (its watch mechanic stays)
+- acceptance: `.slim/clonedeps/repos/fro-bot__agent` refreshed to v0.114.1 (or nearest tag the tooling supports), AGENTS.md pin text updated, short delta note vs v0.78.0 for the mirrored surfaces (gateway OAuth return path, Hono build/serve split, logger/Result primitives)
+- evidence: clone tag + AGENTS.md diff + the delta note (docs/solutions entry or batch doc)
+
+### Deployments column (permission-gated capability)
+- id: `rm-148` | track: capability | priority: 42.0 | status: candidate (added 2026-09-23, cycle-7)
+- signals: `Repository.deployments` verified readable via the same introspection, but deployment states need `deployments:read` added to the minted permission subset — still read-only, yet a mint-map change (app-client.ts) is a governance decision, not a rider
+- acceptance: mint-map diff adds deployments:read with graceful degradation when an installation lacks it (empty column, no error surface); UI column + docs; aggregator suite green
+- evidence: mint-map diff + a degraded-mode test proving zero error surface when the permission is absent
+
+### Riders and dated signals on existing items (cycle-7, 2026-09-23)
+- `rm-112` (degradation semantics) — acceptance EXTENDED with three signals re-measured on origin/main: (1) `repository: null` responses are cached as a FRESH all-zero unknown status (`src/github/aggregator.ts:524` on origin/main — the `repo === null || repo === undefined` branch returning `rollupState: 'unknown'`) so an access revocation presents as a healthy quiet repo; (2) per-installation enumeration failures fail soft with no staleBanner (`src/github/installations.ts:194` rationale comment; the catches at `:203` listInstallations and `:221-237` per-install token mint on origin/main) leaving a silently incomplete snapshot; (3) the in-flight tick skip (`src/github/aggregator.ts:765` `if (refreshing) {` on origin/main; declaration at `:623`) lengthens refresh cadence with no staleness signal of its own. All three must surface a distinguishable degradation marker.
+- `rm-123` (base digest watch) — dated signal: 2026-09-23 live `node:24-slim` index digest is `d8bb36de…` vs the in-tree pin `0e0ff40…` (6th drift event; docker manifest inspect); re-baseline the first-fire-red expectation when base-drift.yaml's weekly cron reaches this branch
+- `rm-133` (TS7/vitest5 deferral) — dated re-measure 2026-09-23: typescript@7.0.2 still peer-blocked by the recorded `<6.1.0` gate; vitest@5.0.1 and jsdom@30.1.1 are npm-latest; eslint 10.11.0 absorbs free via upstream #516 at merge; deferral unchanged, next re-eval stays 2026-10-21 or the next vitest 4.2.x patch
+- `rm-137` (action pin discipline, on origin/main) — TRUTHING: the pins-half payload has landed on origin/main (SHA pins observed live in visual.yaml via merge 37f28e7); the item's status line predates the landing — relocate to Completed at the next batch commit
+- `rm-141` (bounded-concurrency fleet refresh) — CORRECTED 2026-09-23 (run 8f151ba4 implement, attempt c7c6b3b2): the earlier cycle-7 rider claiming FETCH_CONCURRENCY=6 on origin/main was a mis-attributed grep — `git grep -c FETCH_CONCURRENCY origin/main -- src/github/aggregator.ts` returns 0; main still runs the serial per-repo loop (`aggregator.ts:717` on main). The pool exists ONLY on the stranded local branch `conductor/run-a7ca03039406` (3 refs, certified write-tree per integrate-run history), unlanded. rm-141 therefore stays OPEN: outstanding work is landing/reimplementing the pool, then the determinism check (result assembly must not depend on pool completion order) and a before/after refresh-timing measurement
+- README rider (fold into the next docs pass): origin/main README.md:48 still documents `GET /api/healthz` as returning `{ ok, lastFetch, rateLimit }` while the handler stubs those fields null (`src/routes/api.ts:80`) — NOTE: the README half of this rider is already implemented on the cycle-7 branch (B3), pending landing
+- cycle-7 batch outcome (pre-review, 2026-09-23, run 8f151ba4): B1 rm-142, B2 rm-143, B3 rm-146 implemented on branch `conductor/run-8f151ba4ac47` (tree at 7809df6 + batch, unlanded). Validation: targeted vitest 550/550 over the six suites covering the three changed surfaces; FULL suite `pnpm test` 3133/3133 (root 2055 + web 1078) = prior gate 3115 + exactly the 18 new tests; check-types 0 errors; eslint 0 problems; actionlint exit 0. B4 rm-141 premise falsified (see correction above) — remains open with pool landing/reimplementation outstanding. Review/merge outcomes intentionally not recorded here; the next cycle's assessment carries them forward
+
 ## Completed items
 
 ### Port upstream security fix #481 — global redaction chokepoint
