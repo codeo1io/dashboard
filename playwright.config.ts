@@ -43,6 +43,10 @@ export default defineConfig({
   ],
   use: {
     baseURL,
+    // The visual job runs inside the pinned Playwright container image
+    // (rm-142), and GitHub job containers default to root — chromium refuses
+    // to launch as root without --no-sandbox. Harmless on every other runner.
+    launchOptions: {args: ['--no-sandbox']},
     // Pin locale/timezone so any locale/time-dependent rendering is reproducible.
     locale: 'en-US',
     timezoneId: 'UTC',

@@ -22,6 +22,8 @@ permissions:
 
 jobs:
   drift:
+    # 2026-09-22: ubuntu-latest per the hosted-runner CI policy (PR #11/#12)
+    # — this file was authored under the retired self-hosted-only policy.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -60,25 +62,36 @@ jobs:
             exit 0
           fi
 
-          # Surface the drift as an issue (deduplicated while one is open).
-          gh label create base-image-drift --color BFD4F2 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || true
-          OPEN="$(gh issue list --repo "$GITHUB_REPOSITORY" --label base-image-drift --state open --json number --jq 'length')"
-          if [ "$OPEN" = '0' ]; then
-            gh issue create \
-              --repo "$GITHUB_REPOSITORY" \
-              --label base-image-drift \
-              --title 'Base image drift: Dockerfile pins behind node:24-slim' \
-              --body "The weekly drift check found pinned digests that no longer match the live \`node:24-slim\` tag.
+          # Surface the drift as a tracking issue (deduplicated while one is
+          # open). Best-effort only: issues are DISABLED on this fork
+          # (has_issues=false → the issue API 410s), and under set -euo pipefail
+          # an unguarded gh issue call would exit the step red with a
+          # misleading error. The unconditional exit 1 below is the
+          # authoritative drift signal (rm-123).
+          ISSUES_ENABLED="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.has_issues' 2>/dev/null || echo 'false')"
+          if [ "$ISSUES_ENABLED" = 'true' ]; then
+            # Surface the drift as an issue (deduplicated while one is open).
+            gh label create base-image-drift --color BFD4F2 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || true
+            OPEN="$(gh issue list --repo "$GITHUB_REPOSITORY" --label base-image-drift --state open --json number --jq 'length')"
+            if [ "$OPEN" = '0' ]; then
+              gh issue create \
+                --repo "$GITHUB_REPOSITORY" \
+                --label base-image-drift \
+                --title 'Base image drift: Dockerfile pins behind node:24-slim' \
+                --body "The weekly drift check found pinned digests that no longer match the live \`node:24-slim\` tag.
 
-          Live digest: \`$LIVE_DIGEST\`
-          Pinned digests (from \`Dockerfile\`):
-          \`\`\`
-          $PINNED
-          \`\`\`
+            Live digest: \`$LIVE_DIGEST\`
+            Pinned digests (from \`Dockerfile\`):
+            \`\`\`
+            $PINNED
+            \`\`\`
 
-          Action: re-pin in a PR that goes through the normal Release scan gate. Do not auto-bump." >/dev/null
+            Action: re-pin in a PR that goes through the normal Release scan gate. Do not auto-bump." >/dev/null
+            else
+              echo "open drift issue already exists ($OPEN) — skipping creation"
+            fi
           else
-            echo "open drift issue already exists ($OPEN) — skipping creation"
+            echo '::warning::issues disabled on this repository — drift tracking issue skipped; the red run is the drift signal'
           fi
 
           # Non-zero so the run is visibly red on drift.
