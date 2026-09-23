@@ -44,7 +44,8 @@ view of Fro Bot's cross-repo footprint.
   implementing or debugging in documented areas.
 - Validate workflows with actionlint via the container form (see
   `docs/solutions/workflow-issues/actionlint-pipx-missing-container-form-2026-09-19.md`)
-  — the self-hosted runner has no pipx.
+  — pipx-free on every host (adopted when a self-hosted runner lacked pipx;
+  kept after the d73fbe7/aa9937f ubuntu-latest migration for host-independence).
 - New `.yaml`/`.yml` files must single-quote string values — eslint's `yml` plugin
   enforces `yml/quotes` repo-wide (`pnpm lint`), e.g. `patterns: ['*']` in dependabot groups.
 - `.agents/skills/` is the canonical home for cross-harness agent skills (read by

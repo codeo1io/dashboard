@@ -128,9 +128,11 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
-      # raven-actions/actionlint needs pipx (pyflakes default) which the
-      # self-hosted runner lacks — 'Unable to locate executable file: pipx'
-      # (Main run 35413084207). The container form needs nothing on the host.
+      # raven-actions/actionlint needs pipx (pyflakes default), which the
+      # original self-hosted runner lacked — 'Unable to locate executable file:
+      # pipx' (Main run 35413084207). Main moved to ubuntu-latest in d73fbe7
+      # (PR #11); the container form is kept so validation depends on no host
+      # tooling. The container form needs nothing on the host.
       - name: 🛠 Lint Workflows
         run: >
           docker run --rm -v "$PWD:/repo" -w /repo

@@ -49,7 +49,7 @@ describe('fork exclusion invariants (rm-131)', () => {
     expect(existsSync(resolve(repoRoot, 'wiki-writer'))).toBe(false)
   })
 
-  it('renovate workflow stays removed (self-hosted policy, PR #1)', () => {
+  it('renovate workflow stays removed (deleted under PR #1 policy, kept out)', () => {
     expect(existsSync(resolve(repoRoot, '.github/workflows/renovate.yaml'))).toBe(false)
   })
 

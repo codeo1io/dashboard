@@ -15,8 +15,17 @@
 //   2 = usage/parse error (prints error to stderr)
 //
 // Decision logic:
-//   1. If any changed file matches a "hard release" pattern (src/**, Dockerfile,
-//      .github/workflows/release.yaml, scripts/should-release.ts, tsconfig*.json) => release.
+//   1. If any changed file matches a "hard release" pattern => release. The
+//      corpus is defined once in scripts/release-paths.ts and locked both ways
+//      against release.yaml's on.push.paths filter by test/should-release.test.ts
+//      (file-exact: Dockerfile, pnpm-workspace.yaml, .github/workflows/release.yaml,
+//      scripts/should-release.ts, scripts/compute-release-tag.ts; dir prefixes:
+//      src/, web/, public/; root tsconfig*.json). pnpm-workspace.yaml is hard
+//      because the Dockerfile COPYs it into both image build stages.
+//      .github/actions/setup/** is deliberately NOT hard (reviewed 2026-09-23):
+//      the Release workflow never invokes that composite action (main.yaml and
+//      codeql.yaml do) and it plays no part in the image build, so a change
+//      there cannot alter the shipped image.
 //   2. If package.json is in the changed set, diff the runtime fields
 //      (dependencies, engines, packageManager, overrides, pnpm.overrides,
 //       scripts, type, exports, imports) between base and head.
@@ -37,6 +46,10 @@
 
 import {readFileSync} from 'node:fs'
 import process from 'node:process'
+import {
+  HARD_RELEASE_DIR_PREFIXES,
+  HARD_RELEASE_FILE_PATHS,
+} from './release-paths.ts'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -148,29 +161,25 @@ function loadPkg(path: string, label: string): LoadResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Returns true if the file path matches a "hard release" pattern:
- *   - src/**
- *   - web/**  (SPA source — built into the image by the builder stage)
- *   - public/**  (static assets copied into the image)
+ * Returns true if the file path matches a "hard release" pattern — see
+ * scripts/release-paths.ts (single source of truth, locked against the
+ * release workflow's on.push.paths filter by test/should-release.test.ts):
+ *   - src/** / web/** / public/**  (built or copied into the image)
  *   - Dockerfile
  *   - .github/workflows/release.yaml
  *   - scripts/should-release.ts
  *   - scripts/compute-release-tag.ts
+ *   - pnpm-workspace.yaml
  *   - tsconfig*.json (root-level only, not nested paths)
  */
 function isHardReleasePath(filePath: string): boolean {
-  if (filePath.startsWith('src/') || filePath === 'src') return true
-  // web/** — SPA source is built into the image by the Dockerfile builder stage;
-  // any change to web/ must trigger a new image build and release.
-  if (filePath.startsWith('web/') || filePath === 'web') return true
-  // public/** — static assets (operator browser client, manifest, icons) are
-  // copied into the image (Dockerfile `COPY public/ ./public/`); changes must
-  // trigger a new image build and release.
-  if (filePath.startsWith('public/') || filePath === 'public') return true
-  if (filePath === 'Dockerfile') return true
-  if (filePath === '.github/workflows/release.yaml') return true
-  if (filePath === 'scripts/should-release.ts') return true
-  if (filePath === 'scripts/compute-release-tag.ts') return true
+  if (
+    HARD_RELEASE_DIR_PREFIXES.some(
+      prefix => filePath === prefix || filePath.startsWith(`${prefix}/`),
+    )
+  )
+    return true
+  if (HARD_RELEASE_FILE_PATHS.includes(filePath)) return true
   // tsconfig*.json: root-level only (no path separator in the name)
   if (
     !filePath.includes('/') &&
