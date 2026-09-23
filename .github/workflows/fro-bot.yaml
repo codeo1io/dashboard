@@ -41,6 +41,13 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # The secrets context is not available in job-level if: expressions (Actions
+  # schema; actionlint enforces it), so stage PAT presence here and gate the
+  # scheduled-run path at step level via env, mirroring the HAS_RELEASE_APP
+  # staging in release.yaml. Scheduled runs skip the agent step (with a
+  # warning) until FRO_BOT_PAT exists; manual dispatch with the secret set
+  # still runs.
+  HAS_FRO_BOT_PAT: ${{ secrets.FRO_BOT_PAT != '' }}
   PR_REVIEW_PROMPT: |
     You are a skeptical reviewer for fro-bot/dashboard — a TypeScript Hono
     read-only monitoring dashboard — never a write code path
@@ -259,13 +266,16 @@ jobs:
   fro-bot:
     name: Fro Bot
     runs-on: self-hosted
-    # 2026-09-19: this repo has no FRO_BOT_PAT secret configured, so the job's
-    # token input is empty and every scheduled run fails at input validation
-    # ("Input required and not supplied: token"). Skip scheduled runs until the
-    # secret exists (manual dispatch with the secret set still runs).
+    # 2026-09-19: this repo has no FRO_BOT_PAT secret configured, so the token
+    # input is empty and scheduled runs fail at the agent action input
+    # validation. Scheduled runs are therefore skipped at STEP level: a
+    # job-level if: cannot reference the secrets context (Actions schema;
+    # actionlint rejects the whole workflow file for it). The PAT gate reads
+    # env.HAS_FRO_BOT_PAT, staged from secrets in the workflow-level env
+    # block above; every remaining condition below uses only the github
+    # context, which is legal at this level.
     if: >-
       (
-      (github.event_name != 'schedule' || secrets.FRO_BOT_PAT != '') &&
       (
         github.event.pull_request == null ||
         (
@@ -315,8 +325,17 @@ jobs:
       - name: 📦 Setup
         uses: ./.github/actions/setup
 
+      - name: PAT not provisioned, skipping scheduled run
+        if: github.event_name == 'schedule' && env.HAS_FRO_BOT_PAT != 'true'
+        run: |
+          echo "::warning::FRO_BOT_PAT is not configured on this repository; skipping the scheduled Fro Bot run (manual dispatch with the secret set still runs)."
+
       - name: Run Fro Bot
         id: fro-bot-agent
+        # Scheduled runs need the PAT; skip the agent step when it is not
+        # provisioned (the warn step above fires instead). All other
+        # triggers run the agent regardless of PAT presence.
+        if: github.event_name != 'schedule' || env.HAS_FRO_BOT_PAT == 'true'
         uses: fro-bot/agent@43023e5b9755fe307c03ede1067cc182564d30e3 # v0.113.2
         env:
           OPENCODE_PROMPT_ARTIFACT: 'true'

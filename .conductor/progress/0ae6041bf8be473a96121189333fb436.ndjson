@@ -1,0 +1,2 @@
+{"step":1,"ts":"2026-09-20T03:13:47Z","summary":"Orient: read ROADMAP.md (generator-managed, 2 vendored-broken items); prior batch rm-1xx ID scheme; no ce-* skill triggers roadmap curation","touched":[]}
+{"step":2,"ts":"2026-09-20T03:13:47Z","summary":"ROADMAP rewritten: +rm-112/113/111/110 fixes, +rm-115/116/103/105/107/106/117 candidates, rm-001/002 superseded, completed history; lint exit 0","touched":["ROADMAP.md"]}

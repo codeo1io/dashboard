@@ -1,0 +1,6 @@
+{"step":1,"ts":"2026-09-20T02:38:05Z","summary":"Oriented: HEAD==origin/main 2f3a884; prior-cycle CodeQL/Dockerfile fixes NOT landed","touched":[".conductor/progress/23914d5282124a16a0eb70062c0a2179.ndjson"]}
+{"step":2,"ts":"2026-09-20T02:39:25Z","summary":"Loaded ce-review skill (narrowest match); in-process adversarial lens, no subagent tool","touched":["/mnt/workpool/work/projects/systematic/skills/ce-review/SKILL.md"]}
+{"step":3,"ts":"2026-09-20T02:41:23Z","summary":"CI at tip 2f3a884: Main RED (fro-bot.yaml:266 secrets-in-if + ROADMAP.md:20 bare array), CodeQL RED (fix unlanded)","touched":[".github/workflows/fro-bot.yaml","ROADMAP.md"]}
+{"step":4,"ts":"2026-09-20T02:43:02Z","summary":"CodeQL tip failure == known root cause (typescript/autobuild); fix unlanded. PR#4 merged over red gate","touched":[]}
+{"step":5,"ts":"2026-09-20T02:55:33Z","summary":"Gates at tip: types OK, 3017 tests OK, lint FAIL (ROADMAP.md:20), actionlint FAIL (fro-bot.yaml:266), CodeQL FAIL","touched":[]}
+{"step":6,"ts":"2026-09-20T02:55:33Z","summary":"Source sweep done: auth/session/ingest/aggregator/installations clean; new P2 partial-enum invisibility + P3 dead cache; spool written","touched":[]}

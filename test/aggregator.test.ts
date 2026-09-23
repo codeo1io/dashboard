@@ -73,6 +73,7 @@ function makeEnumerateResult(repos: ReturnType<typeof makeRepo>[]): Result<Enume
 function makeGraphqlResponse(overrides: {
   rollupState?: string
   failingChecks?: number
+  checkSuiteNodes?: {checkRuns: {totalCount: number}}[]
   openPrCount?: number
   openIssueCount?: number
   openAlertCount?: number | null
@@ -84,7 +85,8 @@ function makeGraphqlResponse(overrides: {
         target: {
           statusCheckRollup: overrides.rollupState === undefined ? null : {state: overrides.rollupState},
           checkSuites: {
-            nodes: failingChecks > 0 ? [{checkRuns: {totalCount: failingChecks}}] : [],
+            nodes: overrides.checkSuiteNodes ??
+              (failingChecks > 0 ? [{checkRuns: {totalCount: failingChecks}}] : []),
           },
         },
       },
@@ -276,6 +278,46 @@ describe('aggregator — happy path: attention-first sorting', () => {
     expect(snap.repos).toHaveLength(2)
     expect(snap.repos[0]?.node_id).toBe('NODE_FAILING')
     expect(snap.repos[1]?.node_id).toBe('NODE_HEALTHY')
+  })
+
+  it('counts every failing check suite when a repo has more than 10 suites', async () => {
+    const repo = makeRepo({node_id: 'NODE_MANY', owner: 'org', name: 'many'})
+
+    // 12 suites, each with one failing check run. GitHub truncates checkSuites
+    // nodes at the requested page size, so the query must ask for more than 10
+    // (rm-110) and the reducer must sum every returned node, not just a
+    // first page of 10.
+    const suites = Array.from({length: 12}, () => ({checkRuns: {totalCount: 1}}))
+    const seenQueries: string[] = []
+    const graphqlQueryForInstallation: GraphqlQueryForInstallationFn = vi.fn().mockImplementation(async (_installId, query, vars) => {
+      seenQueries.push(String(query))
+      expect((vars as {name: string}).name).toBe('many')
+      return makeGraphqlResponse({rollupState: 'FAILURE', checkSuiteNodes: suites})
+    })
+
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_MANY', owner: 'org', name: 'many'})],
+      }))),
+      graphqlQueryForInstallation,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos).toHaveLength(1)
+    expect(snap.repos[0]?.status.failingChecks).toBe(12)
+    expect(seenQueries.length).toBeGreaterThan(0)
+    for (const q of seenQueries) {
+      // Guard the pagination fix itself: the primary query (and the no-alerts
+      // fallback variant, which shares the defect class) must both request a
+      // page large enough to cover >10 suites.
+      if (q.includes('checkSuites')) {
+        expect(q).toContain('checkSuites(first: 100)')
+      }
+    }
   })
 
   it('repos with open alerts sort before healthy repos', async () => {

@@ -1,0 +1,2 @@
+{"step":1,"ts":"2026-09-20T03:20:26Z","summary":"Live frame re-measured: tip 2f3a884 unchanged, Main+CodeQL red, Release green fc7b834, no open PRs; lineage= cycle-2","touched":[]}
+{"step":2,"ts":"2026-09-20T03:20:26Z","summary":"Cycle-2 batch written: 13 candidates scored 5-axis; selected rm-112+113+111+rm-110 rider + doc riders; lint exit 0","touched":["docs/prioritization/2026-09-20-cycle-2-batch.md"]}

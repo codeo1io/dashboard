@@ -28,6 +28,18 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install dependencies for autobuild
+        # 2026-09-20: build-mode:none autobuild shells out to package build
+        # scripts and needs node_modules/typescript on disk; the self-hosted
+        # runner checks out clean between runs, so install from the frozen
+        # lockfile BEFORE initializing CodeQL. Posture (b) per PR #1 policy:
+        # self-hosted only — never move this job to hosted runners.
+        run: |
+          # corepack shim resolves pnpm from package.json packageManager
+          # (no hardcoded pin to drift; review 7146da7c P3)
+          corepack enable
+          pnpm install --frozen-lockfile
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
         with:

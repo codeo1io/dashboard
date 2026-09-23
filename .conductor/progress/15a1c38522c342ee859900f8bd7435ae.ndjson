@@ -1,0 +1,11 @@
+{"step":1,"ts":"2026-09-20T00:00:00Z","summary":"Oriented: read ce-work skill + all batch surfaces (fro-bot/codeql/Dockerfile/aggregator/tests)","touched":[]}
+{"step":2,"ts":"2026-09-20T00:00:00Z","summary":"rm-112: fro-bot.yaml secrets-in-job-if -> workflow-env HAS_FRO_BOT_PAT + step gates + warn step","touched":[".github/workflows/fro-bot.yaml"]}
+{"step":3,"ts":"2026-09-20T00:00:00Z","summary":"rm-113: codeql.yaml pnpm frozen install added between checkout and codeql-init (posture b)","touched":[".github/workflows/codeql.yaml"]}
+{"step":4,"ts":"2026-09-20T00:00:00Z","summary":"rm-111: Dockerfile 3 pins -> 0e0ff40 (verified == live registry digest today), libpcre2 patch retired","touched":["Dockerfile"]}
+{"step":5,"ts":"2026-09-20T00:00:00Z","summary":"rm-110: aggregator.ts checkSuites first:10->100 at BOTH query variants (137,174)","touched":["src/github/aggregator.ts"]}
+{"step":6,"ts":"2026-09-20T00:00:00Z","summary":"rm-110 fixture: 12-suite mock override + query-shape assert in aggregator.test.ts","touched":["test/aggregator.test.ts"]}
+{"step":7,"ts":"2026-09-20T00:00:00Z","summary":"rm-111 rider: hono 4.13.8 surgical lockfile swap mirroring upstream (pkg.json untouched, no GC drift)","touched":["pnpm-lock.yaml"]}
+{"step":8,"ts":"2026-09-20T03:40:00Z","summary":"Gates: pnpm install --frozen-lockfile exit 0; actionlint container ALL workflows empty (clean)","touched":[]}
+{"step":9,"ts":"2026-09-20T03:44:00Z","summary":"Lint: fixed operator-linebreak in fixture; pnpm lint exit 0 + pnpm check-types exit 0","touched":["test/aggregator.test.ts"]}
+{"step":10,"ts":"2026-09-20T03:52:00Z","summary":"pnpm test exit 0: 1998 server + 1020 web = 3018; 12-suite fixture verified by name (verbose)","touched":[]}
+{"step":11,"ts":"2026-09-20T03:55:00Z","summary":"Adversarial diff pass on workflows clean; PhaseResult JSON written to spool","touched":["/home/agent/.hermes/conductor-delegate-spool-infra-deploy/delegate/15a1c38522c342ee859900f8bd7435ae.json"]}
