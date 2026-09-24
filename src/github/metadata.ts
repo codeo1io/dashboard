@@ -273,6 +273,7 @@ export async function readRepoMetadata(reader: MetadataReader): Promise<Result<M
   const redactedNodeIds = new Set<string>()
   const redactedDatabaseIds = new Set<number>()
   let skippedMalformedCount = 0
+  let privateCoercedCount = 0
 
   for (const rawEntry of doc.repos) {
     if (rawEntry === null || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) {
@@ -283,7 +284,17 @@ export async function readRepoMetadata(reader: MetadataReader): Promise<Result<M
     }
 
     const entry = rawEntry as RawRepoEntry
-    const isPrivate = entry.private === true
+    // rm-179 (fail-closed private flag): a YAML `private: "true"` (string),
+    // `private: 1`, `private: null`, or any other non-false value previously
+    // passed `=== true` as PUBLIC — the entry would flow toward the
+    // aggregator's working set and past the redaction boundary. Every value
+    // that is not strictly `false` or absent is classified private;
+    // coerced values are counted and surfaced in the summary log below.
+    let isPrivate = entry.private === true
+    if (!isPrivate && entry.private !== undefined && entry.private !== false) {
+      isPrivate = true
+      privateCoercedCount++
+    }
     const isRedactedOwner = entry.owner === REDACTED_OWNER
 
     if (isPrivate || isRedactedOwner) {
@@ -352,6 +363,11 @@ export async function readRepoMetadata(reader: MetadataReader): Promise<Result<M
     }
   }
 
+  if (privateCoercedCount > 0) {
+    logger.warning('metadata/repos.yaml coerced ill-typed private flags to private (fail-closed)', {
+      coercedCount: privateCoercedCount,
+    })
+  }
   if (skippedMalformedCount > 0) {
     logger.warning('metadata/repos.yaml skipped malformed entries', {
       skippedCount: skippedMalformedCount,
