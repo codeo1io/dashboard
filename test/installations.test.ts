@@ -5,10 +5,12 @@
  * Covers: happy path, edge cases, error paths, and security invariants.
  */
 
+import type {DashboardAppClient} from '../src/github/app-client.ts'
 import type {InstallationRecord, InstallationsClient, RepoRecord} from '../src/github/installations.ts'
 
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {
+  buildInstallationsClient,
   CORE_READ_PERMISSIONS,
   enumerateRepos,
   FetchInstallationsError,
@@ -645,5 +647,65 @@ describe('security — token-shaped secrets redacted in error log paths', () => 
       warnSpy.mockRestore()
       errorSpy.mockRestore()
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-160 deadline coverage on the token-scoped pagination client
+// (independent-review finding F1, 9351c56b)
+// ---------------------------------------------------------------------------
+
+const paginationRequests = vi.hoisted(() => [] as {route: string; options: Record<string, unknown>}[])
+
+// Hoisted module mock: captures every request made through the bare
+// token-scoped Octokit constructed inside listInstallationReposWithToken.
+vi.mock('@octokit/core', () => {
+  class FakeOctokit {
+    options: Record<string, unknown>
+    constructor(options: Record<string, unknown>) {
+      this.options = options
+    }
+
+    // app-client.ts composes its client via Octokit.plugin(...) at module
+    // load; the composition result is never constructed by this test.
+    static plugin(..._plugins: unknown[]): typeof FakeOctokit {
+      return FakeOctokit
+    }
+
+    async request(route: string, options: Record<string, unknown>): Promise<{data: unknown}> {
+      paginationRequests.push({route, options})
+      return {
+        data: {
+          total_count: 1,
+          repositories: [
+            {id: 42, node_id: 'NODE_PAG', owner: {login: 'org'}, name: 'pag', full_name: 'org/pag'},
+          ],
+        },
+      }
+    }
+  }
+  return {Octokit: FakeOctokit}
+})
+
+describe('buildInstallationsClient — rm-160: installation-repos pagination deadline (review F1)', () => {
+  it('GET /installation/repositories carries a per-request AbortSignal deadline', async () => {
+    paginationRequests.length = 0
+    const appClient = {
+      octokit: {request: vi.fn()},
+      mintInstallationToken: vi.fn(),
+    } as unknown as DashboardAppClient
+    const client = buildInstallationsClient(appClient)
+
+    const repos = await client.listInstallationRepos('ghs_fake_token')
+
+    expect(repos.map(repo => repo.node_id)).toEqual(['NODE_PAG'])
+    expect(paginationRequests.length).toBe(1)
+    expect(paginationRequests[0]?.route).toBe('GET /installation/repositories')
+    const signal = (paginationRequests[0]?.options.request as {signal?: unknown} | undefined)?.signal
+    // rm-160 acceptance: EVERY outbound GitHub request — including the bare
+    // token-scoped pagination client — is constructed with an AbortSignal
+    // deadline. A hung page must not wedge the whole refresh cycle.
+    expect(signal).toBeInstanceOf(AbortSignal)
+    expect((signal as AbortSignal | undefined)?.aborted).toBe(false)
   })
 })

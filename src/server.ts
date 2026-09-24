@@ -19,7 +19,7 @@ import type {AggregatorSnapshot} from './github/aggregator.ts'
 import type {MetadataReader} from './github/metadata.ts'
 import type {ListenerStore} from './listener/store.ts'
 import {Buffer} from 'node:buffer'
-import {existsSync, readFileSync} from 'node:fs'
+import {existsSync, readFileSync, statSync} from 'node:fs'
 import {join} from 'node:path'
 import process from 'node:process'
 import {serve} from '@hono/node-server'
@@ -42,7 +42,7 @@ import {readFixtureHarnessConfig} from './gateway/operator-fixture-config.ts'
 import {FIXTURE_OPERATOR_PREFIX} from './gateway/operator-fixture-routes.ts'
 import {createOperatorServerFetch} from './gateway/operator-server-fetch.ts'
 import {createAggregator} from './github/aggregator.ts'
-import {createDashboardAppClient} from './github/app-client.ts'
+import {createDashboardAppClient, githubRequestTimeoutSignal} from './github/app-client.ts'
 import {buildInstallationsClient, enumerateRepos, mintReadOnlyToken} from './github/installations.ts'
 import {makeNotFoundError, readRepoMetadata} from './github/metadata.ts'
 import {readListenerDbPath, readListenerIngestKey} from './listener/config.ts'
@@ -109,6 +109,25 @@ export function resetRateLimitForTesting(): void {
 // (see app.get('/operator', c => c.redirect('/', 302)) below), so the user lands
 // on / as intended. return_to=/ is NOT on the Gateway allowlist.
 const GATEWAY_LOGIN_REDIRECT = '/operator/auth/github/start?return_to=/operator'
+
+/**
+ * rm-165: parse `GATEWAY_ALLOWED_OPERATOR_LOGINS` (comma-separated operator
+ * logins allowed to hold a gateway session on this dashboard). Returns null
+ * when unset/blank — no restriction (current single-trusted-gateway behavior).
+ * Empty entries are dropped; the result is a trimmed, case-sensitive set.
+ * This is the gateway surface's OWN contract and never consults
+ * `DASHBOARD_OPERATOR_LOGIN` (auth-convergence invariant R3).
+ */
+function parseGatewayAllowedOperatorLogins(): ReadonlySet<string> | null {
+  const raw = process.env.GATEWAY_ALLOWED_OPERATOR_LOGINS
+  if (raw === undefined) return null
+  const entries = raw
+    .split(',')
+    .map(entry => entry.trim())
+    .filter(entry => entry !== '')
+  if (entries.length === 0) return null
+  return new Set(entries)
+}
 
 function sweepRateLimitMap(now: number): void {
   for (const [key, entry] of rateLimitMap) {
@@ -326,7 +345,7 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   const fetchUserLogin = opts?.fetchUserLogin ?? fetchGitHubUserLogin
 
   // Resolve snapshot provider — default empty; production wires the real aggregator.
-  const EMPTY_SNAPSHOT = {repos: [], staleBanner: false, driftCount: 0, refreshedAt: null} as const
+  const EMPTY_SNAPSHOT = {repos: [], staleBanner: false, driftCount: 0, refreshedAt: null, degraded: false} as const
   const getSnapshot = opts?.getSnapshot ?? (() => EMPTY_SNAPSHOT)
 
   // Resolve operator UI flag — default OFF (fail-closed).
@@ -654,6 +673,24 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
         return c.redirect(GATEWAY_LOGIN_REDIRECT, 302)
       }
 
+      // rm-165: gateway-session operator allowlist. `GATEWAY_ALLOWED_OPERATOR_LOGINS`
+      // (comma-separated) is the gateway surface's OWN identity contract — the
+      // arctic branch's `DASHBOARD_OPERATOR_LOGIN` is deliberately NOT consulted
+      // here (auth-convergence plan invariant R3: the gateway is authoritative
+      // for its own sessions). Unset = no restriction (single-trusted-gateway
+      // deployment, current behavior); set = the session login MUST match one
+      // entry or the request fails closed — the authenticated-single-operator
+      // invariant can no longer silently widen if the gateway ever mints
+      // sessions for other operators.
+      const gatewayAllowlist = parseGatewayAllowedOperatorLogins()
+      if (gatewayAllowlist !== null && !gatewayAllowlist.has(result.data.login)) {
+        logger.warning('gateway-auth: session login is not in the gateway operator allowlist; denying', {
+          path,
+          login: result.data.login,
+        })
+        return c.text('Forbidden', 403)
+      }
+
       // Valid gateway session: attach to context.
       c.set('gatewaySession', result.data)
       return next()
@@ -747,13 +784,37 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     // response leaves a stale Content-Length that truncates the injected HTML
     // and drops the <div id="root"> mount target. Reading + injecting + c.html()
     // recomputes the length. Fall through to serveStatic if the file is missing.
+    //
+    // rm-166: the read is memoized behind an mtime guard — the injected body
+    // only changes when index.html changes on disk (deploy), so requests no
+    // longer each pay a main-thread readFileSync. Cache-Control: no-store —
+    // the body reflects the push flag and is served behind auth; intermediaries
+    // must not cache an identity-reflecting HTML shell.
     const indexHtmlPath = join(webDistRoot, 'index.html')
-    app.get('/', async c => {
-      if (!existsSync(indexHtmlPath)) return c.notFound()
+    let memoizedIndexHtml: {mtimeMs: number; html: string} | null = null
+    const readInjectedIndexHtml = (): string | null => {
+      let stats: {mtimeMs: number}
+      try {
+        stats = statSync(indexHtmlPath)
+      } catch {
+        return null
+      }
+      if (memoizedIndexHtml !== null && memoizedIndexHtml.mtimeMs === stats.mtimeMs) {
+        return memoizedIndexHtml.html
+      }
       const html = readFileSync(indexHtmlPath, 'utf8')
-      const injected = html.includes('<meta name="push-enabled"')
-        ? html
-        : html.replace('</head>', '<meta name="push-enabled" content="true"></head>')
+      memoizedIndexHtml = {
+        mtimeMs: stats.mtimeMs,
+        html: html.includes('<meta name="push-enabled"')
+          ? html
+          : html.replace('</head>', '<meta name="push-enabled" content="true"></head>'),
+      }
+      return memoizedIndexHtml.html
+    }
+    app.get('/', async c => {
+      const injected = readInjectedIndexHtml()
+      if (injected === null) return c.notFound()
+      c.header('Cache-Control', 'no-store')
       return c.html(injected)
     })
   } else {
@@ -922,6 +983,8 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
       const response = await appClient.octokit.request('GET /repos/{owner}/{repo}/installation', {
         owner,
         repo: name,
+        // rm-160: per-request deadline — a hung upstream must not wedge the resolver loop.
+        request: {signal: githubRequestTimeoutSignal()},
       })
       const data = response.data as unknown as {id: number}
       return data.id
@@ -944,6 +1007,8 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
         repo: '.github',
         path,
         ref,
+        // rm-160: per-request deadline — a hung upstream must not wedge the metadata read.
+        request: {signal: githubRequestTimeoutSignal()},
       })
       const data = response.data as unknown as {type: string; encoding: string; content: string}
       if (data.type !== 'file' || data.encoding !== 'base64') {
@@ -961,7 +1026,11 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
     (async (installationId: number, query: string, variables: Record<string, unknown>): Promise<unknown> => {
       const token = await getReadOnlyToken(installationId)
       const gql = graphql.defaults({headers: {authorization: `token ${token}`}})
-      return gql(query, variables)
+      // rm-160: per-request deadline — @octokit/graphql reads a non-variable
+      // `request` option (`{request: {signal}}` is split off from the GraphQL
+      // variables in dist-src/graphql.js) and the request layer forwards the
+      // signal to fetch. A hung upstream must not wedge the per-repo fetch loop.
+      return gql(query, {...variables, request: {signal: githubRequestTimeoutSignal()}})
     })
 
   const aggregator = createAggregator(installationsClient, metadataReader, {

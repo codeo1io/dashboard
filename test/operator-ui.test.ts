@@ -21,11 +21,26 @@ import type {Result} from '../src/result.ts'
  */
 import {Buffer} from 'node:buffer'
 
-import {beforeEach, describe, expect, it} from 'vitest'
+import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {ok} from '../src/result.ts'
 import {buildDashboardApp, resetRateLimitForTesting} from '../src/server.ts'
 import {SessionManager} from '../src/session.ts'
 import {createMockOperatorClient} from './operator-mock-client.ts'
+
+// rm-166: hoisted passthrough mock — vi.spyOn cannot patch the ESM builtin
+// namespace ("Module namespace is not configurable"), so readFileSync goes
+// through a counting passthrough that keeps real behavior intact.
+const fsReadFileSyncPaths = vi.hoisted(() => [] as string[])
+vi.mock('node:fs', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  return {
+    ...actual,
+    readFileSync: ((...args: Parameters<typeof actual.readFileSync>) => {
+      fsReadFileSyncPaths.push(String(args[0]))
+      return actual.readFileSync(...args)
+    }) as typeof actual.readFileSync,
+  }
+})
 
 // Reset the module-level rate limiter before each test so tests don't bleed
 // into each other. The rate limiter is shared module state (60 req/min per IP);
@@ -127,7 +142,7 @@ async function buildTestApp(opts: TestAppOpts | boolean) {
     cookieKey: TEST_KEY,
     oauthClient: makeFakeOAuthClient(),
     fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null, degraded: false}),
     operatorUiEnabled: resolved.operatorUiEnabled,
     gatewayOperatorSessionEnabled: resolved.gatewayOperatorSessionEnabled,
     operatorClient: resolved.operatorClient,
@@ -944,5 +959,32 @@ describe('push-enabled meta injection — served SPA shell integrity', () => {
     const body = await res.text()
     expect(body).not.toContain('push-enabled')
     expect(body).toContain('<div id="root">')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-166 (cycle-10): push-index read memoization + Cache-Control
+// ---------------------------------------------------------------------------
+
+describe('rm-166: push-index memoized read + Cache-Control: no-store', () => {
+  it('serves / with Cache-Control: no-store and reads index.html from disk exactly once across requests (mtime guard)', async () => {
+    fsReadFileSyncPaths.length = 0
+    const app = await buildTestApp({operatorUiEnabled: true, pushNotificationsEnabled: true})
+
+    const first = await authedGet(app, '/')
+    expect(first.status).toBe(200)
+    expect(first.headers.get('cache-control')).toBe('no-store')
+    expect(await first.text()).toContain('<meta name="push-enabled" content="true">')
+
+    const second = await authedGet(app, '/')
+    expect(second.status).toBe(200)
+    expect(second.headers.get('cache-control')).toBe('no-store')
+    expect(await second.text()).toContain('<meta name="push-enabled" content="true">')
+
+    // The injected body is identity-reflecting (push flag) and served behind
+    // auth — the memoized read must not re-hit the disk while mtime is
+    // unchanged, but every response still carries no-store.
+    const indexReads = fsReadFileSyncPaths.filter(path => path.endsWith('index.html')).length
+    expect(indexReads).toBe(1)
   })
 })
