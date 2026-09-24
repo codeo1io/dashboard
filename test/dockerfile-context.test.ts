@@ -46,6 +46,51 @@ function collectContextSources(dockerfileText: string): CopySource[] {
   return sources
 }
 
+// rm-184 (cycle-13 batch B1): the context seal. docker transfers the whole
+// repo root when no .dockerignore exists, so every Release build shipped .git,
+// node_modules, and any locally-present .env/.pem/.key to the daemon — invisible
+// to CI because the Dockerfile's selective COPYs keep the IMAGE clean. The gate
+// below pins the seal's presence and its minimal security entry set, and
+// cross-checks that no Dockerfile context source is excluded (the
+// `COPY web/` + build-in-image + `--from=builder` shape must stay copyable).
+// NOTE: the matcher implements the subset of pattern shapes this file uses
+// (literal paths, `*` wildcards, `!` negations) — it is a regression guard, not
+// a dockerignore spec implementation.
+
+function parseDockerignore(text: string): {ignores: string[]; negations: string[]} {
+  const ignores: string[] = []
+  const negations: string[] = []
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim()
+    if (line === '' || line.startsWith('#')) continue
+    if (line.startsWith('!')) {
+      negations.push(line.slice(1))
+    } else {
+      ignores.push(line)
+    }
+  }
+  return {ignores, negations}
+}
+
+function patternToRegExp(pattern: string): RegExp {
+  const escaped = pattern
+    .replaceAll(/[.+^${}()|[\]?\\]/g, String.raw`\$&`)
+    .replaceAll('*', '[^/]*')
+  return new RegExp(`^${escaped}$`)
+}
+
+function isExcludedBy(path: string, {ignores, negations}: {ignores: string[]; negations: string[]}): boolean {
+  const candidates = [path, path.split('/')[0] ?? path]
+  for (const candidate of candidates) {
+    for (const pattern of ignores) {
+      if (!patternToRegExp(pattern).test(candidate)) continue
+      const unignored = negations.some(negation => patternToRegExp(negation).test(candidate))
+      if (!unignored) return true
+    }
+  }
+  return false
+}
+
 describe('Dockerfile build-context validity (rm-132)', () => {
   const dockerfilePath = resolve(repoRoot, 'Dockerfile')
 
@@ -64,6 +109,31 @@ describe('Dockerfile build-context validity (rm-132)', () => {
     )
     expect(
       missing.map(entry => `${entry.instruction} line ${entry.line}: ${entry.source}`),
+    ).toEqual([])
+  })
+})
+
+describe('Docker build-context seal (rm-184)', () => {
+  const dockerignorePath = resolve(repoRoot, '.dockerignore')
+  const requiredSecurityEntries = ['.git', 'node_modules', '.env*', '*.pem', '*.key']
+
+  it('.dockerignore exists in the repo root', () => {
+    expect(existsSync(dockerignorePath)).toBe(true)
+  })
+
+  it('keeps the minimal security entry set (.git, node_modules, .env*, *.pem, *.key)', () => {
+    const {ignores} = parseDockerignore(readFileSync(dockerignorePath, 'utf8'))
+    const missing = requiredSecurityEntries.filter(entry => !ignores.includes(entry))
+    expect(missing).toEqual([])
+  })
+
+  it('never excludes a Dockerfile COPY/ADD source from the build context', () => {
+    const seal = parseDockerignore(readFileSync(dockerignorePath, 'utf8'))
+    const sources = collectContextSources(readFileSync(resolve(repoRoot, 'Dockerfile'), 'utf8'))
+    expect(sources.length).toBeGreaterThan(0)
+    const excluded = sources.filter(entry => isExcludedBy(entry.source, seal))
+    expect(
+      excluded.map(entry => `${entry.instruction} line ${entry.line}: ${entry.source}`),
     ).toEqual([])
   })
 })

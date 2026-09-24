@@ -26,7 +26,10 @@ jobs:
     name: Lint
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    # rm-186 (cycle 13, 2026-09-25): pinned ubuntu-24.04 — ubuntu-26.04 images are
+    # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
+    # at the rm-139 Node-26 window (2026-10-28).
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch
@@ -48,7 +51,7 @@ jobs:
     name: Design Check
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch
@@ -76,7 +79,7 @@ jobs:
     name: Check Types
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch
@@ -96,7 +99,7 @@ jobs:
     name: Test
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch
@@ -118,7 +121,7 @@ jobs:
     name: Check Workflows
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch
@@ -143,7 +146,7 @@ jobs:
     name: Test Scripts Load
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch
