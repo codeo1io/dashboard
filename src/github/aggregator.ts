@@ -116,15 +116,6 @@ export interface AggregatorSnapshot {
 }
 
 // ---------------------------------------------------------------------------
-// Internal cache entry
-// ---------------------------------------------------------------------------
-
-interface CacheEntry {
-  readonly fetchedAt: number
-  readonly payload: RepoCiStatus
-}
-
-// ---------------------------------------------------------------------------
 // GraphQL query + response types
 // ---------------------------------------------------------------------------
 
@@ -522,7 +513,12 @@ function parseRepoResponse(raw: unknown, fetchedAt: number, openAlertCount: numb
 
   const repo = data.repository
   if (repo === null || repo === undefined) {
-    return {rollupState: 'unknown', failingChecks: 0, openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: false, fetchedAt}
+    // rm-112 (cycle-9): repository:null means the repo vanished between
+    // enumeration and query — deleted, renamed, made private, or the
+    // installation lost access. That is a degradation the operator must see,
+    // so we fail visible (stale:true), matching the installation_id:null and
+    // fetch-failure paths below. Serving a calm unknown here hid silent drift.
+    return {rollupState: 'unknown', failingChecks: 0, openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
   }
 
   const target = repo.defaultBranchRef?.target
@@ -564,6 +560,9 @@ async function fetchRepoStatus(
 
   try {
     const raw = await graphqlQueryForInstallation(installationId, REPO_STATUS_QUERY, vars)
+    if ((raw as GraphqlRepoResponse).repository == null) {
+      logger.warning('Repository null in GraphQL response (deleted/renamed/private or access lost); marking stale', safeRepoLogIdentity(entry))
+    }
     return parseRepoResponse(raw, fetchedAt, null)
   } catch (error) {
     // P1 #11: if the error is specifically about vulnerabilityAlerts permission,
@@ -572,6 +571,9 @@ async function fetchRepoStatus(
       logger.warning('vulnerabilityAlerts permission error; retrying without alerts field', safeRepoLogIdentity(entry))
       try {
         const raw = await graphqlQueryForInstallation(installationId, REPO_STATUS_QUERY_NO_ALERTS, vars)
+        if ((raw as GraphqlRepoResponse).repository == null) {
+          logger.warning('Repository null in GraphQL response (deleted/renamed/private or access lost); marking stale', safeRepoLogIdentity(entry))
+        }
         // Parse with openAlertCount=null (alerts unavailable, not stale)
         return parseRepoResponse(raw, fetchedAt, null)
       } catch (retryError) {
@@ -608,9 +610,6 @@ export function createAggregator(
   const setIntervalFn = deps.setIntervalFn ?? ((fn, ms) => setInterval(fn, ms))
   const clearIntervalFn = deps.clearIntervalFn ?? (id => clearInterval(id))
 
-  // Per-repo cache: node_id → CacheEntry
-  const cache = new Map<string, CacheEntry>()
-
   // Last-good snapshot (serves stale data when refresh fails)
   let lastGoodSnapshot: AggregatorSnapshot | null = null
 
@@ -619,7 +618,7 @@ export function createAggregator(
 
   // In-flight guard: prevents overlapping refreshes. If a refresh cycle takes
   // longer than the 60s interval, the next tick is skipped rather than piling
-  // up concurrent refreshes that race on lastGoodSnapshot and the per-repo cache.
+  // up concurrent refreshes that race on lastGoodSnapshot.
   let refreshing = false
 
   /**
@@ -712,26 +711,22 @@ export function createAggregator(
       return
     }
 
-    // 4. Fetch per-repo status — only for repos that survived the denylist filter
+    // 4. Fetch per-repo status — only for repos that survived the denylist filter.
+    //
+    // rm-112 (cycle-9): a per-repo cache used to sit here (60s TTL checked with
+    // a strict '<' against a 60s refresh interval). The cache was consulted
+    // only at the top of this same loop, so an entry's revisit age was the
+    // interval plus or minus per-repo fetch-latency variance — a timing-lucky
+    // entry could dip marginally under TTL when the current cycle had already
+    // spent that wall time on predecessors' fetches, but the steady-state hit
+    // rate was not meaningfully above zero and the machinery was dead weight.
+    // Raising the TTL instead would serve older data to save negligible API
+    // budget (1 query/repo/minute for a small fleet), trading away the
+    // dashboard's freshness contract. Removed; every cycle fetches every
+    // working-set repo fresh.
     const dashboardRepos: DashboardRepo[] = []
     for (const entry of workingSet) {
-      // Check cache first (60s TTL)
-      const cached = cache.get(entry.node_id)
-      const CACHE_TTL_MS = 60_000
-      if (cached !== undefined && now() - cached.fetchedAt < CACHE_TTL_MS) {
-        dashboardRepos.push({
-          node_id: entry.node_id,
-          owner: entry.owner,
-          name: entry.name,
-          full_name: entry.full_name,
-          discovery_channel: entry.discovery_channel,
-          status: cached.payload,
-        })
-        continue
-      }
-
       const status = await fetchRepoStatus(entry, graphqlQueryForInstallation, now)
-      cache.set(entry.node_id, {fetchedAt: status.fetchedAt, payload: status})
       dashboardRepos.push({
         node_id: entry.node_id,
         owner: entry.owner,
