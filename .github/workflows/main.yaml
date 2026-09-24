@@ -130,7 +130,7 @@ jobs:
 
       # raven-actions/actionlint defaults to pyflakes via pipx, which is not
       # guaranteed present on any runner image (it was missing entirely on the
-      # workstation self-hosted runner: Main run 35413084207, 'Unable to locate
+      # workstation-era self-hosted runner: Main run 35413084207, 'Unable to locate
       # executable file: pipx'). The container form assumes nothing from the
       # host and pins actionlint itself (see docs/solutions/
       # workflow-issues/actionlint-pipx-missing-container-form-2026-09-19.md).

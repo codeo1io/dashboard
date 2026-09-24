@@ -10,9 +10,10 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./src/test-setup.ts'],
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
-    // Mirror the root vitest.config.ts rationale: this shared self-hosted runner
-    // regularly needs more than vitest's 5000ms default per test, which produced
-    // full-suite timeout flakes while isolated runs passed.
+    // Mirror the root vitest.config.ts rationale: a contended runner regularly
+    // needs more than vitest's 5000ms default per test (sized 2026-09 on the
+    // then-shared self-hosted runner), which produced full-suite timeout
+    // flakes while isolated runs passed.
     testTimeout: 30_000,
     // vite-plugin-pwa virtual modules are not resolvable in the test environment.
     // Alias them to stub files so tests that import components using useRegisterSW
