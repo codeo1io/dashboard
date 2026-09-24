@@ -30,6 +30,7 @@ import type {MetadataError, MetadataReader, MetadataResult} from './metadata.ts'
 
 import {logger, sanitizeErrorMessage, type LogContext} from '../logger.ts'
 import {isErr, isOk} from '../result.ts'
+import {deriveDatabaseId} from './metadata.ts'
 
 // ---------------------------------------------------------------------------
 // Injectable GraphQL transport
@@ -113,6 +114,13 @@ export interface AggregatorSnapshot {
   readonly driftCount: number
   /** When the snapshot was last successfully refreshed (ms since epoch) */
   readonly refreshedAt: number | null
+  /**
+   * rm-112: single operator-facing degradation signal. True when the snapshot
+   * serves anything other than fully-fresh complete data — enumeration
+   * failure, metadata fail-closed serving, warm-empty protection, cycle
+   * deadline overrun, or any per-repo stale/absence row.
+   */
+  readonly degraded: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -231,6 +239,11 @@ function sortAttentionFirst(repos: DashboardRepo[]): DashboardRepo[] {
   })
 }
 
+/** rm-112: snapshot-level degradation = banner OR any per-repo stale row. */
+function snapshotDegraded(banner: boolean, repos: readonly DashboardRepo[]): boolean {
+  return banner || repos.some(repo => repo.status.stale)
+}
+
 // ---------------------------------------------------------------------------
 // Aggregator deps interface
 // ---------------------------------------------------------------------------
@@ -251,6 +264,14 @@ export interface AggregatorDeps {
   readonly setIntervalFn?: (fn: () => void, ms: number) => ReturnType<typeof setInterval>
   /** Injectable clearInterval (defaults to global clearInterval) */
   readonly clearIntervalFn?: (id: ReturnType<typeof setInterval>) => void
+  /**
+   * rm-160: hard wall-clock budget for one whole refresh cycle (metadata read +
+   * enumeration + resolver calls + per-repo fetches). When a cycle overruns, the
+   * in-flight guard is released and the snapshot degrades visibly instead of
+   * the guard staying wedged and every future tick being skipped. Defaults to
+   * 45s — under the 60s refresh interval so the next tick finds a free guard.
+   */
+  readonly refreshCycleDeadlineMs?: number
   /**
    * Optional: resolve the installation ID for a repo by owner/name.
    * Used for metadata-only public repos that have no installation_id from the
@@ -338,26 +359,19 @@ function buildWorkingSet(
 ): {workingSet: WorkingSetEntry[]; driftCount: number; denylistComplete: boolean} {
   const {publicRepos, redactedNodeIds, redactedDatabaseIds} = metadata
 
-  // denylistComplete: true if every redacted node_id also has a derived databaseId in
-  // redactedDatabaseIds. False means at least one redacted entry (likely a new-format
-  // R_kgDO... node_id) could not contribute a databaseId — the cross-format secondary
-  // guard is partial for that entry. The primary node_id guard still applies.
-  // Tradeoff: we do NOT fail fully closed here — the primary guard covers same-format
-  // matches, and full fail-closed-to-empty would be too aggressive for a single
-  // undecodable new-format node_id. We log a warning instead.
-  let denylistComplete = true
-  for (const nodeId of redactedNodeIds) {
-    // Check if this node_id has a corresponding databaseId in the denylist.
-    // We can't reverse-lookup by node_id here, so we check if redactedDatabaseIds
-    // is non-empty as a proxy — if it's empty and redactedNodeIds is non-empty,
-    // at least one entry has no derived databaseId.
-    // More precise: new-format node_ids (R_kgDO...) can't be decoded, so if any
-    // redacted node_id starts with R_, denylistComplete is false.
-    if (nodeId.startsWith('R_')) {
-      denylistComplete = false
-      break
-    }
-  }
+  // rm-161: guard-coverage telemetry now comes straight from the parser, where
+  // per-entry knowledge lives (metadata.ts counts redacted entries that armed
+  // the format-independent secondary guard via a derived OR explicit
+  // databaseId). denylistComplete=true iff EVERY redacted entry armed it.
+  // The previous R_-prefix heuristic re-derived here could never clear while
+  // any modern node_id existed — even when that entry carried an explicit
+  // database_id and the guard was fully armed — training operators to ignore
+  // the warning.
+  // Tradeoff (unchanged): we do NOT fail fully closed here — the primary
+  // node_id guard covers same-format matches, and full fail-closed-to-empty
+  // would be too aggressive for a single undecodable new-format node_id. We
+  // warn once per refresh with the exact current condition instead.
+  const denylistComplete = metadata.redactedEntriesMissingDatabaseId === 0
 
   // Index install repos by node_id AND database_id for O(1) lookup.
   // This is the auth-context index: when a metadata publicRepo matches an install
@@ -375,8 +389,15 @@ function buildWorkingSet(
   const unionByNodeId = new Map<string, WorkingSetEntry>()
   for (const pub of publicRepos) {
     // *** DENYLIST CHECK — publicRepos should never contain redacted entries,
-    // but we double-check here for defense-in-depth ***
-    if (redactedNodeIds.has(pub.node_id)) {
+    // but we double-check here for defense-in-depth. rm-161: symmetric with the
+    // installation channel — BOTH keys checked (node_id OR derived
+    // databaseId), so the double-check cannot be bypassed by cross-format
+    // node_id skew the way the node_id-only check could. ***
+    const pubDerivedDatabaseId = deriveDatabaseId(pub.node_id)
+    if (
+      redactedNodeIds.has(pub.node_id) ||
+      (pubDerivedDatabaseId !== null && redactedDatabaseIds.has(pubDerivedDatabaseId))
+    ) {
       continue
     }
 
@@ -600,6 +621,12 @@ async function fetchRepoStatus(
  * Deps are fully injectable for testing (fake timers, fake GraphQL, fake
  * enumerate/readMetadata).
  */
+/**
+ * rm-160: default whole-cycle deadline (ms). Below the 60s refresh interval so
+ * an overran cycle releases the in-flight guard before the next tick arrives.
+ */
+const DEFAULT_REFRESH_CYCLE_DEADLINE_MS = 45_000
+
 export function createAggregator(
   installationsClient: InstallationsClient,
   metadataReader: MetadataReader,
@@ -621,13 +648,27 @@ export function createAggregator(
   // up concurrent refreshes that race on lastGoodSnapshot.
   let refreshing = false
 
+  // rm-160: monotonic cycle sequence. A cycle that overruns its deadline is
+  // abandoned (guard released, snapshot degraded) but its awaits may still
+  // settle later — the seq guard makes those late writes no-ops so an overran
+  // cycle can never overwrite a newer cycle's snapshot.
+  let latestCycleSeq = 0
+
+  function commitSnapshot(cycleSeq: number, snapshot: AggregatorSnapshot): void {
+    if (cycleSeq !== latestCycleSeq) {
+      logger.warning('Discarding snapshot from overran refresh cycle (a newer cycle owns the snapshot)')
+      return
+    }
+    lastGoodSnapshot = snapshot
+  }
+
   /**
    * Perform a full refresh cycle.
    *
    * Security: if readMetadata fails (denylist unavailable), we MUST NOT build
    * a fresh union. We serve last-good cache + staleBanner, or empty on cold start.
    */
-  async function runRefresh(): Promise<void> {
+  async function runRefresh(cycleSeq: number): Promise<void> {
     // 1. Read metadata + denylist FIRST
     const metadataResult = await deps.readMetadata(metadataReader)
 
@@ -639,10 +680,10 @@ export function createAggregator(
 
       if (lastGoodSnapshot === null) {
         // Cold start with no cache — serve empty with banner
-        lastGoodSnapshot = {repos: [], staleBanner: true, driftCount: 0, refreshedAt: null}
+        commitSnapshot(cycleSeq, {repos: [], staleBanner: true, driftCount: 0, refreshedAt: null, degraded: true})
       } else {
         // Serve last-good with staleBanner
-        lastGoodSnapshot = {...lastGoodSnapshot, staleBanner: true}
+        commitSnapshot(cycleSeq, {...lastGoodSnapshot, staleBanner: true, degraded: true})
       }
       return
     }
@@ -671,6 +712,10 @@ export function createAggregator(
     // We use resolveInstallationIdForRepo (App JWT endpoint) to find the right installation.
     // If unavailable or resolution fails, the repo is skipped (not queried without auth context).
     let workingSet: WorkingSetEntry[]
+    // rm-112: resolver-failure absence entries — repos whose installation could
+    // not be resolved stay VISIBLE (previous row preserved stale, or a
+    // synthesized unknown row) instead of silently dropping out of the snapshot.
+    const absenceEntries: WorkingSetEntry[] = []
     if (deps.resolveInstallationIdForRepo === undefined) {
       // No resolver: filter out repos with no installation_id (cannot query safely)
       workingSet = rawWorkingSet.filter(e => e.installation_id !== null)
@@ -687,27 +732,84 @@ export function createAggregator(
           const resolvedId = await resolveInstallation(entry.owner, entry.name)
           resolvedEntries.push({...entry, installation_id: resolvedId})
         } catch (resolveError) {
-          logger.warning('Could not resolve installation for metadata-only repo; skipping', safeRepoErrorContext(entry, resolveError))
+          // rm-112: fail-visible, not fail-silent — do NOT query without an
+          // auth context, but do not drop the repo from the snapshot either.
+          logger.warning(
+            'Could not resolve installation for metadata-only repo; keeping as stale absence entry',
+            safeRepoErrorContext(entry, resolveError),
+          )
+          absenceEntries.push(entry)
           // Skip: no valid auth context — do NOT query with an ambient token
         }
       }
       workingSet = resolvedEntries
     }
 
-    // Warn if cross-format denylist protection is partial (new-format node_ids that
-    // couldn't be decoded to a databaseId). The primary node_id guard still applies;
-    // only the secondary databaseId guard is absent for those entries.
+    // Warn if cross-format denylist protection is partial (redacted entries
+    // with no derived AND no explicit databaseId). The primary node_id guard
+    // still applies; only the secondary databaseId guard is absent for those
+    // entries. rm-161: driven by parser-side per-entry telemetry.
     if (!denylistComplete) {
       logger.warning(
-        'Denylist cross-format protection is partial: one or more redacted entries have new-format node_ids (R_kgDO...) ' +
-        'that could not be decoded to a numeric databaseId. The primary node_id guard still applies for same-format matches. ' +
-        'If the installation channel returns the same repo under a different node_id format, it may not be excluded by the secondary guard.',
+        `Denylist cross-format protection is partial: ${metadata.redactedEntriesMissingDatabaseId} redacted entr` +
+        `${metadata.redactedEntriesMissingDatabaseId === 1 ? 'y has' : 'ies have'} no numeric databaseId ` +
+        '(undecodable node_id and no explicit database_id/id field). The primary node_id guard still applies for ' +
+        'same-format matches. If the installation channel returns the same repo under a different node_id format, ' +
+        'it may not be excluded by the secondary guard.',
       )
     }
 
-    if (workingSet.length === 0) {
+    // rm-112: resolver-failure absence entries — the repo stays visible with an
+    // explicit stale marker. Its previous row (if any) is preserved with
+    // stale=true (last-good serving, fail-visible); never-seen repos surface as
+    // a synthesized 'unknown' row rather than silently vanishing. Merged BEFORE
+    // the empty-set guard: absence rows mean the cycle is not a wipe candidate,
+    // and the guard must not swallow them back into last-good.
+    const absenceRows: DashboardRepo[] = []
+    for (const entry of absenceEntries) {
+      const previous = lastGoodSnapshot?.repos.find(repo => repo.node_id === entry.node_id)
+      absenceRows.push(
+        previous === undefined
+          ? {
+              node_id: entry.node_id,
+              owner: entry.owner,
+              name: entry.name,
+              full_name: entry.full_name,
+              discovery_channel: entry.discovery_channel,
+              status: {
+                rollupState: 'unknown',
+                failingChecks: 0,
+                openPrCount: 0,
+                openIssueCount: 0,
+                openAlertCount: null,
+                stale: true,
+                fetchedAt: now(),
+              },
+            }
+          : {...previous, status: {...previous.status, stale: true}},
+      )
+    }
+
+    if (workingSet.length === 0 && absenceRows.length === 0) {
+      // rm-112: a successful-but-empty union while a previous snapshot served
+      // repos is a suspicious wipe, not a legitimate empty fleet (an empty fleet
+      // starts empty). Protect last-good and surface the banner instead of
+      // replacing live data with [].
+      if (lastGoodSnapshot !== null && lastGoodSnapshot.repos.length > 0) {
+        logger.warning(
+          'Refresh produced an empty working set while serving a non-empty snapshot; keeping last-good with stale banner (warm-empty protection)',
+        )
+        commitSnapshot(cycleSeq, {...lastGoodSnapshot, staleBanner: true, degraded: true})
+        return
+      }
       // staleBanner=true if enumeration failed (data is incomplete — install repos missing)
-      lastGoodSnapshot = {repos: [], staleBanner: enumerationFailed, driftCount, refreshedAt: now()}
+      commitSnapshot(cycleSeq, {
+        repos: [],
+        staleBanner: enumerationFailed,
+        driftCount,
+        refreshedAt: now(),
+        degraded: enumerationFailed,
+      })
       return
     }
 
@@ -737,12 +839,17 @@ export function createAggregator(
       })
     }
 
-    // 5. Sort attention-first and store snapshot
-    const sorted = sortAttentionFirst(dashboardRepos)
+    const sorted = sortAttentionFirst([...dashboardRepos, ...absenceRows])
     // staleBanner=true if enumeration failed — data is incomplete (install repos missing).
     // We still show metadata publicRepos (they are public and safe), but the operator
     // must know the installation channel data is absent.
-    lastGoodSnapshot = {repos: sorted, staleBanner: enumerationFailed, driftCount, refreshedAt: now()}
+    commitSnapshot(cycleSeq, {
+      repos: sorted,
+      staleBanner: enumerationFailed,
+      driftCount,
+      refreshedAt: now(),
+      degraded: snapshotDegraded(enumerationFailed, sorted),
+    })
 
     logger.info('Aggregator refresh complete', {
       repoCount: sorted.length,
@@ -762,9 +869,37 @@ export function createAggregator(
       return
     }
     refreshing = true
+    // rm-160: number the cycle so a run that overruns its deadline and settles
+    // late can never overwrite a newer cycle's snapshot (commitSnapshot seq).
+    const cycleSeq = ++latestCycleSeq
+    const deadlineMs = deps.refreshCycleDeadlineMs ?? DEFAULT_REFRESH_CYCLE_DEADLINE_MS
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined
     try {
-      await runRefresh()
+      // rm-160: cycle deadline. Per-request AbortSignal.timeout deadlines
+      // (rm-160, request layer) already make a single hung upstream unable to
+      // wedge a cycle, but a whole cycle can still overrun via many
+      // slow-but-under-deadline requests — or a future request path that misses
+      // its signal. When that happens, release the in-flight guard and degrade
+      // the snapshot VISIBLY instead of skipping every future tick while the
+      // zombie cycle holds `refreshing=true` forever (the cycle-9 wedge).
+      const outcome = await Promise.race([
+        runRefresh(cycleSeq),
+        new Promise<'cycle-deadline'>(resolve => {
+          deadlineTimer = setTimeout(() => resolve('cycle-deadline'), deadlineMs)
+        }),
+      ])
+      if (outcome === 'cycle-deadline') {
+        logger.warning('Aggregator refresh cycle overran its deadline; releasing in-flight guard and degrading snapshot', {
+          deadlineMs,
+        })
+        if (lastGoodSnapshot === null) {
+          lastGoodSnapshot = {repos: [], staleBanner: true, driftCount: 0, refreshedAt: null, degraded: true}
+        } else {
+          lastGoodSnapshot = {...lastGoodSnapshot, staleBanner: true, degraded: true}
+        }
+      }
     } finally {
+      if (deadlineTimer !== undefined) clearTimeout(deadlineTimer)
       refreshing = false
     }
   }
@@ -774,7 +909,7 @@ export function createAggregator(
    */
   function getSnapshot(): AggregatorSnapshot {
     if (lastGoodSnapshot === null) {
-      return {repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}
+      return {repos: [], staleBanner: false, driftCount: 0, refreshedAt: null, degraded: false}
     }
     return lastGoodSnapshot
   }
