@@ -88,6 +88,14 @@ export interface InstallationRecord {
 export interface EnumerateReposResult {
   readonly repos: readonly RepoRecord[]
   readonly installations: readonly InstallationRecord[]
+  /**
+   * Installations whose token mint or repo listing failed during enumeration
+   * (ids only — account names never leave this module). Non-empty means the
+   * union is PARTIAL: repos reachable only through these installations are
+   * missing from `repos`. Callers must surface this instead of presenting the
+   * snapshot as complete (rm-172 fail-visible enumeration).
+   */
+  readonly failedInstallationIds: readonly number[]
 }
 
 export class FetchInstallationsError extends Error {
@@ -191,7 +199,9 @@ export async function mintReadOnlyToken(
  * Enumerate all installations, mint read-only tokens, and union accessible repos.
  *
  * Returns `err(FetchInstallationsError)` if `listInstallations` fails.
- * Per-install token mint failures are logged and skipped (fail-soft per install).
+ * Per-install token mint/list failures are logged, skipped (fail-soft per
+ * install), and reported via `failedInstallationIds` so callers can surface
+ * the partial union instead of presenting it as complete.
  * Repos are deduped by `node_id` across all installs.
  */
 export async function enumerateRepos(
@@ -207,12 +217,13 @@ export async function enumerateRepos(
   }
 
   if (installations.length === 0) {
-    return ok({repos: [], installations: []})
+    return ok({repos: [], installations: [], failedInstallationIds: []})
   }
 
   logger.debug('Enumerating repos across installations', {count: installations.length})
 
   const reposByNodeId = new Map<string, RepoRecord>()
+  const failedInstallationIds: number[] = []
 
   for (const installation of installations) {
     let token: string
@@ -223,6 +234,7 @@ export async function enumerateRepos(
         installationId: installation.id,
         error: safeErrorMessage(mintError),
       })
+      failedInstallationIds.push(installation.id)
       continue
     }
 
@@ -234,6 +246,7 @@ export async function enumerateRepos(
         installationId: installation.id,
         error: safeErrorMessage(repoError),
       })
+      failedInstallationIds.push(installation.id)
       continue
     }
 
@@ -250,6 +263,7 @@ export async function enumerateRepos(
   return ok({
     repos: [...reposByNodeId.values()],
     installations,
+    failedInstallationIds,
   })
 }
 

@@ -63,8 +63,11 @@ function makeMetadataResult(overrides: {
   }
 }
 
-function makeEnumerateResult(repos: ReturnType<typeof makeRepo>[]): Result<EnumerateReposResult, FetchInstallationsError> {
-  return ok({repos, installations: [{id: 1, account: 'fro-bot'}]})
+function makeEnumerateResult(
+  repos: ReturnType<typeof makeRepo>[],
+  failedInstallationIds: readonly number[] = [],
+): Result<EnumerateReposResult, FetchInstallationsError> {
+  return ok({repos, installations: [{id: 1, account: 'fro-bot'}], failedInstallationIds})
 }
 
 /**
@@ -1298,6 +1301,101 @@ describe('aggregator — enumeration failure sets staleBanner=true', () => {
     expect(snap.repos[0]?.node_id).toBe('NODE_PUB_ENUM_FAIL')
     // But staleBanner=true — operator must know install channel failed
     expect(snap.staleBanner).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Fail-visible partial enumeration (rm-172)
+// ---------------------------------------------------------------------------
+
+describe('fail-visible partial enumeration (rm-172)', () => {
+  it('one failed installation → enumerationIncomplete=1, staleBanner stays false', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult(
+        [makeRepo({node_id: 'NODE_OK', owner: 'org', name: 'ok-repo'})],
+        [7],
+      )),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.enumerationIncomplete).toBe(1)
+    expect(snap.staleBanner).toBe(false)
+    expect(snap.repos).toHaveLength(1)
+  })
+
+  it('complete enumeration → enumerationIncomplete=0', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult(
+        [makeRepo({node_id: 'NODE_OK', owner: 'org', name: 'ok-repo'})],
+      )),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    expect(agg.getSnapshot().enumerationIncomplete).toBe(0)
+  })
+
+  it('total enumeration failure → enumerationIncomplete=null (count unknown)', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(err(new FetchInstallationsError('network down'))),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({publicRepos: []}))),
+      graphqlQueryForInstallation: vi.fn(),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.staleBanner).toBe(true)
+    expect(snap.enumerationIncomplete).toBeNull()
+  })
+
+  it('unexpected refresh throw after a good refresh → last-good served with staleBanner=true (no silent freshness)', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn()
+        .mockResolvedValueOnce(makeEnumerateResult(
+          [makeRepo({node_id: 'NODE_KEEP', owner: 'org', name: 'keep-repo'})],
+        ))
+        .mockRejectedValueOnce(new Error('unexpected crash mid-refresh')),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    expect(agg.getSnapshot().staleBanner).toBe(false)
+
+    // Second cycle throws unexpectedly — refresh must resolve (not reject)
+    // and the served snapshot must flip to staleBanner=true, keeping repos.
+    await expect(agg.refresh()).resolves.toBeUndefined()
+    const snap = agg.getSnapshot()
+    expect(snap.staleBanner).toBe(true)
+    expect(snap.repos).toHaveLength(1)
+    expect(snap.repos[0]?.node_id).toBe('NODE_KEEP')
+  })
+
+  it('unexpected throw on cold start → empty snapshot with staleBanner=true, enumerationIncomplete=null', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockRejectedValue(new Error('cold crash')),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await expect(agg.refresh()).resolves.toBeUndefined()
+
+    const snap = agg.getSnapshot()
+    expect(snap.staleBanner).toBe(true)
+    expect(snap.repos).toHaveLength(0)
+    expect(snap.enumerationIncomplete).toBeNull()
+  })
+
+  it('snapshot before any refresh → enumerationIncomplete=null (unknown)', () => {
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, makeDeps())
+    expect(agg.getSnapshot().enumerationIncomplete).toBeNull()
   })
 })
 

@@ -312,6 +312,83 @@ describe('enumerateRepos — error path', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Fail-visible partial enumeration accounting (rm-172)
+// ---------------------------------------------------------------------------
+
+describe('enumerateRepos — partial enumeration accounting (rm-172)', () => {
+  it('one install token mint fails → ok with failedInstallationIds=[bad], union holds only the healthy install repos', async () => {
+    // Fresh installation ids (41/42): the module-level read-only token cache is
+    // keyed by installation id and shared across tests — reused ids would serve
+    // cached tokens and bypass the mint mock entirely.
+    const client = makeClient({
+      listInstallations: vi.fn().mockResolvedValue([makeInstall(41), makeInstall(42)]),
+      mintInstallationToken: vi.fn()
+        .mockResolvedValueOnce('ghs_good')
+        .mockRejectedValueOnce(new Error('mint failed for install 42')),
+      listInstallationRepos: vi.fn().mockImplementation(async (token: string) => {
+        if (token !== 'ghs_good') throw new Error('unexpected token')
+        return [makeRepo({installation_id: 41, full_name: 'org/one', node_id: 'NODE_ONE'})]
+      }),
+    })
+
+    const result = await enumerateRepos(client)
+
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+    expect(result.data.failedInstallationIds).toEqual([42])
+    expect(result.data.repos.map(r => r.full_name)).toEqual(['org/one'])
+  })
+
+  it('one install repo listing fails → ok with failedInstallationIds=[bad]', async () => {
+    const client = makeClient({
+      listInstallations: vi.fn().mockResolvedValue([makeInstall(51), makeInstall(52)]),
+      mintInstallationToken: vi.fn().mockResolvedValue('ghs_ok'),
+      listInstallationRepos: vi.fn()
+        .mockResolvedValueOnce([makeRepo({installation_id: 51, full_name: 'org/one', node_id: 'NODE_ONE'})])
+        .mockRejectedValueOnce(new Error('repo listing failed for install 52')),
+    })
+
+    const result = await enumerateRepos(client)
+
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+    expect(result.data.failedInstallationIds).toEqual([52])
+    expect(result.data.repos.map(r => r.full_name)).toEqual(['org/one'])
+  })
+
+  it('all installs healthy → failedInstallationIds is empty', async () => {
+    const client = makeClient({
+      listInstallations: vi.fn().mockResolvedValue([makeInstall(61), makeInstall(62)]),
+      mintInstallationToken: vi.fn().mockResolvedValue('ghs_fake_token'),
+      listInstallationRepos: vi.fn().mockResolvedValue([makeRepo({installation_id: 61, full_name: 'org/one', node_id: 'NODE_ONE'})]),
+    })
+
+    const result = await enumerateRepos(client)
+
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+    expect(result.data.failedInstallationIds).toEqual([])
+  })
+
+  it('account names of failed installations are never exposed in the result', async () => {
+    const client = makeClient({
+      listInstallations: vi.fn().mockResolvedValue([makeInstall(71, 'secret-org')]),
+      mintInstallationToken: vi.fn().mockRejectedValue(new Error('mint failed')),
+    })
+
+    const result = await enumerateRepos(client)
+
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+    expect(result.data.failedInstallationIds).toEqual([71])
+    // The rm-172 accounting surface is id-only by construction — account
+    // names surface only through the pre-existing `installations` records,
+    // never through the failure path. (The MonitoringDto carries only counts.)
+    expect(JSON.stringify(result.data.failedInstallationIds)).not.toContain('secret-org')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Security: PEM redaction
 // ---------------------------------------------------------------------------
 
