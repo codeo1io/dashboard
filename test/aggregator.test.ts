@@ -1763,9 +1763,9 @@ describe('P1 regression — per-install token cache: no cross-install reuse', ()
     const INSTALL_ID_2 = 8002
 
     const mintFn = vi.fn()
-      .mockResolvedValueOnce('token-for-8001')
-      .mockResolvedValueOnce('token-for-8002')
-      .mockResolvedValue('should-not-be-called-again')
+      .mockResolvedValueOnce({token: 'token-for-8001', expiresAt: null})
+      .mockResolvedValueOnce({token: 'token-for-8002', expiresAt: null})
+      .mockResolvedValue({token: 'should-not-be-called-again', expiresAt: null})
 
     // First call for each installation
     const token1a = await mintReadOnlyToken(INSTALL_ID_1, mintFn)

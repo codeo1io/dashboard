@@ -36,7 +36,45 @@ jobs:
         run: |
           set -euo pipefail
 
-          LIVE_DIGEST="$(docker manifest inspect node:24-slim | awk '/^Digest:/{print $2; exit}')"
+          # rm-177: the live digest MUST be extracted, not assumed. On 2026-09-24
+          # (run 35970747110) `docker manifest inspect` returned no Digest line
+          # (exited 0 under anonymous manifest-auth rate limiting), the empty
+          # string compared unequal to the pin, and the job redded on a
+          # non-drift. Extraction failure is NOT drift and must never produce
+          # a drift verdict.
+          extract_live_digest() {
+            local d
+            d="$(docker manifest inspect node:24-slim 2>/dev/null | awk '/^Digest:/{print $2; exit}' || true)"
+            if [ -n "$d" ]; then
+              printf '%s' "$d"
+              return 0
+            fi
+            echo '::warning::docker manifest inspect returned no Digest line — trying Docker Hub token + registry HEAD fallback' >&2
+            # Fallback (proven 2026-09-24, research b27ad37b): anonymous token
+            # from auth.docker.io, then a registry HEAD whose
+            # docker-content-digest header is the live digest.
+            local token
+            token="$(curl -fsSL --max-time 20 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/node:pull' \
+              | jq -r '.token // empty' 2>/dev/null || true)"
+            if [ -n "$token" ]; then
+              d="$(curl -fsSI --max-time 20 \
+                -H "Authorization: Bearer $token" \
+                -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+                'https://registry-1.docker.io/v2/library/node/manifests/24-slim' \
+                | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:"{print $2; exit}' || true)"
+              if [ -n "$d" ]; then
+                printf '%s' "$d"
+                return 0
+              fi
+            fi
+            return 1
+          }
+
+          LIVE_DIGEST=""
+          if ! LIVE_DIGEST="$(extract_live_digest)"; then
+            echo '::error::live digest EXTRACTION FAILED (empty) — this is an extraction failure, NOT drift. docker manifest inspect returned no Digest line and the auth.docker.io/registry-1.docker.io HEAD fallback also failed. Re-run this workflow before drawing any drift conclusion.'
+            exit 1
+          fi
           echo "live node:24-slim digest: $LIVE_DIGEST"
 
           PINNED="$(grep -oE 'sha256:[0-9a-f]{64}' Dockerfile | sort -u)"
