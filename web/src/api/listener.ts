@@ -26,7 +26,24 @@ export interface ListenerMessagesResponse {
 
 export type FetchListenerResult =
   | { ok: true; data: ListenerMessagesResponse }
-  | { ok: false; reason: 'timeout' | 'network' | 'contract-drift' }
+  | { ok: false; reason: 'timeout' | 'auth' | 'rate-limit' | 'network' | 'contract-drift' }
+
+/** Bound for single listener calls (rm-184): the 30s unread poll and both ack
+ * POSTs must never hang past a server answer that is late, not absent. Kept
+ * well below the web testTimeout (30s) so jsdom suites never inherit a hang. */
+export const LISTENER_CALL_TIMEOUT_MS = 10_000
+
+function isAbortClassError(err: unknown): boolean {
+  // Caller aborts reject as AbortError; AbortSignal.timeout rejects as
+  // TimeoutError — both mean "the call did not complete in its budget".
+  return err instanceof DOMException && (err.name === 'AbortError' || err.name === 'TimeoutError')
+}
+
+function reasonForStatus(status: number): 'auth' | 'rate-limit' | 'network' {
+  if (status === 401) return 'auth'
+  if (status === 429) return 'rate-limit'
+  return 'network'
+}
 
 function isPlainObject(val: unknown): val is Record<string, unknown> {
   return typeof val === 'object' && val !== null && !Array.isArray(val)
@@ -89,11 +106,11 @@ export async function fetchListenerMessages(opts: {
     const res = await fetch(url.toString(), {
       method: 'GET',
       credentials: 'same-origin',
-      signal: opts.abortSignal,
+      signal: opts.abortSignal ?? AbortSignal.timeout(LISTENER_CALL_TIMEOUT_MS),
     })
 
     if (!res.ok) {
-      return { ok: false, reason: 'network' }
+      return { ok: false, reason: reasonForStatus(res.status) }
     }
 
     const data = await res.json()
@@ -111,18 +128,22 @@ export async function fetchListenerMessages(opts: {
 
     return { ok: true, data: { messages, unreadCount: data.unreadCount } }
   } catch (err) {
-    if (err instanceof DOMException && err.name === 'AbortError') {
+    if (isAbortClassError(err)) {
       return { ok: false, reason: 'timeout' }
     }
     return { ok: false, reason: 'network' }
   }
 }
 
-export async function ackListenerMessage(id: string): Promise<boolean> {
+export async function ackListenerMessage(
+  id: string,
+  opts: { abortSignal?: AbortSignal } = {},
+): Promise<boolean> {
   try {
     const res = await fetch(`/api/listener/messages/${encodeURIComponent(id)}/ack`, {
       method: 'POST',
       credentials: 'same-origin',
+      signal: opts.abortSignal ?? AbortSignal.timeout(LISTENER_CALL_TIMEOUT_MS),
     })
     return res.status === 202
   } catch {
@@ -130,11 +151,14 @@ export async function ackListenerMessage(id: string): Promise<boolean> {
   }
 }
 
-export async function ackAllListenerMessages(): Promise<boolean> {
+export async function ackAllListenerMessages(
+  opts: { abortSignal?: AbortSignal } = {},
+): Promise<boolean> {
   try {
     const res = await fetch('/api/listener/ack-all', {
       method: 'POST',
       credentials: 'same-origin',
+      signal: opts.abortSignal ?? AbortSignal.timeout(LISTENER_CALL_TIMEOUT_MS),
     })
     return res.status === 202
   } catch {

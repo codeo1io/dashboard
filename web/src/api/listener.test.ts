@@ -97,6 +97,32 @@ describe('listener API', () => {
       expect(res).toEqual({ ok: false, reason: 'timeout' })
     })
 
+    it('maps AbortSignal.timeout rejection (TimeoutError) to timeout — rm-189', async () => {
+      // AbortSignal.timeout() rejects with a DOMException named 'TimeoutError',
+      // not 'AbortError'; the poll budget relies on this mapping.
+      vi.mocked(fetch).mockRejectedValueOnce(new DOMException('Signal timed out', 'TimeoutError'))
+      const res = await fetchListenerMessages()
+      expect(res).toEqual({ ok: false, reason: 'timeout' })
+    })
+
+    it('maps 401 to auth — rm-189', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 }))
+      const res = await fetchListenerMessages()
+      expect(res).toEqual({ ok: false, reason: 'auth' })
+    })
+
+    it('maps 429 to rate-limit — rm-189', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(new Response('slow down', { status: 429 }))
+      const res = await fetchListenerMessages()
+      expect(res).toEqual({ ok: false, reason: 'rate-limit' })
+    })
+
+    it('maps 500 to network — rm-189', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(new Response('error', { status: 500 }))
+      const res = await fetchListenerMessages()
+      expect(res).toEqual({ ok: false, reason: 'network' })
+    })
+
     it('handles network error', async () => {
       vi.mocked(fetch).mockRejectedValueOnce(new TypeError('Failed to fetch'))
       const res = await fetchListenerMessages()
@@ -104,9 +130,28 @@ describe('listener API', () => {
     })
 
     it('handles non-ok status', async () => {
-      vi.mocked(fetch).mockResolvedValueOnce(new Response('error', { status: 500 }))
+      vi.mocked(fetch).mockResolvedValueOnce(new Response('error', { status: 502 }))
       const res = await fetchListenerMessages()
       expect(res).toEqual({ ok: false, reason: 'network' })
+    })
+
+    it('defaults a timeout signal when none is passed — review fix for rm-189 (view load was unbounded)', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(
+        new Response(JSON.stringify({ messages: [], unreadCount: 0 }), { status: 200 }),
+      )
+      await fetchListenerMessages()
+      const init = vi.mocked(fetch).mock.calls[0]?.[1] as RequestInit
+      expect(init.signal).toBeInstanceOf(AbortSignal)
+    })
+
+    it('honors a caller-provided signal — review fix for rm-189', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(
+        new Response(JSON.stringify({ messages: [], unreadCount: 0 }), { status: 200 }),
+      )
+      const controller = new AbortController()
+      await fetchListenerMessages({ abortSignal: controller.signal })
+      const init = vi.mocked(fetch).mock.calls[0]?.[1] as RequestInit
+      expect(init.signal).toBe(controller.signal)
     })
   })
 
@@ -123,6 +168,21 @@ describe('listener API', () => {
       const res = await ackListenerMessage('test-id')
       expect(res).toBe(false)
     })
+
+    it('defaults a timeout signal when none is passed — rm-189', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(new Response('{}', { status: 202 }))
+      await ackListenerMessage('test-id')
+      const init = vi.mocked(fetch).mock.calls[0]?.[1] as RequestInit
+      expect(init.signal).toBeInstanceOf(AbortSignal)
+    })
+
+    it('honors a caller-provided signal — rm-189', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(new Response('{}', { status: 202 }))
+      const controller = new AbortController()
+      await ackListenerMessage('test-id', { abortSignal: controller.signal })
+      const init = vi.mocked(fetch).mock.calls[0]?.[1] as RequestInit
+      expect(init.signal).toBe(controller.signal)
+    })
   })
 
   describe('ackAllListenerMessages', () => {
@@ -131,6 +191,13 @@ describe('listener API', () => {
       const res = await ackAllListenerMessages()
       expect(res).toBe(true)
       expect(fetch).toHaveBeenCalledWith('/api/listener/ack-all', expect.objectContaining({ method: 'POST' }))
+    })
+
+    it('defaults a timeout signal when none is passed — rm-189', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(new Response('{}', { status: 202 }))
+      await ackAllListenerMessages()
+      const init = vi.mocked(fetch).mock.calls[0]?.[1] as RequestInit
+      expect(init.signal).toBeInstanceOf(AbortSignal)
     })
   })
 })
