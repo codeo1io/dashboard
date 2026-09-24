@@ -734,14 +734,36 @@ describe('should-release — pnpm-lock.yaml-only change triggers release (fail o
   })
 })
 
-describe('should-release — pnpm-lock.yaml + proven non-artifact devDependency change skips release', () => {
-  it('skips when lock + devDependencies changed but no runtime fields changed', () => {
+describe('should-release — pnpm-lock.yaml + proven non-artifact devDependency change releases (rm-167)', () => {
+  it('releases when lock + devDependencies changed but no runtime fields changed', () => {
+    // rm-167: the devDeps-only skip is only sound when the lockfile is
+    // UNCHANGED. A devDeps-only manifest edit whose pnpm-lock.yaml regen moved
+    // an in-range runtime resolution still changes the image, so the guard
+    // fails open and releases. (This expectation intentionally flipped from
+    // skip in cycle 11 — see ROADMAP rm-167 / assess finding F2.)
     const base = writePkg(tmpDir, 'base.json', BASE_PKG)
     const head = writePkg(tmpDir, 'head.json', {
       ...BASE_PKG,
       devDependencies: {...BASE_PKG.devDependencies, vitest: '4.1.8'},
     })
     const {exitCode, stdout} = runGuard('package.json\npnpm-lock.yaml', base, head)
+    expect(exitCode).toBe(0)
+    expect(stdout).toMatch(/^release:/)
+    expect(stdout).toMatch(/pnpm-lock\.yaml/)
+  })
+})
+
+describe('should-release — devDependencies-only manifest change without lockfile skips release (rm-167 narrow skip)', () => {
+  it('skips when only package.json devDependencies changed and the lockfile is NOT in the diff', () => {
+    // The rm-167 fix narrowed the devDeps-only skip to lockfile-unchanged
+    // diffs. With the lockfile absent from the changed set, a proven
+    // non-artifact devDependency bump still skips.
+    const base = writePkg(tmpDir, 'base.json', BASE_PKG)
+    const head = writePkg(tmpDir, 'head.json', {
+      ...BASE_PKG,
+      devDependencies: {...BASE_PKG.devDependencies, vitest: '4.1.8'},
+    })
+    const {exitCode, stdout} = runGuard('package.json', base, head)
     expect(exitCode).toBe(1)
     expect(stdout).toMatch(/^skip:/)
   })

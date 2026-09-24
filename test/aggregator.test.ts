@@ -1748,6 +1748,58 @@ describe('P1 regression — vulnerabilityAlerts graceful: permission error → o
     // Only one call (no retry for non-permission errors)
     expect((graphqlQueryForInstallation as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1)
   })
+
+  it('rm-168: bare "Resource not accessible by integration" (no vulnerability keyword) → graceful no-alerts retry, NOT stale', async () => {
+    // The App-token denial for a missing security_events:vulnerability_alerts
+    // read often arrives as the generic integration message with no
+    // vulnerability keyword. Before rm-168 the matcher missed it and the whole
+    // repo went stale on a pure alerts-permission gap.
+    const repo = makeRepo({node_id: 'NODE_GENERIC_FORBIDDEN', owner: 'org', name: 'generic-forbidden', installation_id: 1})
+
+    let callCount = 0
+    const graphqlQueryForInstallation: GraphqlQueryForInstallationFn = vi.fn().mockImplementation(
+      async (_installId: number, _query: string, _vars: Record<string, unknown>) => {
+        callCount++
+        if (callCount === 1) {
+          throw new Error('Resource not accessible by integration')
+        }
+        return {
+          repository: {
+            defaultBranchRef: {
+              target: {
+                statusCheckRollup: {state: 'SUCCESS'},
+                checkSuites: {nodes: []},
+              },
+            },
+            pullRequests: {totalCount: 3},
+            issues: {totalCount: 4},
+          },
+        }
+      },
+    )
+
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_GENERIC_FORBIDDEN', owner: 'org', name: 'generic-forbidden'})],
+      }))),
+      graphqlQueryForInstallation,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos).toHaveLength(1)
+    const repoStatus = snap.repos[0]?.status
+    expect(repoStatus?.openAlertCount).toBeNull()
+    expect(repoStatus?.stale).toBe(false)
+    expect(repoStatus?.rollupState).toBe('green')
+    expect(repoStatus?.openPrCount).toBe(3)
+    expect(repoStatus?.openIssueCount).toBe(4)
+    // Retry happened: the no-alerts variant succeeded on the second call
+    expect(callCount).toBe(2)
+  })
 })
 
 // ---------------------------------------------------------------------------
