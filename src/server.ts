@@ -18,6 +18,7 @@ import type {OperatorClient, SessionDto} from './gateway/operator-client.ts'
 import type {AggregatorSnapshot} from './github/aggregator.ts'
 import type {MetadataReader} from './github/metadata.ts'
 import type {ListenerStore} from './listener/store.ts'
+import type {Logger} from './logger.ts'
 import {Buffer} from 'node:buffer'
 import {existsSync, readFileSync} from 'node:fs'
 import {join} from 'node:path'
@@ -1031,6 +1032,135 @@ export function readServerBindConfig(env: NodeJS.ProcessEnv = process.env): Serv
 }
 
 /**
+ * Graceful shutdown wiring (rm-157).
+ *
+ * Until 2026-09-24 the server had NO signal handlers: `docker stop`/orchestrator
+ * SIGTERM killed the process outright, `store.close()` (listener SQLite) was never
+ * called, and the aggregator-stop `close` listener could never fire — nothing ever
+ * closed the server. `registerGracefulShutdown` closes that path and is exported for
+ * tests: all collaborators are injected as narrow structural types.
+ *
+ * Semantics: first SIGTERM/SIGINT stops accepting new connections, tears down the
+ * aggregator and listener store (each guarded so one failure cannot block exit),
+ * then waits — bounded by `drainTimeoutMs` — for open sockets to drain before
+ * exiting 0. A second signal skips the drain and exits immediately. The timer is
+ * unref'd so it never holds the event loop open on its own.
+ */
+interface ShutdownClosableServer {
+  close: (callback?: () => void) => unknown
+}
+
+interface ShutdownClosableStore {
+  close: () => unknown
+}
+
+interface ShutdownSignalTarget {
+  on: (signal: string, listener: () => void) => unknown
+  removeListener: (signal: string, listener: () => void) => unknown
+  exit: (code: number) => void
+}
+
+const SHUTDOWN_SIGNALS: readonly string[] = ['SIGTERM', 'SIGINT']
+const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000
+
+export interface GracefulShutdownDeps {
+  readonly server: ShutdownClosableServer
+  readonly listenerStore?: ShutdownClosableStore | undefined
+  readonly stopAggregator?: (() => void) | undefined
+  /** Signal source + exit hook; injectable for tests. Defaults to the real process. */
+  readonly signalTarget?: ShutdownSignalTarget | undefined
+  readonly drainTimeoutMs?: number | undefined
+  readonly log?: Logger | undefined
+}
+
+/**
+ * Registers SIGTERM/SIGINT handlers that drain the server and tear down its
+ * resources. Returns a disposer that unregisters the handlers (test teardown).
+ */
+export function registerGracefulShutdown(deps: GracefulShutdownDeps): () => void {
+  const target: ShutdownSignalTarget = deps.signalTarget ?? process
+  const log: Logger = deps.log ?? logger
+  const drainTimeoutMs = deps.drainTimeoutMs ?? DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS
+
+  let shuttingDown = false
+
+  const onSignal = (): void => {
+    if (shuttingDown) {
+      log.warning('Shutdown already in progress — forcing immediate exit')
+      target.exit(0)
+      return
+    }
+    shuttingDown = true
+    log.info('Shutdown signal received — draining open connections')
+
+    let drainTimer: NodeJS.Timeout | undefined
+    let settled = false
+    const finish = (): void => {
+      if (settled) {
+        return
+      }
+      settled = true
+      if (drainTimer !== undefined) {
+        clearTimeout(drainTimer)
+      }
+      for (const signal of SHUTDOWN_SIGNALS) {
+        target.removeListener(signal, onSignal)
+      }
+      log.info('Shutdown complete')
+      target.exit(0)
+    }
+
+    drainTimer = setTimeout(() => {
+      log.warning('Shutdown drain timeout exceeded — forcing exit with connections possibly open')
+      finish()
+    }, drainTimeoutMs)
+    drainTimer.unref()
+
+    // Stop accepting new connections; finish() runs once open sockets drain.
+    try {
+      deps.server.close(() => {
+        finish()
+      })
+    } catch (error) {
+      log.warning('Server close threw during shutdown — continuing teardown', {
+        error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
+      })
+      finish()
+    }
+
+    if (deps.stopAggregator !== undefined) {
+      try {
+        deps.stopAggregator()
+      } catch (error) {
+        log.warning('Aggregator stop failed during shutdown', {
+          error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
+        })
+      }
+    }
+
+    if (deps.listenerStore !== undefined) {
+      try {
+        deps.listenerStore.close()
+      } catch (error) {
+        log.warning('Listener store close failed during shutdown', {
+          error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
+        })
+      }
+    }
+  }
+
+  for (const signal of SHUTDOWN_SIGNALS) {
+    target.on(signal, onSignal)
+  }
+
+  return () => {
+    for (const signal of SHUTDOWN_SIGNALS) {
+      target.removeListener(signal, onSignal)
+    }
+  }
+}
+
+/**
  * Binds the app to `DASHBOARD_HOST:DASHBOARD_PORT` (default `0.0.0.0:3000`) via
  * @hono/node-server. Loads the cookie key asynchronously before starting.
  *
@@ -1098,13 +1228,11 @@ async function createDashboardServer(): Promise<ServerType> {
     },
   )
 
-  // Attach stop handler for graceful shutdown
-  if (stopAggregator !== undefined) {
-    const stop = stopAggregator
-    server.addListener('close', () => {
-      stop()
-    })
-  }
+  // Graceful shutdown: SIGTERM/SIGINT → stop accepting connections, bounded
+  // drain, aggregator + listener-store teardown, exit 0 (rm-157). This
+  // replaces the former aggregator-only `close` listener, which could never
+  // fire — nothing closed the server.
+  registerGracefulShutdown({server, listenerStore, stopAggregator})
 
   // Kick the first aggregation refresh in the background — does NOT block the
   // server from accepting requests. Failures are logged but do NOT crash the
