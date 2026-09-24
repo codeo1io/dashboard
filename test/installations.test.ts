@@ -647,3 +647,66 @@ describe('security — token-shaped secrets redacted in error log paths', () => 
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// rm-112 (cycle-1, 2026-09-25): partial enumeration is countable, not silent
+// ---------------------------------------------------------------------------
+
+describe('enumerateRepos — degraded installation counting (rm-112)', () => {
+  it('a failed token mint increments degradedInstallations and continues', async () => {
+    // Fresh install ids: mintReadOnlyToken caches per installation id at module
+    // scope, so ids used by earlier tests would short-circuit this mint path.
+    const client = makeClient({
+      listInstallations: vi.fn().mockResolvedValue([makeInstall(101), makeInstall(102)]),
+      mintInstallationToken: vi.fn().mockImplementation(async (id: number) => {
+        // install 101: every mint attempt fails (full AND reduced permission
+        // retries) — mintReadOnlyToken re-throws only when both fail
+        if (id === 101) throw new Error('403 Forbidden')
+        return 'ghs_fake_token'
+      }),
+      listInstallationRepos: vi.fn().mockResolvedValue([makeRepo({node_id: 'REPO_B', full_name: 'fro-bot/dashboard'})]),
+    })
+
+    const result = await enumerateRepos(client)
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+
+    // The surviving install's repos still enumerate
+    expect(result.data.repos).toHaveLength(1)
+    expect(result.data.repos[0]?.node_id).toBe('REPO_B')
+    // ...and the skipped one is surfaced as a count, not a silent hole
+    expect(result.data.degradedInstallations).toBe(1)
+  })
+
+  it('a failed repo list increments degradedInstallations and continues', async () => {
+    const client = makeClient({
+      listInstallations: vi.fn().mockResolvedValue([makeInstall(103), makeInstall(104)]),
+      mintInstallationToken: vi.fn().mockResolvedValue('ghs_fake_token'),
+      listInstallationRepos: vi
+        .fn()
+        .mockRejectedValueOnce(new Error('502 Bad Gateway'))
+        .mockResolvedValueOnce([makeRepo({node_id: 'REPO_A', full_name: 'fro-bot/agent'})]),
+    })
+
+    const result = await enumerateRepos(client)
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+
+    expect(result.data.repos).toHaveLength(1)
+    expect(result.data.repos[0]?.node_id).toBe('REPO_A')
+    expect(result.data.degradedInstallations).toBe(1)
+  })
+
+  it('clean enumeration reports degradedInstallations: 0', async () => {
+    const client = makeClient({
+      listInstallations: vi.fn().mockResolvedValue([makeInstall(105)]),
+      mintInstallationToken: vi.fn().mockResolvedValue('ghs_fake_token'),
+      listInstallationRepos: vi.fn().mockResolvedValue([makeRepo({node_id: 'REPO_A', full_name: 'fro-bot/agent'})]),
+    })
+
+    const result = await enumerateRepos(client)
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+    expect(result.data.degradedInstallations).toBe(0)
+  })
+})
