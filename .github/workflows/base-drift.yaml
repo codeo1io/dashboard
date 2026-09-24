@@ -1,0 +1,104 @@
+# Weekly read-only drift check for the Dockerfile's node:24-slim base pins.
+#
+# The Dockerfile pins by digest (never a moving tag), so nothing alerts when
+# the upstream tag rebuilds. This workflow compares the pinned digests to the
+# live tag digest every Monday and opens an issue on drift — it never bumps
+# anything (auto-bumping a base image would skip the Release scan gate).
+#
+# Digest parsing uses the buildx imagetools pretty-dump `Digest:` line, NOT
+# `docker buildx imagetools inspect --format '{{.Manifest.Digest}}'` — that
+# template is silently ignored for attestation-bearing OCI indexes and prints
+# the full default dump instead (see docs/solutions/, Release workflow fix).
+# `docker manifest inspect <ref>` (non-verbose) is equally unusable: it emits
+# the raw index JSON, which has no top-level `Digest:` line at all.
+name: Base image drift check
+
+on:
+  schedule:
+    - cron: '13 4 * * 1' # Mondays 04:13 UTC, off the hour
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    # 2026-09-22: ubuntu-latest per the hosted-runner CI policy (PR #11/#12)
+    # — this file was authored under the retired self-hosted-only policy.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Compare Dockerfile pins to live node:24-slim digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          LIVE_DIGEST="$(docker buildx imagetools inspect node:24-slim | awk '/^Digest:/{print $2; exit}')"
+          if [ -z "$LIVE_DIGEST" ]; then
+            echo '::error::failed to extract the live multi-arch index digest (no Digest: line in the buildx dump) — an extraction failure is not drift and must not be reported as one'
+            exit 1
+          fi
+          echo "live node:24-slim index digest: $LIVE_DIGEST"
+
+          PINNED="$(grep -oE 'sha256:[0-9a-f]{64}' Dockerfile | sort -u)"
+          if [ -z "$PINNED" ]; then
+            echo '::error::no pinned digests found in Dockerfile'
+            exit 1
+          fi
+          echo "pinned digests:"
+          echo "$PINNED"
+
+          DRIFT=0
+          for pin in $PINNED; do
+            if [ "$pin" != "$LIVE_DIGEST" ]; then
+              echo "drift: pin $pin != live $LIVE_DIGEST"
+              DRIFT=1
+            else
+              echo "current: $pin"
+            fi
+          done
+
+          if [ "$DRIFT" = '0' ]; then
+            echo 'no drift — Dockerfile is current'
+            exit 0
+          fi
+
+          # Surface the drift as a tracking issue (deduplicated while one is
+          # open). Best-effort only: issues are DISABLED on this fork
+          # (has_issues=false → the issue API 410s), and under set -euo pipefail
+          # an unguarded gh issue call would exit the step red with a
+          # misleading error. The unconditional exit 1 below is the
+          # authoritative drift signal (rm-123).
+          ISSUES_ENABLED="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.has_issues' 2>/dev/null || echo 'false')"
+          if [ "$ISSUES_ENABLED" = 'true' ]; then
+            # Surface the drift as an issue (deduplicated while one is open).
+            gh label create base-image-drift --color BFD4F2 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || true
+            OPEN="$(gh issue list --repo "$GITHUB_REPOSITORY" --label base-image-drift --state open --json number --jq 'length')"
+            if [ "$OPEN" = '0' ]; then
+              gh issue create \
+                --repo "$GITHUB_REPOSITORY" \
+                --label base-image-drift \
+                --title 'Base image drift: Dockerfile pins behind node:24-slim' \
+                --body "The weekly drift check found pinned digests that no longer match the live \`node:24-slim\` tag.
+
+            Live digest: \`$LIVE_DIGEST\`
+            Pinned digests (from \`Dockerfile\`):
+            \`\`\`
+            $PINNED
+            \`\`\`
+
+            Action: re-pin in a PR that goes through the normal Release scan gate. Do not auto-bump." >/dev/null
+            else
+              echo "open drift issue already exists ($OPEN) — skipping creation"
+            fi
+          else
+            echo '::warning::issues disabled on this repository — drift tracking issue skipped; the red run is the drift signal'
+          fi
+
+          # Non-zero so the run is visibly red on drift.
+          exit 1
