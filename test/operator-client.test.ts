@@ -1,10 +1,13 @@
 /**
  * Typed Gateway operator API client contract tests.
  *
- * These tests prove the mocked boundary contract only; no live /operator/* calls.
+ * Contract tests against injectable fetch/SSE transports — no network use.
+ * The server-side live consumer is session validation (getCurrentSession);
+ * launch/snapshot are browser-side (public/operator-launch.js) and are not
+ * covered here.
  *
  * Security invariants tested:
- * - Sensitive values (prompts, tool args, workspace paths, tokens, session IDs,
+ * - Sensitive values (tool args, workspace paths, tokens, session IDs,
  *   CSRF values, internal URLs) are never logged.
  * - Mutating calls reject before fetch when CSRF token or idempotency key is
  *   missing or blank.
@@ -13,7 +16,6 @@
  */
 
 import type {
-  LaunchRunRequest,
   OperatorClientOptions,
   RunStreamEvent,
 } from '../src/gateway/operator-client.ts'
@@ -171,430 +173,6 @@ describe('refreshCsrf', () => {
     })
     await client.refreshCsrf()
     expect(calls[0]).toBe('/operator/session/csrf')
-  })
-})
-
-// ---------------------------------------------------------------------------
-// launchRun — CSRF + idempotency key guards
-// ---------------------------------------------------------------------------
-
-describe('launchRun', () => {
-  const validRequest: LaunchRunRequest = {
-    repo: 'owner/repo',
-    prompt: 'fix the bug',
-    idempotencyKey: 'idem-key-abc',
-    csrfToken: 'csrf-token-xyz',
-  }
-
-  it('returns runId on success (202 wire shape)', async () => {
-    const runData = {runId: 'run-xyz'}
-    const client = createOperatorClient({
-      fetch: makeOkFetch(runData, 202),
-      createEventStream: makeEventStream([]),
-    })
-    const result = await client.launchRun(validRequest)
-    expect(result.success).toBe(true)
-    if (result.success) {
-      expect(result.data.runId).toBe('run-xyz')
-    }
-  })
-
-  it('sends body with only repo and prompt — no csrf or idempotency in body', async () => {
-    let capturedBody: unknown
-    const client = createOperatorClient({
-      fetch: async (_input, init) => {
-        capturedBody = JSON.parse(init?.body as string)
-        return new Response(JSON.stringify({runId: 'run-xyz'}), {
-          status: 202,
-          headers: {'content-type': 'application/json'},
-        })
-      },
-      createEventStream: makeEventStream([]),
-    })
-    await client.launchRun({repo: 'owner/repo', prompt: 'p', csrfToken: 'csrf-token-xyz', idempotencyKey: 'idem-key-abc'})
-    expect(capturedBody).toEqual({repo: 'owner/repo', prompt: 'p'})
-  })
-
-  it('rejects before fetch when csrfToken is blank — fetchCalled is false', async () => {
-    let fetchCalled = false
-    const neverFetch: OperatorClientOptions['fetch'] = async () => {
-      fetchCalled = true
-      return new Response('', {status: 200})
-    }
-    const client = createOperatorClient({
-      fetch: neverFetch,
-      createEventStream: makeEventStream([]),
-    })
-    const req = {...validRequest, csrfToken: ''}
-    const result = await client.launchRun(req)
-    expect(result.success).toBe(false)
-    expect(fetchCalled).toBe(false)
-    if (!result.success) {
-      expect(result.error.kind).toBe('validation')
-      if (result.error.kind === 'validation') {
-        expect(result.error.code).toBe('missing_csrf')
-      }
-    }
-  })
-
-  it('rejects before fetch when idempotencyKey is blank — fetchCalled is false', async () => {
-    let fetchCalled = false
-    const neverFetch: OperatorClientOptions['fetch'] = async () => {
-      fetchCalled = true
-      return new Response('', {status: 200})
-    }
-    const client = createOperatorClient({
-      fetch: neverFetch,
-      createEventStream: makeEventStream([]),
-    })
-    const req = {...validRequest, idempotencyKey: ''}
-    const result = await client.launchRun(req)
-    expect(result.success).toBe(false)
-    expect(fetchCalled).toBe(false)
-    if (!result.success) {
-      expect(result.error.kind).toBe('validation')
-      if (result.error.kind === 'validation') {
-        expect(result.error.code).toBe('missing_idempotency_key')
-      }
-    }
-  })
-
-  it('rejects before fetch when csrfToken is whitespace-only', async () => {
-    let fetchCalled = false
-    const neverFetch: OperatorClientOptions['fetch'] = async () => {
-      fetchCalled = true
-      return new Response('', {status: 200})
-    }
-    const client = createOperatorClient({
-      fetch: neverFetch,
-      createEventStream: makeEventStream([]),
-    })
-    const req = {...validRequest, csrfToken: '   '}
-    const result = await client.launchRun(req)
-    expect(result.success).toBe(false)
-    expect(fetchCalled).toBe(false)
-  })
-
-  it('uses relative path /operator/runs', async () => {
-    const calls: string[] = []
-    const client = createOperatorClient({
-      fetch: async (input, _init) => {
-        calls.push(typeof input === 'string' ? input : String(input))
-        return new Response(JSON.stringify({runId: 'r1'}), {
-          status: 202,
-          headers: {'content-type': 'application/json'},
-        })
-      },
-      createEventStream: makeEventStream([]),
-    })
-    await client.launchRun(validRequest)
-    expect(calls[0]).toBe('/operator/runs')
-  })
-
-  it('sends x-csrf-token header with csrfToken value', async () => {
-    const headers: Record<string, string> = {}
-    const client = createOperatorClient({
-      fetch: async (_input, init) => {
-        const h = init?.headers as Record<string, string> | undefined
-        if (h) Object.assign(headers, h)
-        return new Response(JSON.stringify({runId: 'r1'}), {
-          status: 202,
-          headers: {'content-type': 'application/json'},
-        })
-      },
-      createEventStream: makeEventStream([]),
-    })
-    await client.launchRun(validRequest)
-    expect(headers['x-csrf-token']).toBe('csrf-token-xyz')
-  })
-
-  it('sends idempotency-key header with idempotencyKey value', async () => {
-    const headers: Record<string, string> = {}
-    const client = createOperatorClient({
-      fetch: async (_input, init) => {
-        const h = init?.headers as Record<string, string> | undefined
-        if (h) Object.assign(headers, h)
-        return new Response(JSON.stringify({runId: 'r1'}), {
-          status: 202,
-          headers: {'content-type': 'application/json'},
-        })
-      },
-      createEventStream: makeEventStream([]),
-    })
-    await client.launchRun(validRequest)
-    expect(headers['idempotency-key']).toBe('idem-key-abc')
-  })
-
-  it('maps 400 response to http error with status 400', async () => {
-    const client = createOperatorClient({
-      fetch: makeErrorFetch(400),
-      createEventStream: makeEventStream([]),
-    })
-    const result = await client.launchRun(validRequest)
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.kind).toBe('http')
-      if (result.error.kind === 'http') {
-        expect(result.error.status).toBe(400)
-      }
-    }
-  })
-
-  it('maps 404 response to http error with status 404', async () => {
-    const client = createOperatorClient({
-      fetch: makeErrorFetch(404),
-      createEventStream: makeEventStream([]),
-    })
-    const result = await client.launchRun(validRequest)
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.kind).toBe('http')
-      if (result.error.kind === 'http') {
-        expect(result.error.status).toBe(404)
-      }
-    }
-  })
-
-  it('maps 429 response to http error with status 429', async () => {
-    const client = createOperatorClient({
-      fetch: makeErrorFetch(429),
-      createEventStream: makeEventStream([]),
-    })
-    const result = await client.launchRun(validRequest)
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.kind).toBe('http')
-      if (result.error.kind === 'http') {
-        expect(result.error.status).toBe(429)
-      }
-    }
-  })
-
-  it('does not log prompt value in any log entry', async () => {
-    const loggedMessages: string[] = []
-    const capturingLogger = {
-      info: (msg: string) => loggedMessages.push(msg),
-      error: (msg: string) => loggedMessages.push(msg),
-      warning: (msg: string) => loggedMessages.push(msg),
-      debug: (msg: string) => loggedMessages.push(msg),
-    }
-    const client = createOperatorClient({
-      fetch: makeErrorFetch(400),
-      createEventStream: makeEventStream([]),
-      logger: capturingLogger,
-    })
-    await client.launchRun({...validRequest, prompt: 'SECRET_PROMPT_VALUE'})
-    const allLogged = loggedMessages.join(' ')
-    expect(allLogged).not.toContain('SECRET_PROMPT_VALUE')
-  })
-
-  it('route template logged is /operator/runs only (no dynamic segments)', async () => {
-    const loggedMeta: Record<string, unknown>[] = []
-    const capturingLogger = {
-      info: (_msg: string, meta?: Record<string, unknown>) => { if (meta) loggedMeta.push(meta) },
-      error: (_msg: string, meta?: Record<string, unknown>) => { if (meta) loggedMeta.push(meta) },
-      warning: (_msg: string, meta?: Record<string, unknown>) => { if (meta) loggedMeta.push(meta) },
-      debug: (_msg: string, meta?: Record<string, unknown>) => { if (meta) loggedMeta.push(meta) },
-    }
-    const client = createOperatorClient({
-      fetch: makeErrorFetch(400),
-      createEventStream: makeEventStream([]),
-      logger: capturingLogger,
-    })
-    await client.launchRun(validRequest)
-    for (const meta of loggedMeta) {
-      if (meta.route !== undefined) {
-        expect(meta.route).toBe('/operator/runs')
-      }
-    }
-  })
-})
-
-// ---------------------------------------------------------------------------
-// getRunSnapshot
-// ---------------------------------------------------------------------------
-
-describe('getRunSnapshot', () => {
-  it('returns run snapshot on success', async () => {
-    const snapshot = {
-      runId: 'run-001',
-      status: 'running' as const,
-      owner: 'fro-bot',
-      repo: 'agent',
-      createdAt: '2026-06-18T20:00:00Z',
-    }
-    const client = createOperatorClient({
-      fetch: makeOkFetch(snapshot),
-      createEventStream: makeEventStream([]),
-    })
-    const result = await client.getRunSnapshot('run-001')
-    expect(result.success).toBe(true)
-    if (result.success) {
-      expect(result.data.runId).toBe('run-001')
-      expect(result.data.status).toBe('running')
-    }
-  })
-
-  it('uses relative path /operator/runs/:runId', async () => {
-    const calls: string[] = []
-    const client = createOperatorClient({
-      fetch: async (input, _init) => {
-        calls.push(typeof input === 'string' ? input : String(input))
-        return new Response(
-          JSON.stringify({runId: 'run-42', status: 'queued', owner: 'o', repo: 'r', createdAt: '2026-06-18T20:00:00Z'}),
-          {status: 200, headers: {'content-type': 'application/json'}},
-        )
-      },
-      createEventStream: makeEventStream([]),
-    })
-    await client.getRunSnapshot('run-42')
-    expect(calls[0]).toBe('/operator/runs/run-42')
-  })
-
-  it('returns error on 404', async () => {
-    const client = createOperatorClient({
-      fetch: makeErrorFetch(404),
-      createEventStream: makeEventStream([]),
-    })
-    const result = await client.getRunSnapshot('run-missing')
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.kind).toBe('http')
-      if (result.error.kind === 'http') {
-        expect(result.error.status).toBe(404)
-      }
-    }
-  })
-})
-
-// ---------------------------------------------------------------------------
-// connectRunStream — SSE transport
-// ---------------------------------------------------------------------------
-
-describe('connectRunStream', () => {
-  it('delivers typed events to the callback', () => {
-    const events: RunStreamEvent[] = [
-      {type: 'ready', data: {contractVersion: '1.1.0'}},
-      {
-        type: 'status',
-        data: {
-          runId: 'run-001',
-          entityRef: 'fro-bot/agent',
-          surface: 'github',
-          phase: 'EXECUTING',
-          status: 'running',
-          startedAt: '2026-06-18T20:00:00Z',
-          stale: false,
-        },
-      },
-    ]
-    const received: RunStreamEvent[] = []
-    const client = createOperatorClient({
-      fetch: makeOkFetch({}),
-      createEventStream: makeEventStream(events),
-    })
-    client.connectRunStream('run-001', {
-      onEvent: e => received.push(e),
-      onError: () => {},
-      onClose: () => {},
-    })
-    expect(received).toHaveLength(2)
-    expect(received[0]?.type).toBe('ready')
-    expect(received[1]?.type).toBe('status')
-  })
-
-  it('passes lastEventId to the transport', () => {
-    const capturedOpts: {lastEventId?: string}[] = []
-    const client = createOperatorClient({
-      fetch: makeOkFetch({}),
-      createEventStream: (_path, opts) => {
-        capturedOpts.push(opts ?? {})
-        return {
-          start(_onEvent: StreamEventCallback, _onError: (err: Error) => void, onClose: () => void) {
-            onClose()
-          },
-          close() {},
-        }
-      },
-    })
-    client.connectRunStream('run-001', {
-      onEvent: () => {},
-      onError: () => {},
-      onClose: () => {},
-      lastEventId: 'evt-99',
-    })
-    expect(capturedOpts[0]?.lastEventId).toBe('evt-99')
-  })
-
-  it('uses relative path /operator/runs/:runId/stream', () => {
-    const capturedPaths: string[] = []
-    const client = createOperatorClient({
-      fetch: makeOkFetch({}),
-      createEventStream: (path, _opts) => {
-        capturedPaths.push(path)
-        return {
-          start(_onEvent: StreamEventCallback, _onError: (err: Error) => void, onClose: () => void) {
-            onClose()
-          },
-          close() {},
-        }
-      },
-    })
-    client.connectRunStream('run-001', {
-      onEvent: () => {},
-      onError: () => {},
-      onClose: () => {},
-    })
-    expect(capturedPaths[0]).toBe('/operator/runs/run-001/stream')
-  })
-
-  it('delivers reset event when stream is reset', () => {
-    const events: RunStreamEvent[] = [{type: 'reset', data: {runId: 'run-001', reason: 'no-snapshot'}}]
-    const received: RunStreamEvent[] = []
-    const client = createOperatorClient({
-      fetch: makeOkFetch({}),
-      createEventStream: makeEventStream(events),
-    })
-    client.connectRunStream('run-001', {
-      onEvent: e => received.push(e),
-      onError: () => {},
-      onClose: () => {},
-    })
-    expect(received[0]?.type).toBe('reset')
-  })
-
-  it('delivers status events for terminal run statuses', () => {
-    const terminalStatuses = ['succeeded', 'failed', 'cancelled'] as const
-    for (const status of terminalStatuses) {
-      const events: RunStreamEvent[] = [
-        {
-          type: 'status',
-          data: {
-            runId: 'run-001',
-            entityRef: 'fro-bot/agent',
-            surface: 'github',
-            phase: 'COMPLETED',
-            status,
-            startedAt: '2026-06-18T20:00:00Z',
-            stale: false,
-          },
-        },
-      ]
-      const received: RunStreamEvent[] = []
-      const client = createOperatorClient({
-        fetch: makeOkFetch({}),
-        createEventStream: makeEventStream(events),
-      })
-      client.connectRunStream('run-001', {
-        onEvent: e => received.push(e),
-        onError: () => {},
-        onClose: () => {},
-      })
-      expect(received[0]?.type).toBe('status')
-      if (received[0]?.type === 'status') {
-        expect(received[0].data.status).toBe(status)
-      }
-    }
   })
 })
 
@@ -1396,96 +974,6 @@ describe('listRepos', () => {
 // ---------------------------------------------------------------------------
 
 describe('path parameter encoding', () => {
-  it('rejects runId with literal slash in getRunSnapshot before fetch', async () => {
-    let fetchCalled = false
-    const client = createOperatorClient({
-      fetch: async () => {
-        fetchCalled = true
-        return new Response('{}', {status: 200, headers: {'content-type': 'application/json'}})
-      },
-      createEventStream: makeEventStream([]),
-    })
-    const result = await client.getRunSnapshot('run/evil')
-    expect(fetchCalled).toBe(false)
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.kind).toBe('validation')
-      if (result.error.kind === 'validation') {
-        expect(result.error.code).toBe('missing_run_id')
-      }
-    }
-  })
-
-  it('rejects runId with percent-encoded slash (%2F) in getRunSnapshot before fetch', async () => {
-    let fetchCalled = false
-    const client = createOperatorClient({
-      fetch: async () => {
-        fetchCalled = true
-        return new Response('{}', {status: 200, headers: {'content-type': 'application/json'}})
-      },
-      createEventStream: makeEventStream([]),
-    })
-    const result = await client.getRunSnapshot('run%2Fevil')
-    expect(fetchCalled).toBe(false)
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.kind).toBe('validation')
-      if (result.error.kind === 'validation') {
-        expect(result.error.code).toBe('missing_run_id')
-      }
-    }
-  })
-
-  it('rejects runId with percent-encoded traversal (%2F..%2F) in getRunSnapshot before fetch', async () => {
-    let fetchCalled = false
-    const client = createOperatorClient({
-      fetch: async () => {
-        fetchCalled = true
-        return new Response('{}', {status: 200, headers: {'content-type': 'application/json'}})
-      },
-      createEventStream: makeEventStream([]),
-    })
-    const result = await client.getRunSnapshot('run%2Fevil%2F..%2Finject')
-    expect(fetchCalled).toBe(false)
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.kind).toBe('validation')
-    }
-  })
-
-  it('rejects runId with percent-encoded backslash (%5C) in getRunSnapshot before fetch', async () => {
-    let fetchCalled = false
-    const client = createOperatorClient({
-      fetch: async () => {
-        fetchCalled = true
-        return new Response('{}', {status: 200, headers: {'content-type': 'application/json'}})
-      },
-      createEventStream: makeEventStream([]),
-    })
-    const result = await client.getRunSnapshot('run%5Cevil')
-    expect(fetchCalled).toBe(false)
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.kind).toBe('validation')
-    }
-  })
-
-  it('encodes runId with query chars in getRunSnapshot', async () => {
-    const calls: string[] = []
-    const client = createOperatorClient({
-      fetch: async (input, _init) => {
-        calls.push(typeof input === 'string' ? input : String(input))
-        return new Response(
-          JSON.stringify({runId: 'run?x=1', status: 'queued', owner: 'o', repo: 'r', createdAt: '2026-06-18T20:00:00Z'}),
-          {status: 200, headers: {'content-type': 'application/json'}},
-        )
-      },
-      createEventStream: makeEventStream([]),
-    })
-    await client.getRunSnapshot('run?x=1')
-    expect(calls[0]).toBe('/operator/runs/run%3Fx%3D1')
-  })
-
   it('rejects runId with literal slash in connectRunStream before stream creation', () => {
     let streamCreated = false
     const client = createOperatorClient({
@@ -1752,7 +1240,7 @@ describe('path validation — allowlist /operator/* only', () => {
   // For fetchJson paths, we verify via a custom fetch that records the path
   // and that the guard fires before fetch for scheme-like injections.
 
-  it('rejects file: scheme in path via getRunSnapshot', () => {
+  it('rejects file: scheme in path', () => {
     // Since public methods construct paths internally, we test the path guard
     // via the exported validateOperatorPath seam.
     const result = validateOperatorPath('file:///etc/passwd')
@@ -1826,51 +1314,6 @@ describe('path validation — allowlist /operator/* only', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Finding 2: Blank dynamic IDs must reject before fetch/stream creation
-// ---------------------------------------------------------------------------
-
-describe('getRunSnapshot — blank runId validation', () => {
-  it('rejects blank runId before fetch', async () => {
-    let fetchCalled = false
-    const client = createOperatorClient({
-      fetch: async () => {
-        fetchCalled = true
-        return new Response('{}', {status: 200, headers: {'content-type': 'application/json'}})
-      },
-      createEventStream: makeEventStream([]),
-    })
-    const result = await client.getRunSnapshot('')
-    expect(result.success).toBe(false)
-    expect(fetchCalled).toBe(false)
-    if (!result.success) {
-      expect(result.error.kind).toBe('validation')
-      if (result.error.kind === 'validation') {
-        expect(result.error.code).toBe('missing_run_id')
-      }
-    }
-  })
-
-  it('rejects whitespace-only runId before fetch', async () => {
-    let fetchCalled = false
-    const client = createOperatorClient({
-      fetch: async () => {
-        fetchCalled = true
-        return new Response('{}', {status: 200, headers: {'content-type': 'application/json'}})
-      },
-      createEventStream: makeEventStream([]),
-    })
-    const result = await client.getRunSnapshot('   ')
-    expect(result.success).toBe(false)
-    expect(fetchCalled).toBe(false)
-    if (!result.success) {
-      expect(result.error.kind).toBe('validation')
-      if (result.error.kind === 'validation') {
-        expect(result.error.code).toBe('missing_run_id')
-      }
-    }
-  })
-})
-
 describe('connectRunStream — blank runId validation', () => {
   it('rejects blank runId before stream creation', () => {
     let streamCreated = false
@@ -2049,28 +1492,6 @@ describe('connectRunStream — SSE event metadata (eventId)', () => {
 // ---------------------------------------------------------------------------
 
 describe('sensitive value redaction', () => {
-  it('does not log prompt text on launch error', async () => {
-    const loggedMessages: {message: string; context?: Record<string, unknown>}[] = []
-    const client = createOperatorClient({
-      fetch: makeErrorFetch(500),
-      createEventStream: makeEventStream([]),
-      logger: {
-        debug: (message, context) => loggedMessages.push({message, context}),
-        info: (message, context) => loggedMessages.push({message, context}),
-        warning: (message, context) => loggedMessages.push({message, context}),
-        error: (message, context) => loggedMessages.push({message, context}),
-      },
-    })
-    await client.launchRun({
-      repo: 'fro-bot/agent',
-      prompt: 'SECRET_PROMPT_CONTENT_DO_NOT_LOG',
-      idempotencyKey: 'idem-key-abc',
-      csrfToken: 'csrf-token-xyz',
-    })
-    const allLogged = JSON.stringify(loggedMessages)
-    expect(allLogged).not.toContain('SECRET_PROMPT_CONTENT_DO_NOT_LOG')
-  })
-
   it('does not log CSRF token value', async () => {
     const loggedMessages: {message: string; context?: Record<string, unknown>}[] = []
     const client = createOperatorClient({
@@ -2083,12 +1504,7 @@ describe('sensitive value redaction', () => {
         error: (message, context) => loggedMessages.push({message, context}),
       },
     })
-    await client.launchRun({
-      repo: 'fro-bot/agent',
-      prompt: 'do something',
-      idempotencyKey: 'idem-key-abc',
-      csrfToken: 'SUPER_SECRET_CSRF_VALUE_12345',
-    })
+    await client.decideRunApproval('run-001', 'req-001', 'once', 'idem-key-abc', 'SUPER_SECRET_CSRF_VALUE_12345')
     const allLogged = JSON.stringify(loggedMessages)
     expect(allLogged).not.toContain('SUPER_SECRET_CSRF_VALUE_12345')
   })
@@ -2105,12 +1521,7 @@ describe('sensitive value redaction', () => {
         error: (message, context) => loggedMessages.push({message, context}),
       },
     })
-    await client.launchRun({
-      repo: 'fro-bot/agent',
-      prompt: 'do something',
-      idempotencyKey: 'UNIQUE_IDEM_KEY_DO_NOT_LOG_9999',
-      csrfToken: 'csrf-token-xyz',
-    })
+    await client.decideRunApproval('run-001', 'req-001', 'once', 'UNIQUE_IDEM_KEY_DO_NOT_LOG_9999', 'csrf-token-xyz')
     const allLogged = JSON.stringify(loggedMessages)
     expect(allLogged).not.toContain('UNIQUE_IDEM_KEY_DO_NOT_LOG_9999')
   })
@@ -2163,28 +1574,6 @@ describe('sensitive value redaction', () => {
     expect(allLogged).not.toContain('/workspace/secret/path/internal')
   })
 
-  it('does not log raw tool arguments', async () => {
-    const loggedMessages: {message: string; context?: Record<string, unknown>}[] = []
-    const client = createOperatorClient({
-      fetch: makeErrorFetch(500),
-      createEventStream: makeEventStream([]),
-      logger: {
-        debug: (message, context) => loggedMessages.push({message, context}),
-        info: (message, context) => loggedMessages.push({message, context}),
-        warning: (message, context) => loggedMessages.push({message, context}),
-        error: (message, context) => loggedMessages.push({message, context}),
-      },
-    })
-    await client.launchRun({
-      repo: 'fro-bot/agent',
-      prompt: 'run bash with args: SECRET_TOOL_ARG_VALUE_XYZ',
-      idempotencyKey: 'idem-key-abc',
-      csrfToken: 'csrf-token-xyz',
-    })
-    const allLogged = JSON.stringify(loggedMessages)
-    expect(allLogged).not.toContain('SECRET_TOOL_ARG_VALUE_XYZ')
-  })
-
   it('does not log bearer/token-looking values in logger context', async () => {
     const loggedMessages: {message: string; context?: Record<string, unknown>}[] = []
     const client = createOperatorClient({
@@ -2197,12 +1586,7 @@ describe('sensitive value redaction', () => {
         error: (message, context) => loggedMessages.push({message, context}),
       },
     })
-    await client.launchRun({
-      repo: 'fro-bot/agent',
-      prompt: 'do something',
-      idempotencyKey: 'idem-key-abc',
-      csrfToken: 'Bearer_SUPER_SECRET_TOKEN_VALUE_ABCDEF',
-    })
+    await client.decideRunApproval('run-001', 'req-001', 'once', 'idem-key-abc', 'Bearer_SUPER_SECRET_TOKEN_VALUE_ABCDEF')
     const allLogged = JSON.stringify(loggedMessages)
     expect(allLogged).not.toContain('Bearer_SUPER_SECRET_TOKEN_VALUE_ABCDEF')
   })
@@ -2254,24 +1638,6 @@ describe('sensitive value redaction', () => {
       onError: () => {},
       onClose: () => {},
     })
-    const allLogged = JSON.stringify(loggedMessages)
-    expect(allLogged).not.toContain(sensitiveRunId)
-  })
-
-  it('does not log dynamic runId in getRunSnapshot error context — uses coarse route name', async () => {
-    const loggedMessages: {message: string; context?: Record<string, unknown>}[] = []
-    const sensitiveRunId = 'SENSITIVE_RUN_ID_DO_NOT_LOG_67890'
-    const client = createOperatorClient({
-      fetch: makeErrorFetch(404),
-      createEventStream: makeEventStream([]),
-      logger: {
-        debug: (message, context) => loggedMessages.push({message, context}),
-        info: (message, context) => loggedMessages.push({message, context}),
-        warning: (message, context) => loggedMessages.push({message, context}),
-        error: (message, context) => loggedMessages.push({message, context}),
-      },
-    })
-    await client.getRunSnapshot(sensitiveRunId)
     const allLogged = JSON.stringify(loggedMessages)
     expect(allLogged).not.toContain(sensitiveRunId)
   })
@@ -2687,35 +2053,6 @@ describe('connectRunStream — setup error handling', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Fix 10: redirect: 'error' in launchRun and decideRunApproval
-// ---------------------------------------------------------------------------
-
-describe('launchRun — redirect: error', () => {
-  it('passes redirect: error in fetch init', async () => {
-    let capturedInit: RequestInit | undefined
-    const client = createOperatorClient({
-      fetch: async (_input, init) => {
-        capturedInit = init
-        return new Response(JSON.stringify({runId: 'r1', status: 'queued'}), {
-          status: 200,
-          headers: {'content-type': 'application/json'},
-        })
-      },
-      createEventStream: makeEventStream([]),
-    })
-    await client.launchRun({
-      repo: 'fro-bot/agent',
-      prompt: 'fix the bug',
-      idempotencyKey: 'idem-key-abc',
-      csrfToken: 'csrf-token-xyz',
-    })
-    expect(capturedInit?.redirect).toBe('error')
-  })
-})
-
-// (decideRunApproval redirect:error is tested inline in the decideRunApproval describe block above)
-
-// ---------------------------------------------------------------------------
 // Fix 13: No-logger smoke coverage
 // ---------------------------------------------------------------------------
 
@@ -2795,63 +2132,10 @@ describe('network error — fetchImpl throws', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Fix 15: Whitespace-only idempotency key tests
-// ---------------------------------------------------------------------------
-
-describe('launchRun — whitespace-only idempotencyKey', () => {
-  it('rejects whitespace-only idempotencyKey before fetch', async () => {
-    let fetchCalled = false
-    const client = createOperatorClient({
-      fetch: async () => {
-        fetchCalled = true
-        return new Response('', {status: 200})
-      },
-      createEventStream: makeEventStream([]),
-    })
-    const result = await client.launchRun({
-      repo: 'fro-bot/agent',
-      prompt: 'fix the bug',
-      idempotencyKey: '   ',
-      csrfToken: 'csrf-token-xyz',
-    })
-    expect(result.success).toBe(false)
-    expect(fetchCalled).toBe(false)
-    if (!result.success) {
-      expect(result.error.kind).toBe('validation')
-      if (result.error.kind === 'validation') {
-        expect(result.error.code).toBe('missing_idempotency_key')
-      }
-    }
-  })
-})
-
-// (decideRunApproval whitespace-only CSRF and idempotencyKey validation is tested inline in the decideRunApproval describe block above)
-
-// ---------------------------------------------------------------------------
 // Fix 16: HTTP error logging uses route templates, not dynamic IDs
 // ---------------------------------------------------------------------------
 
 describe('HTTP error logging uses route templates', () => {
-  it('does not log dynamic runId in getRunSnapshot HTTP error', async () => {
-    const loggedContexts: Record<string, unknown>[] = []
-    const sensitiveRunId = 'SENSITIVE_RUN_ID_ROUTE_TEMPLATE_TEST'
-    const client = createOperatorClient({
-      fetch: makeErrorFetch(404),
-      createEventStream: makeEventStream([]),
-      logger: {
-        debug: (_msg, ctx) => { if (ctx) loggedContexts.push(ctx) },
-        info: (_msg, ctx) => { if (ctx) loggedContexts.push(ctx) },
-        warning: (_msg, ctx) => { if (ctx) loggedContexts.push(ctx) },
-        error: (_msg, ctx) => { if (ctx) loggedContexts.push(ctx) },
-      },
-    })
-    await client.getRunSnapshot(sensitiveRunId)
-    const allLogged = JSON.stringify(loggedContexts)
-    expect(allLogged).not.toContain(sensitiveRunId)
-    // Should contain the route template instead
-    expect(allLogged).toContain('/operator/runs/:runId')
-  })
-
   it('does not log dynamic runId or requestId in decideRunApproval HTTP error', async () => {
     const loggedContexts: Record<string, unknown>[] = []
     const sensitiveRunId = 'SENSITIVE_RUN_ID_ROUTE_TEMPLATE_TEST'

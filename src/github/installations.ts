@@ -85,9 +85,27 @@ export interface InstallationRecord {
   readonly account: string | null
 }
 
+/** Which phase of per-installation enumeration failed. */
+export type SkippedInstallationPhase = 'mint' | 'list-repos'
+
+/**
+ * An installation that was enumerated but excluded from the repo union because
+ * its token mint or repo listing failed. rm-164: this makes partial GitHub-side
+ * outages visible in the snapshot instead of silently shrinking monitored scope.
+ * The error string is the already-redacted safeErrorMessage form (never a raw
+ * token or repo name — neither is involved at these phases).
+ */
+export interface SkippedInstallation {
+  readonly installationId: number
+  readonly phase: SkippedInstallationPhase
+  readonly error: string
+}
+
 export interface EnumerateReposResult {
   readonly repos: readonly RepoRecord[]
   readonly installations: readonly InstallationRecord[]
+  /** Per-installation failures that shrank this cycle's repo union (empty = full coverage). */
+  readonly skippedInstallations: readonly SkippedInstallation[]
 }
 
 export class FetchInstallationsError extends Error {
@@ -191,7 +209,8 @@ export async function mintReadOnlyToken(
  * Enumerate all installations, mint read-only tokens, and union accessible repos.
  *
  * Returns `err(FetchInstallationsError)` if `listInstallations` fails.
- * Per-install token mint failures are logged and skipped (fail-soft per install).
+ * Per-install token mint/list failures are logged, reported in
+ * `skippedInstallations`, and skipped (fail-soft per install).
  * Repos are deduped by `node_id` across all installs.
  */
 export async function enumerateRepos(
@@ -207,22 +226,25 @@ export async function enumerateRepos(
   }
 
   if (installations.length === 0) {
-    return ok({repos: [], installations: []})
+    return ok({repos: [], installations: [], skippedInstallations: []})
   }
 
   logger.debug('Enumerating repos across installations', {count: installations.length})
 
   const reposByNodeId = new Map<string, RepoRecord>()
+  const skippedInstallations: SkippedInstallation[] = []
 
   for (const installation of installations) {
     let token: string
     try {
       token = await mintReadOnlyToken(installation.id, client.mintInstallationToken)
     } catch (mintError) {
+      const mintErrorMessage = safeErrorMessage(mintError)
       logger.warning('Failed to mint installation token; skipping install', {
         installationId: installation.id,
-        error: safeErrorMessage(mintError),
+        error: mintErrorMessage,
       })
+      skippedInstallations.push({installationId: installation.id, phase: 'mint', error: mintErrorMessage})
       continue
     }
 
@@ -230,10 +252,12 @@ export async function enumerateRepos(
     try {
       repos = await client.listInstallationRepos(token)
     } catch (repoError) {
+      const listErrorMessage = safeErrorMessage(repoError)
       logger.warning('Failed to list repos for installation; skipping', {
         installationId: installation.id,
-        error: safeErrorMessage(repoError),
+        error: listErrorMessage,
       })
+      skippedInstallations.push({installationId: installation.id, phase: 'list-repos', error: listErrorMessage})
       continue
     }
 
@@ -250,6 +274,7 @@ export async function enumerateRepos(
   return ok({
     repos: [...reposByNodeId.values()],
     installations,
+    skippedInstallations,
   })
 }
 

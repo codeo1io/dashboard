@@ -28,8 +28,10 @@ and names every by-design deviation in [docs/runbooks/security-posture.md](docs/
 - **Server** — [Hono](https://hono.dev) + `@hono/node-server` on Node 24 native TypeScript
   (strip-only, no backend build step). Serves the API, GitHub OAuth, and the built client.
 - **Client** — [Vite](https://vite.dev) + [React 19](https://react.dev) +
-  [Tailwind CSS v4](https://tailwindcss.com), shipped as an installable PWA
-  ([vite-plugin-pwa](https://vite-pwa-org.netlify.app) + [Workbox](https://developer.chrome.com/docs/workbox)).
+  [Tailwind CSS v4](https://tailwindcss.com), shipped as an installable PWA via
+  [vite-plugin-pwa](https://vite-pwa-org.netlify.app). The service worker is a
+  kill-switch (`web/src/sw.ts`): it purges caches and unregisters itself — the
+  app does no offline caching.
 - pnpm, [Vitest](https://vitest.dev).
 
 ## Quick Start
