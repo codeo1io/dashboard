@@ -34,7 +34,10 @@ jobs:
   drift:
     # 2026-09-22: ubuntu-latest per the hosted-runner CI policy (PR #11/#12)
     # — this file was authored under the retired self-hosted-only policy.
-    runs-on: ubuntu-latest
+    # rm-186 (cycle 13, 2026-09-25): pinned ubuntu-24.04 — ubuntu-26.04 images are
+    # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
+    # at the rm-139 Node-26 window (2026-10-28).
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Checkout
