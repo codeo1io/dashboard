@@ -88,6 +88,14 @@ export interface InstallationRecord {
 export interface EnumerateReposResult {
   readonly repos: readonly RepoRecord[]
   readonly installations: readonly InstallationRecord[]
+  /**
+   * Installations whose token mint or repo listing failed during enumeration
+   * (ids only — account names never leave this module). Non-empty means the
+   * union is PARTIAL: repos reachable only through these installations are
+   * missing from `repos`. Callers must surface this instead of presenting the
+   * snapshot as complete (fail-visible enumeration).
+   */
+  readonly failedInstallationIds: readonly number[]
 }
 
 export class FetchInstallationsError extends Error {
@@ -154,10 +162,38 @@ function setCachedToken(installationId: number, token: string, expiresAt: Date |
 // ---------------------------------------------------------------------------
 
 /**
+ * Classify a mint error as permission-shaped (rm-170).
+ *
+ * GitHub App installation-token minting rejects ungranted permissions with
+ * HTTP 403. Only that class can plausibly be fixed by retrying with the core
+ * subset. Everything else (5xx, 429, timeouts, network errors without a
+ * status) is transient/infra and must fail visibly instead.
+ */
+function isPermissionShapedMintError(error: unknown): boolean {
+  const shaped = error as
+    | {status?: unknown; response?: {headers?: Record<string, unknown>} | null}
+    | null
+    | undefined
+  if (shaped?.status !== 403) return false
+  // GitHub returns 403 — not 429 — for rate limits: primary exhaustion sends
+  // `x-ratelimit-remaining: 0` and secondary limits send `retry-after`. Those
+  // are transient conditions, not permission verdicts: classify them OUT of
+  // the permission shape so a rate-limited mint rethrows instead of caching
+  // a reduced-scope token for the cache TTL (review finding F1).
+  const headers = shaped.response?.headers ?? {}
+  const remaining = headers['x-ratelimit-remaining']
+  if (remaining === '0' || remaining === 0) return false
+  if ('retry-after' in headers) return false
+  return true
+}
+
+/**
  * Mint a read-only installation token with graceful optional-scope degradation.
  *
  * First attempts to mint with FULL_READ_PERMISSIONS (core + optional).
- * If that fails, retries with only CORE_READ_PERMISSIONS.
+ * If that fails with a permission-shaped 403 (rm-170), retries with only
+ * CORE_READ_PERMISSIONS. Any other error rethrows — never cached, never
+ * silently degraded — so the caller reports the failure.
  * If the core-only mint also fails, throws.
  */
 export async function mintReadOnlyToken(
@@ -175,7 +211,19 @@ export async function mintReadOnlyToken(
     setCachedToken(installationId, token, null)
     return token
   } catch (fullError) {
-    logger.warning('Failed to mint token with optional scopes; retrying with core scopes only', {
+    if (!isPermissionShapedMintError(fullError)) {
+      // rm-170: only permission-shaped 403s justify the scope fallback. A
+      // transient error (network blip, 5xx, 429, timeout) must NOT degrade
+      // the permission subset — rethrow so the caller records this
+      // installation as failed (fail-visible) instead of caching a
+      // reduced-scope token for the cache TTL.
+      logger.error('Installation token mint failed (non-permission error; no scope fallback)', {
+        installationId,
+        error: safeErrorMessage(fullError),
+      })
+      throw fullError
+    }
+    logger.warning('Failed to mint token with optional scopes (permission-shaped); retrying with core scopes only', {
       installationId,
       error: safeErrorMessage(fullError),
     })
@@ -191,7 +239,9 @@ export async function mintReadOnlyToken(
  * Enumerate all installations, mint read-only tokens, and union accessible repos.
  *
  * Returns `err(FetchInstallationsError)` if `listInstallations` fails.
- * Per-install token mint failures are logged and skipped (fail-soft per install).
+ * Per-install token mint/list failures are logged, skipped (fail-soft per
+ * install), and reported via `failedInstallationIds` so callers can surface
+ * the partial union instead of presenting it as complete.
  * Repos are deduped by `node_id` across all installs.
  */
 export async function enumerateRepos(
@@ -207,12 +257,13 @@ export async function enumerateRepos(
   }
 
   if (installations.length === 0) {
-    return ok({repos: [], installations: []})
+    return ok({repos: [], installations: [], failedInstallationIds: []})
   }
 
   logger.debug('Enumerating repos across installations', {count: installations.length})
 
   const reposByNodeId = new Map<string, RepoRecord>()
+  const failedInstallationIds: number[] = []
 
   for (const installation of installations) {
     let token: string
@@ -223,6 +274,7 @@ export async function enumerateRepos(
         installationId: installation.id,
         error: safeErrorMessage(mintError),
       })
+      failedInstallationIds.push(installation.id)
       continue
     }
 
@@ -234,6 +286,7 @@ export async function enumerateRepos(
         installationId: installation.id,
         error: safeErrorMessage(repoError),
       })
+      failedInstallationIds.push(installation.id)
       continue
     }
 
@@ -250,6 +303,7 @@ export async function enumerateRepos(
   return ok({
     repos: [...reposByNodeId.values()],
     installations,
+    failedInstallationIds,
   })
 }
 

@@ -55,6 +55,7 @@ import {buildAuthRouter} from './routes/auth.ts'
 import {buildListenerRouter} from './routes/listener.ts'
 import {readOptionalMultilineSecret, readOptionalSecret} from './secrets.ts'
 import {loadCookieKey, SessionManager} from './session.ts'
+import {installShutdownHandlers} from './shutdown.ts'
 
 /**
  * rm-172: cache TTL for the injected SPA shell served at '/'. The shell is read
@@ -395,7 +396,7 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   const fetchUserLogin = opts?.fetchUserLogin ?? fetchGitHubUserLogin
 
   // Resolve snapshot provider — default empty; production wires the real aggregator.
-  const EMPTY_SNAPSHOT = {repos: [], staleBanner: false, driftCount: 0, refreshedAt: null} as const
+  const EMPTY_SNAPSHOT = {repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null} as const
   const getSnapshot = opts?.getSnapshot ?? (() => EMPTY_SNAPSHOT)
 
   // Resolve operator UI flag — default OFF (fail-closed).
@@ -1205,13 +1206,23 @@ async function createDashboardServer(): Promise<ServerType> {
     },
   )
 
-  // Attach stop handler for graceful shutdown
+  // Attach stop handler for graceful shutdown: the 'close' listener cancels
+  // the aggregator interval whenever the server closes (including via the
+  // signal handlers below); installShutdownHandlers turns SIGTERM/SIGINT —
+  // which as PID 1 have no default dispositions — into an orderly drain
+  // with a bounded force-exit deadline (rm-171).
   if (stopAggregator !== undefined) {
     const stop = stopAggregator
     server.addListener('close', () => {
       stop()
     })
   }
+  installShutdownHandlers({
+    closeServer: callback => server.close(callback),
+    stopAggregator,
+    closeListenerStore: () => listenerStore?.close(),
+    log: (message, context) => logger.warning(message, context ?? {}),
+  })
 
   // Kick the first aggregation refresh in the background — does NOT block the
   // server from accepting requests. Failures are logged but do NOT crash the
