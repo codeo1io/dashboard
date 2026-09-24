@@ -55,11 +55,13 @@ function makeMetadataResult(overrides: {
   publicRepos?: ReturnType<typeof makePublicRepo>[]
   redactedNodeIds?: string[]
   redactedDatabaseIds?: number[]
+  redactedEntriesMissingDatabaseId?: number
 } = {}): MetadataResult {
   return {
     publicRepos: overrides.publicRepos ?? [],
     redactedNodeIds: new Set(overrides.redactedNodeIds ?? []),
     redactedDatabaseIds: new Set(overrides.redactedDatabaseIds ?? []),
+    redactedEntriesMissingDatabaseId: overrides.redactedEntriesMissingDatabaseId ?? 0,
   }
 }
 
@@ -1827,5 +1829,296 @@ describe('aggregator — check-suite cap (rm-110)', () => {
     for (const query of queries) {
       expect(query).toContain('checkSuites(first: 100)')
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-160 (cycle-10): per-cycle deadline — refresh-wedge elimination
+// ---------------------------------------------------------------------------
+
+describe('aggregator — rm-160: cycle-bounded refresh', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('an overran cycle releases the in-flight guard and degrades the snapshot instead of wedging every future tick', async () => {
+    // A hung readMetadata: the cycle never settles on its own — pre-rm-160 this
+    // left `refreshing=true` forever and every future tick was skipped.
+    const readMetadata = vi.fn().mockImplementation(async () => new Promise(() => {}))
+    const deps = makeDeps({
+      readMetadata,
+      refreshCycleDeadlineMs: 5_000,
+      setIntervalFn: (fn, ms) => setInterval(fn, ms),
+      clearIntervalFn: id => clearInterval(id),
+    })
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    const started = agg.start()
+
+    // Deadline fires: refresh() settles (start() resolves) — it must NOT hang.
+    await vi.advanceTimersByTimeAsync(5_000)
+    await started
+
+    const snap = agg.getSnapshot()
+    expect(snap.staleBanner).toBe(true)
+    expect(snap.degraded).toBe(true)
+    expect(snap.repos).toEqual([])
+
+    // The in-flight guard was released: the next interval tick starts a new
+    // cycle (readMetadata called again) instead of being skipped forever.
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(readMetadata.mock.calls.length).toBeGreaterThanOrEqual(2)
+
+    agg.stop()
+  })
+
+  it('a late-settling overran cycle never overwrites a newer cycle’s snapshot (seq guard)', async () => {
+    let releaseFirstCycle: (() => void) | undefined
+    let metadataCalls = 0
+    const readMetadata = vi.fn().mockImplementation(async () => {
+      metadataCalls++
+      if (metadataCalls === 1) {
+        // Cycle 1 hangs at metadata until released late (after cycle 2 landed).
+        return new Promise(resolve => {
+          releaseFirstCycle = () => resolve(ok(makeMetadataResult()))
+        })
+      }
+      return Promise.resolve(ok(makeMetadataResult()))
+    })
+
+    const repo = makeRepo({node_id: 'NODE_SEQ', owner: 'org', name: 'seq-repo'})
+    let graphqlCalls = 0
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata,
+      graphqlQueryForInstallation: vi.fn().mockImplementation(async () => {
+        graphqlCalls++
+        // Cycle 2 runs first in wall order → SUCCESS; the late-settling cycle 1
+        // sees FAILURE — if its commit were (wrongly) accepted, the snapshot
+        // would flip red.
+        return makeGraphqlResponse({rollupState: graphqlCalls === 1 ? 'SUCCESS' : 'FAILURE'})
+      }),
+      refreshCycleDeadlineMs: 5_000,
+      setIntervalFn: (fn, ms) => setInterval(fn, ms),
+      clearIntervalFn: id => clearInterval(id),
+    })
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    const started = agg.start()
+
+    // Cycle 1 overruns its deadline → degraded empty snapshot.
+    await vi.advanceTimersByTimeAsync(5_000)
+    await started
+    expect(agg.getSnapshot().degraded).toBe(true)
+
+    // Interval tick: cycle 2 completes normally with the repo green.
+    await vi.advanceTimersByTimeAsync(60_000)
+    let snap = agg.getSnapshot()
+    expect(snap.repos.map(r => r.full_name)).toEqual(['org/seq-repo'])
+    expect(snap.repos[0]?.status.rollupState).toBe('green')
+    expect(snap.degraded).toBe(false)
+
+    // Now the overran cycle 1 settles — it must NOT overwrite cycle 2's snapshot.
+    releaseFirstCycle?.()
+    await vi.advanceTimersByTimeAsync(1_000)
+    snap = agg.getSnapshot()
+    expect(snap.repos.map(r => r.full_name)).toEqual(['org/seq-repo'])
+    expect(snap.repos[0]?.status.rollupState).toBe('green')
+    expect(snap.degraded).toBe(false)
+
+    agg.stop()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-112 (cycle-10): resolver-failure absence entries + warm-empty protection
+// ---------------------------------------------------------------------------
+
+describe('aggregator — rm-112: resolver-failure absence entries', () => {
+  it('a metadata-only repo whose installation cannot be resolved stays visible as a stale absence row instead of being dropped', async () => {
+    const publicRepo = makePublicRepo({
+      node_id: 'NODE_ABSENT',
+      owner: 'org',
+      name: 'absent-repo',
+      discovery_channel: 'collab',
+    })
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([])),
+      readMetadata: vi.fn().mockResolvedValue(
+        ok(makeMetadataResult({publicRepos: [publicRepo]})),
+      ),
+      resolveInstallationIdForRepo: vi.fn().mockRejectedValue(new Error('installation lookup failed')),
+      graphqlQueryForInstallation: vi.fn(),
+    })
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.start()
+
+    const repos = agg.getSnapshot().repos
+    const absent = repos.find(r => r.full_name === 'org/absent-repo')
+    // Fail-visible, not fail-silent: the repo remains in the snapshot with an
+    // explicit stale marker and an unknown rollup — never quietly dropped.
+    expect(absent).toBeDefined()
+    expect(absent?.status.stale).toBe(true)
+    expect(absent?.status.rollupState).toBe('unknown')
+    expect(absent?.discovery_channel).toBe('collab')
+    // The absence row is not queryable — no GraphQL call was made for it.
+    expect(deps.graphqlQueryForInstallation).not.toHaveBeenCalled()
+    // ...and the degraded flag reflects the failure.
+    expect(agg.getSnapshot().degraded).toBe(true)
+
+    agg.stop()
+  })
+
+  it('a previously-seen repo whose resolver fails keeps its last row marked stale (fail-visible last-good)', async () => {
+    let resolveCalls = 0
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([])),
+      readMetadata: vi.fn().mockResolvedValue(
+        ok(
+          makeMetadataResult({
+            publicRepos: [
+              makePublicRepo({node_id: 'NODE_FLAKY', owner: 'org', name: 'flaky-resolver'}),
+            ],
+          }),
+        ),
+      ),
+      resolveInstallationIdForRepo: vi.fn().mockImplementation(async () => {
+        resolveCalls++
+        if (resolveCalls === 1) return 7
+        throw new Error('installation lookup failed on cycle 2')
+      }),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+    })
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.start()
+
+    // Cycle 1: resolved + green.
+    let snap = agg.getSnapshot()
+    expect(snap.repos[0]?.full_name).toBe('org/flaky-resolver')
+    expect(snap.repos[0]?.status.rollupState).toBe('green')
+    expect(snap.repos[0]?.status.stale).toBe(false)
+
+    // Cycle 2: resolver fails → the previous row survives with stale: true.
+    await agg.refresh()
+    snap = agg.getSnapshot()
+    expect(snap.repos[0]?.full_name).toBe('org/flaky-resolver')
+    expect(snap.repos[0]?.status.rollupState).toBe('green')
+    expect(snap.repos[0]?.status.stale).toBe(true)
+    expect(snap.degraded).toBe(true)
+
+    agg.stop()
+  })
+})
+
+describe('aggregator — rm-112: warm-empty protection', () => {
+  it('a successful-but-empty union while serving a non-empty snapshot keeps last-good data with the stale banner', async () => {
+    const repo = makeRepo({node_id: 'NODE_WARM', owner: 'org', name: 'warm-empty-guard'})
+    let cycle = 0
+    const deps = makeDeps({
+      // readMetadata runs FIRST in each refresh cycle — own the counter here so
+      // both fakes observe the same cycle number.
+      readMetadata: vi.fn().mockImplementation(async () => {
+        cycle++
+        return ok(
+          makeMetadataResult({
+            publicRepos:
+              cycle === 1
+                ? [makePublicRepo({node_id: 'NODE_WARM', owner: 'org', name: 'warm-empty-guard'})]
+                : [],
+          }),
+        )
+      }),
+      enumerate: vi.fn().mockImplementation(async () =>
+        makeEnumerateResult(cycle === 1 ? [repo] : []),
+      ),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+    })
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.start()
+
+    let snap = agg.getSnapshot()
+    expect(snap.repos.map(r => r.full_name)).toEqual(['org/warm-empty-guard'])
+
+    // Cycle 2: everything succeeds but the union is EMPTY — a suspicious wipe,
+    // not a legitimate empty fleet. Last-good must survive, visibly stale.
+    await agg.refresh()
+    snap = agg.getSnapshot()
+    expect(snap.repos.map(r => r.full_name)).toEqual(['org/warm-empty-guard'])
+    expect(snap.staleBanner).toBe(true)
+    expect(snap.degraded).toBe(true)
+
+    agg.stop()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-161 (cycle-10): denylist completeness telemetry + publicRepos double-check
+// ---------------------------------------------------------------------------
+
+describe('aggregator — rm-161: denylist guard-coverage', () => {
+  const captured: string[] = []
+  let originalWarn: typeof console.warn
+
+  beforeEach(() => {
+    captured.length = 0
+    originalWarn = console.warn
+    console.warn = (...args: unknown[]): void => {
+      captured.push(args.map((a: unknown) => String(a)).join(' '))
+    }
+  })
+
+  afterEach(() => {
+    console.warn = originalWarn
+  })
+
+  it('warns with the exact uncovered-entry count when metadata reports redacted entries without any databaseId', async () => {
+    const deps = makeDeps({
+      readMetadata: vi.fn().mockResolvedValue(
+        ok(makeMetadataResult({redactedEntriesMissingDatabaseId: 2})),
+      ),
+    })
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.start()
+    const out = captured.join('\n')
+    expect(out.toLowerCase()).toContain('denylist')
+    expect(out).toContain('2')
+    agg.stop()
+  })
+
+  it('does not warn when every redacted entry armed the secondary databaseId guard', async () => {
+    const deps = makeDeps({
+      readMetadata: vi.fn().mockResolvedValue(
+        ok(makeMetadataResult({redactedEntriesMissingDatabaseId: 0})),
+      ),
+    })
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.start()
+    expect(captured.join('\n')).not.toContain('denylist')
+    agg.stop()
+  })
+
+  it('a publicRepo whose node_id is unknown to the denylist but whose derived databaseId matches is excluded (cross-format symmetry)', async () => {
+    // Legacy-format node_id decodes via deriveDatabaseId to databaseId 123456789;
+    // the denylist set carries the id but NOT this node_id string.
+    const legacyNodeId = 'MDEwOlJlcG9zaXRvcnkxMjM0NTY3ODk='
+    const publicRepo = makePublicRepo({node_id: legacyNodeId, owner: 'org', name: 'denylist-shadow'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([])),
+      readMetadata: vi.fn().mockResolvedValue(
+        ok(makeMetadataResult({publicRepos: [publicRepo], redactedDatabaseIds: [123456789]})),
+      ),
+      graphqlQueryForInstallation: vi.fn(),
+    })
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.start()
+
+    const repos = agg.getSnapshot().repos
+    expect(repos.find(r => r.full_name === 'org/denylist-shadow')).toBeUndefined()
+    // Redaction-before-query held: no GraphQL call for the shadowed repo.
+    expect(deps.graphqlQueryForInstallation).not.toHaveBeenCalled()
+
+    agg.stop()
   })
 })

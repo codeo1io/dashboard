@@ -11,6 +11,7 @@
  * - Octokit boundary casts use `as unknown as X`, never `any`.
  */
 
+import process from 'node:process'
 import {createAppAuth} from '@octokit/auth-app'
 import {Octokit} from '@octokit/core'
 import {retry} from '@octokit/plugin-retry'
@@ -23,6 +24,42 @@ import {logger, sanitizeErrorMessage} from '../logger.ts'
 // ---------------------------------------------------------------------------
 
 const ThrottledOctokit = Octokit.plugin(throttling, retry)
+
+// ---------------------------------------------------------------------------
+// Request deadlines (rm-160)
+// ---------------------------------------------------------------------------
+
+/**
+ * Default per-request deadline for every outbound GitHub request (ms).
+ *
+ * rm-160: Octokit's own `timeout` option is inert against a hung upstream —
+ * the fetch only aborts when the deadline is bound at the request layer via
+ * `AbortSignal.timeout` on `request.signal`. Every outbound request in this
+ * repo (mint, installations enumeration, installation-repos pagination,
+ * metadata read, per-repo graphql) carries this deadline so a wedged socket
+ * can never hold the aggregator's in-flight refresh guard open forever.
+ */
+export const GITHUB_REQUEST_TIMEOUT_MS_DEFAULT = 15_000
+
+/**
+ * Resolve the GitHub request deadline from `GITHUB_REQUEST_TIMEOUT_MS`
+ * (overrideable for tests / slow-proxy environments). Non-numeric, empty, or
+ * non-positive values fall back to the default.
+ */
+export function resolveGithubRequestTimeoutMs(): number {
+  const raw = process.env.GITHUB_REQUEST_TIMEOUT_MS
+  if (raw === undefined) return GITHUB_REQUEST_TIMEOUT_MS_DEFAULT
+  const trimmed = raw.trim()
+  if (trimmed === '') return GITHUB_REQUEST_TIMEOUT_MS_DEFAULT
+  const parsed = Number(trimmed)
+  if (!Number.isFinite(parsed) || parsed <= 0) return GITHUB_REQUEST_TIMEOUT_MS_DEFAULT
+  return Math.floor(parsed)
+}
+
+/** Fresh `AbortSignal.timeout` for a single outbound GitHub request. */
+export function githubRequestTimeoutSignal(): AbortSignal {
+  return AbortSignal.timeout(resolveGithubRequestTimeoutMs())
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -85,7 +122,23 @@ export function createDashboardAppClient(options: AppClientOptions): DashboardAp
     installationId: number,
     permissions: Record<string, 'read'>,
   ): Promise<string> {
-    const installAuth = createAppAuth({appId, privateKey, installationId})
+    // rm-160: route the mint through the throttled instance's request fn with
+    // a per-request AbortSignal.timeout deadline. auth-app honors a
+    // strategy-level `request` option (dist-src/index.js: `options.request ||
+    // defaultRequest.defaults(...)`) — without it the mint POSTs to
+    // /app/installations/{id}/access_tokens via its own undecorated default
+    // request, invisible to both throttling and deadlines.
+    const installAuth = createAppAuth({
+      appId,
+      privateKey,
+      installationId,
+      // Cast seam (AGENTS.md: `as unknown as X` at Octokit boundaries) — the
+      // loose wrapper erases the RequestInterface extras (defaults/endpoint)
+      // that auth-app's option type names but does not invoke on this path.
+      request: withGithubRequestTimeout(octokit.request) as unknown as Parameters<
+        typeof createAppAuth
+      >[0]['request'],
+    })
     const result = await installAuth({
       type: 'installation',
       permissions,
@@ -99,6 +152,34 @@ export function createDashboardAppClient(options: AppClientOptions): DashboardAp
 // ---------------------------------------------------------------------------
 // Error helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Loose request-fn shape at the Octokit boundary (cast seam — see AGENTS.md:
+ * `as unknown as X` at Octokit boundaries, never `any`).
+ */
+export type LooseOctokitRequestFn = (
+  route: string,
+  options?: Record<string, unknown>,
+) => Promise<unknown>
+
+/**
+ * Wrap an Octokit request fn so every call carries a per-request
+ * `AbortSignal.timeout` deadline (rm-160).
+ *
+ * The signal is injected as `request: {signal}` — the Octokit request layer
+ * forwards it to fetch (`@octokit/request/dist-src/fetch-wrapper.js`:
+ * `signal: requestOptions.request?.signal`).
+ */
+export function withGithubRequestTimeout(request: LooseOctokitRequestFn): LooseOctokitRequestFn {
+  return async (route, options = {}) =>
+    request(route, {
+      ...options,
+      request: {
+        ...(options.request ?? {}),
+        signal: githubRequestTimeoutSignal(),
+      },
+    })
+}
 
 /**
  * Extract a safe error message that cannot contain sensitive material.

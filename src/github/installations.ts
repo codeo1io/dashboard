@@ -19,7 +19,7 @@ import type {DashboardAppClient} from './app-client.ts'
 import {Octokit} from '@octokit/core'
 import {logger} from '../logger.ts'
 import {err, ok} from '../result.ts'
-import {safeErrorMessage} from './app-client.ts'
+import {githubRequestTimeoutSignal, safeErrorMessage} from './app-client.ts'
 
 // ---------------------------------------------------------------------------
 // Read-only permissions
@@ -304,6 +304,8 @@ export function buildInstallationsClient(appClient: DashboardAppClient): Install
       const response = await appClient.octokit.request('GET /app/installations', {
         per_page: 100,
         page,
+        // rm-160: per-request deadline — a hung upstream must not wedge enumeration.
+        request: {signal: githubRequestTimeoutSignal()},
       })
       const data = response.data as unknown as {id: number; account: {login: string} | null}[]
       for (const install of data) {

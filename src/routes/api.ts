@@ -10,6 +10,7 @@ const EMPTY_SNAPSHOT: AggregatorSnapshot = {
   staleBanner: false,
   driftCount: 0,
   refreshedAt: null,
+  degraded: false,
 }
 
 // ---------------------------------------------------------------------------
@@ -40,6 +41,12 @@ interface MonitoringDto {
   readonly staleBanner: boolean
   readonly driftCount: number
   readonly refreshedAt: number | null
+  /**
+   * rm-112: single degradation signal — true when the snapshot serves anything
+   * other than fully-fresh complete data. The SPA can render one deterministic
+   * banner instead of re-deriving 'banner || any stale row' per repo client-side.
+   */
+  readonly degraded: boolean
 }
 
 function toMonitoringRepoDto(repo: DashboardRepo): MonitoringRepoDto {
@@ -63,6 +70,7 @@ function toMonitoringDto(snapshot: AggregatorSnapshot): MonitoringDto {
     staleBanner: snapshot.staleBanner,
     driftCount: snapshot.driftCount,
     refreshedAt: snapshot.refreshedAt,
+    degraded: snapshot.degraded,
   }
 }
 
