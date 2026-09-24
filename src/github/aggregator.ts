@@ -108,6 +108,14 @@ export interface AggregatorSnapshot {
    * Never includes names or node_ids — count only.
    */
   readonly driftCount: number
+  /**
+   * Count of installations that failed (token mint or repo listing) during the
+   * enumeration feeding this snapshot. 0 = enumeration was complete.
+   * null = unknown — either enumeration failed entirely (staleBanner is true)
+   * or no refresh has run yet. Count only; installation ids/names are never
+   * exposed (redaction invariant).
+   */
+  readonly enumerationIncomplete: number | null
   /** When the snapshot was last successfully refreshed (ms since epoch) */
   readonly refreshedAt: number | null
 }
@@ -620,6 +628,27 @@ export function createAggregator(
   let refreshing = false
 
   /**
+   * Mark the served snapshot stale — used by every fail-visible path
+   * (metadata fail-closed, enumeration failure, unexpected refresh throw).
+   * Cold start serves an empty bannered snapshot; otherwise the last-good
+   * snapshot is preserved with staleBanner flipped on (rm-172: never serve
+   * last-good silently as fresh).
+   */
+  function markSnapshotStale(): void {
+    if (lastGoodSnapshot === null) {
+      lastGoodSnapshot = {
+        repos: [],
+        staleBanner: true,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+      }
+    } else {
+      lastGoodSnapshot = {...lastGoodSnapshot, staleBanner: true}
+    }
+  }
+
+  /**
    * Perform a full refresh cycle.
    *
    * Security: if readMetadata fails (denylist unavailable), we MUST NOT build
@@ -635,13 +664,9 @@ export function createAggregator(
         error: sanitizeErrorMessage(metadataResult.error.message),
       })
 
-      if (lastGoodSnapshot === null) {
-        // Cold start with no cache — serve empty with banner
-        lastGoodSnapshot = {repos: [], staleBanner: true, driftCount: 0, refreshedAt: null}
-      } else {
-        // Serve last-good with staleBanner
-        lastGoodSnapshot = {...lastGoodSnapshot, staleBanner: true}
-      }
+      // Cold start: serves an empty bannered snapshot; otherwise preserves
+      // last-good with the banner flipped on.
+      markSnapshotStale()
       return
     }
 
@@ -652,10 +677,13 @@ export function createAggregator(
 
     let installRepos: readonly {node_id: string; database_id: number; owner: string; name: string; full_name: string; installation_id: number}[] = []
     let enumerationFailed = false
+    let enumerationIncomplete: number | null = 0
     if (isOk(enumerateResult)) {
       installRepos = enumerateResult.data.repos
+      enumerationIncomplete = enumerateResult.data.failedInstallationIds.length
     } else {
       enumerationFailed = true
+      enumerationIncomplete = null
       logger.warning('Installation enumeration failed; using empty install set — snapshot will be incomplete', {
         error: sanitizeErrorMessage(String((enumerateResult as {error: unknown}).error)),
       })
@@ -705,7 +733,7 @@ export function createAggregator(
 
     if (workingSet.length === 0) {
       // staleBanner=true if enumeration failed (data is incomplete — install repos missing)
-      lastGoodSnapshot = {repos: [], staleBanner: enumerationFailed, driftCount, refreshedAt: now()}
+      lastGoodSnapshot = {repos: [], staleBanner: enumerationFailed, driftCount, enumerationIncomplete, refreshedAt: now()}
       return
     }
 
@@ -744,12 +772,13 @@ export function createAggregator(
     // staleBanner=true if enumeration failed — data is incomplete (install repos missing).
     // We still show metadata publicRepos (they are public and safe), but the operator
     // must know the installation channel data is absent.
-    lastGoodSnapshot = {repos: sorted, staleBanner: enumerationFailed, driftCount, refreshedAt: now()}
+    lastGoodSnapshot = {repos: sorted, staleBanner: enumerationFailed, driftCount, enumerationIncomplete, refreshedAt: now()}
 
     logger.info('Aggregator refresh complete', {
       repoCount: sorted.length,
       driftCount,
       enumerationFailed,
+      enumerationIncomplete,
     })
   }
 
@@ -766,6 +795,13 @@ export function createAggregator(
     refreshing = true
     try {
       await runRefresh()
+    } catch (error) {
+      // rm-172: an unexpected throw must not silently serve the last-good
+      // snapshot as if it were fresh — mark it stale (fail-visible).
+      logger.error('Aggregator refresh threw unexpectedly; marking served snapshot stale', {
+        error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
+      })
+      markSnapshotStale()
     } finally {
       refreshing = false
     }
@@ -776,7 +812,7 @@ export function createAggregator(
    */
   function getSnapshot(): AggregatorSnapshot {
     if (lastGoodSnapshot === null) {
-      return {repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}
+      return {repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null}
     }
     return lastGoodSnapshot
   }
@@ -788,9 +824,12 @@ export function createAggregator(
     await refresh()
     intervalHandle = setIntervalFn(() => {
       refresh().catch(error => {
+        // Belt-and-braces: refresh() already catches and marks stale; this
+        // guards against a future regression re-introducing a reject path.
         logger.error('Aggregator background refresh threw unexpectedly', {
           error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
         })
+        markSnapshotStale()
       })
     }, 60_000)
   }

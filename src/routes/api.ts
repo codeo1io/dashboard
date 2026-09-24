@@ -9,6 +9,7 @@ const EMPTY_SNAPSHOT: AggregatorSnapshot = {
   repos: [],
   staleBanner: false,
   driftCount: 0,
+  enumerationIncomplete: null,
   refreshedAt: null,
 }
 
@@ -39,6 +40,8 @@ interface MonitoringDto {
   readonly repos: readonly MonitoringRepoDto[]
   readonly staleBanner: boolean
   readonly driftCount: number
+  /** Count of installations that failed during the enumeration feeding this snapshot (rm-172); null = unknown. */
+  readonly enumerationIncomplete: number | null
   readonly refreshedAt: number | null
 }
 
@@ -62,6 +65,7 @@ function toMonitoringDto(snapshot: AggregatorSnapshot): MonitoringDto {
     repos: snapshot.repos.map(toMonitoringRepoDto),
     staleBanner: snapshot.staleBanner,
     driftCount: snapshot.driftCount,
+    enumerationIncomplete: snapshot.enumerationIncomplete,
     refreshedAt: snapshot.refreshedAt,
   }
 }
