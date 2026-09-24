@@ -3,15 +3,82 @@
  *
  * See docs/contracts/operator-listener-channel.md — mounted at `/api/listener`
  * by server.ts. `/ingest` is HMAC-gated and public-before-session; `/messages*`
- * and `/ack-all` sit behind the operator session (server.ts auth middleware).
+ * and `/ack-all` sit behind the operator session (server.ts auth middleware)
+ * and, being session-authenticated mutations, additionally require a
+ * listener-ack CSRF token (double-submit via the `x-csrf-token` header,
+ * derived HMAC-style from the cookie key — mirroring the logout CSRF pattern
+ * in routes/auth.ts).
  */
 import type {ListenerStore} from '../listener/store.ts'
 
+import {Buffer} from 'node:buffer'
+import {createHmac, timingSafeEqual} from 'node:crypto'
 import {Hono} from 'hono'
 import {parseIngestBody} from '../listener/contract.ts'
 import {verifyIngestSignature} from '../listener/ingest-auth.ts'
+import {logger} from '../logger.ts'
 
 const MAX_INGEST_BODY_BYTES = 16384
+
+const ACK_CSRF_WINDOW_MS = 60 * 60 * 1000
+const ACK_CSRF_HEADER = 'x-csrf-token'
+
+/** CSRF enforcement config for the operator ack mutations. */
+export interface AckCsrfConfig {
+  /** Cookie signing key — used as the HMAC key for the derived token. */
+  readonly cookieKey: Buffer
+  /** Operator login bound into the token (operator-specific, like logout CSRF). */
+  readonly operatorLogin: string
+}
+
+/**
+ * Derives the listener-ack CSRF token for the current window: the first 32
+ * hex chars of HMAC-SHA256(cookieKey, `<login>:listener-ack:<window>`).
+ *
+ * The token is fetched by the operator UI from GET /api/listener/csrf (behind
+ * the session middleware) and submitted on every ack mutation via the
+ * `x-csrf-token` header. A fresh fetch also rotates the token because the
+ * operator login is bound in — matching the logout CSRF derivation shape
+ * (routes/auth.ts deriveLogoutCsrfToken) so the two surfaces stay symmetric.
+ */
+export function deriveAckCsrfToken(config: AckCsrfConfig, now: number = Date.now()): string {
+  const window = Math.floor(now / ACK_CSRF_WINDOW_MS)
+  return createHmac('sha256', config.cookieKey)
+    .update(`${config.operatorLogin}:listener-ack:${window}`)
+    .digest('hex')
+    .slice(0, 32)
+}
+
+/** Verdicts for {@link checkAckCsrf}. */
+export type AckCsrfVerdict = 'ok' | 'missing' | 'invalid' | 'unavailable'
+
+/**
+ * Validates a submitted ack CSRF token against the current and previous
+ * window (a token fetched near a window boundary stays valid for one window
+ * of clock skew). Constant-time comparison via timingSafeEqual; length is
+ * compared first because timingSafeEqual throws on mismatched lengths.
+ *
+ * 'unavailable' is fail-closed: when the router is built without CSRF config
+ * (no operator session material in scope), mutations are refused outright.
+ */
+export function checkAckCsrf(
+  submitted: string | undefined,
+  config: AckCsrfConfig | null,
+  now: number = Date.now(),
+): AckCsrfVerdict {
+  if (config === null) return 'unavailable'
+  if (submitted === undefined || submitted.length === 0) return 'missing'
+
+  const submittedBuf = Buffer.from(submitted, 'utf8')
+  const candidates = [deriveAckCsrfToken(config, now), deriveAckCsrfToken(config, now - ACK_CSRF_WINDOW_MS)]
+  for (const candidate of candidates) {
+    const candidateBuf = Buffer.from(candidate, 'utf8')
+    if (submittedBuf.length === candidateBuf.length && timingSafeEqual(submittedBuf, candidateBuf)) {
+      return 'ok'
+    }
+  }
+  return 'invalid'
+}
 
 /**
  * Reads at most `maxBytes` of the request body, returning null when the cap is
@@ -64,6 +131,12 @@ async function readBodyCapped(req: Request, maxBytes: number): Promise<string | 
 export interface ListenerRouterDeps {
   readonly store: ListenerStore
   readonly ingestKey: string | null
+  /**
+   * CSRF config for the ack mutations. Null fails closed: mutations return
+   * 403 and the /csrf token endpoint returns 503. server.ts always supplies
+   * it whenever an operator session is in scope (auth active).
+   */
+  readonly ackCsrf: AckCsrfConfig | null
 }
 
 export function buildListenerRouter(deps: ListenerRouterDeps): Hono {
@@ -118,7 +191,20 @@ export function buildListenerRouter(deps: ListenerRouterDeps): Hono {
     return c.json(response, 200)
   })
 
+  router.get('/csrf', c => {
+    if (deps.ackCsrf === null) {
+      return c.json({error: 'csrf unavailable'}, 503)
+    }
+    return c.json({csrfToken: deriveAckCsrfToken(deps.ackCsrf)}, 200)
+  })
+
   router.post('/messages/:id/ack', c => {
+    const verdict = checkAckCsrf(c.req.header(ACK_CSRF_HEADER), deps.ackCsrf)
+    if (verdict !== 'ok') {
+      logger.warning(`listener ack rejected: csrf ${verdict}`)
+      return c.json({error: `csrf ${verdict}`}, 403)
+    }
+
     const id = c.req.param('id')
     const result = deps.store.ack(id)
     if (!result.acked) {
@@ -128,6 +214,12 @@ export function buildListenerRouter(deps: ListenerRouterDeps): Hono {
   })
 
   router.post('/ack-all', c => {
+    const verdict = checkAckCsrf(c.req.header(ACK_CSRF_HEADER), deps.ackCsrf)
+    if (verdict !== 'ok') {
+      logger.warning(`listener ack-all rejected: csrf ${verdict}`)
+      return c.json({error: `csrf ${verdict}`}, 403)
+    }
+
     const acked = deps.store.ackAll()
     return c.json({acked}, 202)
   })
