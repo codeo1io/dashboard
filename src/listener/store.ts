@@ -91,7 +91,7 @@ export function createListenerStore(dbPath: string): ListenerStore {
   `)
   const updateByIdStmt = db.prepare(`
     UPDATE messages
-    SET kind = ?, severity = ?, title = ?, body = ?, links = ?, created_at = ?, received_at = ?, read_at = NULL
+    SET kind = ?, severity = ?, title = ?, body = ?, links = ?, created_at = ?, received_at = ?, read_at = messages.read_at
     WHERE id = ?
   `)
   const selectAllStmt = db.prepare('SELECT * FROM messages ORDER BY received_at DESC LIMIT ?')
@@ -115,6 +115,9 @@ export function createListenerStore(dbPath: string): ListenerStore {
     if (input.dedupeKey !== null) {
       const existing = findByDedupeStmt.get(input.source, input.dedupeKey) as unknown as {id: string} | undefined
       if (existing !== undefined) {
+        // rm-169: replay (dedupe hit) refreshes content but PRESERVES read_at —
+        // a redelivered webhook must not silently un-ack an operator-read
+        // message. The SQL sets read_at = messages.read_at (no-op on itself).
         updateByIdStmt.run(
           input.kind,
           input.severity,

@@ -19,7 +19,8 @@ import type {AggregatorSnapshot} from './github/aggregator.ts'
 import type {MetadataReader} from './github/metadata.ts'
 import type {ListenerStore} from './listener/store.ts'
 import {Buffer} from 'node:buffer'
-import {existsSync, readFileSync} from 'node:fs'
+import {existsSync} from 'node:fs'
+import {readFile} from 'node:fs/promises'
 import {join} from 'node:path'
 import process from 'node:process'
 import {serve} from '@hono/node-server'
@@ -54,6 +55,14 @@ import {buildAuthRouter} from './routes/auth.ts'
 import {buildListenerRouter} from './routes/listener.ts'
 import {readOptionalMultilineSecret, readOptionalSecret} from './secrets.ts'
 import {loadCookieKey, SessionManager} from './session.ts'
+
+/**
+ * rm-172: cache TTL for the injected SPA shell served at '/'. The shell is read
+ * asynchronously once and cached; a rebuilt web/dist/index.html is picked up
+ * within this bound of the next request (or at process restart). Keeps the '/'
+ * hot path free of per-request synchronous file I/O.
+ */
+const SPA_SHELL_CACHE_TTL_MS = 5_000
 
 /** Hono context variables set by auth middleware */
 interface Variables {
@@ -824,15 +833,35 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     // length is computed correctly. Post-processing a streamed serveStatic
     // response leaves a stale Content-Length that truncates the injected HTML
     // and drops the <div id="root"> mount target. Reading + injecting + c.html()
-    // recomputes the length. Fall through to serveStatic if the file is missing.
+    // recomputes the length. Fall through to c.notFound() if the file is missing.
+    //
+    // rm-172: the shell is READ ASYNCHRONOUSLY ONCE and cached — this handler
+    // runs on every authenticated '/' request and must not pay synchronous
+    // file I/O each time (a blocking readFileSync on the hot path stalls the
+    // event loop under load). Cache flip bound: a rebuilt web/dist/index.html
+    // is picked up within SPA_SHELL_CACHE_TTL_MS of the next request (or at
+    // process restart) — strictly better than never, which was the previous
+    // serveStatic behavior for the injected variant.
     const indexHtmlPath = join(webDistRoot, 'index.html')
+    let spaShellCache: {injected: string; at: number} | null = null
+    const loadSpaShell = async (): Promise<string | null> => {
+      try {
+        const html = await readFile(indexHtmlPath, 'utf8')
+        return html.includes('<meta name="push-enabled"')
+          ? html
+          : html.replace('</head>', '<meta name="push-enabled" content="true"></head>')
+      } catch {
+        return null // missing/unreadable shell — keep the notFound fallback
+      }
+    }
     app.get('/', async c => {
-      if (!existsSync(indexHtmlPath)) return c.notFound()
-      const html = readFileSync(indexHtmlPath, 'utf8')
-      const injected = html.includes('<meta name="push-enabled"')
-        ? html
-        : html.replace('</head>', '<meta name="push-enabled" content="true"></head>')
-      return c.html(injected)
+      if (spaShellCache === null || Date.now() - spaShellCache.at >= SPA_SHELL_CACHE_TTL_MS) {
+        const injected = await loadSpaShell()
+        if (injected === null) return c.notFound()
+        spaShellCache = {injected, at: Date.now()}
+        return c.html(injected)
+      }
+      return c.html(spaShellCache.injected)
     })
   } else {
     app.get('/', serveStatic({root: webDistRoot, path: 'index.html'}))

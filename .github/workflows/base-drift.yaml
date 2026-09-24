@@ -5,16 +5,20 @@
 # live tag digest every Monday and opens an issue on drift — it never bumps
 # anything (auto-bumping a base image would skip the Release scan gate).
 #
-# Digest parsing reads the pretty-dump `Digest:` line from
-# `docker buildx imagetools inspect`, NOT `docker manifest inspect` — the
-# latter prints raw JSON with no `^Digest:` line, so an awk on it yields an
-# EMPTY string and the drift verdict degenerates to "everything drifted"
-# (rm-178; the pre-fix gate ran 4/4 false-red). Also NOT
-# `docker buildx imagetools inspect --format '{{.Manifest.Digest}}'` — that
-# template is silently ignored for attestation-bearing OCI indexes and prints
-# the full default dump instead (see docs/solutions/, Release workflow fix).
-# Empty extraction is a hard error, never a drift report (fail loud on the
-# tool, not the base image).
+# Digest readback contract (rm-166, rm-178 — two 2026-09-24 runs converged
+# on this same fix):
+#   - Use `docker buildx imagetools inspect <ref>` — its pretty dump prints a
+#     `Digest: <sha256:...>` header line the awk below can parse.
+#   - NEVER `docker manifest inspect` here: plain `manifest inspect` prints the
+#     raw manifest JSON with NO `Digest:` header, so the awk returns EMPTY and
+#     every pin "drifts" against "" — a guaranteed weekly false red (run
+#     35970747110; the pre-fix gate ran 4/4 false-red). This is the #3317
+#     lesson transposed to the wrong subcommand: the buildx
+#     `--format '{{.Manifest.Digest}}'` template is silently IGNORED for
+#     attestation-bearing OCI indexes, so the Digest:-line + awk form (as in
+#     release.yaml) is the only readback proven on both runner classes.
+#   - An empty LIVE_DIGEST is a readback ERROR, never a drift verdict: guarded
+#     explicitly below (fail loud on the tool, not the base image).
 name: Base image drift check
 
 on:
@@ -43,11 +47,11 @@ jobs:
           set -euo pipefail
 
           LIVE_DIGEST="$(docker buildx imagetools inspect node:24-slim | awk '/^Digest:/{print $2; exit}')"
-          echo "live node:24-slim digest: $LIVE_DIGEST"
           if [ -z "$LIVE_DIGEST" ]; then
-            echo '::error::live digest extraction returned EMPTY — extraction bug (rm-178), not drift; refusing to report drift'
+            echo '::error::live digest readback failed (empty) — buildx imagetools inspect produced no Digest: line for node:24-slim; extraction bug (rm-166/rm-178), not drift; refusing to report drift'
             exit 1
           fi
+          echo "live node:24-slim digest: $LIVE_DIGEST"
 
           PINNED="$(grep -oE 'sha256:[0-9a-f]{64}' Dockerfile | sort -u)"
           if [ -z "$PINNED" ]; then

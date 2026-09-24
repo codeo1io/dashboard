@@ -55,4 +55,6 @@ tags:
   - digests
   - drift-gates
   - extraction-errors
+related:
+  - docs/solutions/workflow-issues/docker-manifest-inspect-no-digest-header-false-drift-2026-09-24.md
 ---
