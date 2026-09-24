@@ -980,3 +980,81 @@ describe('security — token-shaped secrets redacted in error log paths', () => 
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// rm-184: fail-closed private flag coercion
+// ---------------------------------------------------------------------------
+
+describe('readRepoMetadata — rm-184 fail-closed private coercion', () => {
+  const entry = (privateLine: string, nodeId: string, name: string) => `
+version: 1
+repos:
+  - owner: some-org
+    name: ${name}
+    added: 2026-01-01
+    onboarding_status: pending
+    last_survey_at: null
+    last_survey_status: null
+    has_fro_bot_workflow: false
+    has_renovate: false
+    discovery_channel: collab
+    next_survey_eligible_at: null
+    ${privateLine}
+    node_id: ${nodeId}
+`
+
+  it('private: "true" (string) is denylisted, never public', async () => {
+    const result = await readRepoMetadata(makeReader(entry('private: "true"', 'R_kgDOStringTrue', 'string-true-private')))
+
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+
+    expect(result.data.redactedNodeIds.has('R_kgDOStringTrue')).toBe(true)
+    expect(result.data.publicRepos).toHaveLength(0)
+  })
+
+  it('private: 1 (number) is denylisted, never public', async () => {
+    const result = await readRepoMetadata(makeReader(entry('private: 1', 'R_kgDONumberOne', 'number-private')))
+
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+
+    expect(result.data.redactedNodeIds.has('R_kgDONumberOne')).toBe(true)
+    expect(result.data.publicRepos).toHaveLength(0)
+  })
+
+  it('private: null is denylisted (ambiguous fails closed), never public', async () => {
+    const result = await readRepoMetadata(makeReader(entry('private: null', 'R_kgDONullPrivate', 'null-private')))
+
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+
+    expect(result.data.redactedNodeIds.has('R_kgDONullPrivate')).toBe(true)
+    expect(result.data.publicRepos).toHaveLength(0)
+  })
+
+  it('private: "false" (string) still fails closed — only the boolean stays public', async () => {
+    const result = await readRepoMetadata(makeReader(entry('private: "false"', 'R_kgDOStringFalse', 'string-false-private')))
+
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+
+    expect(result.data.redactedNodeIds.has('R_kgDOStringFalse')).toBe(true)
+    expect(result.data.publicRepos).toHaveLength(0)
+  })
+
+  it('coerced entries surface a warning count (schema drift is never silent)', async () => {
+    const yaml = entry('private: "true"', 'R_kgDOCoerceWarn', 'coerce-warn-private')
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    try {
+      const result = await readRepoMetadata(makeReader(yaml))
+      expect(isOk(result)).toBe(true)
+      const logged = warnSpy.mock.calls.flat().map(String).join(' ')
+      expect(logged).toContain('coerced ill-typed private flags')
+      expect(logged).toContain('coercedCount')
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+})

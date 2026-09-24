@@ -41,7 +41,7 @@ function makeInstall(id: number, account = 'fro-bot'): InstallationRecord {
 function makeClient(overrides: Partial<InstallationsClient> = {}): InstallationsClient {
   return {
     listInstallations: vi.fn().mockResolvedValue([]),
-    mintInstallationToken: vi.fn().mockResolvedValue('ghs_fake_token'),
+    mintInstallationToken: vi.fn().mockResolvedValue({token: 'ghs_fake_token', expiresAt: null}),
     listInstallationRepos: vi.fn().mockResolvedValue([]),
     ...overrides,
   }
@@ -59,7 +59,7 @@ describe('enumerateRepos — happy path', () => {
 
     const client = makeClient({
       listInstallations: vi.fn().mockResolvedValue([makeInstall(1), makeInstall(2)]),
-      mintInstallationToken: vi.fn().mockResolvedValue('ghs_fake_token'),
+      mintInstallationToken: vi.fn().mockResolvedValue({token: 'ghs_fake_token', expiresAt: null}),
       listInstallationRepos: vi
         .fn()
         // install 1 has sharedRepo + repoA
@@ -207,7 +207,7 @@ describe('security — database_id captured from REST id field', () => {
 
     const client = makeClient({
       listInstallations: vi.fn().mockResolvedValue([makeInstall(1), makeInstall(2)]),
-      mintInstallationToken: vi.fn().mockResolvedValue('ghs_fake_token'),
+      mintInstallationToken: vi.fn().mockResolvedValue({token: 'ghs_fake_token', expiresAt: null}),
       listInstallationRepos: vi
         .fn()
         .mockResolvedValueOnce([repoInstall1])
@@ -267,7 +267,7 @@ describe('enumerateRepos — edge cases', () => {
         .mockRejectedValueOnce(new Error('scope not registered'))
         .mockRejectedValueOnce(new Error('scope not registered'))
         // install 2: succeeds
-        .mockResolvedValueOnce('ghs_install2_token'),
+        .mockResolvedValueOnce({token: 'ghs_install2_token', expiresAt: null}),
       listInstallationRepos: vi.fn().mockResolvedValue([repoB]),
     })
 
@@ -384,7 +384,7 @@ describe('security — read-only permissions invariant', () => {
   })
 
   it('every mintInstallationToken call passes a permissions object with only "read" values', async () => {
-    const mintFn = vi.fn().mockResolvedValue('ghs_token')
+    const mintFn = vi.fn().mockResolvedValue({token: 'ghs_token', expiresAt: null})
 
     // Use IDs not used in any other test to avoid token cache hits
     const client = makeClient({
@@ -439,7 +439,7 @@ describe('security — optional-scope graceful degradation', () => {
       // First call (full permissions) fails
       .mockRejectedValueOnce(new Error('Resource not accessible by integration'))
       // Second call (core-only) succeeds
-      .mockResolvedValueOnce('ghs_core_only_token')
+      .mockResolvedValueOnce({token: 'ghs_core_only_token', expiresAt: null})
 
     const token = await mintReadOnlyToken(99, mintFn)
 
@@ -460,7 +460,7 @@ describe('security — optional-scope graceful degradation', () => {
   })
 
   it('succeeds with full permissions on first try when App has all scopes', async () => {
-    const mintFn = vi.fn().mockResolvedValueOnce('ghs_full_token')
+    const mintFn = vi.fn().mockResolvedValueOnce({token: 'ghs_full_token', expiresAt: null})
 
     const token = await mintReadOnlyToken(100, mintFn)
 
@@ -489,7 +489,7 @@ describe('security — optional-scope graceful degradation', () => {
       // Full permissions fail
       .mockRejectedValueOnce(new Error('security_events not registered'))
       // Core-only succeeds
-      .mockResolvedValueOnce('ghs_core_token')
+      .mockResolvedValueOnce({token: 'ghs_core_token', expiresAt: null})
 
     const client = makeClient({
       listInstallations: vi.fn().mockResolvedValue([makeInstall(200)]),
@@ -588,7 +588,7 @@ describe('security — token-shaped secrets redacted in error log paths', () => 
     const mintFn = vi
       .fn()
       .mockRejectedValueOnce(new Error(`Token ${fakeToken} has insufficient scope`))
-      .mockResolvedValueOnce('ghs_core_only_token')
+      .mockResolvedValueOnce({token: 'ghs_core_only_token', expiresAt: null})
 
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -644,6 +644,60 @@ describe('security — token-shaped secrets redacted in error log paths', () => 
     } finally {
       warnSpy.mockRestore()
       errorSpy.mockRestore()
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-185: cached token honors the API-provided expiresAt (no 55-min guess)
+// ---------------------------------------------------------------------------
+
+describe('rm-185 — cached token honors the API-provided expiresAt', () => {
+  it('short expiresAt (5 min) expires the cache at the real boundary, not 55 min', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-24T00:00:00Z'))
+    const INSTALL_ID = 9101
+    try {
+      const mintFn = vi
+        .fn()
+        .mockResolvedValueOnce({token: 'short-lived-token', expiresAt: new Date('2026-09-24T00:05:00Z')})
+        .mockResolvedValueOnce({token: 'second-mint', expiresAt: null})
+
+      expect(await mintReadOnlyToken(INSTALL_ID, mintFn)).toBe('short-lived-token')
+      // Still cached immediately after mint.
+      expect(await mintReadOnlyToken(INSTALL_ID, mintFn)).toBe('short-lived-token')
+      expect(mintFn).toHaveBeenCalledTimes(1)
+
+      // 5m30s after mint: past the real 5-min expiry (beyond the 60s refresh
+      // buffer). A 55-min guess would still be cached here — the real
+      // boundary MUST trigger a re-mint.
+      vi.setSystemTime(new Date('2026-09-24T00:05:30Z'))
+      expect(await mintReadOnlyToken(INSTALL_ID, mintFn)).toBe('second-mint')
+      expect(mintFn).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('far-future expiresAt (8 h) is capped at the 55-min historical ceiling', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-24T00:00:00Z'))
+    const INSTALL_ID = 9102
+    try {
+      const mintFn = vi
+        .fn()
+        .mockResolvedValueOnce({token: 'far-future-token', expiresAt: new Date('2026-09-24T08:00:00Z')})
+        .mockResolvedValueOnce({token: 'capped-refresh', expiresAt: null})
+
+      expect(await mintReadOnlyToken(INSTALL_ID, mintFn)).toBe('far-future-token')
+
+      // 56m30s after mint: beyond the 55-min cap (+ buffer) despite the 8 h
+      // API expiry — the cap preserves the pre-rm-185 refresh cadence.
+      vi.setSystemTime(new Date('2026-09-24T00:56:30Z'))
+      expect(await mintReadOnlyToken(INSTALL_ID, mintFn)).toBe('capped-refresh')
+      expect(mintFn).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
     }
   })
 })

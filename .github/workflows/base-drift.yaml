@@ -5,8 +5,8 @@
 # live tag digest every Monday and opens an issue on drift — it never bumps
 # anything (auto-bumping a base image would skip the Release scan gate).
 #
-# Digest readback contract (rm-166, rm-178 — two 2026-09-24 runs converged
-# on this same fix):
+# Digest readback contract (rm-166, rm-178, rm-182 — three 2026-09-24 runs
+# converged on this same repair):
 #   - Use `docker buildx imagetools inspect <ref>` — its pretty dump prints a
 #     `Digest: <sha256:...>` header line the awk below can parse.
 #   - NEVER `docker manifest inspect` here: plain `manifest inspect` prints the
@@ -19,6 +19,12 @@
 #     release.yaml) is the only readback proven on both runner classes.
 #   - An empty LIVE_DIGEST is a readback ERROR, never a drift verdict: guarded
 #     explicitly below (fail loud on the tool, not the base image).
+#   - rm-182 (run 5b6e8e801952 cycle:1 B1, integrated 2026-09-24) adds the
+#     fallback for the anonymous-CLI rate-limit failure class: when the buildx
+#     dump yields no Digest: line, mint an anonymous token at auth.docker.io
+#     and HEAD registry-1.docker.io for the docker-content-digest header
+#     (proven 2026-09-24, research b27ad37b). Only failure of BOTH paths reds
+#     — distinctly, as an extraction error, never a drift verdict.
 name: Base image drift check
 
 on:
@@ -46,9 +52,30 @@ jobs:
         run: |
           set -euo pipefail
 
-          LIVE_DIGEST="$(docker buildx imagetools inspect node:24-slim | awk '/^Digest:/{print $2; exit}')"
+          # Digest readback (rm-166/rm-178 — cycle-11/12 landed this buildx
+          # primary; rm-182 — the third same-day convergence — adds the
+          # anonymous-token + registry-HEAD fallback below). `|| true` INSIDE
+          # each substitution so a CLI failure (e.g. anonymous manifest-auth
+          # rate limiting) reaches the empty-digest guard instead of tripping
+          # set -e first.
+          LIVE_DIGEST="$(docker buildx imagetools inspect node:24-slim | awk '/^Digest:/{print $2; exit}' || true)"
           if [ -z "$LIVE_DIGEST" ]; then
-            echo '::error::live digest readback failed (empty) — buildx imagetools inspect produced no Digest: line for node:24-slim; extraction bug (rm-166/rm-178), not drift; refusing to report drift'
+            echo '::warning::buildx imagetools inspect yielded no Digest: line — trying the Docker Hub token + registry HEAD fallback (rm-182)'
+            # Fallback (proven 2026-09-24, research b27ad37b): anonymous token
+            # from auth.docker.io, then a registry HEAD whose
+            # docker-content-digest header is the live digest.
+            TOKEN="$(curl -fsSL --max-time 20 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/node:pull' \
+              | jq -r '.token // empty' 2>/dev/null || true)"
+            if [ -n "$TOKEN" ]; then
+              LIVE_DIGEST="$(curl -fsSI --max-time 20 \
+                -H "Authorization: Bearer $TOKEN" \
+                -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+                'https://registry-1.docker.io/v2/library/node/manifests/24-slim' \
+                | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:"{print $2; exit}' || true)"
+            fi
+          fi
+          if [ -z "$LIVE_DIGEST" ]; then
+            echo '::error::live digest EXTRACTION FAILED (empty) — this is a readback/extraction failure (rm-166/rm-178/rm-182), NOT drift: buildx imagetools inspect produced no Digest: line and the auth.docker.io/registry-1.docker.io HEAD fallback failed too. Re-run this workflow before drawing any drift conclusion.'
             exit 1
           fi
           echo "live node:24-slim digest: $LIVE_DIGEST"
