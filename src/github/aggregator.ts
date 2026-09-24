@@ -203,6 +203,29 @@ interface GraphqlRepoResponse {
   } | null
 }
 
+/** A registered query template — every live-destined GraphQL string the aggregator can send (rm-184). */
+export interface RegisteredQueryTemplate {
+  /** The exported constant's name, so canary logs name which exact template ran */
+  readonly name: string
+  /** The exact query text the aggregator sends — the registry never rewrites it */
+  readonly query: string
+}
+
+/**
+ * rm-184: every live-destined query template MUST be registered here. The
+ * GraphQL canary (scripts/graphql-canary.ts) iterates this registry — not a
+ * hand-picked import — so adding a template auto-extends live coverage, and
+ * test/query-shape-guard.test.ts asserts the registry equals the module's
+ * exported template set (a template constant without a registry entry fails
+ * the suite). rm-177 shipped because the canary's predecessor covered
+ * exactly one of two shipped templates; this registry is the structural fix
+ * for that blind spot.
+ */
+export const REPO_STATUS_QUERY_REGISTRY: readonly RegisteredQueryTemplate[] = [
+  {name: 'REPO_STATUS_QUERY', query: REPO_STATUS_QUERY},
+  {name: 'REPO_STATUS_QUERY_NO_ALERTS', query: REPO_STATUS_QUERY_NO_ALERTS},
+]
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

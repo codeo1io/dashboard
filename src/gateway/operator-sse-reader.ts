@@ -31,7 +31,15 @@ import {OPERATOR_CONTRACT_VERSION} from './operator-contract/version.ts'
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Hard cap on the incremental SSE buffer. Overflow → fail closed. */
+/**
+ * Hard cap on the incremental SSE buffer, in UTF-8 BYTES. Overflow → fail closed.
+ *
+ * rm-114 units truth: the cap is enforced on a byte count maintained
+ * incrementally (TextEncoder per appended/consumed fragment), NOT on
+ * `buffer.length` — a JS string's length counts UTF-16 code units, which
+ * undercounts astral-plane characters by up to 4× and let multi-byte frames
+ * sail past a BYTES-named bound.
+ */
 export const MAX_SSE_BUFFER_BYTES = 1_000_000
 
 // ---------------------------------------------------------------------------
@@ -455,7 +463,9 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
     }
 
     const decoder = new TextDecoder()
+    const encoder = new TextEncoder()
     let buffer = ''
+    let bufferBytes = 0
     let contractVerified = false
     let drifted = false
 
@@ -519,11 +529,13 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
 
         if (value !== undefined) {
           // Normalize CRLF on each appended chunk before boundary search
-          buffer += normalizeCrlf(decoder.decode(value, {stream: true}))
+          const chunk = normalizeCrlf(decoder.decode(value, {stream: true}))
+          buffer += chunk
+          bufferBytes += encoder.encode(chunk).length
         }
 
-        // Hard buffer cap — fail closed if exceeded without a boundary
-        if (buffer.length > MAX_SSE_BUFFER_BYTES) {
+        // Hard buffer cap (UTF-8 bytes, rm-114) — fail closed if exceeded without a boundary
+        if (bufferBytes > MAX_SSE_BUFFER_BYTES) {
           logger?.error('sse-reader: buffer overflow', {route: ROUTE_TEMPLATE})
           onError(new Error('network error: stream buffer overflow'))
           onClose()
@@ -535,6 +547,7 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
         while (boundary !== -1) {
           const record = buffer.slice(0, boundary)
           buffer = buffer.slice(boundary + 2)
+          bufferBytes -= encoder.encode(`${record}\n\n`).length
 
           const results = parseSseChunk(`${record}\n\n`)
           for (const result of results) {
