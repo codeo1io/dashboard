@@ -1,10 +1,13 @@
-# Continuous Integration jobs for changes headed to main.
+# Continuous Integration jobs for changes headed to main. Also admits
+# Conductor's ephemeral validation PRs (base conductor/ci-base-**): those PRs
+# gate pre-landing main content with this same suite, and without this glob
+# they report zero checks, so the engine's ci validation times out.
 ---
 name: Main
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, 'conductor/ci-base-**']
     types: [opened, ready_for_review, reopened, synchronize]
   push:
     branches: [main]
