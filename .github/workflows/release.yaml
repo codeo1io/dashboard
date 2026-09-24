@@ -442,7 +442,7 @@ jobs:
           # NOTE (historical quirk, any runner): buildx v0.30.1 printed the default
           # pretty dump for `imagetools inspect --format '{{.Manifest.Digest}}'` on
           # attestation-bearing OCI indexes (template silently ignored, exit 0 —
-          # observed 2026-09 on the workstation self-hosted runner), so parse the
+          # observed 2026-09 on the workstation-era self-hosted runner), so parse the
           # Digest line from the default output instead of trusting the template
           # across buildx versions.
           for TAG in "$CALVER" "sha-${SHORT_SHA}"; do
