@@ -96,6 +96,38 @@ export interface DashboardRepo {
 }
 
 /**
+ * One metadata-listed repo that is missing from the working set, and why
+ * (rm-112 cycle-10). full_name comes from metadata publicRepos, which excludes
+ * redacted entries at parse time — denylist invariant preserved by construction.
+ */
+export interface AbsentRepo {
+  readonly full_name: string
+  readonly reason: 'resolver-failed' | 'no-resolver'
+}
+
+/**
+ * Fail-visible degradation detail (rm-112 cycle-10): why the snapshot may be
+ * incomplete, so the operator can distinguish data loss from quiet.
+ */
+export interface SnapshotDegradation {
+  /** Total enumeration failure — install repos are entirely absent. */
+  readonly enumerationFailed: boolean
+  /** Partial enumeration: installations whose token mint or repo list failed. */
+  readonly failedInstallations: number
+  /** A GOOD enumeration emptied a previously non-empty snapshot — data loss, not quiet. */
+  readonly warmEmpty: boolean
+  /** Metadata-listed repos dropped from the working set (resolver unavailable/failed). */
+  readonly absentRepos: readonly AbsentRepo[]
+}
+
+export const NO_DEGRADATION: SnapshotDegradation = {
+  enumerationFailed: false,
+  failedInstallations: 0,
+  warmEmpty: false,
+  absentRepos: [],
+}
+
+/**
  * The aggregator's public snapshot shape.
  */
 export interface AggregatorSnapshot {
@@ -113,6 +145,8 @@ export interface AggregatorSnapshot {
   readonly driftCount: number
   /** When the snapshot was last successfully refreshed (ms since epoch) */
   readonly refreshedAt: number | null
+  /** Structured fail-visible degradation detail (rm-112). */
+  readonly degradation: SnapshotDegradation
 }
 
 // ---------------------------------------------------------------------------
@@ -639,7 +673,13 @@ export function createAggregator(
 
       if (lastGoodSnapshot === null) {
         // Cold start with no cache — serve empty with banner
-        lastGoodSnapshot = {repos: [], staleBanner: true, driftCount: 0, refreshedAt: null}
+        lastGoodSnapshot = {
+          repos: [],
+          staleBanner: true,
+          driftCount: 0,
+          refreshedAt: null,
+          degradation: {enumerationFailed: true, failedInstallations: 0, warmEmpty: false, absentRepos: []},
+        }
       } else {
         // Serve last-good with staleBanner
         lastGoodSnapshot = {...lastGoodSnapshot, staleBanner: true}
@@ -654,8 +694,12 @@ export function createAggregator(
 
     let installRepos: readonly {node_id: string; database_id: number; owner: string; name: string; full_name: string; installation_id: number}[] = []
     let enumerationFailed = false
+    let failedInstallations: readonly number[] = []
     if (isOk(enumerateResult)) {
       installRepos = enumerateResult.data.repos
+      // Defensive seam: older producers (and injectable mocks) may omit the
+      // count — treat absent as empty rather than poisoning .length downstream.
+      failedInstallations = enumerateResult.data.failedInstallations ?? []
     } else {
       enumerationFailed = true
       logger.warning('Installation enumeration failed; using empty install set — snapshot will be incomplete', {
@@ -671,9 +715,18 @@ export function createAggregator(
     // We use resolveInstallationIdForRepo (App JWT endpoint) to find the right installation.
     // If unavailable or resolution fails, the repo is skipped (not queried without auth context).
     let workingSet: WorkingSetEntry[]
+    // rm-112 (cycle-10): record every metadata-listed repo dropped from the
+    // working set as a fail-visible absence entry instead of skipping silently.
+    const absentRepos: AbsentRepo[] = []
     if (deps.resolveInstallationIdForRepo === undefined) {
       // No resolver: filter out repos with no installation_id (cannot query safely)
-      workingSet = rawWorkingSet.filter(e => e.installation_id !== null)
+      workingSet = rawWorkingSet.filter(e => {
+        if (e.installation_id !== null) {
+          return true
+        }
+        absentRepos.push({full_name: e.full_name, reason: 'no-resolver'})
+        return false
+      })
     } else {
       const resolveInstallation = deps.resolveInstallationIdForRepo
       const resolvedEntries: WorkingSetEntry[] = []
@@ -687,7 +740,8 @@ export function createAggregator(
           const resolvedId = await resolveInstallation(entry.owner, entry.name)
           resolvedEntries.push({...entry, installation_id: resolvedId})
         } catch (resolveError) {
-          logger.warning('Could not resolve installation for metadata-only repo; skipping', safeRepoErrorContext(entry, resolveError))
+          logger.warning('Could not resolve installation for metadata-only repo; recording absence', safeRepoErrorContext(entry, resolveError))
+          absentRepos.push({full_name: entry.full_name, reason: 'resolver-failed'})
           // Skip: no valid auth context — do NOT query with an ambient token
         }
       }
@@ -706,8 +760,22 @@ export function createAggregator(
     }
 
     if (workingSet.length === 0) {
-      // staleBanner=true if enumeration failed (data is incomplete — install repos missing)
-      lastGoodSnapshot = {repos: [], staleBanner: enumerationFailed, driftCount, refreshedAt: now()}
+      // staleBanner=true if enumeration failed (data is incomplete — install repos missing).
+      // rm-112 (cycle-10): a GOOD enumeration that empties a previously non-empty
+      // snapshot is data loss, not quiet — banner that too (warmEmpty).
+      const warmEmpty = !enumerationFailed && (lastGoodSnapshot?.repos.length ?? 0) > 0
+      lastGoodSnapshot = {
+        repos: [],
+        staleBanner: enumerationFailed || warmEmpty,
+        driftCount,
+        refreshedAt: now(),
+        degradation: {
+          enumerationFailed,
+          failedInstallations: failedInstallations.length,
+          warmEmpty,
+          absentRepos,
+        },
+      }
       return
     }
 
@@ -742,7 +810,18 @@ export function createAggregator(
     // staleBanner=true if enumeration failed — data is incomplete (install repos missing).
     // We still show metadata publicRepos (they are public and safe), but the operator
     // must know the installation channel data is absent.
-    lastGoodSnapshot = {repos: sorted, staleBanner: enumerationFailed, driftCount, refreshedAt: now()}
+    lastGoodSnapshot = {
+      repos: sorted,
+      staleBanner: enumerationFailed,
+      driftCount,
+      refreshedAt: now(),
+      degradation: {
+        enumerationFailed,
+        failedInstallations: failedInstallations.length,
+        warmEmpty: false,
+        absentRepos,
+      },
+    }
 
     logger.info('Aggregator refresh complete', {
       repoCount: sorted.length,
@@ -774,7 +853,7 @@ export function createAggregator(
    */
   function getSnapshot(): AggregatorSnapshot {
     if (lastGoodSnapshot === null) {
-      return {repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}
+      return {repos: [], staleBanner: false, driftCount: 0, refreshedAt: null, degradation: NO_DEGRADATION}
     }
     return lastGoodSnapshot
   }

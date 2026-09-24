@@ -3,7 +3,8 @@ import {join, relative} from 'node:path'
 import process from 'node:process'
 import {describe, expect, it} from 'vitest'
 
-// rm-164 (cycle-10 batch B2): prose-residue guard, filter-free by mandate.
+// rm-167 (cycle-10 batch B2, run 3538ec96 — renumbered from rm-164 at the
+// run-c2ae28ab landing merge): prose-residue guard, filter-free by mandate.
 // The term classes this guards ("self-hosted" as a CURRENT runner claim, and
 // any wiki-write machinery reference) have twice survived narrow sweeps — the
 // cycle-7 review found 3 stale sites because the sweep was scoped to
@@ -83,7 +84,7 @@ const ALLOWED_MENTIONS: Record<string, string[]> = {
   ],
 }
 
-// Term variants for the retired-tool prose classes (rm-164): separators
+// Term variants for the retired-tool prose classes (rm-167): separators
 // '-', ' ', '_', or none — covers self-hosted / self hosted / self_hosted /
 // selfhosted and wiki-writer / wiki_writer / wiki writer / wikiwriter.
 // Extended by the cycle-10 review fix (F5) from self[- ]hosted|wiki[-_]writ.
@@ -116,7 +117,7 @@ function isTextFile(path: string): boolean {
   return !probe.includes(0)
 }
 
-describe('prose-residue guard (rm-164)', () => {
+describe('prose-residue guard (rm-167)', () => {
   it('no unqualified self-hosted/wiki-write residue anywhere in the tree', () => {
     const offenders: string[] = []
     for (const file of walk(repoRoot)) {

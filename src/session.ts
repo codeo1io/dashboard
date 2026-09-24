@@ -159,7 +159,14 @@ export async function loadCookieKey(): Promise<Buffer> {
 }
 
 /**
- * Decodes a key string (hex or base64) to a Buffer.
+ * Decodes a key string to a Buffer.
+ *
+ * Canonical format enforcement (rm-165, cycle 10): the encoded form must be the
+ * exact canonical encoding of its decoded bytes — hex at 2 chars/byte or base64
+ * (padded) at 4 chars per 3 bytes. Non-canonical encodings (stripped padding,
+ * junk tolerated by Node's lenient decoder, raw passphrases) are rejected
+ * fail-fast with a specific message so a silently-misprovisioned key cannot
+ * load — the operator sees exactly what was wrong at startup.
  *
  * Hardened against the "44 A's" exploit:
  * - Only treats input as hex if it FULLY matches /^[0-9a-fA-F]+$/ AND has even length
@@ -177,34 +184,31 @@ function decodeKey(input: string): Buffer {
   // Try hex ONLY if input is a full hex string with even length
   if (/^[\da-f]+$/i.test(input) && input.length % 2 === 0) {
     const buf = Buffer.from(input, 'hex')
-    if (buf.length >= 32) {
-      candidates.push(buf)
-    }
-    // If it matched hex but decoded to <32 bytes, do NOT fall through to base64
-    // (the 44-A exploit: 44 hex chars → 22 bytes, then base64 of "AAAA..." → 33 null bytes)
-    // We only add to candidates if ≥32 bytes; if hex matched but was too short, stop here.
-    if (candidates.length === 0) {
+    if (buf.length < 32) {
+      // If it matched hex but decoded to <32 bytes, do NOT fall through to base64
+      // (the 44-A exploit: 44 hex chars → 22 bytes, then base64 of "AAAA..." → 33 null bytes)
       throw new Error(`Cookie signing key must be at least 32 bytes (256-bit); hex-decoded key is too short`)
     }
+    if (input.length !== buf.length * 2) {
+      throw canonicalFormatError(input, buf.length, 'hex')
+    }
+    candidates.push(buf)
   } else {
     // Try base64 (standard or URL-safe) — only if not a hex string
     const isBase64 = /^[\w+/=-]+$/.test(input)
     if (isBase64) {
-      // Try base64url first, then standard base64
-      const b64Buf = Buffer.from(input, 'base64')
-      if (b64Buf.length >= 32) {
-        candidates.push(b64Buf)
-      } else {
+      const buf = Buffer.from(input, 'base64')
+      if (buf.length < 32) {
         throw new Error(`Cookie signing key must be at least 32 bytes (256-bit); base64-decoded key is too short`)
       }
-    } else {
-      // Raw UTF-8 passthrough (e.g. a long passphrase)
-      const rawBuf = Buffer.from(input, 'utf8')
-      if (rawBuf.length >= 32) {
-        candidates.push(rawBuf)
-      } else {
-        throw new Error(`Cookie signing key must be at least 32 bytes (256-bit); decoded key is too short`)
+      const canonicalLength = Math.ceil(buf.length / 3) * 4
+      if (input.length !== canonicalLength) {
+        throw canonicalFormatError(input, buf.length, 'base64')
       }
+      candidates.push(buf)
+    } else {
+      // No raw-UTF-8 passphrase acceptance: the key must arrive canonically encoded.
+      throw canonicalFormatError(input, null, 'neither')
     }
   }
 
@@ -215,6 +219,22 @@ function decodeKey(input: string): Buffer {
 
   assertNonDegenerate(key)
   return key
+}
+
+/**
+ * Builds the fail-fast canonical-format error.
+ *
+ * `decodedBytes` is null when the input matched neither charset at all (e.g. a
+ * raw passphrase with spaces/punctuation).
+ */
+function canonicalFormatError(input: string, decodedBytes: number | null, encoding: 'hex' | 'base64' | 'neither'): Error {
+  const got =
+    decodedBytes === null
+      ? `input of ${input.length} chars is neither hex nor base64`
+      : `${encoding} input of ${input.length} chars is not the canonical encoding of its ${decodedBytes} decoded bytes`
+  return new Error(
+    `Cookie signing key must be canonically encoded (hex at 2 chars/byte or padded base64 at 4 chars per 3 bytes, ≥32 bytes): ${got}`,
+  )
 }
 
 /**
