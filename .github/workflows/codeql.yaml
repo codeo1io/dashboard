@@ -39,8 +39,8 @@ jobs:
       # 2026-09-20: autobuild under build-mode none needs node_modules/typescript
       # (this repo has no `main` entrypoint), and checkout's git-clean wipes
       # node_modules — install deps before codeql-init so autobuild finds the
-      # toolchain. Runs self-hosted per PR #1 policy. Also feeds
-      # SEMMLE_TYPESCRIPT_HOME (job env above) with the pinned typescript.
+      # toolchain. Also feeds SEMMLE_TYPESCRIPT_HOME (job env above) with the
+      # pinned typescript.
       - name: 📦 Setup
         uses: ./.github/actions/setup
 
