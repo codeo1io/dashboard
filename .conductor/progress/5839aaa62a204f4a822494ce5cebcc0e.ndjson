@@ -1,0 +1,5 @@
+{"step":1,"ts":"2026-09-24T06:27:06Z","summary":"targeted_tests start: before-fingerprint captured, no changes this turn yet","touched":[]}
+{"step":2,"ts":"2026-09-24T06:32:22Z","summary":"Ran work-order targeted_command verbatim; impacted runner widened to authoritative full validation (package.json rule)","touched":[]}
+{"step":3,"ts":"2026-09-24T06:32:22Z","summary":"Ephemeral PR verdict root-caused: only failure = fork-exclusion-guard on 13 base-lineage breadcrumbs (7809df6 tracks them; validator excludes .conductor deltas by design, #3256). All other checks green on real CI.","touched":["/tmp/ci-905bc566-failed.log"]}
+{"step":4,"ts":"2026-09-24T06:32:22Z","summary":"No-change proof: git-status fingerprint identical before/after; local guard 15/15; dispatch digest copied verbatim","touched":[]}
+{"step":5,"ts":"2026-09-24T06:33:02Z","summary":"PhaseResult emitted to spool 5839aaa6.json (targeted, passed, dispatch digest verbatim)","touched":["/home/agent/.hermes/conductor-delegate-spool-infra-deploy/delegate/5839aaa62a204f4a822494ce5cebcc0e.json"]}

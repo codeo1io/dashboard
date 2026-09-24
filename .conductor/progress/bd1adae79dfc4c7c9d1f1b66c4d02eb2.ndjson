@@ -1,0 +1,2 @@
+{"step":1,"ts":"2026-09-24T05:22:15Z","summary":"Reset worktree to origin/main 82312f7 (subsumed sibling dropped; docs backed up + restored); base for B2 src work","touched":["/tmp/impl-bd1adae7-backup/"]}
+{"step":2,"ts":"2026-09-24T05:22:29Z","summary":"B1: staged 13 .conductor deletions (git rm -r --cached); ls-files .conductor now empty; 18 ndjson preserved on disk","touched":[".git/index"]}
