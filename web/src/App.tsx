@@ -2,7 +2,7 @@ import {useEffect, useState, useCallback} from 'react'
 import {AppShell} from './shell/AppShell.tsx'
 import {Operator} from './views/Operator.tsx'
 import {ListenerChannel} from './views/Listener.tsx'
-import {fetchListenerMessages} from './api/listener.ts'
+import {fetchListenerMessages, LISTENER_CALL_TIMEOUT_MS} from './api/listener.ts'
 import type {OperatorState} from './operator/state.ts'
 
 interface FixtureState {
@@ -43,7 +43,14 @@ export default function App() {
   }, [])
 
   const pollUnreadCount = useCallback(async () => {
-    const res = await fetchListenerMessages({ limit: 1, unreadOnly: true })
+    // rm-184: bound the poll — the 30s interval must never stack on a request
+    // that is late rather than absent. AbortSignal.timeout rejects as
+    // TimeoutError, which the listener API maps to reason 'timeout'.
+    const res = await fetchListenerMessages({
+      limit: 1,
+      unreadOnly: true,
+      abortSignal: AbortSignal.timeout(LISTENER_CALL_TIMEOUT_MS),
+    })
     if (res.ok) {
       setUnreadCount(res.data.unreadCount)
     }
