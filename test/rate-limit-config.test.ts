@@ -58,11 +58,13 @@ describe('rate-limit env config surface (rm-129 review fix)', () => {
   })
 
   it('invalid values fall back to the default budget (house env convention)', async () => {
-    for (const bad of ['abc', '0', '-5', '   ']) {
+    for (const bad of ['abc', '0', '-5', '   ', '12abc', '3.5']) {
       process.env.RATE_LIMIT_MAX_PUBLIC = bad
       const {buildDashboardApp, resetRateLimitForTesting} = await importFreshServer()
       const app = await buildDashboardApp({operatorLogin: 'octocat', cookieKey: TEST_KEY})
-      // Default budget is 60/min: a burst of 10 never throttles.
+      // Whole-string integer semantics (rm-180): partial prefixes like '12abc'
+      // or '3.5' must NOT parse as 12/3 — they fall back like every other
+      // invalid value. Default budget is 60/min: a burst of 10 never throttles.
       for (let i = 0; i < 10; i++) {
         expect(await hit(app)).not.toBe(429)
       }

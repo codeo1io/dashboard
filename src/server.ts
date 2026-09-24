@@ -90,9 +90,11 @@ const RATE_LIMIT_MAX = 60 // requests per window per IP (per-class default)
 
 const envIntOrDefault = (name: string, fallback: number): number => {
   const raw = process.env[name]
-  if (raw === undefined || raw.trim() === '') return fallback
-  const parsed = Number.parseInt(raw, 10)
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+  if (raw === undefined) return fallback
+  const trimmed = raw.trim()
+  if (trimmed === '' || !/^\d+$/.test(trimmed)) return fallback
+  const parsed = Number.parseInt(trimmed, 10)
+  return parsed > 0 ? parsed : fallback
 }
 
 /**

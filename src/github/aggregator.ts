@@ -119,7 +119,7 @@ export interface AggregatorSnapshot {
 // GraphQL query + response types
 // ---------------------------------------------------------------------------
 
-const REPO_STATUS_QUERY = `
+export const REPO_STATUS_QUERY = `
   query RepoStatus($owner: String!, $name: String!) {
     repository(owner: $owner, name: $name) {
       defaultBranchRef {
@@ -128,7 +128,7 @@ const REPO_STATUS_QUERY = `
             statusCheckRollup {
               state
             }
-            // GraphQL max page size; repos with >100 suites still understate failingChecks (documented ceiling, rm-110)
+            # GraphQL max page size; repos with >100 suites still understate failingChecks (documented ceiling, rm-110)
             checkSuites(first: 100) {
               nodes {
                 checkRuns(first: 50, filterBy: { status: COMPLETED, conclusions: [FAILURE, TIMED_OUT, CANCELLED, ACTION_REQUIRED, STARTUP_FAILURE] }) {
@@ -157,7 +157,7 @@ const REPO_STATUS_QUERY = `
  * lacks the security_events/vulnerability_alerts scope. openAlertCount is set
  * to null (not stale) when this variant is used.
  */
-const REPO_STATUS_QUERY_NO_ALERTS = `
+export const REPO_STATUS_QUERY_NO_ALERTS = `
   query RepoStatusNoAlerts($owner: String!, $name: String!) {
     repository(owner: $owner, name: $name) {
       defaultBranchRef {
@@ -166,7 +166,7 @@ const REPO_STATUS_QUERY_NO_ALERTS = `
             statusCheckRollup {
               state
             }
-            // GraphQL max page size; repos with >100 suites still understate failingChecks (documented ceiling, rm-110)
+            # GraphQL max page size; repos with >100 suites still understate failingChecks (documented ceiling, rm-110)
             checkSuites(first: 100) {
               nodes {
                 checkRuns(first: 50, filterBy: { status: COMPLETED, conclusions: [FAILURE, TIMED_OUT, CANCELLED, ACTION_REQUIRED, STARTUP_FAILURE] }) {

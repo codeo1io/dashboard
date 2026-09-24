@@ -1,0 +1,48 @@
+# rm-179 reality canary — weekly read-only proof that the EXACT query the
+# aggregator ships is accepted by the real GitHub GraphQL API.
+#
+# Class guard, not a required check: this workflow exists because a live-syntax
+# error (rm-177: //-comments inside the templates) shipped for four days with
+# CI green — every aggregator test fakes the transport. A red run here means
+# "the real API would reject our query today". Read-only, GITHUB_TOKEN only,
+# never writes, never gates merges. The structural offline half of the guard
+# lives in test/query-shape-guard.test.ts.
+name: GraphQL canary
+
+on:
+  schedule:
+    - cron: '23 5 * * 1' # Mondays 05:23 UTC — after the 04:13 base-drift check
+  workflow_dispatch: {}
+
+permissions:
+  # Mint-family match (AGENTS.md invariant 1): the aggregator's installation
+  # tokens carry pull_requests/checks/issues/contents/metadata read, and the
+  # query reads statusCheckRollup (checks family) and checkWorkflowRuns
+  # (actions family) — so the canary must hold the same read-only scope
+  # profile, not a narrower one, to verify the production contract. Workflow
+  # scope names are hyphenated and `metadata` is not a GITHUB_TOKEN scope
+  # (it is an installation-token mint-family permission), so the closest
+  # schema-valid set is used; all read-only.
+  contents: read
+  checks: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node 24 (native TS, no install needed)
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - name: Execute the live REPO_STATUS_QUERY
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/graphql-canary.ts
