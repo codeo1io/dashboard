@@ -165,6 +165,13 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: ghcr.io/${{ github.repository }}:ci-${{ github.run_id }}-${{ github.run_attempt }}
+          # rm-105: registry-side supply-chain attestations. Provenance v1 ships
+          # by default at mode=min; mode=max adds full materials/builder data and
+          # sbom adds the SPDX attestation the image was missing (verified absent
+          # on the pre-change :latest digest). See
+          # docs/solutions/workflow-issues/registry-attestation-verification-2026-09-25.md
+          sbom: true
+          provenance: mode=max
 
       - name: 🧪 Smoke-test candidate image by digest
         run: |
