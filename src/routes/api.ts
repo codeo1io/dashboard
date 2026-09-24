@@ -10,6 +10,12 @@ const EMPTY_SNAPSHOT: AggregatorSnapshot = {
   staleBanner: false,
   driftCount: 0,
   refreshedAt: null,
+  degradation: {
+    enumerationFailed: false,
+    failedInstallations: 0,
+    warmEmpty: false,
+    absentRepos: [],
+  },
 }
 
 // ---------------------------------------------------------------------------
@@ -35,11 +41,19 @@ interface MonitoringRepoDto {
   readonly status: MonitoringRepoStatusDto
 }
 
+/** Fail-visible degradation detail on the client DTO (rm-112 cycle-10). */
+interface MonitoringDegradationDto {
+  readonly warmEmpty: boolean
+  readonly failedInstallations: number
+  readonly absentRepos: readonly {readonly full_name: string; readonly reason: string}[]
+}
+
 interface MonitoringDto {
   readonly repos: readonly MonitoringRepoDto[]
   readonly staleBanner: boolean
   readonly driftCount: number
   readonly refreshedAt: number | null
+  readonly degradation: MonitoringDegradationDto
 }
 
 function toMonitoringRepoDto(repo: DashboardRepo): MonitoringRepoDto {
@@ -63,6 +77,11 @@ function toMonitoringDto(snapshot: AggregatorSnapshot): MonitoringDto {
     staleBanner: snapshot.staleBanner,
     driftCount: snapshot.driftCount,
     refreshedAt: snapshot.refreshedAt,
+    degradation: {
+      warmEmpty: snapshot.degradation.warmEmpty,
+      failedInstallations: snapshot.degradation.failedInstallations,
+      absentRepos: snapshot.degradation.absentRepos.map(a => ({full_name: a.full_name, reason: a.reason})),
+    },
   }
 }
 
