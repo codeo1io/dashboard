@@ -75,6 +75,26 @@ interface RateLimitEntry {
   windowStart: number
 }
 
+/**
+ * RFC 9116 security contact document served at /.well-known/security.txt.
+ *
+ * Contact policy (verified 2026-09-24, review F2): the fork's own surfaces
+ * are dead by default — codeo1io/dashboard has has_issues=false (fork default)
+ * and private-vulnerability-reporting disabled — so the second Contact points
+ * at the upstream repo's issues (fro-bot/dashboard, has_issues=true, probed
+ * live), the one channel verified working today. The first Contact (this
+ * fork's advisory form) goes live the moment the operator enables private
+ * vulnerability reporting; enabling it is a mandatory B0 landing-checklist
+ * step in docs/prioritization/2026-09-24-cycle-1-batch.md. Expires is a hard
+ * requirement of RFC 9116 and must stay under a year out; refresh it on the
+ * maintenance cadence (rm-161 in ROADMAP.md owns the refresh).
+ */
+const SECURITY_TXT = `Contact: https://github.com/codeo1io/dashboard/security/advisories/new
+Contact: https://github.com/fro-bot/dashboard/issues
+Expires: 2026-12-24T00:00:00.000Z
+Preferred-Languages: en
+`
+
 /** Simple fixed-window in-memory rate limiter */
 const rateLimitMap = new Map<string, RateLimitEntry>()
 const RATE_LIMIT_WINDOW_MS = 60_000 // 1 minute
@@ -569,6 +589,11 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     // does not silently become public.
     path === '/privacy' ||
     path === '/privacy/' ||
+    // RFC 9116 security contact — public in every deployment posture, like
+    // /privacy above. Exact match only (plus the trailing-slash variant) so no
+    // /.well-known/* sibling silently inherits public access.
+    path === '/.well-known/security.txt' ||
+    path === '/.well-known/security.txt/' ||
     // Listener machine-write path — public-before-session; HMAC-gated by the
     // route itself (see routes/listener.ts). The read/ack paths
     // (/api/listener/messages*, /api/listener/ack-all) are intentionally NOT
@@ -734,7 +759,23 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   if (opts?.listenerStore !== undefined) {
     app.route(
       '/api/listener',
-      buildListenerRouter({store: opts.listenerStore, ingestKey: opts.listenerIngestKey ?? null}),
+      buildListenerRouter({
+        store: opts.listenerStore,
+        ingestKey: opts.listenerIngestKey ?? null,
+        // Ack CSRF is active whenever an operator session is in scope. Derive
+        // from the RESOLVED operatorLogin (opts with env fallback — see the
+        // resolution above), never raw opts: createDashboardServer and
+        // env-configured deployments pass no explicit operatorLogin, but auth
+        // is still active via DASHBOARD_OPERATOR_LOGIN, and the session cookie
+        // is always minted for the resolved login, so the CSRF HMAC must bind
+        // to the same identity. When auth is unconfigured, the middleware
+        // already denies every protected route (fail-closed), and the router's
+        // null config refuses mutations independently — belt and suspenders.
+        ackCsrf:
+          operatorLogin !== undefined && sessionManager !== undefined
+            ? {cookieKey: opts?.cookieKey as Buffer, operatorLogin}
+            : null,
+      }),
     )
   }
 
@@ -844,6 +885,18 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   // never serves navigations, so no SW denylist exemption is needed here.
   app.get('/privacy', serveStatic({root: webDistRoot, path: 'privacy.html'}))
   app.get('/privacy/', serveStatic({root: webDistRoot, path: 'privacy.html'}))
+
+  // ── RFC 9116 security contact ────────────────────────────────────────────────
+  // Served inline (not via serveStatic) so it carries no dependency on the SPA
+  // build and stays byte-identical across deployment postures. Public via
+  // isPublicPath in both auth branches; Content-Type is text/plain per RFC 9116.
+  // Expires: refresh on the maintenance cadence (quarterly) — see rm-161.
+  app.get('/.well-known/security.txt', c =>
+    c.text(SECURITY_TXT, 200, {'Content-Type': 'text/plain; charset=utf-8'}),
+  )
+  app.get('/.well-known/security.txt/', c =>
+    c.text(SECURITY_TXT, 200, {'Content-Type': 'text/plain; charset=utf-8'}),
+  )
 
   // Warn early if the SPA build artifact is missing (GET / will 404 silently).
   if (!existsSync(`${webDistRoot}/index.html`)) {
