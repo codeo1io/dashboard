@@ -5,6 +5,13 @@ allowBuilds:
   msgpackr-extract: false
   unrs-resolver: true
 
+# Supply-chain gate (rm-133): block packages published less than 1440 minutes
+# (1 day) ago — stops same-day compromise pushes while keeping weekly
+# dependabot PRs mergeable. Set deliberately (the gate is inert without this
+# key); the @bfra.me excludes below stay because those config packages are
+# first-party pins that sometimes need same-day adoption.
+minimumReleaseAge: 1440
+
 minimumReleaseAgeExclude:
   - '@bfra.me/eslint-config@0.51.2 || 0.51.3 || 0.51.4 || 0.52.0 || 0.52.1 || 0.52.2'
   - '@bfra.me/tsconfig@0.13.2'

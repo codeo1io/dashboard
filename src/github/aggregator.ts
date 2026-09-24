@@ -16,9 +16,12 @@
  *
  * 3. SOURCE-CHANNEL LABELS: Repos in metadata publicRepos carry their
  *    discovery_channel. Repos discovered ONLY via installations (not in
- *    publicRepos, not denylisted) get the generic label 'discovered'. The
- *    metadata-vs-installation cardinality gap is reported as a count only
- *    (driftCount), never by repo identity.
+ *    publicRepos, not denylisted) are listed in the working set with their
+ *    full identity under the generic label 'discovered' — deliberate
+ *    exposure to the single authenticated operator. driftCount reports the
+ *    SIZE of that metadata-vs-installation gap as a bare count; the count
+ *    field itself never carries names or node_ids, and gap identity (when
+ *    shown at all) comes only from these labeled working-set rows.
  */
 
 import type {Result} from '../result.ts'
