@@ -71,6 +71,7 @@ function makeSnapshot(overrides: Partial<AggregatorSnapshot> = {}): AggregatorSn
     staleBanner: false,
     driftCount: 0,
     refreshedAt: null,
+    degradation: {enumerationFailed: false, failedInstallations: 0, warmEmpty: false, absentRepos: []},
     ...overrides,
   }
 }
