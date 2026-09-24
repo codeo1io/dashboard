@@ -64,7 +64,7 @@ function makeMetadataResult(overrides: {
 }
 
 function makeEnumerateResult(repos: ReturnType<typeof makeRepo>[]): Result<EnumerateReposResult, FetchInstallationsError> {
-  return ok({repos, installations: [{id: 1, account: 'fro-bot'}]})
+  return ok({repos, installations: [{id: 1, account: 'fro-bot'}], degradedInstallations: 0})
 }
 
 /**
@@ -1879,5 +1879,122 @@ describe('aggregator — check-suite cap (rm-110)', () => {
     for (const query of queries) {
       expect(query).toContain('checkSuites(first: 100)')
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-112 (cycle-1, 2026-09-25): absence entries, warm-empty banner, degraded installs
+// ---------------------------------------------------------------------------
+
+describe('aggregator — rm-112 fail-visible enumeration', () => {
+  it('resolver failure surfaces an absence entry (repo no longer vanishes)', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(err(new FetchInstallationsError('enum down'))),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_ABS', owner: 'fro-bot', name: 'agent', discovery_channel: 'collab'})],
+      }))),
+      resolveInstallationIdForRepo: vi.fn().mockRejectedValue(new Error('cannot resolve')),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos).toHaveLength(1)
+    const entry = snap.repos[0]
+    expect(entry?.node_id).toBe('NODE_ABS')
+    expect(entry?.status.rollupState).toBe('unknown')
+    expect(entry?.status.stale).toBe(true)
+    expect(entry?.status.openAlertCount).toBeNull()
+  })
+
+  it('absence entry sorts attention-first ahead of healthy fetched repos', async () => {
+    const healthy = makeRepo({node_id: 'NODE_OK', owner: 'fro-bot', name: 'healthy', installation_id: 1})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([healthy])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [
+          makePublicRepo({node_id: 'NODE_OK', owner: 'fro-bot', name: 'healthy', discovery_channel: 'discovered'}),
+          makePublicRepo({node_id: 'NODE_ABS2', owner: 'fro-bot', name: 'unresolved', discovery_channel: 'collab'}),
+        ],
+      }))),
+      resolveInstallationIdForRepo: vi.fn().mockRejectedValue(new Error('nope')),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos).toHaveLength(2)
+    expect(snap.repos[0]?.node_id).toBe('NODE_ABS2')
+    expect(snap.repos[0]?.status.stale).toBe(true)
+    expect(snap.repos[1]?.node_id).toBe('NODE_OK')
+    expect(snap.repos[1]?.status.stale).toBe(false)
+  })
+
+  it('no resolver configured: null-installation repos become absence entries, not silent drops', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_NORES', owner: 'fro-bot', name: 'agent', discovery_channel: 'collab'})],
+      }))),
+    })
+    // makeDeps defaults resolveInstallationIdForRepo to a resolving mock — remove it.
+    ;(deps as unknown as Record<string, unknown>).resolveInstallationIdForRepo = undefined
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos).toHaveLength(1)
+    expect(snap.repos[0]?.node_id).toBe('NODE_NORES')
+    expect(snap.repos[0]?.status.stale).toBe(true)
+  })
+
+  it('warm-empty refresh keeps last-good repos under a stale banner', async () => {
+    let call = 0
+    const deps = makeDeps({
+      enumerate: vi.fn().mockImplementation(async () => {
+        call++
+        return call === 1
+          ? makeEnumerateResult([makeRepo({node_id: 'NODE_WARM', owner: 'fro-bot', name: 'warm', installation_id: 1})])
+          : ok({repos: [], installations: [], degradedInstallations: 2})
+      }),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult())),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const warm = agg.getSnapshot()
+    expect(warm.repos).toHaveLength(1)
+    expect(warm.staleBanner).toBe(false)
+    expect(warm.refreshedAt).not.toBeNull()
+
+    await agg.refresh()
+    const after = agg.getSnapshot()
+    // rm-112: empty working set must NOT replace a populated last-good snapshot
+    expect(after.repos).toHaveLength(1)
+    expect(after.repos[0]?.node_id).toBe('NODE_WARM')
+    expect(after.staleBanner).toBe(true)
+    expect(after.degradedInstallations).toBe(2)
+    // refreshedAt preserved — the age of the served data stays honest
+    expect(after.refreshedAt).toBe(warm.refreshedAt)
+  })
+
+  it('cold empty refresh still yields the empty snapshot (no last-good to protect)', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(ok({repos: [], installations: [], degradedInstallations: 0})),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult())),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos).toHaveLength(0)
+    expect(snap.staleBanner).toBe(false)
+    expect(snap.degradedInstallations).toBe(0)
   })
 })
