@@ -4988,6 +4988,47 @@ describe('initOperatorStream — noticeEl gets data-connection-state attribute',
     vi.unstubAllGlobals()
   })
 
+  it('rm-114: buffer cap counts UTF-8 BYTES — astral text under the code-unit count still fails closed', async () => {
+    // '𝕏' (U+1D54F) is 4 UTF-8 bytes but 2 UTF-16 code units: 250_001 chars
+    // exceed MAX_SSE_BUFFER_BYTES in bytes while staying under it in string
+    // length — the pre-rm-114 `.length` check admitted this buffer. The
+    // browser twin must abort terminally (connectionState 'failed', the
+    // buffer-overflow path dispatches no reconnect).
+    const noticeEl = makeFakeEl('div')
+    const statusEl = makeFakeEl('span')
+    const astral = '𝕏'.repeat(Math.ceil((MAX_SSE_BUFFER_BYTES + 4) / 4))
+    expect(astral.length).toBeLessThan(MAX_SSE_BUFFER_BYTES) // the bug's precondition
+
+    const readyFrame = `event: ready\ndata: {"contractVersion":"${PINNED_CONTRACT_VERSION}"}\n\n`
+    const encoder = new TextEncoder()
+    let resolveController: (c: ReadableStreamDefaultController<Uint8Array>) => void
+    const controllerReady = new Promise<ReadableStreamDefaultController<Uint8Array>>(resolve => {
+      resolveController = resolve
+    })
+    const body = new ReadableStream<Uint8Array>({
+      start(c) { resolveController(c) },
+    })
+
+    vi.stubGlobal('fetch', async () => ({
+      status: 200,
+      headers: {get: () => 'text/event-stream'},
+      body,
+    }))
+
+    const handle = initOperatorStream({runId: 'run-astral-cap', statusEl, noticeEl})
+
+    const controller = await controllerReady
+    controller.enqueue(encoder.encode(readyFrame))
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(noticeEl.dataset.connectionState).toBe('live')
+
+    controller.enqueue(encoder.encode(astral))
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(noticeEl.dataset.connectionState).toBe('failed')
+
+    handle.close()
+  })
+
   it('noticeEl has data-connection-state="live" when stream goes live', async () => {
     const noticeEl = makeFakeEl('div')
     const statusEl = makeFakeEl('span')

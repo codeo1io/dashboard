@@ -1,5 +1,6 @@
 /**
- * rm-179 reality canary — execute the REAL status query against the REAL API.
+ * rm-179/rm-184 reality canary — execute EVERY registered template against
+ * the REAL API.
  *
  * Origin: 2026-09-24, run 6fe26972. Two failures that day shared one class —
  * green CI over broken reality: the aggregator's GraphQL templates carried
@@ -7,17 +8,20 @@
  * so no suite could catch it), and the base-drift gate's digest extraction
  * was structurally empty while the workflow was believed green (rm-178).
  *
- * This script is the runtime half of the fix's defense-in-depth. It imports
- * the EXACT exported template the aggregator sends (so the shipped string is
- * what runs), substitutes this repository's own coordinates, executes one
- * read-only query with GITHUB_TOKEN, and exits non-zero on any of: transport
- * failure, GraphQL error, or a missing repository object. Scheduled weekly
- * by .github/workflows/canary.yaml — never a required check, never a write.
+ * 2026-09-25, run aaa84dff (rm-184): the original canary imported
+ * REPO_STATUS_QUERY only, while the aggregator ships a second live-destined
+ * template (REPO_STATUS_QUERY_NO_ALERTS, the fallback used when an
+ * installation lacks the security-events scope) that never executed anywhere.
+ * The script now iterates REPO_STATUS_QUERY_REGISTRY — the same list the
+ * aggregator draws from — so adding a template auto-extends live coverage;
+ * test/query-shape-guard.test.ts enforces the registry's completeness
+ * offline. Scheduled weekly by .github/workflows/canary.yaml (never a
+ * required check, never a write) and dispatchable on demand.
  */
 import {createHash} from 'node:crypto'
 import process from 'node:process'
 
-import {REPO_STATUS_QUERY} from '../src/github/aggregator.ts'
+import {REPO_STATUS_QUERY_REGISTRY} from '../src/github/aggregator.ts'
 
 const rawRepository = process.env.GITHUB_REPOSITORY ?? ''
 // In Actions this is always 'owner/repo'; locally it may be unset or junk.
@@ -27,17 +31,10 @@ const repositoryMatches = /^([\w.-]+)\/([\w.-]+)$/.exec(rawRepository)
 const owner = repositoryMatches?.[1] ?? 'codeo1io'
 const name = repositoryMatches?.[2] ?? 'dashboard'
 
-async function main(): Promise<void> {
-  const token = process.env.GITHUB_TOKEN ?? ''
-  if (token === '') {
-    console.error('GITHUB_TOKEN is required (read-only metadata is sufficient for a public repo)')
-    process.exit(1)
-  }
-
-  const query = REPO_STATUS_QUERY
+async function runTemplate(token: string, entry: {readonly name: string; readonly query: string}): Promise<void> {
+  const query = entry.query
   // The digest makes "which exact query text ran" auditable from the run log.
-  console.log(`canary: query sha256 ${createHash('sha256').update(query).digest('hex')}`)
-  console.log(`canary: target ${owner}/${name}`)
+  console.log(`canary: query ${entry.name} sha256 ${createHash('sha256').update(query).digest('hex')}`)
 
   let status: number
   let body: unknown
@@ -55,32 +52,44 @@ async function main(): Promise<void> {
     status = res.status
     body = await res.json()
   } catch (error) {
-    console.error(`canary: transport failure — ${error instanceof Error ? error.message : String(error)}`)
+    console.error(`canary: ${entry.name} transport failure — ${error instanceof Error ? error.message : String(error)}`)
     process.exit(1)
   }
 
   const errors = (body as {errors?: unknown[]} | null)?.errors
   if (status !== 200) {
-    console.error(`canary: HTTP ${status} — the real API would reject this query today`)
+    console.error(`canary: ${entry.name} HTTP ${status} — the real API would reject this query today`)
     console.error(JSON.stringify(body, null, 2))
     process.exit(1)
   }
   if (errors && errors.length > 0) {
-    console.error('canary: GraphQL errors — the real API would reject this query today (rm-177 class):')
+    console.error(`canary: ${entry.name} GraphQL errors — the real API would reject this query today (rm-177 class):`)
     console.error(JSON.stringify(errors, null, 2))
     process.exit(1)
   }
 
   const repository = (body as {data?: {repository?: object}} | null)?.data?.repository
   if (!repository) {
-    console.error('canary: response contained no repository object — query shape drifted from the contract:')
+    console.error(`canary: ${entry.name} response contained no repository object — query shape drifted from the contract:`)
     console.error(JSON.stringify(body, null, 2))
     process.exit(1)
   }
 
-  // The shipped template deliberately selects no identity field (it is the
+  // The shipped templates deliberately select no identity field (each is the
   // exact string the aggregator sends), so report the local target coords.
-  console.log(`canary: OK — ${owner}/${name} answered the exact shipped REPO_STATUS_QUERY`)
+  console.log(`canary: OK — ${owner}/${name} answered the exact shipped ${entry.name}`)
+}
+
+async function main(): Promise<void> {
+  const token = process.env.GITHUB_TOKEN ?? ''
+  if (token === '') {
+    console.error('GITHUB_TOKEN is required (read-only metadata is sufficient for a public repo)')
+    process.exit(1)
+  }
+  console.log(`canary: target ${owner}/${name} — ${REPO_STATUS_QUERY_REGISTRY.length} registered template(s)`)
+  for (const entry of REPO_STATUS_QUERY_REGISTRY) {
+    await runTemplate(token, entry)
+  }
 }
 
 await main()
