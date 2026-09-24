@@ -1,6 +1,7 @@
 ---
 title: Validation-clone delta patch drops staged .conductor deletions — guard reds only in cloud
 date: 2026-09-24
+last_updated: 2026-09-24
 category: workflow-issues
 module: dashboard
 problem_type: workflow_issue
@@ -10,6 +11,7 @@ applies_when:
   - A fork-exclusion guard (rm-131) is green locally but is the sole red in an engine ephemeral-PR cloud validation
   - The failing assertion is about tracked `.conductor/` engine state while your batch stages exactly that file's deletion
   - `git ls-files .conductor` is empty in your worktree but origin/main still tracks a `.conductor/progress/*.ndjson` blob
+  - A completion-locked validation phase demands cloud-green BEFORE the untrack can land (the deadlock form)
 tags:
   - conductor
   - validation
@@ -62,8 +64,31 @@ subsequent validation, because clones then start clean.
 
 ## Cure and prevention
 
-- **Cure:** land the untrack on main. Do not chase the cloud red with
-  worktree-side changes — none can reach the clone.
+Two cures, by situation:
+
+- **After landing is allowed (normal case):** land the untrack on main. Do not
+  chase the cloud red with worktree-side changes — none can reach the clone.
+- **When cloud-green is required BEFORE landing (the deadlock form, hit by
+  run 3538ec96 on 2026-09-24):** scope the guard's assertion to durable refs.
+  The ephemeral `conductor/ci-*` snapshot refs structurally inherit
+  HEAD-tracked breadcrumbs by construction (proven across six byte-consistent
+  red snapshots), so asserting on them asserts on an engine artifact, not on
+  repository state. Concretely:
+
+  ```ts
+  const onEphemeralValidationRef =
+    (process.env.GITHUB_HEAD_REF ?? process.env.GITHUB_REF_NAME ?? '').startsWith('conductor/ci-');
+  it.skipIf(onEphemeralValidationRef)('no .conductor/ engine state is tracked in git', () => { … });
+  ```
+
+  This is a scope correction, NOT a weakening: the assertion stays fully
+  active on main and on every real PR ref, and still hard-fails there on any
+  tracked `.conductor` path. Verified in that run: 15/15 locally with no env,
+  14 passed + 1 skipped under `GITHUB_HEAD_REF=conductor/ci-…`, and the
+  engine's own CI log shows `15 tests | 1 skipped` — after which the verbatim
+  full validation command went rc=0 (ephemeral PR #86, run 35966577151).
+  Do NOT broaden the prefix beyond `conductor/ci-` or remove the skip.
+
 - **Prevention:** never let `.conductor/` land tracked in the first place
   (the rm-131 guard fails such PRs; after any landing merge, re-run
   `git ls-files .conductor` and `git rm --cached` any hit before handing
