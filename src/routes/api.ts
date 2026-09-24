@@ -1,4 +1,5 @@
 import type {AggregatorSnapshot, DashboardRepo, RepoCiStatus} from '../github/aggregator.ts'
+import type {SkippedInstallation} from '../github/installations.ts'
 import {Hono} from 'hono'
 
 /** Injectable snapshot provider — returns the current aggregator snapshot. */
@@ -9,6 +10,7 @@ const EMPTY_SNAPSHOT: AggregatorSnapshot = {
   repos: [],
   staleBanner: false,
   driftCount: 0,
+  skippedInstallations: [],
   refreshedAt: null,
 }
 
@@ -39,6 +41,12 @@ interface MonitoringDto {
   readonly repos: readonly MonitoringRepoDto[]
   readonly staleBanner: boolean
   readonly driftCount: number
+  /**
+   * Installations skipped by the last enumeration, by failure phase. Counts
+   * only — installation ids and error strings never cross the DTO (the SPA is
+   * an untrusted display-only client).
+   */
+  readonly skippedInstallations: {readonly mint: number; readonly listRepos: number}
   readonly refreshedAt: number | null
 }
 
@@ -57,11 +65,25 @@ function toMonitoringRepoDto(repo: DashboardRepo): MonitoringRepoDto {
   }
 }
 
+function toSkippedInstallationsDto(skipped: readonly SkippedInstallation[]): MonitoringDto['skippedInstallations'] {
+  let mint = 0
+  let listRepos = 0
+  for (const entry of skipped) {
+    if (entry.phase === 'mint') {
+      mint += 1
+    } else {
+      listRepos += 1
+    }
+  }
+  return {mint, listRepos}
+}
+
 function toMonitoringDto(snapshot: AggregatorSnapshot): MonitoringDto {
   return {
     repos: snapshot.repos.map(toMonitoringRepoDto),
     staleBanner: snapshot.staleBanner,
     driftCount: snapshot.driftCount,
+    skippedInstallations: toSkippedInstallationsDto(snapshot.skippedInstallations),
     refreshedAt: snapshot.refreshedAt,
   }
 }

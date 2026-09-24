@@ -54,12 +54,6 @@ function makeFakeOperatorClient(
     refreshCsrf: () => {
       throw new Error('refreshCsrf must not be called in auth middleware')
     },
-    launchRun: () => {
-      throw new Error('launchRun must not be called in auth middleware')
-    },
-    getRunSnapshot: () => {
-      throw new Error('getRunSnapshot must not be called in auth middleware')
-    },
     connectRunStream: () => {
       throw new Error('connectRunStream must not be called in auth middleware')
     },
