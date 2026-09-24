@@ -44,7 +44,7 @@ async function buildTestApp(operatorUiEnabled: boolean) {
     cookieKey: TEST_KEY,
     oauthClient: makeFakeOAuthClient(),
     fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+    getSnapshot: () => ({repos: [], staleBanner: false, degradedInstallations: 0, driftCount: 0, refreshedAt: null}),
     operatorUiEnabled,
   })
 }
@@ -669,7 +669,7 @@ describe('DASHBOARD_WEB_DIST — static root override', () => {
       cookieKey: TEST_KEY,
       oauthClient: makeFakeOAuthClient(),
       fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+      getSnapshot: () => ({repos: [], staleBanner: false, degradedInstallations: 0, driftCount: 0, refreshedAt: null}),
     })
     // /sw.js is served from web/dist — 200 confirms the default root is correct
     const res = await app.request('/sw.js')
@@ -687,7 +687,7 @@ describe('DASHBOARD_WEB_DIST — static root override', () => {
       cookieKey: TEST_KEY,
       oauthClient: makeFakeOAuthClient(),
       fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+      getSnapshot: () => ({repos: [], staleBanner: false, degradedInstallations: 0, driftCount: 0, refreshedAt: null}),
       webDistRoot: './web/dist-fixture',
     })
     const res = await app.request('/sw.js')
@@ -701,7 +701,7 @@ describe('DASHBOARD_WEB_DIST — static root override', () => {
       cookieKey: TEST_KEY,
       oauthClient: makeFakeOAuthClient(),
       fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+      getSnapshot: () => ({repos: [], staleBanner: false, degradedInstallations: 0, driftCount: 0, refreshedAt: null}),
       // No webDistRoot injected — reads from env
     })
     const res = await app.request('/sw.js')
@@ -720,7 +720,7 @@ describe('DASHBOARD_WEB_DIST — production guard: dist-fixture must not be used
           cookieKey: TEST_KEY,
           oauthClient: makeFakeOAuthClient(),
           fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-          getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+          getSnapshot: () => ({repos: [], staleBanner: false, degradedInstallations: 0, driftCount: 0, refreshedAt: null}),
           webDistRoot: './web/dist-fixture',
         }),
       ).rejects.toThrow(/dist-fixture.*production|production.*dist-fixture/i)
@@ -739,7 +739,7 @@ describe('DASHBOARD_WEB_DIST — production guard: dist-fixture must not be used
           cookieKey: TEST_KEY,
           oauthClient: makeFakeOAuthClient(),
           fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-          getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+          getSnapshot: () => ({repos: [], staleBanner: false, degradedInstallations: 0, driftCount: 0, refreshedAt: null}),
           webDistRoot: './web/dist-fixture',
         }),
       ).resolves.toBeDefined()
@@ -758,7 +758,7 @@ describe('DASHBOARD_WEB_DIST — production guard: dist-fixture must not be used
           cookieKey: TEST_KEY,
           oauthClient: makeFakeOAuthClient(),
           fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-          getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+          getSnapshot: () => ({repos: [], staleBanner: false, degradedInstallations: 0, driftCount: 0, refreshedAt: null}),
           webDistRoot: './web/dist',
         }),
       ).resolves.toBeDefined()

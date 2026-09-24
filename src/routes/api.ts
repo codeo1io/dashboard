@@ -8,6 +8,7 @@ export type SnapshotProvider = () => AggregatorSnapshot
 const EMPTY_SNAPSHOT: AggregatorSnapshot = {
   repos: [],
   staleBanner: false,
+  degradedInstallations: 0,
   driftCount: 0,
   refreshedAt: null,
 }
@@ -38,6 +39,8 @@ interface MonitoringRepoDto {
 interface MonitoringDto {
   readonly repos: readonly MonitoringRepoDto[]
   readonly staleBanner: boolean
+  /** rm-112: installations skipped mid-enumeration — partial-data signal for the operator. */
+  readonly degradedInstallations: number
   readonly driftCount: number
   readonly refreshedAt: number | null
 }
@@ -61,6 +64,7 @@ function toMonitoringDto(snapshot: AggregatorSnapshot): MonitoringDto {
   return {
     repos: snapshot.repos.map(toMonitoringRepoDto),
     staleBanner: snapshot.staleBanner,
+    degradedInstallations: snapshot.degradedInstallations,
     driftCount: snapshot.driftCount,
     refreshedAt: snapshot.refreshedAt,
   }

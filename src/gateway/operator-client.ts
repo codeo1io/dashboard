@@ -20,7 +20,7 @@ import type {Result} from '../result.ts'
 import type {PermissionReply} from './operator-contract/approval.ts'
 import type {OperatorCsrfToken, OperatorDecisionState, OperatorSessionInfo, OperatorWebStatus, PushSubscriptionMetadata, RepoSummary, RunStreamFrame, VapidKeyResponse} from './operator-contract/index.ts'
 import {err, ok} from '../result.ts'
-import {parseOperatorCsrfToken, parseOperatorSessionInfo, parsePushSubscriptionMetadata, parseRepoSummaryList, parseVapidKeyResponse} from './operator-contract/index.ts'
+import {parseLaunchRunResponse, parseOperatorCsrfToken, parseOperatorSessionInfo, parsePushSubscriptionMetadata, parseRepoSummaryList, parseRunApprovalDecisionResponse, parseRunApprovalsResponse, parseRunSnapshotResponse, parseVapidKeyResponse} from './operator-contract/index.ts'
 
 // ---------------------------------------------------------------------------
 // Run status union
@@ -557,30 +557,42 @@ export function createOperatorClient(options: OperatorClientOptions): OperatorCl
       prompt: req.prompt,
     })
 
-    return fetchJson<LaunchRunResponse>(
-      '/operator/runs',
-      '/operator/runs',
-      {
-        method: 'POST',
-        redirect: 'error',
-        headers: {
-          'content-type': 'application/json',
-          'x-csrf-token': req.csrfToken,
-          'idempotency-key': req.idempotencyKey,
-        },
-        body,
+    const raw = await fetchJson<unknown>('/operator/runs', '/operator/runs', {
+      method: 'POST',
+      redirect: 'error',
+      headers: {
+        'content-type': 'application/json',
+        'x-csrf-token': req.csrfToken,
+        'idempotency-key': req.idempotencyKey,
       },
-    )
+      body,
+    })
+    if (!raw.success) return raw
+    const parsed = parseLaunchRunResponse(raw.data)
+    if (!parsed.success) {
+      const protocolErr: GatewayProtocolError = {kind: 'protocol', message: 'Failed to parse run launch response'}
+      logger?.error('operator-client: run launch parse error', {route: '/operator/runs'})
+      return err(protocolErr)
+    }
+    return ok(parsed.data)
   }
 
   async function getRunSnapshot(runId: string): Promise<Result<RunSnapshotDto, GatewayClientError>> {
     const runIdErr = requireRunId(runId)
     if (runIdErr !== null) return err(runIdErr)
 
-    return fetchJson<RunSnapshotDto>(
+    const raw = await fetchJson<unknown>(
       `/operator/runs/${encodeURIComponent(runId)}`,
       '/operator/runs/:runId',
     )
+    if (!raw.success) return raw
+    const parsed = parseRunSnapshotResponse(raw.data)
+    if (!parsed.success) {
+      const protocolErr: GatewayProtocolError = {kind: 'protocol', message: 'Failed to parse run snapshot response'}
+      logger?.error('operator-client: run snapshot parse error', {route: '/operator/runs/:runId'})
+      return err(protocolErr)
+    }
+    return ok(parsed.data)
   }
 
   function connectRunStream(
@@ -631,10 +643,18 @@ export function createOperatorClient(options: OperatorClientOptions): OperatorCl
     const runIdErr = requireRunId(runId)
     if (runIdErr !== null) return err(runIdErr)
 
-    return fetchJson<RunApprovalsResponse>(
+    const raw = await fetchJson<unknown>(
       `/operator/runs/${encodeURIComponent(runId)}/approvals`,
       '/operator/runs/:runId/approvals',
     )
+    if (!raw.success) return raw
+    const parsed = parseRunApprovalsResponse(raw.data)
+    if (!parsed.success) {
+      const protocolErr: GatewayProtocolError = {kind: 'protocol', message: 'Failed to parse run approvals response'}
+      logger?.error('operator-client: run approvals parse error', {route: '/operator/runs/:runId/approvals'})
+      return err(protocolErr)
+    }
+    return ok(parsed.data)
   }
 
   async function decideRunApproval(
@@ -670,7 +690,16 @@ export function createOperatorClient(options: OperatorClientOptions): OperatorCl
       body,
     }
 
-    const first = await fetchJson<RunApprovalDecisionResponse>(path, route, init)
+    const send = async (token: string) =>
+      fetchJson<unknown>(path, route, {
+        ...init,
+        headers: {
+          ...init.headers,
+          'x-csrf-token': token,
+        },
+      })
+
+    const first = await send(csrfToken)
 
     // One CSRF-400 retry with a REFRESHED token, reusing the SAME idempotency
     // key (mirrors the launch-surface pattern). A 400 here most likely means
@@ -686,17 +715,25 @@ export function createOperatorClient(options: OperatorClientOptions): OperatorCl
     if (!first.success && first.error.kind === 'http' && first.error.status === 400) {
       const refreshed = await refreshCsrf()
       if (!refreshed.success) return first
-      const retryInit: RequestInit = {
-        ...init,
-        headers: {
-          ...init.headers,
-          'x-csrf-token': refreshed.data.csrfToken,
-        },
+      const retried = await send(refreshed.data.csrfToken)
+      if (!retried.success) return retried
+      const parsedRetry = parseRunApprovalDecisionResponse(retried.data)
+      if (!parsedRetry.success) {
+        const protocolErr: GatewayProtocolError = {kind: 'protocol', message: 'Failed to parse run approval decision response'}
+        logger?.error('operator-client: run approval decision parse error', {route})
+        return err(protocolErr)
       }
-      return fetchJson<RunApprovalDecisionResponse>(path, route, retryInit)
+      return ok(parsedRetry.data)
     }
 
-    return first
+    if (!first.success) return first
+    const parsed = parseRunApprovalDecisionResponse(first.data)
+    if (!parsed.success) {
+      const protocolErr: GatewayProtocolError = {kind: 'protocol', message: 'Failed to parse run approval decision response'}
+      logger?.error('operator-client: run approval decision parse error', {route})
+      return err(protocolErr)
+    }
+    return ok(parsed.data)
   }
 
   async function getVapidKey(): Promise<Result<VapidKeyResult, GatewayClientError>> {

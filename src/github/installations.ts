@@ -88,6 +88,13 @@ export interface InstallationRecord {
 export interface EnumerateReposResult {
   readonly repos: readonly RepoRecord[]
   readonly installations: readonly InstallationRecord[]
+  /**
+   * rm-112 (this cycle): installations skipped mid-enumeration (token mint or
+   * repo-list failure). Their repos are silently absent from `repos` — this
+   * count is how callers surface partial enumeration instead of presenting an
+   * incomplete set as complete.
+   */
+  readonly degradedInstallations: number
 }
 
 export class FetchInstallationsError extends Error {
@@ -207,22 +214,24 @@ export async function enumerateRepos(
   }
 
   if (installations.length === 0) {
-    return ok({repos: [], installations: []})
+    return ok({repos: [], installations: [], degradedInstallations: 0})
   }
 
   logger.debug('Enumerating repos across installations', {count: installations.length})
 
   const reposByNodeId = new Map<string, RepoRecord>()
+  let degradedInstallations = 0
 
   for (const installation of installations) {
     let token: string
     try {
       token = await mintReadOnlyToken(installation.id, client.mintInstallationToken)
     } catch (mintError) {
-      logger.warning('Failed to mint installation token; skipping install', {
+      logger.warning('Failed to mint installation token; counting degraded installation', {
         installationId: installation.id,
         error: safeErrorMessage(mintError),
       })
+      degradedInstallations++
       continue
     }
 
@@ -230,10 +239,11 @@ export async function enumerateRepos(
     try {
       repos = await client.listInstallationRepos(token)
     } catch (repoError) {
-      logger.warning('Failed to list repos for installation; skipping', {
+      logger.warning('Failed to list repos for installation; counting degraded installation', {
         installationId: installation.id,
         error: safeErrorMessage(repoError),
       })
+      degradedInstallations++
       continue
     }
 
@@ -250,6 +260,7 @@ export async function enumerateRepos(
   return ok({
     repos: [...reposByNodeId.values()],
     installations,
+    degradedInstallations,
   })
 }
 
