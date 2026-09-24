@@ -46,3 +46,8 @@ web/dist-fixture
 my-profile/
 test-results/
 playwright-report/
+
+# rm-175: belt-and-braces — engine/delegate state and pnpm cache must never
+# be tracked even if an upstream absorb or landing merge re-adds them.
+.conductor/
+.pnpm-store/

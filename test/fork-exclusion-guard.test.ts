@@ -80,4 +80,13 @@ describe('fork exclusion invariants (rm-131)', () => {
     }).trim()
     expect(tracked).toBe('')
   })
+
+  it('.gitignore excludes .conductor/ and .pnpm-store/ (rm-175 belt-and-braces)', () => {
+    // The `git ls-files` assertion above catches tracked state; this catches
+    // the earlier failure stage — an absorb or landing merge that drops the
+    // ignore entries would let the next `git add .` track them silently.
+    const gitignore = read('.gitignore')
+    expect(gitignore).toMatch(/^\.conductor\/$/m)
+    expect(gitignore).toMatch(/^\.pnpm-store\/$/m)
+  })
 })
