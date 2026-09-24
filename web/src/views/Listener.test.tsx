@@ -136,7 +136,12 @@ describe('ListenerChannel', () => {
       await vi.advanceTimersByTimeAsync(10)
     })
 
-    expect(listenerApi.ackListenerMessage).toHaveBeenCalledWith('msg-1')
+    // rm-184: the call site passes an explicit timeout bound (AbortSignal),
+    // not just the id — pin the shape so the bound cannot silently regress.
+    expect(listenerApi.ackListenerMessage).toHaveBeenCalledWith(
+      'msg-1',
+      expect.objectContaining({abortSignal: expect.any(AbortSignal)}),
+    )
     expect(listenerApi.fetchListenerMessages).toHaveBeenCalled() // at least once
   })
 
