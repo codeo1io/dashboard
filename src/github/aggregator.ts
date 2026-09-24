@@ -25,7 +25,7 @@
  */
 
 import type {Result} from '../result.ts'
-import type {EnumerateReposResult, InstallationsClient} from './installations.ts'
+import type {EnumerateReposResult, InstallationsClient, SkippedInstallation} from './installations.ts'
 import type {MetadataError, MetadataReader, MetadataResult} from './metadata.ts'
 
 import {logger, sanitizeErrorMessage, type LogContext} from '../logger.ts'
@@ -111,6 +111,14 @@ export interface AggregatorSnapshot {
    * Never includes names or node_ids — count only.
    */
   readonly driftCount: number
+  /**
+   * Installations skipped during the last enumeration attempt (token mint or
+   * repo listing failed). rm-164: makes partial GitHub-side outages visible
+   * instead of silently shrinking monitored scope. Empty when every enumerated
+   * installation was processed. Full detail (installationId + redacted error)
+   * is server-side; the API DTO exposes phase counts only.
+   */
+  readonly skippedInstallations: readonly SkippedInstallation[]
   /** When the snapshot was last successfully refreshed (ms since epoch) */
   readonly refreshedAt: number | null
 }
@@ -639,7 +647,7 @@ export function createAggregator(
 
       if (lastGoodSnapshot === null) {
         // Cold start with no cache — serve empty with banner
-        lastGoodSnapshot = {repos: [], staleBanner: true, driftCount: 0, refreshedAt: null}
+        lastGoodSnapshot = {repos: [], staleBanner: true, driftCount: 0, skippedInstallations: [], refreshedAt: null}
       } else {
         // Serve last-good with staleBanner
         lastGoodSnapshot = {...lastGoodSnapshot, staleBanner: true}
@@ -654,8 +662,12 @@ export function createAggregator(
 
     let installRepos: readonly {node_id: string; database_id: number; owner: string; name: string; full_name: string; installation_id: number}[] = []
     let enumerationFailed = false
+    let skippedInstallations: readonly SkippedInstallation[] = []
     if (isOk(enumerateResult)) {
       installRepos = enumerateResult.data.repos
+      // Additive rm-164 field: injected enumerate deps may predate it — normalize
+      // rather than crash the refresh cycle on the DI seam.
+      skippedInstallations = enumerateResult.data.skippedInstallations ?? []
     } else {
       enumerationFailed = true
       logger.warning('Installation enumeration failed; using empty install set — snapshot will be incomplete', {
@@ -707,7 +719,7 @@ export function createAggregator(
 
     if (workingSet.length === 0) {
       // staleBanner=true if enumeration failed (data is incomplete — install repos missing)
-      lastGoodSnapshot = {repos: [], staleBanner: enumerationFailed, driftCount, refreshedAt: now()}
+      lastGoodSnapshot = {repos: [], staleBanner: enumerationFailed, driftCount, skippedInstallations, refreshedAt: now()}
       return
     }
 
@@ -742,12 +754,13 @@ export function createAggregator(
     // staleBanner=true if enumeration failed — data is incomplete (install repos missing).
     // We still show metadata publicRepos (they are public and safe), but the operator
     // must know the installation channel data is absent.
-    lastGoodSnapshot = {repos: sorted, staleBanner: enumerationFailed, driftCount, refreshedAt: now()}
+    lastGoodSnapshot = {repos: sorted, staleBanner: enumerationFailed, driftCount, skippedInstallations, refreshedAt: now()}
 
     logger.info('Aggregator refresh complete', {
       repoCount: sorted.length,
       driftCount,
       enumerationFailed,
+      skippedInstallations: skippedInstallations.length,
     })
   }
 
@@ -774,7 +787,7 @@ export function createAggregator(
    */
   function getSnapshot(): AggregatorSnapshot {
     if (lastGoodSnapshot === null) {
-      return {repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}
+      return {repos: [], staleBanner: false, driftCount: 0, skippedInstallations: [], refreshedAt: null}
     }
     return lastGoodSnapshot
   }

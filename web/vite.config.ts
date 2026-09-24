@@ -15,8 +15,9 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
-      // Use injectManifest so we can ship a custom SW with deny-by-default
-      // fetch routing.
+      // injectManifest ships our hand-written SW (web/src/sw.ts) — a
+      // kill-switch that purges caches and unregisters itself. It performs no
+      // fetch routing and no caching; the emitted precache manifest is inert.
       strategies: 'injectManifest',
       srcDir: 'src',
       filename: 'sw.ts',

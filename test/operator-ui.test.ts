@@ -77,12 +77,6 @@ function makeFakeOperatorClient(
     refreshCsrf: () => {
       throw new Error('refreshCsrf must not be called during page render')
     },
-    launchRun: () => {
-      throw new Error('launchRun must not be called during page render')
-    },
-    getRunSnapshot: () => {
-      throw new Error('getRunSnapshot must not be called during page render')
-    },
     connectRunStream: () => {
       throw new Error('connectRunStream must not be called during page render')
     },
@@ -127,7 +121,7 @@ async function buildTestApp(opts: TestAppOpts | boolean) {
     cookieKey: TEST_KEY,
     oauthClient: makeFakeOAuthClient(),
     fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, skippedInstallations: [], refreshedAt: null}),
     operatorUiEnabled: resolved.operatorUiEnabled,
     gatewayOperatorSessionEnabled: resolved.gatewayOperatorSessionEnabled,
     operatorClient: resolved.operatorClient,
@@ -345,7 +339,7 @@ describe('operator UI — SPA shell at / (flag ON + authenticated)', () => {
     expect(body).not.toMatch(/src="https?:\/\//)
   })
 
-  it('mock client fetch guard: getCurrentSession and getRunSnapshot return network errors', async () => {
+  it('mock client fetch guard: getCurrentSession and decideRunApproval return network errors', async () => {
     // Prove the no-network guarantee at the client layer.
     // The mock client's injected fetch throws if called; the fetchJson wrapper
     // catches the throw and converts it to a network-error Result.
@@ -357,10 +351,10 @@ describe('operator UI — SPA shell at / (flag ON + authenticated)', () => {
       expect(sessionResult.error.kind).toBe('network')
     }
 
-    const snapshotResult = await client.getRunSnapshot('run-fixture-queued-001')
-    expect(snapshotResult.success).toBe(false)
-    if (!snapshotResult.success) {
-      expect(snapshotResult.error.kind).toBe('network')
+    const decisionResult = await client.decideRunApproval('run-001', 'req-001', 'once', 'idem-key-abc', 'csrf-token-xyz')
+    expect(decisionResult.success).toBe(false)
+    if (!decisionResult.success) {
+      expect(decisionResult.error.kind).toBe('network')
     }
   })
 })

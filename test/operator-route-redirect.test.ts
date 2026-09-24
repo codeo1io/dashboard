@@ -56,7 +56,7 @@ async function buildArcticApp(operatorUiEnabled: boolean) {
     cookieKey: TEST_KEY,
     oauthClient: makeFakeOAuthClient(),
     fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, skippedInstallations: [], refreshedAt: null}),
     operatorUiEnabled,
   })
 }
@@ -69,14 +69,8 @@ function makeFakeOperatorClient(
     refreshCsrf: () => {
       throw new Error('refreshCsrf must not be called during redirect')
     },
-    launchRun: () => {
-      throw new Error('launchRun must not be called during redirect')
-    },
     listRepos: () => {
       throw new Error('listRepos must not be called during redirect')
-    },
-    getRunSnapshot: () => {
-      throw new Error('getRunSnapshot must not be called during redirect')
     },
     connectRunStream: () => {
       throw new Error('connectRunStream must not be called during redirect')
@@ -108,7 +102,7 @@ async function buildGatewayApp(client: OperatorClient) {
     cookieKey: TEST_KEY,
     oauthClient: makeFakeOAuthClient(),
     fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, skippedInstallations: [], refreshedAt: null}),
     operatorUiEnabled: false,
     gatewayOperatorSessionEnabled: true,
     gatewayOperatorOrigin: 'https://dashboard.fro.bot',
