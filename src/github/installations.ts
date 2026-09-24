@@ -289,7 +289,7 @@ export async function enumerateRepos(
     try {
       token = await mintReadOnlyToken(installation.id, client.mintInstallationToken)
     } catch (mintError) {
-      logger.warning('Failed to mint installation token; skipping install', {
+      logger.warning('Failed to mint installation token; counting degraded installation', {
         installationId: installation.id,
         error: safeErrorMessage(mintError),
       })
@@ -301,7 +301,7 @@ export async function enumerateRepos(
     try {
       repos = await client.listInstallationRepos(token)
     } catch (repoError) {
-      logger.warning('Failed to list repos for installation; skipping', {
+      logger.warning('Failed to list repos for installation; counting degraded installation', {
         installationId: installation.id,
         error: safeErrorMessage(repoError),
       })

@@ -159,6 +159,7 @@ describe('/api/monitoring — BFF aggregation endpoint', () => {
       const snapshot = makeSnapshot({
         repos: [repo],
         staleBanner: false,
+        enumerationIncomplete: 2,
         driftCount: 1,
         refreshedAt: 1_700_000_000_000,
       })
@@ -170,6 +171,8 @@ describe('/api/monitoring — BFF aggregation endpoint', () => {
       expect(body.repos).toHaveLength(1)
       expect(body.staleBanner).toBe(false)
       expect(body.driftCount).toBe(1)
+      // rm-112: partial-enumeration signal survives the DTO projection
+      expect(body.enumerationIncomplete).toBe(2)
       expect(body.refreshedAt).toBe(1_700_000_000_000)
       // Repo shape
       const r = body.repos[0]
