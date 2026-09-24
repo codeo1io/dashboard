@@ -20,6 +20,7 @@ import {InstallPrompt} from '../pwa/InstallPrompt.tsx'
 import {ReloadPrompt} from '../pwa/ReloadPrompt.tsx'
 import {purgeOperatorCache} from '../pwa/logout-purge.ts'
 import {Notifications} from '../views/Notifications.tsx'
+import {DegradationBanner} from './DegradationBanner.tsx'
 
 /**
  * Best-effort push teardown on logout. Runs local `unsubscribe()` + Gateway
@@ -431,6 +432,7 @@ export function AppShell({
         }}
         className="sm:px-6 md:px-8 lg:px-10"
       >
+        <DegradationBanner />
         <Notifications
           pushEndpointBase={pushEndpointBase}
           pushConfigReady={pushConfigReady}
