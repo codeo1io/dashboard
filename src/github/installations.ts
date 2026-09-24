@@ -101,6 +101,18 @@ export class FetchInstallationsError extends Error {
 // Dependency injection interface (for testability)
 // ---------------------------------------------------------------------------
 
+/**
+ * Result of minting an installation token (rm-180).
+ *
+ * `expiresAt` is the API-provided token expiry; `null` when the mint
+ * boundary could not determine one (the cache then falls back to its
+ * capped 55-min default).
+ */
+export interface MintedToken {
+  readonly token: string
+  readonly expiresAt: Date | null
+}
+
 export interface InstallationsClient {
   /**
    * List all App installations (App-JWT-level call).
@@ -108,12 +120,12 @@ export interface InstallationsClient {
   readonly listInstallations: () => Promise<readonly InstallationRecord[]>
   /**
    * Mint a read-only installation token for the given installation ID.
-   * Returns the raw token string. NEVER log this value.
+   * Returns the raw token string plus its real expiry. NEVER log the token.
    */
   readonly mintInstallationToken: (
     installationId: number,
     permissions: Record<string, 'read'>,
-  ) => Promise<string>
+  ) => Promise<MintedToken>
   /**
    * List all repos accessible to the given installation token.
    * Returns records without installation_id — enumerateRepos attaches it.
@@ -145,7 +157,14 @@ function getCachedToken(installationId: number): string | null {
 }
 
 function setCachedToken(installationId: number, token: string, expiresAt: Date | null): void {
-  const expiresAtMs = expiresAt === null ? Date.now() + 55 * 60 * 1000 : expiresAt.getTime() // default 55 min
+  // rm-180: honor the API-provided expiry, but CAP it at the historical
+  // 55-min guess — a far-future expiry can never extend a token's cached
+  // life beyond the pre-seam behavior. The cap doubles as the fallback when
+  // the mint boundary could not determine an expiry. Ill-formed dates
+  // (NaN) fall back to the cap too: a NaN expiry would never compare stale.
+  const cappedDefaultMs = Date.now() + 55 * 60 * 1000
+  const rawMs = expiresAt === null ? Number.NaN : expiresAt.getTime()
+  const expiresAtMs = Number.isNaN(rawMs) ? cappedDefaultMs : Math.min(rawMs, cappedDefaultMs)
   tokenCache.set(installationId, {token, expiresAt: expiresAtMs})
 }
 
@@ -162,7 +181,7 @@ function setCachedToken(installationId: number, token: string, expiresAt: Date |
  */
 export async function mintReadOnlyToken(
   installationId: number,
-  mintFn: (installationId: number, permissions: Record<string, 'read'>) => Promise<string>,
+  mintFn: (installationId: number, permissions: Record<string, 'read'>) => Promise<MintedToken>,
 ): Promise<string> {
   // Check cache first
   const cached = getCachedToken(installationId)
@@ -170,10 +189,10 @@ export async function mintReadOnlyToken(
 
   // Try full permissions first
   try {
-    const token = await mintFn(installationId, FULL_READ_PERMISSIONS)
-    // Cache with a default expiry (we don't have expiry info from the injected fn)
-    setCachedToken(installationId, token, null)
-    return token
+    const minted = await mintFn(installationId, FULL_READ_PERMISSIONS)
+    // rm-180: cache against the API-provided expiry (capped in setCachedToken)
+    setCachedToken(installationId, minted.token, minted.expiresAt)
+    return minted.token
   } catch (fullError) {
     logger.warning('Failed to mint token with optional scopes; retrying with core scopes only', {
       installationId,
@@ -182,9 +201,9 @@ export async function mintReadOnlyToken(
   }
 
   // Retry with core-only permissions
-  const token = await mintFn(installationId, CORE_READ_PERMISSIONS)
-  setCachedToken(installationId, token, null)
-  return token
+  const minted = await mintFn(installationId, CORE_READ_PERMISSIONS)
+  setCachedToken(installationId, minted.token, minted.expiresAt)
+  return minted.token
 }
 
 /**
