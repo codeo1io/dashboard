@@ -1,0 +1,27 @@
+# .dockerignore (rm-184, cycle 13) — content landed by reconcile from the
+# stranded cycle-10-era PR #97 (branch conductor/run-c2ae28ab9962, where the
+# ~340 MB -> ~3 MB context cut was first measured). The image only needs
+# manifests, web/, src/, and public/ — the Dockerfile's builder stage COPYs
+# web/ and builds it in-image, the final stage copies dist from the builder.
+# Excluding everything else keeps .git, node_modules, local secrets, and test
+# artifacts from ever reaching the daemon's build context.
+.git
+.github
+.agents
+.conductor
+.opencode
+.slim
+docs
+node_modules
+test
+scripts
+web/dist
+web/dist-fixture
+web/coverage
+*.md
+!README.md
+.env*
+*.pem
+*.key
+coverage
+.vite
