@@ -161,13 +161,21 @@ Response:
 
 ## Ack — `POST /api/listener/messages/:id/ack` and `POST /api/listener/ack-all`
 
-Session-authenticated. Marks one message (or all) read. Read state is durable
-and server-side, so unread status is consistent across the operator's desktop
-and phone.
+Session-authenticated **mutations**: besides the session cookie they require
+an ack CSRF token (double-submit pattern, mirroring the logout CSRF in
+`routes/auth.ts`). The UI fetches `GET /api/listener/csrf` (session-protected,
+returns `{ "csrfToken": "<32 hex>" }`) and submits the token on the mutation
+via the `x-csrf-token` header. The token is HMAC-derived from the cookie key
+and the operator login over a one-hour window; the previous window's token is
+accepted for clock-skew tolerance. Marks one message (or all) read. Read state
+is durable and server-side, so unread status is consistent across the operator's
+desktop and phone.
 
 - `POST /api/listener/messages/:id/ack` → `202` `{ "id": "...", "readAt": "..." }`,
   or `404` if the id is unknown.
 - `POST /api/listener/ack-all` → `202` `{ "acked": <count> }`.
+- Either mutation without a valid `x-csrf-token` header → `403` (fail-closed;
+  a router built without CSRF config refuses mutations outright).
 
 ## Persistence and retention
 
@@ -204,6 +212,10 @@ the dashboard cookie key and never a GitHub token.
   repository/environment secret.
 - The read/ack side is behind the existing session auth; a machine producer
   cannot read or ack, only write.
+- The ack mutations additionally require the session-scoped CSRF token from
+  `GET /api/listener/csrf` (`x-csrf-token` header, constant-time compare,
+  fail-closed when CSRF material is unavailable) — a cross-site attacker who
+  holds no same-origin script cannot drive acks on the operator's session.
 - Message content is operator-authored/machine-authored operational text and is
   rendered as plain text — no HTML/Markdown execution, `https://` links only.
 
