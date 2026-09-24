@@ -26,7 +26,6 @@ import {serve} from '@hono/node-server'
 import {getConnInfo} from '@hono/node-server/conninfo'
 import {serveStatic} from '@hono/node-server/serve-static'
 import {Octokit} from '@octokit/core'
-import {graphql} from '@octokit/graphql'
 import {Hono, type Context} from 'hono'
 import {getCookie, setCookie} from 'hono/cookie'
 import {secureHeaders} from 'hono/secure-headers'
@@ -42,7 +41,7 @@ import {readFixtureHarnessConfig} from './gateway/operator-fixture-config.ts'
 import {FIXTURE_OPERATOR_PREFIX} from './gateway/operator-fixture-routes.ts'
 import {createOperatorServerFetch} from './gateway/operator-server-fetch.ts'
 import {createAggregator} from './github/aggregator.ts'
-import {createDashboardAppClient} from './github/app-client.ts'
+import {createBoundedFetch, createDashboardAppClient, createInstallationGraphqlQueryFn, GITHUB_HTTP_TIMEOUT_MS} from './github/app-client.ts'
 import {buildInstallationsClient, enumerateRepos, mintReadOnlyToken} from './github/installations.ts'
 import {makeNotFoundError, readRepoMetadata} from './github/metadata.ts'
 import {readListenerDbPath, readListenerIngestKey} from './listener/config.ts'
@@ -326,7 +325,7 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   const fetchUserLogin = opts?.fetchUserLogin ?? fetchGitHubUserLogin
 
   // Resolve snapshot provider — default empty; production wires the real aggregator.
-  const EMPTY_SNAPSHOT = {repos: [], staleBanner: false, driftCount: 0, refreshedAt: null} as const
+  const EMPTY_SNAPSHOT = {repos: [], staleBanner: false, driftCount: 0, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false} as const
   const getSnapshot = opts?.getSnapshot ?? (() => EMPTY_SNAPSHOT)
 
   // Resolve operator UI flag — default OFF (fail-closed).
@@ -938,7 +937,7 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
       const installationId = await resolveInstallationIdForRepo('codeo1io', '.github')
       const token = await getReadOnlyToken(installationId)
 
-      const installOctokit = new Octokit({auth: token})
+      const installOctokit = new Octokit({auth: token, request: {fetch: createBoundedFetch(GITHUB_HTTP_TIMEOUT_MS)}})
       const response = await installOctokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
         owner: 'codeo1io',
         repo: '.github',
@@ -957,12 +956,7 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
   // the given installationId and authenticates the graphql client with it.
   // NO "first installation" logic — each repo uses its own installation's token.
   const graphqlQueryFn =
-    deps.graphqlQueryFn ??
-    (async (installationId: number, query: string, variables: Record<string, unknown>): Promise<unknown> => {
-      const token = await getReadOnlyToken(installationId)
-      const gql = graphql.defaults({headers: {authorization: `token ${token}`}})
-      return gql(query, variables)
-    })
+    deps.graphqlQueryFn ?? createInstallationGraphqlQueryFn(getReadOnlyToken)
 
   const aggregator = createAggregator(installationsClient, metadataReader, {
     enumerate: deps.enumerateFn ?? enumerateRepos,

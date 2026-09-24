@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, act, fireEvent } from '@testing-library/react'
 import { ListenerChannel } from './Listener.tsx'
 import * as listenerApi from '../api/listener.ts'
+import { LISTENER_FETCH_TIMEOUT_MS, POLL_INTERVAL_MS } from './Listener.tsx'
 
 vi.mock('../api/listener.ts')
 
@@ -203,5 +204,52 @@ describe('ListenerChannel', () => {
     })
 
     expect(listenerApi.fetchListenerMessages).toHaveBeenCalled() // at least once
+  })
+  // rm-155 regressions: the poll latch must release even when the transport
+  // never settles, and the in-flight request must be aborted on unmount.
+  describe('rm-155 poll hygiene', () => {
+    it('releases the poll latch when a fetch hangs past the timeout, then polls again', async () => {
+      vi.mocked(listenerApi.fetchListenerMessages).mockImplementation(
+        () => new Promise(() => {}) as ReturnType<typeof listenerApi.fetchListenerMessages>
+      )
+      vi.mocked(listenerApi.fetchListenerMessages).mockClear()
+
+      const { unmount } = render(<ListenerChannel />)
+
+      // Initial poll starts and hangs.
+      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      expect(vi.mocked(listenerApi.fetchListenerMessages).mock.calls.length).toBe(1)
+
+      // Timeout fires: the race settles with the timeout result, the latch is
+      // released, and the error view appears ("Will retry").
+      await act(async () => { await vi.advanceTimersByTimeAsync(LISTENER_FETCH_TIMEOUT_MS) })
+      expect(screen.getByTestId('listener-error')).toBeInTheDocument()
+
+      // No fetch retry before the next interval tick.
+      vi.mocked(listenerApi.fetchListenerMessages).mockClear()
+      expect(vi.mocked(listenerApi.fetchListenerMessages).mock.calls.length).toBe(0)
+
+      // Next 30s interval tick: the latch is free, so the poll fires again.
+      await act(async () => { await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS) })
+      expect(vi.mocked(listenerApi.fetchListenerMessages).mock.calls.length).toBe(1)
+
+      unmount()
+    })
+
+    it('aborts the in-flight fetch when the view unmounts', async () => {
+      let capturedSignal: AbortSignal | undefined
+      vi.mocked(listenerApi.fetchListenerMessages).mockImplementation((req) => {
+        capturedSignal = req?.abortSignal
+        return new Promise(() => {}) as ReturnType<typeof listenerApi.fetchListenerMessages>
+      })
+
+      const { unmount } = render(<ListenerChannel />)
+      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      expect(capturedSignal).toBeDefined()
+      expect(capturedSignal!.aborted).toBe(false)
+
+      unmount()
+      expect(capturedSignal!.aborted).toBe(true)
+    })
   })
 })

@@ -10,6 +10,8 @@ const EMPTY_SNAPSHOT: AggregatorSnapshot = {
   staleBanner: false,
   driftCount: 0,
   refreshedAt: null,
+  refreshDurationMs: null,
+  refreshDegraded: false,
 }
 
 // ---------------------------------------------------------------------------
@@ -40,6 +42,10 @@ interface MonitoringDto {
   readonly staleBanner: boolean
   readonly driftCount: number
   readonly refreshedAt: number | null
+  /** Wall-clock duration (ms) of the last completed refresh attempt (rm-156 watchdog signal) */
+  readonly refreshDurationMs: number | null
+  /** True when the last refresh attempt exceeded the watchdog ceiling (rm-156 watchdog signal) */
+  readonly refreshDegraded: boolean
 }
 
 function toMonitoringRepoDto(repo: DashboardRepo): MonitoringRepoDto {
@@ -63,6 +69,8 @@ function toMonitoringDto(snapshot: AggregatorSnapshot): MonitoringDto {
     staleBanner: snapshot.staleBanner,
     driftCount: snapshot.driftCount,
     refreshedAt: snapshot.refreshedAt,
+    refreshDurationMs: snapshot.refreshDurationMs,
+    refreshDegraded: snapshot.refreshDegraded,
   }
 }
 
