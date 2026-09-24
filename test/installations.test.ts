@@ -285,6 +285,51 @@ describe('enumerateRepos — edge cases', () => {
 // Error path
 // ---------------------------------------------------------------------------
 
+describe('security — transient vs scope-class mint failures (rm-181)', () => {
+  it('transient 5xx is retried with the SAME full scopes, then succeeds — never core fallback', async () => {
+    const mintFn = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error('internal server error'), {status: 500}))
+      .mockRejectedValueOnce(Object.assign(new Error('bad gateway'), {status: 502}))
+      .mockResolvedValueOnce('ghs_full_after_retry')
+
+    const token = await mintReadOnlyToken(201, mintFn, {retryDelaysMs: [0, 0]})
+
+    expect(token).toBe('ghs_full_after_retry')
+    expect(mintFn).toHaveBeenCalledTimes(3)
+    for (const call of mintFn.mock.calls) {
+      expect(call[1]).toMatchObject(FULL_READ_PERMISSIONS)
+      expect(call[1]).toHaveProperty('security_events', 'read')
+    }
+  })
+
+  it('scope-class 403 degrades to core immediately — no retries', async () => {
+    const mintFn = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error('Resource not accessible by integration'), {status: 403}))
+      .mockResolvedValueOnce('ghs_core_immediate')
+
+    const token = await mintReadOnlyToken(202, mintFn, {retryDelaysMs: [0, 0]})
+
+    expect(token).toBe('ghs_core_immediate')
+    expect(mintFn).toHaveBeenCalledTimes(2)
+    expect(mintFn.mock.calls[1]?.[1]).not.toHaveProperty('security_events')
+    expect(mintFn.mock.calls[1]?.[1]).not.toHaveProperty('vulnerability_alerts')
+  })
+
+  it('persistent transient failure throws loud — optional scopes are never silently dropped', async () => {
+    const mintFn = vi.fn().mockRejectedValue(new Error('fetch failed'))
+
+    await expect(mintReadOnlyToken(203, mintFn, {retryDelaysMs: [0, 0]})).rejects.toThrow('fetch failed')
+
+    // initial + 2 retries, all with the full scope set
+    expect(mintFn).toHaveBeenCalledTimes(3)
+    for (const call of mintFn.mock.calls) {
+      expect(call[1]).toMatchObject(FULL_READ_PERMISSIONS)
+    }
+  })
+})
+
 describe('enumerateRepos — error path', () => {
   it('returns err(FetchInstallationsError) when listInstallations rejects', async () => {
     const client = makeClient({

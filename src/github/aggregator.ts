@@ -506,7 +506,15 @@ function isVulnerabilityAlertsPermissionError(error: unknown): boolean {
     msg.includes('vulnerabilityalerts') ||
     msg.includes('vulnerability_alerts') ||
     msg.includes('vulnerability alerts') ||
-    (msg.includes('push access') && msg.includes('vulnerability'))
+    (msg.includes('push access') && msg.includes('vulnerability')) ||
+    // rm-177: bare integration error — the documented form for a missing App
+    // permission, listed in the comment above but matched by no branch before
+    // rm-177 (assess F1): a repo missing the vulnerabilityAlerts permission
+    // was marked stale on every 60s cycle instead of entering the graceful
+    // no-alerts retry. The string carries no field name; if the missing
+    // permission was actually for a different field, the no-alerts retry
+    // fails the same way and the repo still goes stale — same terminal state.
+    msg.includes('resource not accessible by integration')
   )
 }
 

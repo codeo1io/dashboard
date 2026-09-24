@@ -19,7 +19,7 @@ import type {AggregatorSnapshot} from './github/aggregator.ts'
 import type {MetadataReader} from './github/metadata.ts'
 import type {ListenerStore} from './listener/store.ts'
 import {Buffer} from 'node:buffer'
-import {existsSync, readFileSync} from 'node:fs'
+import {existsSync, readFileSync, statSync} from 'node:fs'
 import {join} from 'node:path'
 import process from 'node:process'
 import {serve} from '@hono/node-server'
@@ -54,6 +54,7 @@ import {buildAuthRouter} from './routes/auth.ts'
 import {buildListenerRouter} from './routes/listener.ts'
 import {readOptionalMultilineSecret, readOptionalSecret} from './secrets.ts'
 import {loadCookieKey, SessionManager} from './session.ts'
+import {installGracefulShutdown} from './shutdown.ts'
 
 /** Hono context variables set by auth middleware */
 interface Variables {
@@ -748,13 +749,30 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     // and drops the <div id="root"> mount target. Reading + injecting + c.html()
     // recomputes the length. Fall through to serveStatic if the file is missing.
     const indexHtmlPath = join(webDistRoot, 'index.html')
-    app.get('/', async c => {
-      if (!existsSync(indexHtmlPath)) return c.notFound()
+    // rm-179: index.html only changes at build/deploy time; the existsSync
+    // stat + readFileSync on every '/' request put syscalls on the hot path.
+    // Cache by mtime: steady-state serving is syscall-free, while a rebuilt
+    // artifact is still picked up without a restart.
+    let indexHtmlCache: {mtimeMs: number; html: string} | null = null
+    const readIndexHtml = (): string => {
+      const stat = statSync(indexHtmlPath)
+      if (indexHtmlCache !== null && indexHtmlCache.mtimeMs === stat.mtimeMs) {
+        return indexHtmlCache.html
+      }
       const html = readFileSync(indexHtmlPath, 'utf8')
-      const injected = html.includes('<meta name="push-enabled"')
-        ? html
-        : html.replace('</head>', '<meta name="push-enabled" content="true"></head>')
-      return c.html(injected)
+      indexHtmlCache = {mtimeMs: stat.mtimeMs, html}
+      return html
+    }
+    app.get('/', async c => {
+      try {
+        const html = readIndexHtml()
+        const injected = html.includes('<meta name="push-enabled"')
+          ? html
+          : html.replace('</head>', '<meta name="push-enabled" content="true"></head>')
+        return c.html(injected)
+      } catch {
+        return c.notFound()
+      }
     })
   } else {
     app.get('/', serveStatic({root: webDistRoot, path: 'index.html'}))
@@ -1105,6 +1123,18 @@ async function createDashboardServer(): Promise<ServerType> {
       stop()
     })
   }
+
+  // rm-178: under the Dockerfile CMD node runs as PID 1, where an unhandled
+  // SIGTERM is silently dropped by the kernel — the 'close' listener above
+  // would never fire and `docker stop` escalates to SIGKILL. Wire explicit
+  // signal handling: drain connections, stop the aggregator, exit cleanly,
+  // with a bounded forced-exit deadline.
+  installGracefulShutdown({
+    server,
+    logger,
+    timeoutMs: 10_000,
+    stop: stopAggregator,
+  })
 
   // Kick the first aggregation refresh in the background — does NOT block the
   // server from accepting requests. Failures are logged but do NOT crash the
