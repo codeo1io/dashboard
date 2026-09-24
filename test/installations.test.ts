@@ -260,14 +260,15 @@ describe('enumerateRepos — edge cases', () => {
     const repoB = makeRepo({node_id: 'REPO_B', full_name: 'fro-bot/dashboard'})
 
     const client = makeClient({
-      listInstallations: vi.fn().mockResolvedValue([makeInstall(1), makeInstall(2)]),
+      // Ids 41/42: fresh ids so no earlier test's cached token satisfies the mint.
+      listInstallations: vi.fn().mockResolvedValue([makeInstall(41), makeInstall(42)]),
       mintInstallationToken: vi
         .fn()
-        // install 1: full permissions fail, core-only also fails → skip
+        // install 41: full permissions fail, core-only also fails → skip
         .mockRejectedValueOnce(new Error('scope not registered'))
         .mockRejectedValueOnce(new Error('scope not registered'))
-        // install 2: succeeds
-        .mockResolvedValueOnce('ghs_install2_token'),
+        // install 42: succeeds
+        .mockResolvedValueOnce('ghs_install42_token'),
       listInstallationRepos: vi.fn().mockResolvedValue([repoB]),
     })
 
@@ -278,6 +279,45 @@ describe('enumerateRepos — edge cases', () => {
     // Only install 2's repos
     expect(result.data.repos).toHaveLength(1)
     expect(result.data.repos[0]?.node_id).toBe('REPO_B')
+    // rm-164: the skipped install is surfaced, not silent
+    expect(result.data.skippedInstallations).toHaveLength(1)
+    expect(result.data.skippedInstallations[0]?.installationId).toBe(41)
+    expect(result.data.skippedInstallations[0]?.phase).toBe('mint')
+    expect(result.data.skippedInstallations[0]?.error).toContain('scope not registered')
+  })
+
+  it('surfaces an installation whose repo listing fails as a list-repos skip', async () => {
+    const client = makeClient({
+      listInstallations: vi.fn().mockResolvedValue([makeInstall(7)]),
+      mintInstallationToken: vi.fn().mockResolvedValue('ghs_install7_token'),
+      listInstallationRepos: vi.fn().mockRejectedValue(new Error('502 from GitHub')),
+    })
+
+    const result = await enumerateRepos(client)
+
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+    expect(result.data.repos).toHaveLength(0)
+    expect(result.data.skippedInstallations).toHaveLength(1)
+    expect(result.data.skippedInstallations[0]?.installationId).toBe(7)
+    expect(result.data.skippedInstallations[0]?.phase).toBe('list-repos')
+    expect(result.data.skippedInstallations[0]?.error).toContain('502 from GitHub')
+  })
+
+  it('reports no skipped installations when every install succeeds', async () => {
+    const repoA = makeRepo({node_id: 'REPO_A', full_name: 'fro-bot/one'})
+    const client = makeClient({
+      // Id 43: fresh id, no cached token from earlier tests.
+      listInstallations: vi.fn().mockResolvedValue([makeInstall(43)]),
+      mintInstallationToken: vi.fn().mockResolvedValue('ghs_install1_token'),
+      listInstallationRepos: vi.fn().mockResolvedValue([repoA]),
+    })
+
+    const result = await enumerateRepos(client)
+
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+    expect(result.data.skippedInstallations).toEqual([])
   })
 })
 

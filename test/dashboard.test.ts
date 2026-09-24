@@ -70,6 +70,7 @@ function makeSnapshot(overrides: Partial<AggregatorSnapshot> = {}): AggregatorSn
     repos: [],
     staleBanner: false,
     driftCount: 0,
+    skippedInstallations: [],
     refreshedAt: null,
     ...overrides,
   }
@@ -189,6 +190,37 @@ describe('/api/monitoring — BFF aggregation endpoint', () => {
       const body = await res.json() as AggregatorSnapshot
       expect(body.repos).toHaveLength(0)
       expect(body.refreshedAt).toBeNull()
+    })
+
+    it('rm-164: skippedInstallations are exposed as phase counts only — no ids, no error strings', async () => {
+      const snapshot = makeSnapshot({
+        skippedInstallations: [
+          {installationId: 424242, phase: 'mint', error: 'SECRET-MINT-FAILURE-DETAIL'},
+          {installationId: 717171, phase: 'list-repos', error: 'SECRET-LIST-FAILURE-DETAIL'},
+        ],
+      })
+      const app = await buildTestApp(snapshot)
+      const res = await authedGet(app, '/api/monitoring')
+
+      expect(res.status).toBe(200)
+      const raw = await res.text()
+      // Counts by phase
+      expect(raw).toContain('"skippedInstallations":{"mint":1,"listRepos":1}')
+      // The untrusted SPA never sees installation ids or error detail
+      expect(raw).not.toContain('424242')
+      expect(raw).not.toContain('717171')
+      expect(raw).not.toContain('SECRET-MINT-FAILURE-DETAIL')
+      expect(raw).not.toContain('SECRET-LIST-FAILURE-DETAIL')
+      expect(raw).not.toContain('installationId')
+    })
+
+    it('rm-164: zero skips serialize as zeroed counts', async () => {
+      const app = await buildTestApp(makeSnapshot())
+      const res = await authedGet(app, '/api/monitoring')
+
+      expect(res.status).toBe(200)
+      const raw = await res.text()
+      expect(raw).toContain('"skippedInstallations":{"mint":0,"listRepos":0}')
     })
   })
 
