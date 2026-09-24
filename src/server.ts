@@ -69,16 +69,61 @@ interface Variables {
   gatewaySession?: SessionDto
 }
 
-/** Per-IP rate limiter state */
+/**
+ * Rate-limit path classes. Independent per-class budgets so a flood on one
+ * class (the public pre-auth surface) cannot starve another (the authenticated
+ * operator API or the listener ingest route). See classifyRateLimitPath.
+ */
+export type RateLimitClass = 'public' | 'operator' | 'ingest'
+const RATE_LIMIT_CLASSES = ['public', 'operator', 'ingest'] as const
+
+/** Per-IP rate limiter state: one shared window, per-class counters. */
 interface RateLimitEntry {
-  count: number
   windowStart: number
+  counts: Record<RateLimitClass, number>
 }
 
 /** Simple fixed-window in-memory rate limiter */
 const rateLimitMap = new Map<string, RateLimitEntry>()
 const RATE_LIMIT_WINDOW_MS = 60_000 // 1 minute
-const RATE_LIMIT_MAX = 60 // requests per window per IP
+const RATE_LIMIT_MAX = 60 // requests per window per IP (per-class default)
+
+const envIntOrDefault = (name: string, fallback: number): number => {
+  const raw = process.env[name]
+  if (raw === undefined || raw.trim() === '') return fallback
+  const parsed = Number.parseInt(raw, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+}
+
+/**
+ * Per-class maxima. Each defaults to RATE_LIMIT_MAX; override via env when one
+ * class needs a different budget (e.g. a chatty health prober).
+ */
+const RATE_LIMIT_MAX_PER_CLASS: Record<RateLimitClass, number> = {
+  public: envIntOrDefault('RATE_LIMIT_MAX_PUBLIC', RATE_LIMIT_MAX),
+  operator: envIntOrDefault('RATE_LIMIT_MAX_OPERATOR', RATE_LIMIT_MAX),
+  ingest: envIntOrDefault('RATE_LIMIT_MAX_INGEST', RATE_LIMIT_MAX),
+}
+
+/**
+ * Default for the trusted-proxy opt-in: RATE_LIMIT_TRUSTED_PROXY in
+ * {1,true,yes} (case-insensitive). Off unless explicitly enabled.
+ */
+const defaultRateLimitTrustedProxy = (): boolean =>
+  ['1', 'true', 'yes'].includes((process.env.RATE_LIMIT_TRUSTED_PROXY ?? '').trim().toLowerCase())
+
+/**
+ * Classify a sensitive path into its rate-limit budget class.
+ * Mirrors the isPublicPath knowledge below:
+ * - ingest: the machine-write listener route (HMAC-gated by the route itself)
+ * - public: the pre-auth browser surface (SPA root, /auth/*, /api/healthz)
+ * - operator: every other sensitive route (remaining /api/* + /operator*)
+ */
+export function classifyRateLimitPath(path: string): RateLimitClass {
+  if (path === '/api/listener/ingest') return 'ingest'
+  if (path === '/' || path === '/api/healthz' || path.startsWith('/auth/')) return 'public'
+  return 'operator'
+}
 
 /**
  * Eviction sweep counter. Every EVICT_INTERVAL calls we sweep the map for
@@ -123,25 +168,31 @@ function sweepRateLimitMap(now: number): void {
  * Accepts an optional `now` for testability (defaults to Date.now()).
  * Returns true if the request is allowed, false if rate-limited.
  */
-export function checkRateLimit(ip: string, now: number = Date.now()): boolean {
+export function checkRateLimit(ip: string, now: number = Date.now(), pathClass?: RateLimitClass): boolean {
   rateLimitCallCount++
   if (rateLimitCallCount >= EVICT_INTERVAL) {
     rateLimitCallCount = 0
     sweepRateLimitMap(now)
   }
 
-  const entry = rateLimitMap.get(ip)
+  let entry = rateLimitMap.get(ip)
 
   if (entry === undefined || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
-    rateLimitMap.set(ip, {count: 1, windowStart: now})
-    return true
+    entry = {windowStart: now, counts: {public: 0, operator: 0, ingest: 0}}
+    rateLimitMap.set(ip, entry)
+  }
+  const current = entry
+
+  if (pathClass === undefined) {
+    // Unclassified call: count against EVERY class budget. This preserves the
+    // pre-class-split global-bucket semantics (an unclassified request could be
+    // any class, so conservatively consume all of them).
+    for (const cls of RATE_LIMIT_CLASSES) current.counts[cls]++
+    return RATE_LIMIT_CLASSES.every(cls => current.counts[cls] <= RATE_LIMIT_MAX_PER_CLASS[cls])
   }
 
-  entry.count++
-  if (entry.count > RATE_LIMIT_MAX) {
-    return false
-  }
-  return true
+  current.counts[pathClass]++
+  return current.counts[pathClass] <= RATE_LIMIT_MAX_PER_CLASS[pathClass]
 }
 
 /**
@@ -172,6 +223,13 @@ export interface DashboardAppConfig {
    * If undefined, uses the real GitHub API.
    */
   fetchUserLogin?: ((accessToken: string) => Promise<string>) | undefined
+  /**
+   * Key the rate limiter on the first X-Forwarded-For hop instead of the
+   * direct remote address. Off by default — XFF is client-spoofable; enable
+   * only when the app sits behind a proxy that OVERWRITES XFF. Production
+   * default reads RATE_LIMIT_TRUSTED_PROXY.
+   */
+  rateLimitTrustedProxy?: boolean | undefined
   /**
    * Aggregator snapshot provider. Both the SPA monitoring view and /api/status
    * read from this same provider so they always serve the same data.
@@ -517,7 +575,12 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   )
 
   // ── Rate limiting middleware (defense-in-depth; real limiting belongs at Caddy) ──
-  // Keyed on the direct connection remote address, not X-Forwarded-For (client-spoofable).
+  // Keyed on the direct connection remote address. X-Forwarded-For is client-
+  // spoofable and is IGNORED unless rateLimitTrustedProxy is explicitly enabled —
+  // enable that only when the app sits behind a proxy that OVERWRITES XFF.
+  // Budgets are per path class (public / operator / ingest — see
+  // classifyRateLimitPath) so a flood on one class cannot starve the others.
+  const rateLimitTrustedProxy = opts?.rateLimitTrustedProxy ?? defaultRateLimitTrustedProxy()
   app.use('*', async (c: Context, next) => {
     const path = new URL(c.req.url).pathname
     const sensitiveRoutes = ['/', '/auth/login', '/auth/callback', '/operator']
@@ -531,8 +594,21 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       } catch {
         ip = 'unknown'
       }
+      if (rateLimitTrustedProxy) {
+        // Trusted-proxy mode: key on the FIRST X-Forwarded-For hop. That hop
+        // is the real client ONLY when the proxy OVERWRITES XFF (see the
+        // opts comment above: enable only for an overwriting proxy). A proxy
+        // that APPENDS puts the real client LAST — first-hop keying there
+        // would let callers pick their own throttle keys.
+        const firstHop = c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
+        // Cap the key: a plain IP/host is ≤45 chars, so anything longer is
+        // not an address, and an unbounded token alphabet would grow
+        // rateLimitMap without bound inside the sweep window. A
+        // deterministic prefix cap keeps each spoofed token on ONE key.
+        if (firstHop !== undefined && firstHop !== '') ip = firstHop.slice(0, 64)
+      }
 
-      if (!checkRateLimit(ip)) {
+      if (!checkRateLimit(ip, Date.now(), classifyRateLimitPath(path))) {
         logger.warning('Rate limit exceeded', {ip, path})
         return c.text('Too Many Requests', 429)
       }
