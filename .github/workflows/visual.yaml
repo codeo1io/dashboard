@@ -5,6 +5,7 @@ name: visual
 # without blocking merges. Baselines under tests/visual/__screenshots__.
 # Promote to required once baselines are stable across runner generations.
 on:
+  # conductor: ephemeral-validation marker (paths self-match); restored after validation
   pull_request:
     paths:
       - web/src/**
