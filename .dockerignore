@@ -1,0 +1,52 @@
+# rm-186: the Dockerfile copies only the manifests, web/, src/, and public/
+# into its stages. Everything else here is excluded from the build-context
+# transfer — the big win is node_modules (the container installs its own
+# dependency tree), and the security win is the secret block: .gitignore
+# guards .env/*.pem/*.key against COMMITS, but docker build reads the working
+# tree directly, so without this file a stray local secret would ride the
+# context transfer. test/dockerfile-context.test.ts enforces that this file
+# exists and that no Dockerfile COPY/ADD source is excluded by it.
+
+# VCS + agent/CI machinery — never needed inside an image
+.git
+.github
+.agents
+.codex
+.conductor
+.opencode
+.impeccable
+.slim
+.husky
+
+# Host dependency trees (pnpm installs fresh from the frozen lockfile)
+node_modules
+web/node_modules
+**/node_modules
+
+# Non-runtime trees — none are COPY sources
+docs
+assets
+test
+tests
+scripts
+
+# Secrets: never enter ANY layer or the context transfer (defense in depth
+# alongside .gitignore — the two lists intentionally overlap)
+.env
+.env.*
+*.pem
+*.key
+
+# Root-level tooling/docs the image never reads
+*.md
+opencode.json
+playwright.config.ts
+eslint.config.ts
+vitest.config.ts
+tsconfig.json
+docker-compose*.yaml
+docker-compose*.yml
+
+# The Dockerfile itself is read by the CLI before the context is built
+Dockerfile
+.dockerignore

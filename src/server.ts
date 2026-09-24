@@ -125,10 +125,18 @@ const defaultRateLimitTrustedProxy = (): boolean =>
 
 /**
  * Classify a sensitive path into its rate-limit budget class.
- * Mirrors the isPublicPath knowledge below:
- * - ingest: the machine-write listener route (HMAC-gated by the route itself)
- * - public: the pre-auth browser surface (SPA root, /auth/*, /api/healthz)
- * - operator: every other sensitive route (remaining /api/* + /operator*)
+ * Related to — but deliberately NOT identical to — the isPublicPath auth
+ * allowlist defined in the middleware below; the two knowledge sets diverge
+ * on purpose (rm-129 divergence note):
+ * - '/' is rate-limit public (the SPA shell and its client-side auth redirect
+ *   must never be throttled away) yet is NOT in isPublicPath — the shell
+ *   itself passes through session auth like every other protected route.
+ * - '/auth/*' matches by prefix here; isPublicPath lists the exact auth
+ *   endpoints (/auth/login, /auth/callback, /auth/logout).
+ * - isPublicPath's public static assets (/assets/*, /static/*, /privacy, …)
+ * land in the operator budget here — they share the SPA's traffic class
+ * rather than the pre-auth one.
+ * - ingest: the machine-write listener route (HMAC-gated by the route itself).
  */
 export function classifyRateLimitPath(path: string): RateLimitClass {
   if (path === '/api/listener/ingest') return 'ingest'
