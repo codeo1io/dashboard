@@ -67,3 +67,58 @@ describe('Dockerfile build-context validity (rm-132)', () => {
     ).toEqual([])
   })
 })
+
+// rm-186 (cycle-13 batch B3): .gitignore guards .env/*.pem/*.key against
+// COMMITS, but `docker build` reads the working tree directly — without a
+// .dockerignore, a stray local secret (or the 394MB host node_modules tree)
+// rides the build-context transfer. This gate pins both halves: the secret
+// patterns exist, and no Dockerfile COPY/ADD context source is accidentally
+// ignored (the failure mode a .dockerignore bug actually ships as).
+function dockerignorePatterns(text: string): string[] {
+  return text
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line !== '' && !line.startsWith('#'))
+}
+
+function patternToRegExp(pattern: string): RegExp {
+  const escaped = pattern
+    .replaceAll(/[.+^${}()|[\]\\]/g, String.raw`\$&`)
+    .replaceAll('*', '[^/]*')
+  if (pattern.startsWith('**/')) {
+    return new RegExp(`(^|/)${escaped.slice(3)}$`)
+  }
+  // A bare name matches the entry and everything under it (directory semantics)
+  return new RegExp(`^${escaped}(/.*)?$`)
+}
+
+describe('Docker build context guard (.dockerignore, rm-186)', () => {
+  const dockerignorePath = resolve(repoRoot, '.dockerignore')
+
+  it('.dockerignore exists at the repo root', () => {
+    expect(existsSync(dockerignorePath)).toBe(true)
+  })
+
+  it('excludes the secret families .gitignore covers — context transfer is guarded too', () => {
+    const patterns = dockerignorePatterns(readFileSync(dockerignorePath, 'utf8'))
+    for (const secret of ['.env', '.env.*', '*.pem', '*.key']) {
+      expect(patterns, `secret pattern ${secret} must be dockerignored`).toContain(secret)
+    }
+  })
+
+  it('no COPY/ADD build-context source is excluded by .dockerignore', () => {
+    const patterns = dockerignorePatterns(readFileSync(dockerignorePath, 'utf8'))
+    const regexes = patterns.map(patternToRegExp)
+    const sources = collectContextSources(readFileSync(resolve(repoRoot, 'Dockerfile'), 'utf8'))
+    const ignored = sources.filter(entry => regexes.some(re => re.test(entry.source)))
+    expect(
+      ignored.map(entry => `${entry.instruction} line ${entry.line}: ${entry.source}`),
+      'Dockerfile COPY sources must not be dockerignored (the image build would fail)',
+    ).toEqual([])
+  })
+
+  it('excludes the host dependency tree — context transfer stays small', () => {
+    const patterns = dockerignorePatterns(readFileSync(dockerignorePath, 'utf8'))
+    expect(patterns.some(p => p === 'node_modules' || p === '**/node_modules')).toBe(true)
+  })
+})

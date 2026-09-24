@@ -2456,7 +2456,9 @@ export function initOperatorStream(opts) {
         }
 
         const decoder = new TextDecoder()
+        const encoder = new TextEncoder()
         let buffer = ''
+        let bufferBytes = 0
         const reader = response.body.getReader()
 
         function readChunk() {
@@ -2484,12 +2486,14 @@ export function initOperatorStream(opts) {
 
               if (value) {
                 // Normalize CRLF on each appended chunk
-                buffer += normalizeCrlf(decoder.decode(value, {stream: true}))
+                const chunk = normalizeCrlf(decoder.decode(value, {stream: true}))
+                buffer += chunk
+                bufferBytes += encoder.encode(chunk).length
               }
 
-              // Hard buffer cap — abort the reader and fail closed terminally
-              // (no reconnect) if exceeded without a record boundary.
-              if (buffer.length > MAX_SSE_BUFFER_BYTES) {
+              // Hard buffer cap (UTF-8 bytes, rm-114) — abort the reader and fail
+              // closed terminally (no reconnect) if exceeded without a record boundary.
+              if (bufferBytes > MAX_SSE_BUFFER_BYTES) {
                 clearFirstFrameTimer()
                 if (abortController) {
                   abortController.abort()
@@ -2503,6 +2507,7 @@ export function initOperatorStream(opts) {
               while (boundary !== -1) {
                 const record = buffer.slice(0, boundary)
                 buffer = buffer.slice(boundary + 2)
+                bufferBytes -= encoder.encode(`${record}\n\n`).length
 
                 const result = parseSseFrame(`${record}\n\n`)
                 if (result !== null && result.success) {
