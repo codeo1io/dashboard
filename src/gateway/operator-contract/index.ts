@@ -42,6 +42,19 @@ export type {
   OperatorOk,
   OperatorSessionInfo,
 } from './responses.ts'
+export {
+  parseLaunchRunResponse,
+  parseRunApprovalDecisionResponse,
+  parseRunApprovalsResponse,
+  parseRunSnapshotResponse,
+} from './run-responses.ts'
+export type {
+  LaunchRunResponse,
+  RunApprovalDecisionResult,
+  RunApprovalsListResponse,
+  RunApprovalSummaryItem,
+  RunSnapshotResponse,
+} from './run-responses.ts'
 export {PHASE_TO_WEB_STATUS} from './run-status.ts'
 export type {
   OperatorFailureKind,
