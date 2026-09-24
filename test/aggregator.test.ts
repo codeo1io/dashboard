@@ -63,8 +63,11 @@ function makeMetadataResult(overrides: {
   }
 }
 
-function makeEnumerateResult(repos: ReturnType<typeof makeRepo>[]): Result<EnumerateReposResult, FetchInstallationsError> {
-  return ok({repos, installations: [{id: 1, account: 'fro-bot'}]})
+function makeEnumerateResult(
+  repos: ReturnType<typeof makeRepo>[],
+  failedInstallations: readonly number[] = [],
+): Result<EnumerateReposResult, FetchInstallationsError> {
+  return ok({repos, installations: [{id: 1, account: 'fro-bot'}], failedInstallations})
 }
 
 /**
@@ -77,8 +80,12 @@ function makeGraphqlResponse(overrides: {
   openPrCount?: number
   openIssueCount?: number
   openAlertCount?: number | null
+  repository?: null
 } = {}) {
   const failingChecks = overrides.failingChecks ?? 0
+  if (overrides.repository === null) {
+    return {repository: null}
+  }
   return {
     repository: {
       defaultBranchRef: {
@@ -420,6 +427,34 @@ describe('aggregator — edge cases', () => {
     expect(snap.driftCount).toBe(1)
   })
 
+  it('driftCount equals installation-only, non-denylisted repos and discovered rows keep full identity (rm-126)', async () => {
+    const discoveredA = makeRepo({node_id: 'NODE_D_A', owner: 'org', name: 'drift-a'})
+    const discoveredB = makeRepo({node_id: 'NODE_D_B', owner: 'org', name: 'drift-b'})
+    const redacted = makeRepo({node_id: 'NODE_REDACTED', owner: 'org', name: 'hidden'})
+    const listed = makeRepo({node_id: 'NODE_LISTED', owner: 'org', name: 'listed'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([discoveredA, discoveredB, redacted, listed])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_LISTED', owner: 'org', name: 'listed'})],
+        redactedNodeIds: ['NODE_REDACTED'],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse()),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    // Listed repo + two installation-only repos; the denylisted repo is
+    // filtered BEFORE any query and counts toward nothing.
+    expect(snap.repos.map(repo => repo.full_name).sort()).toEqual(['org/drift-a', 'org/drift-b', 'org/listed'])
+    expect(snap.repos.find(repo => repo.full_name === 'org/drift-a')?.discovery_channel).toBe('discovered')
+    expect(snap.repos.find(repo => repo.full_name === 'org/drift-b')?.discovery_channel).toBe('discovered')
+    // driftCount is the bare size of the installation-only gap — denylisted
+    // and metadata-listed repos never contribute.
+    expect(snap.driftCount).toBe(2)
+  })
+
   it('metadata publicRepos carry their discovery_channel label', async () => {
     const repo = makeRepo({node_id: 'NODE_COLLAB', owner: 'org', name: 'collab-repo'})
     const deps = makeDeps({
@@ -724,10 +759,10 @@ describe('security — repo-name redaction in operational logs (#54)', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Cache refresh with fake timers
+// Interval refresh with fake timers
 // ---------------------------------------------------------------------------
 
-describe('aggregator — cache refresh with fake timers', () => {
+describe('aggregator — interval refresh with fake timers', () => {
   beforeEach(() => {
     vi.useFakeTimers()
   })
@@ -736,7 +771,7 @@ describe('aggregator — cache refresh with fake timers', () => {
     vi.useRealTimers()
   })
 
-  it('cache refresh replaces stale payload after interval', async () => {
+  it('interval refresh replaces stale payload after interval', async () => {
     let callCount = 0
     const graphqlQueryForInstallation: GraphqlQueryForInstallationFn = vi.fn().mockImplementation(async () => {
       callCount++
@@ -756,7 +791,7 @@ describe('aggregator — cache refresh with fake timers', () => {
       }))),
       graphqlQueryForInstallation,
       now: () => {
-        nowMs += 70_000 // advance past 60s TTL on each call
+        nowMs += 70_000 // advance the clock well past the 60s refresh interval
         return nowMs
       },
       setIntervalFn: (fn, ms) => setInterval(fn, ms),
@@ -776,6 +811,58 @@ describe('aggregator — cache refresh with fake timers', () => {
     expect(snap2.repos[0]?.status.rollupState).toBe('red')
 
     agg.stop()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-112 (cycle-9): repository:null fails visible
+// ---------------------------------------------------------------------------
+
+describe('aggregator — repository:null fails visible (rm-112)', () => {
+  it('repository:null in a successful GraphQL response marks the repo stale, not calm', async () => {
+    const repo = makeRepo({node_id: 'NODE_VANISHED', owner: 'org', name: 'vanished-repo'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({repository: null})),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    const snapshot = agg.getSnapshot()
+    expect(snapshot.repos).toHaveLength(1)
+    const status = snapshot.repos[0]?.status
+    expect(status?.rollupState).toBe('unknown')
+    // The fix: a vanished repo (deleted/renamed/private or access lost) must
+    // surface as stale:true — matching the installation_id:null precedent.
+    // Pre-cycle-9 this was stale:false and the repo rendered calm.
+    expect(status?.stale).toBe(true)
+  })
+
+  it('a vanished repo sorts attention-first ahead of a healthy green repo', async () => {
+    const healthy = makeRepo({node_id: 'NODE_HEALTHY', owner: 'org', name: 'healthy-repo'})
+    const vanished = makeRepo({node_id: 'NODE_VANISHED', owner: 'org', name: 'vanished-repo'})
+    const graphqlQueryForInstallation: GraphqlQueryForInstallationFn = vi.fn().mockImplementation(async (_installId, _query, vars) => {
+      if ((vars as {name: string}).name === 'vanished-repo') {
+        return makeGraphqlResponse({repository: null})
+      }
+      return makeGraphqlResponse({rollupState: 'SUCCESS'})
+    })
+
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([healthy, vanished])),
+      graphqlQueryForInstallation,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    const snapshot = agg.getSnapshot()
+    expect(snapshot.repos).toHaveLength(2)
+    expect(snapshot.repos[0]?.name).toBe('vanished-repo')
+    expect(snapshot.repos[0]?.status.stale).toBe(true)
+    expect(snapshot.repos[1]?.name).toBe('healthy-repo')
+    expect(snapshot.repos[1]?.status.stale).toBe(false)
   })
 })
 
@@ -1743,5 +1830,151 @@ describe('aggregator — check-suite cap (rm-110)', () => {
     for (const query of queries) {
       expect(query).toContain('checkSuites(first: 100)')
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Fail-visible degradation detail (rm-112 cycle-10)
+// ---------------------------------------------------------------------------
+
+describe('aggregator — fail-visible degradation detail (rm-112)', () => {
+  it('healthy snapshot carries zero degradation', async () => {
+    const repo = makeRepo({node_id: 'NODE_H', owner: 'org', name: 'healthy'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_H', owner: 'org', name: 'healthy'})],
+      }))),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    expect(agg.getSnapshot().degradation).toEqual({
+      enumerationFailed: false,
+      failedInstallations: 0,
+      warmEmpty: false,
+      absentRepos: [],
+    })
+  })
+
+  it('warm-empty: a GOOD enumeration emptying a previously non-empty snapshot sets staleBanner + warmEmpty', async () => {
+    const repo = makeRepo({node_id: 'NODE_W', owner: 'org', name: 'warming'})
+    const deps = makeDeps({
+      enumerate: vi.fn()
+        .mockResolvedValueOnce(makeEnumerateResult([repo]))
+        .mockResolvedValueOnce(makeEnumerateResult([])),
+      readMetadata: vi.fn()
+        .mockResolvedValueOnce(ok(makeMetadataResult({
+          publicRepos: [makePublicRepo({node_id: 'NODE_W', owner: 'org', name: 'warming'})],
+        })))
+        .mockResolvedValueOnce(ok(makeMetadataResult())),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    expect(agg.getSnapshot().repos).toHaveLength(1)
+
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+    expect(snap.repos).toHaveLength(0)
+    // Data loss, not quiet — the operator must be bannered.
+    expect(snap.staleBanner).toBe(true)
+    expect(snap.degradation.warmEmpty).toBe(true)
+    expect(snap.degradation.enumerationFailed).toBe(false)
+  })
+
+  it('cold start with a good-but-empty enumeration is NOT warm-empty and NOT bannered', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult())),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    const snap = agg.getSnapshot()
+    expect(snap.staleBanner).toBe(false)
+    expect(snap.degradation.warmEmpty).toBe(false)
+    expect(snap.degradation.enumerationFailed).toBe(false)
+  })
+
+  it('resolver failure for a metadata-only repo records a resolver-failed absence entry', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_G', owner: 'org', name: 'gone'})],
+      }))),
+      resolveInstallationIdForRepo: vi.fn().mockRejectedValue(new Error('no installation found')),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    const snap = agg.getSnapshot()
+    expect(snap.repos).toHaveLength(0)
+    expect(snap.degradation.absentRepos).toEqual([
+      {full_name: 'org/gone', reason: 'resolver-failed'},
+    ])
+  })
+
+  it('no-resolver filter records a no-resolver absence entry (not a silent skip)', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_N', owner: 'org', name: 'nores'})],
+      }))),
+      // no resolveInstallationIdForRepo — the no-resolver filter path
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    expect(agg.getSnapshot().degradation.absentRepos).toEqual([
+      {full_name: 'org/nores', reason: 'no-resolver'},
+    ])
+  })
+
+  it('partial enumeration failure (per-installation) surfaces failedInstallations count', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([], [7, 8])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult())),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    const snap = agg.getSnapshot()
+    expect(snap.degradation.failedInstallations).toBe(2)
+    expect(snap.degradation.enumerationFailed).toBe(false)
+    expect(snap.staleBanner).toBe(false)
+  })
+
+  it('total enumeration failure (err result) sets degradation.enumerationFailed=true', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(err(new FetchInstallationsError('channel down'))),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_M', owner: 'org', name: 'meta'})],
+      }))),
+      resolveInstallationIdForRepo: vi.fn().mockResolvedValue(1),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    const snap = agg.getSnapshot()
+    expect(snap.staleBanner).toBe(true)
+    expect(snap.degradation.enumerationFailed).toBe(true)
+    expect(snap.repos).toHaveLength(1)
+  })
+
+  it('getSnapshot before any refresh returns the zero-degradation shape', () => {
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, makeDeps())
+    expect(agg.getSnapshot().degradation).toEqual({
+      enumerationFailed: false,
+      failedInstallations: 0,
+      warmEmpty: false,
+      absentRepos: [],
+    })
   })
 })

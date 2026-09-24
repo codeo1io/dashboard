@@ -44,7 +44,8 @@ view of Fro Bot's cross-repo footprint.
   implementing or debugging in documented areas.
 - Validate workflows with actionlint via the container form (see
   `docs/solutions/workflow-issues/actionlint-pipx-missing-container-form-2026-09-19.md`)
-  — the self-hosted runner has no pipx.
+  — the container form assumes nothing from the host (no pipx/python
+  dependency on any runner, self-hosted or GitHub-hosted).
 - New `.yaml`/`.yml` files must single-quote string values — eslint's `yml` plugin
   enforces `yml/quotes` repo-wide (`pnpm lint`), e.g. `patterns: ['*']` in dependabot groups.
 - `.agents/skills/` is the canonical home for cross-harness agent skills (read by
@@ -84,3 +85,20 @@ Read-only dependency source repositories are available under
   gateway's operator OAuth return path contract, GitHub App client, secret
   readers, Hono build/serve split, and runtime logger/Result primitives that
   this app mirrors.
+
+## Landing-pipeline traps (rm-164 / rm-116, cycle 10)
+
+- A landing merge can itself re-track `.conductor/` engine state on main (landing
+  commits may carry breadcrumbs) — after EVERY merge, `git ls-files .conductor`
+  must end empty; staged untracks do NOT ride candidate-delta merges (the
+  validation clone's `:(exclude).conductor/**` pathspec drops them), so the cure
+  is a main-direct `git rm -r --cached .conductor` whose deletions ride the
+  landing merge itself. Root mechanism + cure:
+  `docs/solutions/workflow-issues/validation-clone-exclude-pathspec-drops-staged-breadcrumb-deletion-2026-09-24.md`.
+- Branch protection on `main` requires the Main job conclusions + CodeQL and
+  enforces for admins (rm-116). If a hotfix must land while a required check
+  cannot run, the override path is: temporarily `enforce_admins.enabled=false`
+  via `gh api -X PUT
+  /repos/codeo1io/dashboard/branches/main/protection` with the full protection
+  body preserved, land, then re-enable enforcement in the same session — never
+  delete the protection object (recreating it drops the check list).

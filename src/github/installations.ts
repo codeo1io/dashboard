@@ -88,6 +88,12 @@ export interface InstallationRecord {
 export interface EnumerateReposResult {
   readonly repos: readonly RepoRecord[]
   readonly installations: readonly InstallationRecord[]
+  /**
+   * Installation ids whose token mint or repo list failed (rm-112 cycle-10).
+   * Their repos are silently absent from `repos` — this count makes that
+   * fail-visible to the operator via the snapshot degradation detail.
+   */
+  readonly failedInstallations: readonly number[]
 }
 
 export class FetchInstallationsError extends Error {
@@ -207,12 +213,14 @@ export async function enumerateRepos(
   }
 
   if (installations.length === 0) {
-    return ok({repos: [], installations: []})
+    return ok({repos: [], installations: [], failedInstallations: []})
   }
 
   logger.debug('Enumerating repos across installations', {count: installations.length})
 
   const reposByNodeId = new Map<string, RepoRecord>()
+  // rm-112 (cycle-10): per-installation failures counted, not just logged.
+  const failedInstallations: number[] = []
 
   for (const installation of installations) {
     let token: string
@@ -223,6 +231,7 @@ export async function enumerateRepos(
         installationId: installation.id,
         error: safeErrorMessage(mintError),
       })
+      failedInstallations.push(installation.id)
       continue
     }
 
@@ -234,6 +243,7 @@ export async function enumerateRepos(
         installationId: installation.id,
         error: safeErrorMessage(repoError),
       })
+      failedInstallations.push(installation.id)
       continue
     }
 
@@ -250,6 +260,7 @@ export async function enumerateRepos(
   return ok({
     repos: [...reposByNodeId.values()],
     installations,
+    failedInstallations,
   })
 }
 
