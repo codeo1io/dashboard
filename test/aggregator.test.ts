@@ -1639,6 +1639,55 @@ describe('P1 regression — vulnerabilityAlerts graceful: permission error → o
     expect(callCount).toBe(2)
   })
 
+  it('rm-177: bare "Resource not accessible by integration" enters the no-alerts retry — not stale', async () => {
+    const repo = makeRepo({node_id: 'NODE_BARE_INTEGRATION', owner: 'org', name: 'bare-integration', installation_id: 1})
+
+    let callCount = 0
+    const graphqlQueryForInstallation: GraphqlQueryForInstallationFn = vi.fn().mockImplementation(
+      async () => {
+        callCount++
+        if (callCount === 1) {
+          // The exact documented form GitHub emits for a missing App
+          // permission (listed in the matcher's own comment but matched by NO
+          // branch before rm-177 — assess F1: the repo went stale every cycle
+          // instead of entering the graceful retry).
+          throw new Error('Resource not accessible by integration')
+        }
+        return {
+          repository: {
+            defaultBranchRef: {
+              target: {
+                statusCheckRollup: {state: 'SUCCESS'},
+                checkSuites: {nodes: []},
+              },
+            },
+            pullRequests: {totalCount: 1},
+            issues: {totalCount: 2},
+            // No vulnerabilityAlerts field — the no-alerts query variant
+          },
+        }
+      },
+    )
+
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_BARE_INTEGRATION', owner: 'org', name: 'bare-integration'})],
+      }))),
+      graphqlQueryForInstallation,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos).toHaveLength(1)
+    expect(snap.repos[0]?.status.openAlertCount).toBeNull()
+    expect(snap.repos[0]?.status.stale).toBe(false)
+    expect(snap.repos[0]?.status.rollupState).toBe('green')
+    expect(callCount).toBe(2)
+  })
+
   it('repo with non-permission GraphQL error → stale (not graceful retry)', async () => {
     const repo = makeRepo({node_id: 'NODE_REAL_FAIL', owner: 'org', name: 'real-fail', installation_id: 1})
 

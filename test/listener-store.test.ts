@@ -35,7 +35,7 @@ describe('listener store', () => {
     expect(unreadCount).toBe(1)
   })
 
-  it('dedupe: two inserts same (source,dedupeKey) upsert to one row, id preserved, reset to unread', () => {
+  it('dedupe: content change upserts one row, id preserved, stays read (rm-180)', () => {
     const first = store.insert(makeMessage({dedupeKey: 'deploy-health-2026-07-11', title: 'First'}))
     store.ack(first.id)
 
@@ -49,7 +49,32 @@ describe('listener store', () => {
     expect(messages).toHaveLength(1)
     expect(messages[0]?.title).toBe('Second')
     expect(messages[0]?.body).toBe('updated body content here')
-    expect(messages[0]?.read).toBe(false)
+    // rm-180: a newer version of an already-read message no longer un-acks it.
+    expect(messages[0]?.read).toBe(true)
+  })
+
+  it('dedupe: identical replay is a no-op — id, receivedAt, and read state preserved (rm-180)', () => {
+    const first = store.insert(makeMessage({dedupeKey: 'replay-identical'}))
+    expect(store.ack(first.id).acked).toBe(true)
+
+    const replay = store.insert(makeMessage({dedupeKey: 'replay-identical'}))
+
+    expect(replay.id).toBe(first.id)
+    expect(replay.receivedAt).toBe(first.receivedAt)
+
+    const {messages, unreadCount} = store.list({})
+    expect(messages).toHaveLength(1)
+    expect(messages[0]?.read).toBe(true)
+    expect(unreadCount).toBe(0)
+  })
+
+  it('dedupe: identical replay of an unread message stays unread (rm-180)', () => {
+    const first = store.insert(makeMessage({dedupeKey: 'replay-unread'}))
+    const replay = store.insert(makeMessage({dedupeKey: 'replay-unread'}))
+
+    expect(replay.id).toBe(first.id)
+    expect(replay.receivedAt).toBe(first.receivedAt)
+    expect(store.list({}).unreadCount).toBe(1)
   })
 
   it('different dedupeKey or source creates a separate row', () => {

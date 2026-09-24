@@ -156,32 +156,81 @@ function setCachedToken(installationId: number, token: string, expiresAt: Date |
 /**
  * Mint a read-only installation token with graceful optional-scope degradation.
  *
- * First attempts to mint with FULL_READ_PERMISSIONS (core + optional).
- * If that fails, retries with only CORE_READ_PERMISSIONS.
+ * First attempts to mint with FULL_READ_PERMISSIONS (core + optional):
+ * - a scope-class failure (GitHub rejected the requested permissions) retries
+ *   with only CORE_READ_PERMISSIONS;
+ * - a transient failure (network/5xx/429) is retried with the SAME scope set
+ *   and throws loud if it persists, so the optional security read scopes are
+ *   never silently dropped for the life of the token cache (rm-181).
  * If the core-only mint also fails, throws.
  */
+/**
+ * rm-181: classify mint failures into transient (retry the SAME scope set) vs
+ * scope-class (GitHub definitively rejected the requested permissions — degrade
+ * to core). Definitive HTTP rejections are scope-class unless the status itself
+ * says transient (429/5xx); errors without a status are classified by message
+ * shape, defaulting to scope-class to preserve the pre-rm-181 fallback contract.
+ */
+const TRANSIENT_MINT_ERROR_PATTERN =
+  /network|socket|timeout|timed out|etimedout|enotfound|econnreset|econnrefused|fetch failed|bad gateway|service unavailable|internal server error|temporarily unavailable/i
+
+function isTransientMintError(error: unknown): boolean {
+  const status = (error as {status?: unknown}).status
+  if (typeof status === 'number' && Number.isFinite(status)) {
+    return status === 429 || status >= 500
+  }
+  return TRANSIENT_MINT_ERROR_PATTERN.test(error instanceof Error ? error.message : String(error))
+}
+
+/** Default backoff between retries of a transient full-scope mint (rm-181). */
+const DEFAULT_MINT_RETRY_DELAYS_MS: readonly number[] = [200, 600]
+
 export async function mintReadOnlyToken(
   installationId: number,
   mintFn: (installationId: number, permissions: Record<string, 'read'>) => Promise<string>,
+  opts?: {retryDelaysMs?: readonly number[]},
 ): Promise<string> {
   // Check cache first
   const cached = getCachedToken(installationId)
   if (cached !== null) return cached
 
-  // Try full permissions first
-  try {
-    const token = await mintFn(installationId, FULL_READ_PERMISSIONS)
-    // Cache with a default expiry (we don't have expiry info from the injected fn)
-    setCachedToken(installationId, token, null)
-    return token
-  } catch (fullError) {
-    logger.warning('Failed to mint token with optional scopes; retrying with core scopes only', {
-      installationId,
-      error: safeErrorMessage(fullError),
-    })
+  const retryDelays = opts?.retryDelaysMs ?? DEFAULT_MINT_RETRY_DELAYS_MS
+
+  // Try full permissions first, with bounded retries for TRANSIENT failures.
+  // A transient failure (network, 5xx, 429) must never silently drop the
+  // optional security read scopes for the life of the token cache (rm-181);
+  // only a scope-class rejection degrades to core scopes.
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const token = await mintFn(installationId, FULL_READ_PERMISSIONS)
+      setCachedToken(installationId, token, null)
+      return token
+    } catch (fullError) {
+      if (!isTransientMintError(fullError)) {
+        logger.warning('Failed to mint token with optional scopes; retrying with core scopes only', {
+          installationId,
+          error: safeErrorMessage(fullError),
+        })
+        break
+      }
+      if (attempt >= retryDelays.length) {
+        logger.error('Transient mint failure persisted; not degrading to core scopes', {
+          installationId,
+          error: safeErrorMessage(fullError),
+        })
+        throw fullError
+      }
+      const delayMs = retryDelays[attempt] ?? 0
+      logger.warning('Transient mint failure; retrying same scopes', {
+        installationId,
+        attempt,
+        error: safeErrorMessage(fullError),
+      })
+      if (delayMs > 0) await new Promise(resolve => setTimeout(resolve, delayMs))
+    }
   }
 
-  // Retry with core-only permissions
+  // Retry with core-only permissions (scope-class failure path)
   const token = await mintFn(installationId, CORE_READ_PERMISSIONS)
   setCachedToken(installationId, token, null)
   return token

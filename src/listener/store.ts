@@ -2,7 +2,9 @@
  * `node:sqlite`-backed persistence for the operator listener channel.
  *
  * See docs/contracts/operator-listener-channel.md — retention policy (500 rows
- * / 30 days) and idempotency (dedupeKey upsert) are enforced here.
+ * / 30 days) and idempotency (dedupeKey upsert) are enforced here. Idempotency
+ * is a true no-op for identical replays: id, received_at, and read state are
+ * preserved; a content change refreshes the row but never un-acks it (rm-180).
  */
 import type {IngestMessage, ListenerLink, ListenerMessage, MessagesResponse} from './contract.ts'
 import {randomUUID} from 'node:crypto'
@@ -84,14 +86,16 @@ export function createListenerStore(dbPath: string): ListenerStore {
       WHERE dedupe_key IS NOT NULL
   `)
 
-  const findByDedupeStmt = db.prepare('SELECT id FROM messages WHERE source = ? AND dedupe_key = ?')
+  const findByDedupeStmt = db.prepare(
+    'SELECT id, kind, severity, title, body, links, created_at, received_at FROM messages WHERE source = ? AND dedupe_key = ?',
+  )
   const insertStmt = db.prepare(`
     INSERT INTO messages (id, source, kind, severity, title, body, links, dedupe_key, created_at, received_at, read_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
   `)
   const updateByIdStmt = db.prepare(`
     UPDATE messages
-    SET kind = ?, severity = ?, title = ?, body = ?, links = ?, created_at = ?, received_at = ?, read_at = NULL
+    SET kind = ?, severity = ?, title = ?, body = ?, links = ?, created_at = ?, received_at = ?
     WHERE id = ?
   `)
   const selectAllStmt = db.prepare('SELECT * FROM messages ORDER BY received_at DESC LIMIT ?')
@@ -113,8 +117,23 @@ export function createListenerStore(dbPath: string): ListenerStore {
     const linksJson = JSON.stringify(input.links)
 
     if (input.dedupeKey !== null) {
-      const existing = findByDedupeStmt.get(input.source, input.dedupeKey) as unknown as {id: string} | undefined
+      const existing = findByDedupeStmt.get(input.source, input.dedupeKey) as unknown as
+        | (Pick<MessageRow, 'id' | 'kind' | 'severity' | 'title' | 'body' | 'links' | 'created_at' | 'received_at'>)
+        | undefined
       if (existing !== undefined) {
+        const unchanged =
+          existing.kind === input.kind &&
+          existing.severity === input.severity &&
+          existing.title === input.title &&
+          existing.body === input.body &&
+          existing.links === linksJson &&
+          existing.created_at === input.createdAt
+        if (unchanged) {
+          // rm-180: identical replay (producer retry inside the ingest freshness
+          // window) is a true no-op — preserves received_at ordering and, unlike
+          // the previous un-ack behavior, the operator's read state.
+          return {id: existing.id, receivedAt: existing.received_at}
+        }
         updateByIdStmt.run(
           input.kind,
           input.severity,
