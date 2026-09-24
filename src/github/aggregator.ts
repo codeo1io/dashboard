@@ -125,7 +125,7 @@ interface CacheEntry {
 // GraphQL query + response types
 // ---------------------------------------------------------------------------
 
-const REPO_STATUS_QUERY = `
+export const REPO_STATUS_QUERY = `
   query RepoStatus($owner: String!, $name: String!) {
     repository(owner: $owner, name: $name) {
       defaultBranchRef {
@@ -134,7 +134,7 @@ const REPO_STATUS_QUERY = `
             statusCheckRollup {
               state
             }
-            // GraphQL max page size; repos with >100 suites still understate failingChecks (documented ceiling, rm-110)
+            # GraphQL max page size; repos with >100 suites still understate failingChecks (documented ceiling, rm-110)
             checkSuites(first: 100) {
               nodes {
                 checkRuns(first: 50, filterBy: { status: COMPLETED, conclusions: [FAILURE, TIMED_OUT, CANCELLED, ACTION_REQUIRED, STARTUP_FAILURE] }) {
@@ -163,7 +163,7 @@ const REPO_STATUS_QUERY = `
  * lacks the security_events/vulnerability_alerts scope. openAlertCount is set
  * to null (not stale) when this variant is used.
  */
-const REPO_STATUS_QUERY_NO_ALERTS = `
+export const REPO_STATUS_QUERY_NO_ALERTS = `
   query RepoStatusNoAlerts($owner: String!, $name: String!) {
     repository(owner: $owner, name: $name) {
       defaultBranchRef {
@@ -172,7 +172,7 @@ const REPO_STATUS_QUERY_NO_ALERTS = `
             statusCheckRollup {
               state
             }
-            // GraphQL max page size; repos with >100 suites still understate failingChecks (documented ceiling, rm-110)
+            # GraphQL max page size; repos with >100 suites still understate failingChecks (documented ceiling, rm-110)
             checkSuites(first: 100) {
               nodes {
                 checkRuns(first: 50, filterBy: { status: COMPLETED, conclusions: [FAILURE, TIMED_OUT, CANCELLED, ACTION_REQUIRED, STARTUP_FAILURE] }) {
@@ -511,10 +511,11 @@ function isVulnerabilityAlertsPermissionError(error: unknown): boolean {
 }
 
 /**
- * Parse a GraphQL response into a RepoCiStatus, with openAlertCount from the response
- * (or null if the field is absent/null).
+ * Parse a GraphQL response into a RepoCiStatus; the alert count comes from the
+ * response itself (null when the field is absent — REPO_STATUS_QUERY_NO_ALERTS
+ * omits it by design).
  */
-function parseRepoResponse(raw: unknown, fetchedAt: number, openAlertCount: number | null): RepoCiStatus {
+function parseRepoResponse(raw: unknown, fetchedAt: number): RepoCiStatus {
   const data = raw as GraphqlRepoResponse
 
   const repo = data.repository
@@ -537,8 +538,8 @@ function parseRepoResponse(raw: unknown, fetchedAt: number, openAlertCount: numb
   const openPrCount = repo.pullRequests.totalCount
   const openIssueCount = repo.issues.totalCount
 
-  // Use the provided openAlertCount (may be from the response or null if no-alerts variant)
-  const alertCount = openAlertCount ?? (repo.vulnerabilityAlerts?.totalCount ?? null)
+  // Alert count comes from the response itself; null when the no-alerts variant was used
+  const alertCount = repo.vulnerabilityAlerts?.totalCount ?? null
 
   return {rollupState, failingChecks, openPrCount, openIssueCount, openAlertCount: alertCount, stale: false, fetchedAt}
 }
@@ -561,7 +562,7 @@ async function fetchRepoStatus(
 
   try {
     const raw = await graphqlQueryForInstallation(installationId, REPO_STATUS_QUERY, vars)
-    return parseRepoResponse(raw, fetchedAt, null)
+    return parseRepoResponse(raw, fetchedAt)
   } catch (error) {
     // P1 #11: if the error is specifically about vulnerabilityAlerts permission,
     // retry without that field and set openAlertCount = null (not stale).
@@ -569,8 +570,8 @@ async function fetchRepoStatus(
       logger.warning('vulnerabilityAlerts permission error; retrying without alerts field', safeRepoLogIdentity(entry))
       try {
         const raw = await graphqlQueryForInstallation(installationId, REPO_STATUS_QUERY_NO_ALERTS, vars)
-        // Parse with openAlertCount=null (alerts unavailable, not stale)
-        return parseRepoResponse(raw, fetchedAt, null)
+        // Alerts field absent (unavailable, not stale) — alertCount resolves to null
+        return parseRepoResponse(raw, fetchedAt)
       } catch (retryError) {
         logger.warning('Per-repo GraphQL fetch failed (no-alerts retry); marking stale', safeRepoErrorContext(entry, retryError))
         return {rollupState: 'unknown', failingChecks: 0, openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
