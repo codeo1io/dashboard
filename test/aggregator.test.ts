@@ -64,7 +64,7 @@ function makeMetadataResult(overrides: {
 }
 
 function makeEnumerateResult(repos: ReturnType<typeof makeRepo>[]): Result<EnumerateReposResult, FetchInstallationsError> {
-  return ok({repos, installations: [{id: 1, account: 'fro-bot'}]})
+  return ok({repos, installations: [{id: 1, account: 'fro-bot'}], failedInstallationIds: []})
 }
 
 /**
