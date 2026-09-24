@@ -26,6 +26,13 @@ view of Fro Bot's cross-repo footprint.
 
 ## Conventions
 
+- Rate limiting is per-path-class (public / operator / ingest), each 60 req/min by
+  default; override via `RATE_LIMIT_MAX_{PUBLIC,OPERATOR,INGEST}` (invalid values fall
+  back to the default per the house env convention). Set
+  `RATE_LIMIT_TRUSTED_PROXY` to `1`/`true`/`yes` ONLY when the reverse proxy
+  OVERWRITES `X-Forwarded-For` with the real client — keying then uses the first XFF
+  hop (capped at 64 chars); behind an appending proxy, first-hop keying is
+  client-spoofable.
 - pnpm. Server (`src/`, `test/`, `scripts/`) is Node 24 native TS (strip-only): no
   enums, namespaces, parameter properties, or TS import aliases (`erasableSyntaxOnly`
   lint enforces this). The client (`web/`) is a full-TS Vite + React 19 workspace with
@@ -45,7 +52,7 @@ view of Fro Bot's cross-repo footprint.
 - Validate workflows with actionlint via the container form (see
   `docs/solutions/workflow-issues/actionlint-pipx-missing-container-form-2026-09-19.md`)
   — the container form assumes nothing from the host (no pipx/python
-  dependency on any runner, self-hosted or GitHub-hosted).
+  dependency on the runner image).
 - New `.yaml`/`.yml` files must single-quote string values — eslint's `yml` plugin
   enforces `yml/quotes` repo-wide (`pnpm lint`), e.g. `patterns: ['*']` in dependabot groups.
 - `.agents/skills/` is the canonical home for cross-harness agent skills (read by

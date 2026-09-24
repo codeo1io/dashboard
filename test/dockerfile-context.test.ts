@@ -9,7 +9,8 @@ import {describe, expect, it} from 'vitest'
 // Main gate green, then Release failed at builder step 5/8 on
 // `COPY wiki-writer/package.json` — a directory that does not exist in this
 // fork). This gate parses COPY/ADD sources at PR time instead: seconds of Node,
-// no docker build, friendly to the single serialized self-hosted runner.
+// no docker build, friendly to a single serialized CI runner (originally the
+// 2026-09 self-hosted one).
 
 const repoRoot = process.cwd()
 

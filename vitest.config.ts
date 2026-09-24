@@ -7,12 +7,13 @@ export default defineConfig({
     // are unresolvable here).
     include: ['test/**/*.test.ts', 'test/**/*.test.js', '.opencode/impeccable/**/*.test.ts'],
     exclude: ['**/node_modules/**', 'dist', '.slim'],
-    // Default is 5000ms, which is tight for this suite on a shared self-hosted
-    // runner: several tests spawn git/pnpm subprocesses in fresh temp repos
+    // Default is 5000ms, which is tight for this suite under contention:
+    // several tests spawn git/pnpm subprocesses in fresh temp repos
     // (compute-release-tag, should-release) and need 8-12s under concurrent
     // load. The assertions themselves are fast; it is process spawn + repo
     // setup that costs. 30s keeps the suite deterministic on a loaded box
-    // while still failing genuinely hung tests.
+    // (sized 2026-09 on the then-shared self-hosted runner) while still
+    // failing genuinely hung tests.
     testTimeout: 30_000,
   },
 })
