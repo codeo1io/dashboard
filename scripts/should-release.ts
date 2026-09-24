@@ -21,7 +21,10 @@
 //      (dependencies, engines, packageManager, overrides, pnpm.overrides,
 //       scripts, type, exports, imports) between base and head.
 //      If any runtime field changed => release.
-//      If only proven non-artifact devDependencies changed => skip.
+//      If only proven non-artifact devDependencies changed, and the lockfile
+//      is unchanged => skip. With pnpm-lock.yaml also in the changed set the
+//      guard fails open and releases (rm-167): a lockfile regen can move an
+//      in-range runtime resolution even when only devDependencies were edited.
 //      Unknown devDependency changes fail open and trigger a release because
 //      Docker installs them before the shipped browser bundle is built.
 //   3. If only pnpm-lock.yaml changed (no package.json diff) => release.
@@ -340,7 +343,20 @@ function decide(
       }
     }
 
-    // Only devDependencies (or other non-runtime fields) changed
+    // Only devDependencies (or other non-runtime fields) changed.
+    // rm-167: the devDeps-only skip is only sound when the LOCKFILE is
+    // unchanged — a devDeps-only manifest edit whose lockfile regen moved an
+    // in-range runtime resolution still changes the image, so consult
+    // hasLockChange before skipping (rule 3's fail-open logic, hoisted so
+    // this branch cannot shadow it).
+    if (hasLockChange) {
+      return {
+        shouldRelease: true,
+        reason:
+          'package.json devDependencies-only change with pnpm-lock.yaml in the diff — ' +
+          'lockfile regen may move an in-range runtime resolution; releasing (fail open)',
+      }
+    }
     return {
       shouldRelease: false,
       reason: 'package.json changed but only devDependencies (or non-runtime fields) differ',
