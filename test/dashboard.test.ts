@@ -70,6 +70,7 @@ function makeSnapshot(overrides: Partial<AggregatorSnapshot> = {}): AggregatorSn
     repos: [],
     staleBanner: false,
     driftCount: 0,
+    enumerationIncomplete: null,
     refreshedAt: null,
     ...overrides,
   }

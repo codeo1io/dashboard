@@ -62,6 +62,12 @@ describe('fork exclusion invariants (rm-131)', () => {
     expect(pkg.packageManager).toBe('pnpm@11.27.0')
   })
 
+  it('.gitignore keeps the run-state entries guarded against upstream merges (rm-159 residue)', () => {
+    const text = read('.gitignore')
+    expect(text).toMatch(/^\.pnpm-store\/$/m)
+    expect(text).toMatch(/^\.conductor\/$/m)
+  })
+
   it.each([...BINDING_DOCS])('%s names the codeo1io metadata source, not upstream org', file => {
     const text = read(file)
     expect(text).toMatch(/codeo1io\/\.github/)
