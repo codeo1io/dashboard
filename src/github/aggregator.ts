@@ -223,7 +223,7 @@ function needsAttention(status: RepoCiStatus): boolean {
   return false
 }
 
-function sortAttentionFirst(repos: DashboardRepo[]): DashboardRepo[] {
+export function sortAttentionFirst(repos: DashboardRepo[]): DashboardRepo[] {
   return repos.sort((a, b) => {
     const aNeeds = needsAttention(a.status) ? 0 : 1
     const bNeeds = needsAttention(b.status) ? 0 : 1
@@ -292,7 +292,7 @@ function isKnownPublic(discoveryChannel: string): boolean {
   return discoveryChannel !== DISCOVERED_CHANNEL
 }
 
-type RepoLogIdentity = Pick<WorkingSetEntry, 'node_id' | 'owner' | 'name' | 'discovery_channel' | 'installation_id'>
+export type RepoLogIdentity = Pick<WorkingSetEntry, 'node_id' | 'owner' | 'name' | 'discovery_channel' | 'installation_id'>
 
 /**
  * Build the working set from the union of installation repos and metadata publicRepos,
@@ -470,7 +470,7 @@ function safeRepoErrorContext(entry: RepoLogIdentity, error: unknown): LogContex
 }
 
 /** Strip a repo's own owner, name, and full_name occurrences from a text string. */
-function redactRepoIdentityFromText(text: string, entry: RepoLogIdentity): string {
+export function redactRepoIdentityFromText(text: string, entry: RepoLogIdentity): string {
   // Replace identity tokens LONGEST-FIRST so the most specific match always wins
   // and no partial fragment survives when tokens overlap (e.g. the name is a
   // substring of the owner). An error string may carry the full `owner/name`,
@@ -508,7 +508,7 @@ function isVulnerabilityAlertsPermissionError(error: unknown): boolean {
  * Parse a GraphQL response into a RepoCiStatus, with openAlertCount from the response
  * (or null if the field is absent/null).
  */
-function parseRepoResponse(raw: unknown, fetchedAt: number, openAlertCount: number | null): RepoCiStatus {
+export function parseRepoResponse(raw: unknown, fetchedAt: number, openAlertCount: number | null): RepoCiStatus {
   const data = raw as GraphqlRepoResponse
 
   const repo = data.repository
