@@ -77,8 +77,12 @@ function makeGraphqlResponse(overrides: {
   openPrCount?: number
   openIssueCount?: number
   openAlertCount?: number | null
+  repository?: null
 } = {}) {
   const failingChecks = overrides.failingChecks ?? 0
+  if (overrides.repository === null) {
+    return {repository: null}
+  }
   return {
     repository: {
       defaultBranchRef: {
@@ -752,10 +756,10 @@ describe('security — repo-name redaction in operational logs (#54)', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Cache refresh with fake timers
+// Interval refresh with fake timers
 // ---------------------------------------------------------------------------
 
-describe('aggregator — cache refresh with fake timers', () => {
+describe('aggregator — interval refresh with fake timers', () => {
   beforeEach(() => {
     vi.useFakeTimers()
   })
@@ -764,7 +768,7 @@ describe('aggregator — cache refresh with fake timers', () => {
     vi.useRealTimers()
   })
 
-  it('cache refresh replaces stale payload after interval', async () => {
+  it('interval refresh replaces stale payload after interval', async () => {
     let callCount = 0
     const graphqlQueryForInstallation: GraphqlQueryForInstallationFn = vi.fn().mockImplementation(async () => {
       callCount++
@@ -784,7 +788,7 @@ describe('aggregator — cache refresh with fake timers', () => {
       }))),
       graphqlQueryForInstallation,
       now: () => {
-        nowMs += 70_000 // advance past 60s TTL on each call
+        nowMs += 70_000 // advance the clock well past the 60s refresh interval
         return nowMs
       },
       setIntervalFn: (fn, ms) => setInterval(fn, ms),
@@ -804,6 +808,58 @@ describe('aggregator — cache refresh with fake timers', () => {
     expect(snap2.repos[0]?.status.rollupState).toBe('red')
 
     agg.stop()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-112 (cycle-9): repository:null fails visible
+// ---------------------------------------------------------------------------
+
+describe('aggregator — repository:null fails visible (rm-112)', () => {
+  it('repository:null in a successful GraphQL response marks the repo stale, not calm', async () => {
+    const repo = makeRepo({node_id: 'NODE_VANISHED', owner: 'org', name: 'vanished-repo'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({repository: null})),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    const snapshot = agg.getSnapshot()
+    expect(snapshot.repos).toHaveLength(1)
+    const status = snapshot.repos[0]?.status
+    expect(status?.rollupState).toBe('unknown')
+    // The fix: a vanished repo (deleted/renamed/private or access lost) must
+    // surface as stale:true — matching the installation_id:null precedent.
+    // Pre-cycle-9 this was stale:false and the repo rendered calm.
+    expect(status?.stale).toBe(true)
+  })
+
+  it('a vanished repo sorts attention-first ahead of a healthy green repo', async () => {
+    const healthy = makeRepo({node_id: 'NODE_HEALTHY', owner: 'org', name: 'healthy-repo'})
+    const vanished = makeRepo({node_id: 'NODE_VANISHED', owner: 'org', name: 'vanished-repo'})
+    const graphqlQueryForInstallation: GraphqlQueryForInstallationFn = vi.fn().mockImplementation(async (_installId, _query, vars) => {
+      if ((vars as {name: string}).name === 'vanished-repo') {
+        return makeGraphqlResponse({repository: null})
+      }
+      return makeGraphqlResponse({rollupState: 'SUCCESS'})
+    })
+
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([healthy, vanished])),
+      graphqlQueryForInstallation,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    const snapshot = agg.getSnapshot()
+    expect(snapshot.repos).toHaveLength(2)
+    expect(snapshot.repos[0]?.name).toBe('vanished-repo')
+    expect(snapshot.repos[0]?.status.stale).toBe(true)
+    expect(snapshot.repos[1]?.name).toBe('healthy-repo')
+    expect(snapshot.repos[1]?.status.stale).toBe(false)
   })
 })
 
