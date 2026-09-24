@@ -41,7 +41,7 @@ import {
 import {readFixtureHarnessConfig} from './gateway/operator-fixture-config.ts'
 import {FIXTURE_OPERATOR_PREFIX} from './gateway/operator-fixture-routes.ts'
 import {createOperatorServerFetch} from './gateway/operator-server-fetch.ts'
-import {createAggregator} from './github/aggregator.ts'
+import {createAggregator, NO_DEGRADATION} from './github/aggregator.ts'
 import {createDashboardAppClient} from './github/app-client.ts'
 import {buildInstallationsClient, enumerateRepos, mintReadOnlyToken} from './github/installations.ts'
 import {makeNotFoundError, readRepoMetadata} from './github/metadata.ts'
@@ -326,7 +326,7 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   const fetchUserLogin = opts?.fetchUserLogin ?? fetchGitHubUserLogin
 
   // Resolve snapshot provider — default empty; production wires the real aggregator.
-  const EMPTY_SNAPSHOT = {repos: [], staleBanner: false, driftCount: 0, refreshedAt: null} as const
+  const EMPTY_SNAPSHOT: AggregatorSnapshot = {repos: [], staleBanner: false, driftCount: 0, refreshedAt: null, degradation: NO_DEGRADATION}
   const getSnapshot = opts?.getSnapshot ?? (() => EMPTY_SNAPSHOT)
 
   // Resolve operator UI flag — default OFF (fail-closed).
