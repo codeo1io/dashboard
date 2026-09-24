@@ -35,9 +35,14 @@ describe('listener store', () => {
     expect(unreadCount).toBe(1)
   })
 
-  it('dedupe: two inserts same (source,dedupeKey) upsert to one row, id preserved, reset to unread', () => {
+  it('dedupe: two inserts same (source,dedupeKey) upsert to one row, id preserved, stays read (rm-169)', () => {
+    // rm-169: a replay (redelivered webhook with the same dedupe key)
+    // refreshes content but must NOT un-ack an operator-read message. This
+    // expectation intentionally flipped from "reset to unread" in cycle 11 —
+    // see ROADMAP rm-169 / assess finding F8.
     const first = store.insert(makeMessage({dedupeKey: 'deploy-health-2026-07-11', title: 'First'}))
     store.ack(first.id)
+    expect(store.list({}).unreadCount).toBe(0)
 
     const second = store.insert(
       makeMessage({dedupeKey: 'deploy-health-2026-07-11', title: 'Second', body: 'updated body content here'}),
@@ -49,7 +54,23 @@ describe('listener store', () => {
     expect(messages).toHaveLength(1)
     expect(messages[0]?.title).toBe('Second')
     expect(messages[0]?.body).toBe('updated body content here')
+    // Acked BEFORE the replay → stays acked; the replay did not resurrect it
+    expect(messages[0]?.read).toBe(true)
+    expect(store.list({}).unreadCount).toBe(0)
+  })
+
+  it('rm-169: replay of an UNREAD message keeps it unread (no accidental ack)', () => {
+    const first = store.insert(makeMessage({dedupeKey: 'replay-unread', title: 'First'}))
+    expect(store.list({}).unreadCount).toBe(1)
+
+    const second = store.insert(makeMessage({dedupeKey: 'replay-unread', title: 'Second'}))
+
+    expect(second.id).toBe(first.id)
+    const {messages, unreadCount} = store.list({})
+    expect(messages).toHaveLength(1)
+    expect(messages[0]?.title).toBe('Second')
     expect(messages[0]?.read).toBe(false)
+    expect(unreadCount).toBe(1)
   })
 
   it('different dedupeKey or source creates a separate row', () => {

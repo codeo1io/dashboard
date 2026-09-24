@@ -496,10 +496,18 @@ function isVulnerabilityAlertsPermissionError(error: unknown): boolean {
   //   "Must have push access to view vulnerability alerts."
   //   "Resource not accessible by integration"
   //   "Field 'vulnerabilityAlerts' doesn't exist on type 'Repository'"
+  // rm-168: the bare "Resource not accessible by integration" form carries NO
+  // vulnerability keyword, yet it is exactly the App-token permission denial
+  // for this query — when the token lacks security_events:vulnerability_alerts
+  // read, the vulnerabilityAlerts field is the only field the repo query
+  // requests that needs it. Matching the generic message keeps the whole repo
+  // from going stale on a pure alerts-permission gap; the worst case of a
+  // broader false positive is one no-alerts retry that itself fails visible.
   return (
     msg.includes('vulnerabilityalerts') ||
     msg.includes('vulnerability_alerts') ||
     msg.includes('vulnerability alerts') ||
+    msg.includes('resource not accessible by integration') ||
     (msg.includes('push access') && msg.includes('vulnerability'))
   )
 }
