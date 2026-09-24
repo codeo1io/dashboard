@@ -167,6 +167,10 @@ function isHardReleasePath(filePath: string): boolean {
   // copied into the image (Dockerfile `COPY public/ ./public/`); changes must
   // trigger a new image build and release.
   if (filePath.startsWith('public/') || filePath === 'public') return true
+  // rm-154 (cycle-9): build-behavior config COPY'd into both Docker stages
+  // (builder + prod-deps). allowBuilds/shamefullyHoist/minimumReleaseAge edits
+  // change the image with zero source diff — always a release candidate.
+  if (filePath === 'pnpm-workspace.yaml') return true
   if (filePath === 'Dockerfile') return true
   if (filePath === '.github/workflows/release.yaml') return true
   if (filePath === 'scripts/should-release.ts') return true

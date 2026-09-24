@@ -8,6 +8,10 @@ on:
       - Dockerfile
       - package.json
       - pnpm-lock.yaml
+      # rm-154 (cycle-9): COPY'd into BOTH Docker stages (builder + prod-deps);
+      # carries allowBuilds/shamefullyHoist/minimumReleaseAge — build-behavior
+      # config that changes image contents with zero code diff.
+      - pnpm-workspace.yaml
       - 'tsconfig*.json'
       - 'src/**'
       - 'web/**'
