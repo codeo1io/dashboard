@@ -105,6 +105,7 @@ describe('buildSnapshotProvider — production wiring', () => {
           },
         ],
         installations: [{id: 1, account: 'fro-bot'}],
+        failedInstallationIds: [],
       },
     })
 
@@ -171,7 +172,7 @@ repos:
     // after start(), refreshedAt is set (not null as in the empty default).
     const fakeEnumerate = vi.fn().mockResolvedValue({
       success: true,
-      data: {repos: [], installations: []},
+      data: {repos: [], installations: [], failedInstallationIds: []},
     })
     const fakeMetadataReader = vi.fn().mockResolvedValue('version: 1\nrepos: []\n')
     const fakeGraphqlQuery = vi.fn().mockResolvedValue({repository: null})
@@ -218,7 +219,7 @@ describe('buildSnapshotProvider — auth topology regression tests', () => {
     const fakeMetadataReader = vi.fn().mockResolvedValue('version: 1\nrepos: []\n')
     const fakeEnumerate = vi.fn().mockResolvedValue({
       success: true,
-      data: {repos: [], installations: [{id: 42, account: 'codeo1io'}]},
+      data: {repos: [], installations: [{id: 42, account: 'codeo1io'}], failedInstallationIds: []},
     })
     const fakeGraphqlQuery = vi.fn().mockResolvedValue({repository: null})
 
@@ -263,7 +264,7 @@ describe('buildSnapshotProvider — auth topology regression tests', () => {
     const fakeMetadataReader = vi.fn().mockResolvedValue('version: 1\nrepos: []\n')
     const fakeEnumerate = vi.fn().mockResolvedValue({
       success: true,
-      data: {repos: [], installations},
+      data: {repos: [], installations, failedInstallationIds: []},
     })
     const fakeGraphqlQuery = vi.fn().mockResolvedValue({repository: null})
 
@@ -304,7 +305,7 @@ describe('buildSnapshotProvider — auth topology regression tests', () => {
     const fakeMetadataReader = vi.fn().mockResolvedValue('version: 1\nrepos: []\n')
     const fakeEnumerate = vi.fn().mockResolvedValue({
       success: true,
-      data: {repos: [], installations},
+      data: {repos: [], installations, failedInstallationIds: []},
     })
     const fakeGraphqlQuery = vi.fn().mockResolvedValue({repository: null})
 

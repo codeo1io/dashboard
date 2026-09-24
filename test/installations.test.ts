@@ -38,6 +38,14 @@ function makeInstall(id: number, account = 'fro-bot'): InstallationRecord {
   return {id, account}
 }
 
+/**
+ * rm-170: only permission-shaped (HTTP 403) mint failures justify the
+ * core-scope fallback — a transient/network error rethrows so it can never
+ * silently mint + cache a reduced-scope token. Shapes the error like
+ * Octokit's RequestError (status field).
+ */
+const permissionError = (message: string) => Object.assign(new Error(message), {status: 403})
+
 function makeClient(overrides: Partial<InstallationsClient> = {}): InstallationsClient {
   return {
     listInstallations: vi.fn().mockResolvedValue([]),
@@ -436,8 +444,8 @@ describe('security — optional-scope graceful degradation', () => {
   it('retries with core-only permissions when full-permissions mint fails', async () => {
     const mintFn = vi
       .fn()
-      // First call (full permissions) fails
-      .mockRejectedValueOnce(new Error('Resource not accessible by integration'))
+      // First call (full permissions) fails — permission-shaped (rm-170)
+      .mockRejectedValueOnce(permissionError('Resource not accessible by integration'))
       // Second call (core-only) succeeds
       .mockResolvedValueOnce({token: 'ghs_core_only_token', expiresAt: null})
 
@@ -474,7 +482,7 @@ describe('security — optional-scope graceful degradation', () => {
   it('throws when both full and core-only mint attempts fail', async () => {
     const mintFn = vi
       .fn()
-      .mockRejectedValueOnce(new Error('full scope fail'))
+      .mockRejectedValueOnce(permissionError('full scope fail'))
       .mockRejectedValueOnce(new Error('core scope fail'))
 
     await expect(mintReadOnlyToken(101, mintFn)).rejects.toThrow('core scope fail')
@@ -486,8 +494,8 @@ describe('security — optional-scope graceful degradation', () => {
 
     const mintFn = vi
       .fn()
-      // Full permissions fail
-      .mockRejectedValueOnce(new Error('security_events not registered'))
+      // Full permissions fail — the App-permission shape (rm-170)
+      .mockRejectedValueOnce(permissionError('security_events not registered'))
       // Core-only succeeds
       .mockResolvedValueOnce({token: 'ghs_core_token', expiresAt: null})
 
@@ -587,7 +595,7 @@ describe('security — token-shaped secrets redacted in error log paths', () => 
     // Full-permissions mint fails with a token in the error, core-only succeeds
     const mintFn = vi
       .fn()
-      .mockRejectedValueOnce(new Error(`Token ${fakeToken} has insufficient scope`))
+      .mockRejectedValueOnce(permissionError(`Token ${fakeToken} has insufficient scope`))
       .mockResolvedValueOnce({token: 'ghs_core_only_token', expiresAt: null})
 
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -699,5 +707,123 @@ describe('rm-185 — cached token honors the API-provided expiresAt', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+// Security: rm-170 — transient mint errors must never degrade the scope set
+// ---------------------------------------------------------------------------
+
+describe('security — rm-170: transient mint errors never degrade scope', () => {
+  it('rethrows a status-less (network/transient) mint error instead of retrying core-only', async () => {
+    const mintFn = vi.fn().mockRejectedValue(new Error('socket hang up'))
+
+    await expect(mintReadOnlyToken(2101, mintFn)).rejects.toThrow('socket hang up')
+    // No second mint attempt — a transient error must not silently mint a
+    // reduced-scope token (which would then be cached for the TTL).
+    expect(mintFn).toHaveBeenCalledTimes(1)
+    const callPerms = mintFn.mock.calls[0]?.[1] as Record<string, string>
+    expect(callPerms).toMatchObject(FULL_READ_PERMISSIONS)
+  })
+
+  it('rethrows a 5xx mint error instead of retrying core-only', async () => {
+    const mintFn = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error('server error'), {status: 500}))
+
+    await expect(mintReadOnlyToken(2102, mintFn)).rejects.toThrow('server error')
+    expect(mintFn).toHaveBeenCalledTimes(1)
+  })
+
+  it('rethrows a 429 (rate-limit) mint error instead of retrying core-only', async () => {
+    const mintFn = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error('secondary rate limit'), {status: 429}))
+
+    await expect(mintReadOnlyToken(2103, mintFn)).rejects.toThrow('secondary rate limit')
+    expect(mintFn).toHaveBeenCalledTimes(1)
+  })
+
+  it('rethrows a rate-limit-shaped 403 (x-ratelimit-remaining: 0) instead of retrying core-only (review F1)', async () => {
+    // GitHub primary rate-limit exhaustion answers 403, not 429 — the status
+    // alone must NOT classify as permission-shaped.
+    const mintFn = vi.fn().mockRejectedValue(Object.assign(
+      new Error('API rate limit exceeded'),
+      {status: 403, response: {headers: {'x-ratelimit-remaining': '0'}}},
+    ))
+
+    await expect(mintReadOnlyToken(2105, mintFn)).rejects.toThrow('API rate limit exceeded')
+    expect(mintFn).toHaveBeenCalledTimes(1)
+  })
+
+  it('rethrows a secondary-rate-limit 403 (retry-after header) instead of retrying core-only (review F1)', async () => {
+    const mintFn = vi.fn().mockRejectedValue(Object.assign(
+      new Error('You have exceeded a secondary rate limit'),
+      {status: 403, response: {headers: {'retry-after': '60'}}},
+    ))
+
+    await expect(mintReadOnlyToken(2106, mintFn)).rejects.toThrow('secondary rate limit')
+    expect(mintFn).toHaveBeenCalledTimes(1)
+  })
+
+  it('falls back core-only even when a 403 carries unrelated headers (not rate-limit-shaped)', async () => {
+    const mintFn = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(
+        new Error('Resource not accessible by integration'),
+        {status: 403, response: {headers: {'x-github-request-id': 'ABCD:1234'}}},
+      ))
+      .mockResolvedValueOnce({token: 'ghs_core_token', expiresAt: null})
+
+    await expect(mintReadOnlyToken(2107, mintFn)).resolves.toBe('ghs_core_token')
+    expect(mintFn).toHaveBeenCalledTimes(2)
+  })
+
+  it('falls back to core-only ONLY for 403-shaped (permission) mint errors', async () => {
+    const mintFn = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error('Resource not accessible by integration'), {status: 403}))
+      .mockResolvedValueOnce({token: 'ghs_core_token', expiresAt: null})
+
+    await expect(mintReadOnlyToken(2104, mintFn)).resolves.toBe('ghs_core_token')
+    expect(mintFn).toHaveBeenCalledTimes(2)
+  })
+
+  it('enumerateRepos records a transient-mint installation in failedInstallationIds (fail-visible)', async () => {
+    const repoB = makeRepo({node_id: 'REPO_B'})
+
+    const client = makeClient({
+      listInstallations: vi.fn().mockResolvedValue([makeInstall(31, 'good-org'), makeInstall(32, 'flaky-org')]),
+      mintInstallationToken: vi
+        .fn()
+        // Good install mints fine
+        .mockResolvedValueOnce({token: 'ghs_good_token', expiresAt: null})
+        // Flaky install fails transiently (no status)
+        .mockRejectedValueOnce(new Error('ETIMEDOUT')),
+      listInstallationRepos: vi.fn().mockResolvedValue([repoB]),
+    })
+
+    const result = await enumerateRepos(client)
+
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+    // The reachable repo is served — but the partial union is REPORTED, not hidden
+    expect(result.data.repos).toHaveLength(1)
+    expect(result.data.repos[0]?.node_id).toBe('REPO_B')
+    expect(result.data.failedInstallationIds).toEqual([32])
+  })
+
+  it('enumerateRepos records a repo-listing failure in failedInstallationIds', async () => {
+    const client = makeClient({
+      listInstallations: vi.fn().mockResolvedValue([makeInstall(41, 'org')]),
+      mintInstallationToken: vi.fn().mockResolvedValue({token: 'ghs_token', expiresAt: null}),
+      listInstallationRepos: vi.fn().mockRejectedValue(new Error('boom')),
+    })
+
+    const result = await enumerateRepos(client)
+
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+    expect(result.data.repos).toHaveLength(0)
+    expect(result.data.failedInstallationIds).toEqual([41])
   })
 })

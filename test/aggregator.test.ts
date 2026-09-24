@@ -63,8 +63,11 @@ function makeMetadataResult(overrides: {
   }
 }
 
-function makeEnumerateResult(repos: ReturnType<typeof makeRepo>[]): Result<EnumerateReposResult, FetchInstallationsError> {
-  return ok({repos, installations: [{id: 1, account: 'fro-bot'}]})
+function makeEnumerateResult(
+  repos: ReturnType<typeof makeRepo>[],
+  failedInstallationIds: readonly number[] = [],
+): Result<EnumerateReposResult, FetchInstallationsError> {
+  return ok({repos, installations: [{id: 1, account: 'fro-bot'}], failedInstallationIds})
 }
 
 /**
@@ -549,6 +552,76 @@ describe('aggregator — error paths', () => {
     expect(snap.repos).toHaveLength(1)
     expect(snap.repos[0]?.node_id).toBe('NODE_META')
     // staleBanner=true — data is incomplete (installation channel failed)
+    expect(snap.staleBanner).toBe(true)
+    // rm-112/B1: enumerationIncomplete is null (unknown) when enumeration
+    // failed entirely — distinct from a partial failure's count.
+    expect(snap.enumerationIncomplete).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Fail-visible partial enumeration (rm-112 remaining scope / cycle-13 B1)
+// ---------------------------------------------------------------------------
+
+describe('aggregator — fail-visible partial enumeration', () => {
+  it('successful enumeration → enumerationIncomplete is 0, no stale banner', async () => {
+    const repo = makeRepo({node_id: 'NODE_OK', owner: 'org', name: 'repo-ok'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_OK', owner: 'org', name: 'repo-ok'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.enumerationIncomplete).toBe(0)
+    expect(snap.staleBanner).toBe(false)
+  })
+
+  it('partial enumeration → enumerationIncomplete carries the failed-installation count', async () => {
+    const repo = makeRepo({node_id: 'NODE_P', owner: 'org', name: 'repo-p'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo], [11, 12])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_P', owner: 'org', name: 'repo-p'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    // The union is partial: 2 installations failed. The snapshot must SAY so
+    // (count only — never ids/names) while still serving the reachable repos.
+    // Review F2: any incomplete enumeration also flips staleBanner — the
+    // operator-facing degradation channel until rm-107 renders the count.
+    expect(snap.enumerationIncomplete).toBe(2)
+    expect(snap.staleBanner).toBe(true)
+    expect(snap.repos).toHaveLength(1)
+  })
+
+  it('partial enumeration with an empty working set → empty snapshot is bannered, never reads as authoritative emptiness (review F2)', async () => {
+    // Every installation fails to mint while listInstallations succeeds and
+    // repos.yaml yields no public repos: the snapshot must carry the banner.
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([], [11, 12])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [],
+      }))),
+      graphqlQueryForInstallation: vi.fn(),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos).toHaveLength(0)
+    expect(snap.enumerationIncomplete).toBe(2)
     expect(snap.staleBanner).toBe(true)
   })
 })
