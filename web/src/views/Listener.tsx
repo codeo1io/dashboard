@@ -3,6 +3,7 @@ import {
   fetchListenerMessages,
   ackListenerMessage,
   ackAllListenerMessages,
+  LISTENER_CALL_TIMEOUT_MS,
   type ListenerMessagesResponse,
   type ListenerMessage,
 } from '../api/listener.ts'
@@ -75,7 +76,11 @@ export function ListenerChannel() {
   const handleAck = async (id: string) => {
     if (ackingId) return
     setAckingId(id)
-    const success = await ackListenerMessage(id)
+    // rm-184: both acks bounded at the call site (the API layer also defaults
+    // a timeout when no signal is passed).
+    const success = await ackListenerMessage(id, {
+      abortSignal: AbortSignal.timeout(LISTENER_CALL_TIMEOUT_MS),
+    })
     setAckingId(null)
     if (success) {
       void loadData(false)
@@ -85,7 +90,9 @@ export function ListenerChannel() {
   const handleAckAll = async () => {
     if (ackingId) return
     setAckingId('all')
-    const success = await ackAllListenerMessages()
+    const success = await ackAllListenerMessages({
+      abortSignal: AbortSignal.timeout(LISTENER_CALL_TIMEOUT_MS),
+    })
     setAckingId(null)
     if (success) {
       void loadData(false)
