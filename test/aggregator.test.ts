@@ -64,7 +64,7 @@ function makeMetadataResult(overrides: {
 }
 
 function makeEnumerateResult(repos: ReturnType<typeof makeRepo>[]): Result<EnumerateReposResult, FetchInstallationsError> {
-  return ok({repos, installations: [{id: 1, account: 'fro-bot'}]})
+  return ok({repos, installations: [{id: 1, account: 'fro-bot'}], skippedInstallations: []})
 }
 
 /**
@@ -1381,6 +1381,55 @@ describe('aggregator — enumeration failure sets staleBanner=true', () => {
     expect(snap.repos).toHaveLength(1)
     expect(snap.repos[0]?.node_id).toBe('NODE_PUB_ENUM_FAIL')
     // But staleBanner=true — operator must know install channel failed
+    expect(snap.staleBanner).toBe(true)
+  })
+})
+
+describe('aggregator — partial enumeration surfaces skippedInstallations (rm-164)', () => {
+  it('ok result with skipped installs → snapshot carries full skip detail', async () => {
+    const repo = makeRepo({node_id: 'NODE_SKIPPED_OK', owner: 'org', name: 'skipped-ok'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(ok({
+        repos: [repo],
+        installations: [{id: 1, account: 'fro-bot'}, {id: 2, account: 'org'}, {id: 3, account: 'other'}],
+        skippedInstallations: [
+          {installationId: 2, phase: 'mint', error: 'scope not registered'},
+          {installationId: 3, phase: 'list-repos', error: '502 from GitHub'},
+        ],
+      })),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_SKIPPED_OK', owner: 'org', name: 'skipped-ok'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    // Partial outage is visible in the snapshot, not a silently shrunken union
+    expect(snap.skippedInstallations).toEqual([
+      {installationId: 2, phase: 'mint', error: 'scope not registered'},
+      {installationId: 3, phase: 'list-repos', error: '502 from GitHub'},
+    ])
+    // staleBanner stays false — the enumeration channel itself succeeded
+    expect(snap.staleBanner).toBe(false)
+    expect(snap.repos).toHaveLength(1)
+  })
+
+  it('enumeration err (total failure) → snapshot reports no per-install skips, staleBanner=true', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(err(new FetchInstallationsError('network down'))),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({publicRepos: []}))),
+      graphqlQueryForInstallation: vi.fn(),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    // Total failure is the staleBanner channel; skippedInstallations makes no claims
+    expect(snap.skippedInstallations).toEqual([])
     expect(snap.staleBanner).toBe(true)
   })
 })

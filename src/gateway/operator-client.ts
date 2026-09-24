@@ -1,14 +1,17 @@
 /**
  * Typed Gateway operator API client contract.
  *
- * @contract-churn-prone — several gateway operator routes have not landed yet.
- * This module defines the mocked boundary contract only; no live /operator/* calls
- * are made until the gateway operator surface is ready and verified.
+ * Server-side live use (src/server.ts gateway-auth middleware) is session
+ * validation via getCurrentSession only. Run launch and run snapshot are
+ * browser-side concerns: public/operator-launch.js and web/src/operator/
+ * runtime.ts carry their own clients against the same gateway routes, so
+ * this module deliberately exposes no launch/snapshot methods.
  *
  * Security invariants:
  * - All paths must be relative (/operator/*); absolute URLs are rejected.
- * - Mutating calls (launchRun, decideRunApproval) reject before fetch when CSRF
- *   token or idempotency key is missing or blank.
+ * - Mutating calls (decideRunApproval, subscribePush, unsubscribePush)
+ *   reject before fetch when CSRF token or idempotency key is missing or
+ *   blank.
  * - Logger receives only coarse metadata: path, status, event type, error code.
  *   Never logs: prompts, tool args, workspace paths, internal URLs, tokens,
  *   session IDs, cookies, or CSRF values.
@@ -49,8 +52,7 @@ export type CsrfDto = OperatorCsrfToken
 // ---------------------------------------------------------------------------
 // MOCK-ONLY / DEFERRED — NOT part of frozen contract v1.0.0
 //
-// The following DTOs (LaunchRunRequest, LaunchRunResponse, RunSnapshotDto)
-// and the RunStreamEvent SSE union are MOCK-ONLY.
+// The RunStreamEvent SSE union is MOCK-ONLY.
 //
 // Only the following are frozen in operator contract v1.0.0:
 //   - GET /operator/session → OperatorSessionInfo (SessionDto)
@@ -62,26 +64,6 @@ export type CsrfDto = OperatorCsrfToken
 // corresponding gateway operator routes land. Do NOT add conformance
 // assertions over these types until they are frozen upstream.
 // ---------------------------------------------------------------------------
-
-export interface LaunchRunRequest {
-  readonly repo: string
-  readonly prompt: string
-  readonly idempotencyKey: string
-  readonly csrfToken: string
-}
-
-export interface LaunchRunResponse {
-  readonly runId: string
-}
-
-export interface RunSnapshotDto {
-  readonly runId: string
-  readonly status: RunStatus
-  readonly owner: string
-  readonly repo: string
-  readonly createdAt: string
-  readonly updatedAt?: string
-}
 
 // ---------------------------------------------------------------------------
 // Approval DTOs — 1.4.0 per-run routes
@@ -224,8 +206,6 @@ export interface OperatorClient {
   readonly getCurrentSession: () => Promise<Result<SessionDto, GatewayClientError>>
   readonly refreshCsrf: () => Promise<Result<CsrfDto, GatewayClientError>>
   readonly listRepos: () => Promise<Result<RepoSummary[], GatewayClientError>>
-  readonly launchRun: (req: LaunchRunRequest) => Promise<Result<LaunchRunResponse, GatewayClientError>>
-  readonly getRunSnapshot: (runId: string) => Promise<Result<RunSnapshotDto, GatewayClientError>>
   readonly connectRunStream: (
     runId: string,
     opts: {
@@ -543,46 +523,6 @@ export function createOperatorClient(options: OperatorClientOptions): OperatorCl
     return ok(parsed.data)
   }
 
-  async function launchRun(req: LaunchRunRequest): Promise<Result<LaunchRunResponse, GatewayClientError>> {
-    const csrfGuard = requireCsrf(req.csrfToken)
-    if (csrfGuard !== null) return err(csrfGuard)
-
-    const idemGuard = requireIdempotencyKey(req.idempotencyKey)
-    if (idemGuard !== null) return err(idemGuard)
-
-    // Build request body — exclude csrfToken and idempotencyKey from body;
-    // they travel as headers. Never include prompt in logs.
-    const body = JSON.stringify({
-      repo: req.repo,
-      prompt: req.prompt,
-    })
-
-    return fetchJson<LaunchRunResponse>(
-      '/operator/runs',
-      '/operator/runs',
-      {
-        method: 'POST',
-        redirect: 'error',
-        headers: {
-          'content-type': 'application/json',
-          'x-csrf-token': req.csrfToken,
-          'idempotency-key': req.idempotencyKey,
-        },
-        body,
-      },
-    )
-  }
-
-  async function getRunSnapshot(runId: string): Promise<Result<RunSnapshotDto, GatewayClientError>> {
-    const runIdErr = requireRunId(runId)
-    if (runIdErr !== null) return err(runIdErr)
-
-    return fetchJson<RunSnapshotDto>(
-      `/operator/runs/${encodeURIComponent(runId)}`,
-      '/operator/runs/:runId',
-    )
-  }
-
   function connectRunStream(
     runId: string,
     opts: {
@@ -849,8 +789,6 @@ export function createOperatorClient(options: OperatorClientOptions): OperatorCl
     getCurrentSession,
     refreshCsrf,
     listRepos,
-    launchRun,
-    getRunSnapshot,
     connectRunStream,
     listRunApprovals,
     decideRunApproval,
