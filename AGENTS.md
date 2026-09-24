@@ -35,6 +35,15 @@ view of Fro Bot's cross-repo footprint.
 - Gates: `pnpm check-types` (server + `web/`), `pnpm lint`, `pnpm test` (rebuilds the
   client via `pretest`, then runs Vitest). Build the client with `pnpm build:web` →
   `web/dist`; `pnpm dev` serves that prebuilt bundle.
+- The server shuts down gracefully on SIGTERM/SIGINT (`registerGracefulShutdown` in
+  `src/server.ts`, rm-157): stops accepting connections, tears down the listener store
+  and aggregator, drains open sockets bounded by 10s, then exits 0 — `docker stop`
+  needs no override and no `init` wrapper. A second signal skips the drain.
+- Ops: the weekly `.github/workflows/base-drift.yaml` check compares the Dockerfile's
+  pinned digest against the registry's live **index** digest for `node:24-slim`
+  (`docker buildx imagetools inspect`, capture-then-parse — see the workflow header);
+  a red there means the pin rotated (bump all three `FROM` stages) or the extraction
+  broke again, never an empty-digest comparison.
 - `docs/runbooks/gateway-access.md` — how to reach the gateway behind `/operator/*` and read its
   logs. The operator surface is proxied to `fro-bot/agent`, so operator auth, session, and push
   evidence lives there and no test in this repo can reach it. Requires a local `marcusrbrown/infra`
