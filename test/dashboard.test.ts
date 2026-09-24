@@ -71,6 +71,7 @@ function makeSnapshot(overrides: Partial<AggregatorSnapshot> = {}): AggregatorSn
     staleBanner: false,
     driftCount: 0,
     refreshedAt: null,
+    degraded: false,
     ...overrides,
   }
 }
@@ -904,5 +905,38 @@ describe('devAutoLogin — DEV-ONLY auth bypass', () => {
         expect(setCookieHeader).not.toContain('session=')
       }
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-112 (cycle-10): degraded flag on the monitoring DTO
+// ---------------------------------------------------------------------------
+
+describe('/api/monitoring — degraded flag passthrough (rm-112)', () => {
+  it('degraded: true on the snapshot passes through to the DTO', async () => {
+    const app = await buildTestApp(
+      makeSnapshot({
+        repos: [makeRepo()],
+        staleBanner: true,
+        driftCount: 1,
+        refreshedAt: 1_700_000_000_000,
+        degraded: true,
+      }),
+    )
+    const res = await authedGet(app, '/api/monitoring')
+
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as AggregatorSnapshot
+    expect(body.degraded).toBe(true)
+    expect(body.staleBanner).toBe(true)
+  })
+
+  it('degraded defaults to false on a healthy snapshot', async () => {
+    const app = await buildTestApp(makeSnapshot({repos: [makeRepo()], refreshedAt: 1_700_000_000_000}))
+    const res = await authedGet(app, '/api/monitoring')
+
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as AggregatorSnapshot
+    expect(body.degraded).toBe(false)
   })
 })
