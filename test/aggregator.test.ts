@@ -63,8 +63,11 @@ function makeMetadataResult(overrides: {
   }
 }
 
-function makeEnumerateResult(repos: ReturnType<typeof makeRepo>[]): Result<EnumerateReposResult, FetchInstallationsError> {
-  return ok({repos, installations: [{id: 1, account: 'fro-bot'}]})
+function makeEnumerateResult(
+  repos: ReturnType<typeof makeRepo>[],
+  failedInstallations: readonly number[] = [],
+): Result<EnumerateReposResult, FetchInstallationsError> {
+  return ok({repos, installations: [{id: 1, account: 'fro-bot'}], failedInstallations})
 }
 
 /**
@@ -1879,5 +1882,151 @@ describe('aggregator — check-suite cap (rm-110)', () => {
     for (const query of queries) {
       expect(query).toContain('checkSuites(first: 100)')
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Fail-visible degradation detail (rm-112 cycle-10)
+// ---------------------------------------------------------------------------
+
+describe('aggregator — fail-visible degradation detail (rm-112)', () => {
+  it('healthy snapshot carries zero degradation', async () => {
+    const repo = makeRepo({node_id: 'NODE_H', owner: 'org', name: 'healthy'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_H', owner: 'org', name: 'healthy'})],
+      }))),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    expect(agg.getSnapshot().degradation).toEqual({
+      enumerationFailed: false,
+      failedInstallations: 0,
+      warmEmpty: false,
+      absentRepos: [],
+    })
+  })
+
+  it('warm-empty: a GOOD enumeration emptying a previously non-empty snapshot sets staleBanner + warmEmpty', async () => {
+    const repo = makeRepo({node_id: 'NODE_W', owner: 'org', name: 'warming'})
+    const deps = makeDeps({
+      enumerate: vi.fn()
+        .mockResolvedValueOnce(makeEnumerateResult([repo]))
+        .mockResolvedValueOnce(makeEnumerateResult([])),
+      readMetadata: vi.fn()
+        .mockResolvedValueOnce(ok(makeMetadataResult({
+          publicRepos: [makePublicRepo({node_id: 'NODE_W', owner: 'org', name: 'warming'})],
+        })))
+        .mockResolvedValueOnce(ok(makeMetadataResult())),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    expect(agg.getSnapshot().repos).toHaveLength(1)
+
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+    expect(snap.repos).toHaveLength(0)
+    // Data loss, not quiet — the operator must be bannered.
+    expect(snap.staleBanner).toBe(true)
+    expect(snap.degradation.warmEmpty).toBe(true)
+    expect(snap.degradation.enumerationFailed).toBe(false)
+  })
+
+  it('cold start with a good-but-empty enumeration is NOT warm-empty and NOT bannered', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult())),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    const snap = agg.getSnapshot()
+    expect(snap.staleBanner).toBe(false)
+    expect(snap.degradation.warmEmpty).toBe(false)
+    expect(snap.degradation.enumerationFailed).toBe(false)
+  })
+
+  it('resolver failure for a metadata-only repo records a resolver-failed absence entry', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_G', owner: 'org', name: 'gone'})],
+      }))),
+      resolveInstallationIdForRepo: vi.fn().mockRejectedValue(new Error('no installation found')),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    const snap = agg.getSnapshot()
+    expect(snap.repos).toHaveLength(0)
+    expect(snap.degradation.absentRepos).toEqual([
+      {full_name: 'org/gone', reason: 'resolver-failed'},
+    ])
+  })
+
+  it('no-resolver filter records a no-resolver absence entry (not a silent skip)', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_N', owner: 'org', name: 'nores'})],
+      }))),
+      // no resolveInstallationIdForRepo — the no-resolver filter path
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    expect(agg.getSnapshot().degradation.absentRepos).toEqual([
+      {full_name: 'org/nores', reason: 'no-resolver'},
+    ])
+  })
+
+  it('partial enumeration failure (per-installation) surfaces failedInstallations count', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([], [7, 8])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult())),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    const snap = agg.getSnapshot()
+    expect(snap.degradation.failedInstallations).toBe(2)
+    expect(snap.degradation.enumerationFailed).toBe(false)
+    expect(snap.staleBanner).toBe(false)
+  })
+
+  it('total enumeration failure (err result) sets degradation.enumerationFailed=true', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(err(new FetchInstallationsError('channel down'))),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_M', owner: 'org', name: 'meta'})],
+      }))),
+      resolveInstallationIdForRepo: vi.fn().mockResolvedValue(1),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    const snap = agg.getSnapshot()
+    expect(snap.staleBanner).toBe(true)
+    expect(snap.degradation.enumerationFailed).toBe(true)
+    expect(snap.repos).toHaveLength(1)
+  })
+
+  it('getSnapshot before any refresh returns the zero-degradation shape', () => {
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, makeDeps())
+    expect(agg.getSnapshot().degradation).toEqual({
+      enumerationFailed: false,
+      failedInstallations: 0,
+      warmEmpty: false,
+      absentRepos: [],
+    })
   })
 })

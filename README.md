@@ -28,8 +28,10 @@ and names every by-design deviation in [docs/runbooks/security-posture.md](docs/
 - **Server** — [Hono](https://hono.dev) + `@hono/node-server` on Node 24 native TypeScript
   (strip-only, no backend build step). Serves the API, GitHub OAuth, and the built client.
 - **Client** — [Vite](https://vite.dev) + [React 19](https://react.dev) +
-  [Tailwind CSS v4](https://tailwindcss.com), shipped as an installable PWA
-  ([vite-plugin-pwa](https://vite-pwa-org.netlify.app) + [Workbox](https://developer.chrome.com/docs/workbox)).
+  [Tailwind CSS v4](https://tailwindcss.com), shipped as an installable PWA via
+  [vite-plugin-pwa](https://vite-pwa-org.netlify.app). The generated service worker is
+  intentionally a kill-switch (precache of the app shell only, no runtime caching, no
+  push handlers) — the workbox runtime dependencies were removed at `f334fb2`.
 - pnpm, [Vitest](https://vitest.dev).
 
 ## Quick Start
@@ -63,6 +65,13 @@ client changes). The test suite rebuilds the client automatically via `pretest`.
 Access is single-operator: GitHub OAuth authenticates the request and an exact, case-sensitive
 login allowlist gates every non-public route. Sessions are HttpOnly, Secure, SameSite=Lax signed
 cookies; logout is CSRF-protected.
+
+The cookie-signing key (`DASHBOARD_COOKIE_KEY`, or a file via
+`DASHBOARD_COOKIE_KEY_FILE` defaulting to `/data/cookie.key`) must decode to at
+least 32 bytes and be canonically encoded: hex of 64+ characters, or padded
+base64 that decodes to exactly 48 bytes. Shorter keys — and non-canonical
+encodings such as base64 with stripped padding — are rejected at load
+(fail-closed) instead of being signed with silently.
 
 The dashboard mints each GitHub App installation token with an explicit read-only permissions
 subset (`pull_requests`/`checks`/`issues`/`contents`/`metadata:read`, with

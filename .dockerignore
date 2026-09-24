@@ -1,0 +1,24 @@
+# .dockerignore (rm-182 cycle-10) — the image only needs manifests, web/,
+# src/, and public/ (Dockerfile COPYs exactly those). Excluding the rest cut
+# the build context from ~340 MB to ~3 MB (node_modules 394 MB on disk was
+# the bulk; .slim clonedeps and docs never enter any stage).
+.git
+.github
+.agents
+.conductor
+.opencode
+.slim
+docs
+node_modules
+test
+scripts
+web/dist
+web/dist-fixture
+web/coverage
+*.md
+!README.md
+.env*
+*.pem
+*.key
+coverage
+.vite

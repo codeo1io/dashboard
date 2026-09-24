@@ -647,3 +647,72 @@ describe('security — token-shaped secrets redacted in error log paths', () => 
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// Per-installation failure accounting (rm-112 cycle-10)
+// ---------------------------------------------------------------------------
+
+describe('enumerateRepos — per-installation failure accounting (rm-112)', () => {
+  it('counts a mint failure in failedInstallations while the union still succeeds', async () => {
+    const client = makeClient({
+      listInstallations: vi.fn().mockResolvedValue([makeInstall(91), makeInstall(92)]),
+      mintInstallationToken: vi.fn()
+        .mockRejectedValueOnce(new Error('mint denied (full)'))
+        .mockRejectedValueOnce(new Error('mint denied (core retry)'))
+        .mockResolvedValueOnce('ghs_ok')
+        .mockResolvedValueOnce('ghs_ok'),
+      listInstallationRepos: vi.fn().mockResolvedValue([makeRepo({node_id: 'OK_91', full_name: 'fro-bot/ok'})]),
+    })
+
+    const result = await enumerateRepos(client)
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+
+    expect(result.data.repos).toHaveLength(1)
+    expect(result.data.failedInstallations).toEqual([91])
+  })
+
+  it('counts a repo-list failure in failedInstallations', async () => {
+    const client = makeClient({
+      listInstallations: vi.fn().mockResolvedValue([makeInstall(93), makeInstall(94)]),
+      mintInstallationToken: vi.fn().mockResolvedValue('ghs_ok'),
+      listInstallationRepos: vi.fn()
+        .mockResolvedValueOnce([makeRepo({node_id: 'OK_93', full_name: 'fro-bot/ok'})])
+        .mockRejectedValueOnce(new Error('list exploded')),
+    })
+
+    const result = await enumerateRepos(client)
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+
+    expect(result.data.repos).toHaveLength(1)
+    expect(result.data.failedInstallations).toEqual([94])
+  })
+
+  it('no failures → failedInstallations is an empty array', async () => {
+    const client = makeClient({
+      listInstallations: vi.fn().mockResolvedValue([makeInstall(95)]),
+      mintInstallationToken: vi.fn().mockResolvedValue('ghs_ok'),
+      listInstallationRepos: vi.fn().mockResolvedValue([makeRepo()]),
+    })
+
+    const result = await enumerateRepos(client)
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+
+    expect(result.data.failedInstallations).toEqual([])
+  })
+
+  it('empty installation list → failedInstallations empty', async () => {
+    const client = makeClient({
+      listInstallations: vi.fn().mockResolvedValue([]),
+    })
+
+    const result = await enumerateRepos(client)
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+
+    expect(result.data.repos).toEqual([])
+    expect(result.data.failedInstallations).toEqual([])
+  })
+})
