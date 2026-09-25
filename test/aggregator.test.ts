@@ -403,7 +403,9 @@ describe('aggregator — edge cases', () => {
     const snap = agg.getSnapshot()
 
     expect(snap.repos).toHaveLength(0)
-    expect(snap.staleBanner).toBe(false)
+    // rm-197: the pre-first-refresh window is bannered — a refresh may be in
+    // flight, so empty must never read as authoritatively verified empty.
+    expect(snap.staleBanner).toBe(true)
     expect(snap.refreshedAt).toBeNull()
   })
 
@@ -2151,5 +2153,64 @@ describe('aggregator — rm-112 fail-visible enumeration', () => {
     expect(snap.repos).toHaveLength(0)
     expect(snap.staleBanner).toBe(false)
     expect(snap.enumerationIncomplete).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-197/rm-201: cold-start contract + lifecycle hardening (cycle-14)
+// ---------------------------------------------------------------------------
+
+describe('aggregator — cold-start contract (rm-197)', () => {
+  it('serves a bannered empty snapshot before any refresh has completed', () => {
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, makeDeps())
+
+    const snap = agg.getSnapshot()
+    expect(snap.repos).toHaveLength(0)
+    expect(snap.staleBanner).toBe(true)
+    expect(snap.refreshedAt).toBeNull()
+  })
+
+  it('start() installs the interval before the first refresh resolves and banners the in-flight window', async () => {
+    let release!: () => void
+    const pending = new Promise<ReturnType<typeof makeEnumerateResult>>(resolve => {
+      release = () => resolve(makeEnumerateResult([]))
+    })
+    const enumerate = vi.fn().mockImplementation(async () => pending)
+    const setIntervalFn = vi.fn()
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, makeDeps({enumerate, setIntervalFn}))
+
+    const starting = agg.start()
+    // Interval is live even though the first refresh is still pending…
+    expect(setIntervalFn).toHaveBeenCalledTimes(1)
+    // …and the in-flight window serves bannered empty, never false-fresh empty.
+    expect(agg.getSnapshot().staleBanner).toBe(true)
+
+    release()
+    await starting
+    // A successful verified-empty refresh is fresh — banner comes off.
+    expect(agg.getSnapshot().staleBanner).toBe(false)
+  })
+})
+
+describe('aggregator — lifecycle hardening (rm-201)', () => {
+  it('duplicate start() does not leak a second interval', async () => {
+    const setIntervalFn = vi.fn()
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, makeDeps({setIntervalFn}))
+
+    await agg.start()
+    await agg.start()
+    expect(setIntervalFn).toHaveBeenCalledTimes(1)
+    agg.stop()
+  })
+
+  it('stop() clears the interval exactly once and is idempotent', async () => {
+    const setIntervalFn = vi.fn()
+    const clearIntervalFn = vi.fn()
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, makeDeps({setIntervalFn, clearIntervalFn}))
+
+    await agg.start()
+    agg.stop()
+    agg.stop()
+    expect(clearIntervalFn).toHaveBeenCalledTimes(1)
   })
 })

@@ -13,18 +13,23 @@
 import fc from 'fast-check'
 import {describe, expect, it} from 'vitest'
 import {
+  COLD_START_SNAPSHOT,
+  escapeRegExp,
   parseRepoResponse,
   redactRepoIdentityFromText,
   sortAttentionFirst,
   type DashboardRepo,
   type RepoCiStatus,
+  type RepoLogIdentity,
 } from '../src/github/aggregator.ts'
 
 // ---------------------------------------------------------------------------
 // Generators
 // ---------------------------------------------------------------------------
 
-const nameArb = fc.stringMatching(/^\w[\w.-]{1,30}$/)
+// 1-char identities are legal GitHub names — the redaction boundary must
+// cover them (rm-200).
+const nameArb = fc.stringMatching(/^\w[\w.-]{0,30}$/)
 
 const identityArb = fc.record({
   node_id: fc.stringMatching(/^R_[A-Za-z0-9]{8,20}$/),
@@ -114,10 +119,20 @@ describe('aggregator redaction invariants (rm-144)', () => {
         // Strip the redaction marker first: the marker string itself can
         // contain a short owner as a substring (e.g. owner 'ED' inside
         // '[REDACTED_REPO]') without any real identity leaking.
+        //
+        // rm-200: "never survive" means no BOUNDARY-ANCHORED occurrence
+        // survives — the redaction contract. A token embedded inside a longer
+        // identity-charset word (name 'one' inside 'alone', 1-char 'a' inside
+        // 'name') is a lexical collision with unrelated text, not identity
+        // survival, and anchoring deliberately leaves it untouched.
         const stripped = out.replaceAll('[REDACTED_REPO]', '')
-        expect(stripped).not.toContain(entry.owner)
-        expect(stripped).not.toContain(entry.name)
-        expect(stripped).not.toContain(full)
+        for (const token of [entry.owner, entry.name, full]) {
+          if (token.length === 0) continue
+          const standalone = new RegExp(
+            String.raw`(?<![\w.-])${escapeRegExp(token)}(?![\w.-])`,
+          )
+          expect(standalone.test(stripped), `standalone '${token}' survived in: ${stripped}`).toBe(false)
+        }
       }),
       {numRuns: 200},
     )
@@ -218,5 +233,49 @@ describe('aggregator ordering invariants (rm-144)', () => {
       }),
       {numRuns: 300},
     )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-200 review fix — pair-token boundary regressions (independent review
+// 6f4e6190 live-reproduced the leak: 'a/b-42' survived as
+// '[REDACTED_REPO]/b-42', leaking the repo name through a failed '-'
+// lookahead on the pair token). The full `owner/name` pair is now replaced
+// UNANCHORED; bare owner/name tokens keep boundary anchoring.
+// ---------------------------------------------------------------------------
+
+const logIdentity = (owner: string, name: string): RepoLogIdentity => ({
+  node_id: 'R_testentry0000',
+  owner,
+  name,
+  discovery_channel: 'discovered',
+  installation_id: 1,
+})
+
+describe('aggregator redaction pair-token boundary (rm-200 review fix)', () => {
+  it('redacts the full pair adjacent to a hyphen suffix (1-char identity)', () => {
+    expect(
+      redactRepoIdentityFromText('Run failed for a/b-42 at step', logIdentity('a', 'b')),
+    ).toBe('Run failed for [REDACTED_REPO]-42 at step')
+  })
+
+  it('redacts a long-name pair adjacent to a suffix', () => {
+    expect(
+      redactRepoIdentityFromText('check acme/widget-7 failed', logIdentity('acme', 'widget')),
+    ).toBe('check [REDACTED_REPO]-7 failed')
+  })
+
+  it('bare tokens keep boundary anchoring — lexical collisions survive', () => {
+    expect(redactRepoIdentityFromText('alone at home', logIdentity('a', 'one'))).toBe('alone at home')
+  })
+})
+
+// rm-197 review fix: the bannered cold-start literal is a single shared
+// constant (server.ts + routes/api.ts previously carried duplicate literals).
+describe('aggregator cold-start snapshot constant (rm-197 review fix)', () => {
+  it('COLD_START_SNAPSHOT is bannered and empty, never false-fresh', () => {
+    expect(COLD_START_SNAPSHOT.repos).toEqual([])
+    expect(COLD_START_SNAPSHOT.staleBanner).toBe(true)
+    expect(COLD_START_SNAPSHOT.refreshedAt).toBeNull()
   })
 })

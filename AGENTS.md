@@ -39,7 +39,7 @@ view of Fro Bot's cross-repo footprint.
   its own `web/tsconfig.json` — excluded from the strip-only lint.
 - `as unknown as X` for Octokit boundary casts; never `any`.
 - `Result<T,E>` error-return shape for the app client (extraction seam).
-- Gates: `pnpm check-types` (server + `web/`), `pnpm lint`, `pnpm test` (rebuilds the
+- Gates: `pnpm check-types` (server + `web/` + `.opencode`), `pnpm lint`, `pnpm test` (rebuilds the
   client via `pretest`, then runs Vitest). Build the client with `pnpm build:web` →
   `web/dist`; `pnpm dev` serves that prebuilt bundle.
 - `docs/runbooks/gateway-access.md` — how to reach the gateway behind `/operator/*` and read its
