@@ -12,9 +12,14 @@ allowBuilds:
 # first-party pins that sometimes need same-day adoption.
 minimumReleaseAge: 1440
 
+# rm-196 rider (2026-09-25): hono@4.13.9 and vite@8.3.1 are the rider targets,
+# both past their 1440-minute maturity timestamps — an explicit, disclosed
+# bypass of the rm-133 age gate, not a weakening of it.
 minimumReleaseAgeExclude:
   - '@bfra.me/eslint-config@0.51.2 || 0.51.3 || 0.51.4 || 0.52.0 || 0.52.1 || 0.52.2'
   - '@bfra.me/tsconfig@0.13.2'
+  - hono@4.13.9
+  - vite@8.3.1
 
 overrides:
   brace-expansion@2: '>=2.1.2 <3.0.0'

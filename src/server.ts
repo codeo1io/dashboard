@@ -1156,6 +1156,23 @@ export interface ServerBindConfig {
 }
 
 /**
+ * Resolve whether the consumerless monitoring refresh loop should run.
+ *
+ * rm-204 monitoring-refresh gate: readMonitoringRefreshConfig resolves
+ * DASHBOARD_MONITORING_REFRESH (default ON) so the consumerless
+ * aggregator loop can be skipped without removing credentials.
+ */
+export interface MonitoringRefreshConfig {
+  readonly enabled: boolean
+}
+
+export function readMonitoringRefreshConfig(env: NodeJS.ProcessEnv = process.env): MonitoringRefreshConfig {
+  const raw = env.DASHBOARD_MONITORING_REFRESH?.trim().toLowerCase()
+  const disabled = raw === 'false' || raw === '0' || raw === 'off' || raw === 'no'
+  return {enabled: !disabled}
+}
+
+/**
  * Resolve the server bind host/port from the environment.
  *
  * Defaults to `0.0.0.0:3000`. The dashboard runs inside a container behind a
@@ -1278,13 +1295,21 @@ async function createDashboardServer(): Promise<ServerType> {
   // Kick the first aggregation refresh in the background — does NOT block the
   // server from accepting requests. Failures are logged but do NOT crash the
   // server; the interval set by start() will retry on the next cycle.
-  if (provider !== undefined) {
+  // rm-204: DASHBOARD_MONITORING_REFRESH=false skips the loop entirely — no
+  // token mint, no per-repo queries; the empty bannered snapshot IS the
+  // fail-closed behavior (identical to running without credentials).
+  const monitoringRefresh = readMonitoringRefreshConfig()
+  if (provider !== undefined && monitoringRefresh.enabled) {
     const p = provider
     p.start().catch((error: unknown) => {
       logger.warning('Failed to start GitHub aggregator; serving empty snapshot until next retry', {
         error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
       })
     })
+  } else if (provider !== undefined) {
+    logger.warning(
+      'DASHBOARD_MONITORING_REFRESH disabled — aggregator refresh loop not started; serving empty snapshot without querying GitHub (rm-204)',
+    )
   }
 
   return server

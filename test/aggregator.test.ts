@@ -2283,7 +2283,184 @@ describe('aggregator — rm-161: denylist guard-coverage', () => {
     expect(repos.find(r => r.full_name === 'org/denylist-shadow')).toBeUndefined()
     // Redaction-before-query held: no GraphQL call for the shadowed repo.
     expect(deps.graphqlQueryForInstallation).not.toHaveBeenCalled()
+    agg.stop()
+  })
+})
 
+// ---------------------------------------------------------------------------
+// Per-call deadline bounds: never-settling calls can no longer wedge a cycle
+// (this run's deadline-racing layer, on top of the transport-level
+// GITHUB_REQUEST_TIMEOUT_MS bounds)
+// ---------------------------------------------------------------------------
+
+describe('deadline bounds — never-settling outbound calls', () => {
+  it('per-repo GraphQL hang completes the cycle with a stale row instead of hanging the loop', async () => {
+    const repo = makeRepo({node_id: 'NODE_HUNG', owner: 'org', name: 'hung-repo'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      // Never settles — the pre-deadline failure mode that froze the loop and
+      // pinned the in-flight guard forever.
+      graphqlQueryForInstallation: vi.fn().mockImplementation(async () => new Promise(() => {})),
+      fetchDeadlineMs: 25,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    // start() awaits the first walk — before the deadline layer this hung forever.
+    await agg.start()
+
+    const snap = agg.getSnapshot()
+    expect(snap.repos).toHaveLength(1)
+    expect(snap.repos[0]?.name).toBe('hung-repo')
+    expect(snap.repos[0]?.status.stale).toBe(true)
+    expect(snap.repos[0]?.status.rollupState).toBe('unknown')
+    agg.stop()
+  })
+
+  it('a never-settling metadata read fails closed with the stale banner', async () => {
+    const deps = makeDeps({
+      readMetadata: vi.fn().mockImplementation(async () => new Promise(() => {})),
+      fetchDeadlineMs: 25,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.start()
+
+    const snap = agg.getSnapshot()
+    expect(snap.repos).toHaveLength(0)
+    expect(snap.staleBanner).toBe(true)
+    agg.stop()
+  })
+
+  it('a never-settling enumeration read marks the snapshot incomplete, not silent', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockImplementation(async () => new Promise(() => {})),
+      fetchDeadlineMs: 25,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.start()
+
+    const snap = agg.getSnapshot()
+    expect(snap.repos).toHaveLength(0)
+    expect(snap.staleBanner).toBe(true)
+    expect(snap.enumerationIncomplete).toBeNull()
+    agg.stop()
+  })
+})
+
+describe('stall watchdog — an in-flight cycle past staleAfterMs banners the served snapshot', () => {
+  it('trips on a wedged second cycle and clears when a cycle completes', async () => {
+    const clock = {t: 0}
+    let calls = 0
+    const deps = makeDeps({
+      // Cycle 1 resolves immediately; cycle 2 never settles (gated).
+      readMetadata: vi.fn().mockImplementation(async () => {
+        calls += 1
+        if (calls === 1) return Promise.resolve(ok(makeMetadataResult()))
+        return new Promise(() => {})
+      }),
+      now: () => {
+        clock.t += 1
+        return clock.t
+      },
+      // Long deadline so the watchdog (not the per-call deadline) is what we
+      // observe, and nothing fires during the test.
+      fetchDeadlineMs: 60_000,
+      staleAfterMs: 100,
+      setIntervalFn: (fn: () => void, ms: number) => setInterval(fn, ms),
+      clearIntervalFn: (id: ReturnType<typeof setInterval>) => clearInterval(id),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.start()
+    // Cycle 1 completed cleanly: empty-but-successful snapshot, no banner.
+    expect(agg.getSnapshot().staleBanner).toBe(false)
+
+    // Stop the first interval (start() is duplicate-guarded), then arm a
+    // second cycle WITHOUT awaiting it — it wedges on the gated metadata
+    // read, exactly like a hung outbound call in production.
+    agg.stop()
+    // Fire-and-forget: the wedged cycle must NOT resolve (that is the point).
+    agg.start().catch(() => undefined)
+    // Cycle 2 in flight but young → still no banner.
+    expect(agg.getSnapshot().staleBanner).toBe(false)
+
+    // Age the clock past staleAfterMs while the cycle is wedged → the
+    // last-good snapshot must now serve bannered (it is NOT fresh).
+    clock.t += 500
+    expect(agg.getSnapshot().staleBanner).toBe(true)
+
+    agg.stop()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-141: bounded-concurrency fleet refresh
+// ---------------------------------------------------------------------------
+
+describe('rm-141 — bounded-concurrency per-repo refresh', () => {
+  it('runs at most refreshConcurrency fetches concurrently with deterministic per-repo results', async () => {
+    const repos = [1, 2, 3, 4, 5, 6].map(i => makeRepo({node_id: `NODE_POOL_${i}`, owner: 'org', name: `pool-repo-${i}`}))
+    let inFlight = 0
+    let maxInFlight = 0
+    const graphqlQueryForInstallation: GraphqlQueryForInstallationFn = vi.fn().mockImplementation(
+      async (_installationId: number, _query: string, variables: Record<string, unknown>) => {
+        inFlight += 1
+        maxInFlight = Math.max(maxInFlight, inFlight)
+        await new Promise(resolve => setTimeout(resolve, 10))
+        inFlight -= 1
+        // Distinct payload per repo so a completion-order permutation cannot
+        // masquerade as correct results.
+        const name = String(variables.name)
+        const index = Number(name.slice('pool-repo-'.length))
+        return makeGraphqlResponse({openPrCount: index})
+      },
+    )
+
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult(repos)),
+      graphqlQueryForInstallation,
+      refreshConcurrency: 2,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.start()
+
+    expect(maxInFlight).toBeGreaterThan(1) // pool actually overlaps
+    expect(maxInFlight).toBeLessThanOrEqual(2) // and never exceeds the bound
+
+    // Fixed-index read-back: every row carries ITS OWN payload — completion
+    // order cannot permute the served rows.
+    const byName = new Map(agg.getSnapshot().repos.map(repo => [repo.name, repo]))
+    for (let i = 1; i <= 6; i++) {
+      const row = byName.get(`pool-repo-${i}`)
+      expect(row?.status.openPrCount).toBe(i)
+    }
+    agg.stop()
+  })
+
+  it('refreshConcurrency=1 restores the serial walk', async () => {
+    const repos = [1, 2, 3].map(i => makeRepo({node_id: `NODE_SERIAL_${i}`, owner: 'org', name: `serial-repo-${i}`}))
+    let inFlight = 0
+    let maxInFlight = 0
+    const graphqlQueryForInstallation: GraphqlQueryForInstallationFn = vi.fn().mockImplementation(async () => {
+      inFlight += 1
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      await new Promise(resolve => setTimeout(resolve, 5))
+      inFlight -= 1
+      return makeGraphqlResponse()
+    })
+
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult(repos)),
+      graphqlQueryForInstallation,
+      refreshConcurrency: 1,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.start()
+
+    expect(maxInFlight).toBe(1)
     agg.stop()
   })
 })

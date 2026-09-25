@@ -84,6 +84,18 @@ denylisted repos are excluded before any per-repo query, and the app fails close
 fails. The App private key and cookie key are never committed (`*.pem`/`*.key` are gitignored
 in-repo).
 
+### Monitoring refresh loop
+
+While GitHub App credentials are present, the aggregator refresh loop runs every 60s: it mints
+read-only installation tokens and queries GitHub for every fleet repo. Outbound calls are
+individually deadline-bounded (15s) and per-repo fetches run with bounded concurrency (4), so a
+hung endpoint degrades to stale rows and a stale banner instead of freezing the loop
+(rm-203/rm-141).
+
+Set `DASHBOARD_MONITORING_REFRESH=false` (also `0`/`off`/`no`, case-insensitive) to skip the
+loop entirely: the dashboard then serves an empty snapshot without minting tokens or querying
+GitHub — the same fail-closed behavior as running without credentials (rm-204).
+
 ### Environment variables (rm-214)
 
 Every `DASHBOARD_*` / `RATE_LIMIT_*` environment variable actually read from `src/` is listed
@@ -107,6 +119,7 @@ missing `_FILE` path silently falls back to the environment variable).
 | `DASHBOARD_HOST` | `src/server.ts` | `0.0.0.0` | Bind host; must be loopback for `DASHBOARD_DEV_AUTOLOGIN` to be honored. |
 | `DASHBOARD_LISTENER_DB` | `src/listener/config.ts` | `/data/listener/messages.db` | SQLite file path for the listener message store. |
 | `DASHBOARD_LISTENER_INGEST_KEY` | `src/listener/config.ts` | unset (route unmounted) | HMAC key for `POST /api/listener/ingest`; when unset the ingest route is not mounted at all (fail-closed). |
+| `DASHBOARD_MONITORING_REFRESH` | `src/server.ts` | on | Set to `false`/`0`/`off`/`no` (case-insensitive) to skip the aggregator refresh loop entirely — empty snapshot, no token minting, no GitHub queries (rm-204; same fail-closed posture as missing credentials). |
 | `DASHBOARD_OAUTH_CLIENT_ID` | `src/server.ts` | `''` | GitHub OAuth app client id. |
 | `DASHBOARD_OAUTH_CLIENT_SECRET` | `src/server.ts` | `''` | GitHub OAuth app client secret. |
 | `DASHBOARD_OAUTH_REDIRECT_URI` | `src/server.ts` | `http://localhost:3000/auth/callback` | OAuth callback URL. |
@@ -124,6 +137,7 @@ The rate-limit window itself is fixed at 60 seconds in code — there is no envi
 it. Identifiers you may see in `src/server.ts` such as `RATE_LIMIT_MAX`, `RATE_LIMIT_CLASSES`,
 `RATE_LIMIT_MAX_PER_CLASS`, and `RATE_LIMIT_WINDOW_MS` are code constants (the per-class defaults
 the three `RATE_LIMIT_MAX_*` variables override), not environment variables.
+
 
 ## Development
 
