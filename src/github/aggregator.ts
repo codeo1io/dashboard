@@ -302,6 +302,29 @@ export interface AggregatorDeps {
    * enumeration channel. If absent, such repos are skipped (not queried).
    */
   readonly resolveInstallationIdForRepo?: (owner: string, name: string) => Promise<number>
+  /**
+   * Per-call-site deadline raced against each outbound call site in a refresh
+   * cycle (this run's rm-203: deadline racing + stall watchdog — a second layer
+   * on top of the transport-level GITHUB_REQUEST_TIMEOUT_MS bounds, so even a
+   * deps-injected transport with no timeout of its own cannot wedge a
+   * cycle; note the budget granularity is per CALL SITE, not per HTTP
+   * request — e.g. the enumeration site's single deadline bounds the whole
+   * enumerateRepos call, fail-visible as a bannered incomplete set rather
+   * than a partial unfiltered one). Defaults to AGGREGATOR_FETCH_DEADLINE_MS
+   * (15s).
+   */
+  readonly fetchDeadlineMs?: number
+  /**
+   * Max concurrent per-repo status fetches (rm-141). Defaults to
+   * AGGREGATOR_REFRESH_CONCURRENCY (4). 1 restores the old serial walk.
+   */
+  readonly refreshConcurrency?: number
+  /**
+   * A cycle still in flight after this long serves the stale banner even
+   * though no newer cycle has run (stall watchdog). Defaults to 2× the
+   * refresh interval.
+   */
+  readonly staleAfterMs?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -621,6 +644,7 @@ async function fetchRepoStatus(
   entry: WorkingSetEntry,
   graphqlQueryForInstallation: GraphqlQueryForInstallationFn,
   now: () => number,
+  fetchDeadlineMs: number,
 ): Promise<RepoCiStatus> {
   const fetchedAt = now()
 
@@ -634,7 +658,13 @@ async function fetchRepoStatus(
   const vars = {owner: entry.owner, name: entry.name}
 
   try {
-    const raw = await graphqlQueryForInstallation(installationId, REPO_STATUS_QUERY, vars)
+    // Deadline-bounded: a hung GraphQL call degrades to a stale row for
+    // this repo (the catch below) instead of stalling the refresh cycle.
+    const raw = await withDeadline(
+      graphqlQueryForInstallation(installationId, REPO_STATUS_QUERY, vars),
+      fetchDeadlineMs,
+      'per-repo graphql (repo identity withheld from deadline labels)',
+    )
     if ((raw as GraphqlRepoResponse).repository == null) {
       logger.warning('Repository null in GraphQL response (deleted/renamed/private or access lost); marking stale', safeRepoLogIdentity(entry))
     }
@@ -645,7 +675,12 @@ async function fetchRepoStatus(
     if (isVulnerabilityAlertsPermissionError(error)) {
       logger.warning('vulnerabilityAlerts permission error; retrying without alerts field', safeRepoLogIdentity(entry))
       try {
-        const raw = await graphqlQueryForInstallation(installationId, REPO_STATUS_QUERY_NO_ALERTS, vars)
+        // The no-alerts retry is deadline-bounded too.
+        const raw = await withDeadline(
+          graphqlQueryForInstallation(installationId, REPO_STATUS_QUERY_NO_ALERTS, vars),
+          fetchDeadlineMs,
+          'per-repo graphql retry (no-alerts)',
+        )
         if ((raw as GraphqlRepoResponse).repository == null) {
           logger.warning('Repository null in GraphQL response (deleted/renamed/private or access lost); marking stale', safeRepoLogIdentity(entry))
         }
@@ -659,6 +694,84 @@ async function fetchRepoStatus(
 
     logger.warning('Per-repo GraphQL fetch failed; marking stale', safeRepoErrorContext(entry, error))
     return {rollupState: 'unknown', failingChecks: 0, openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Outbound deadline machinery (this run's rm-203)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-call deadline raced against every outbound call made during a refresh
+ * cycle (metadata read, enumeration, per-repo GraphQL, installation
+ * resolution). 15s is comfortably above a healthy GitHub round-trip (p99
+ * GraphQL lands well under 5s) while guaranteeing that a fleet of N repos
+ * cannot stall a 60s cycle indefinitely: worst case N × 15s before the
+ * cycle ends, and the served snapshot goes bannered long before that via
+ * the stall watchdog (see getSnapshot).
+ */
+export const AGGREGATOR_FETCH_DEADLINE_MS = 15_000
+
+/**
+ * Upper bound on concurrent per-repo status fetches (rm-141). The refresh
+ * walk used to be strictly serial — wall-time per cycle summed every repo's
+ * latency, which is what made a single slow endpoint punish the whole
+ * fleet. A small fixed pool keeps GitHub-facing concurrency polite while
+ * letting independent repos overlap.
+ */
+export const AGGREGATOR_REFRESH_CONCURRENCY = 4
+
+/** Refresh interval (ms) — also the unit the stall watchdog counts in. */
+export const AGGREGATOR_REFRESH_INTERVAL_MS = 60_000
+
+/** A cycle still in flight after 2× the refresh interval serves the stale banner. */
+const DEFAULT_STALE_AFTER_MS = 2 * AGGREGATOR_REFRESH_INTERVAL_MS
+
+/**
+ * Rejected by withDeadline when the wrapped promise does not settle within
+ * its deadline. Distinct type so call sites can distinguish a timeout from
+ * an underlying transport error when shaping the fail-visible response.
+ */
+class DeadlineExceededError extends Error {
+  constructor(label: string) {
+    super(`Outbound call exceeded its deadline: ${label}`)
+    this.name = 'DeadlineExceededError'
+  }
+}
+
+/**
+ * Race a promise against a deadline. The losing underlying promise is NOT
+ * cancelled (it keeps running in the background; its eventual settlement is
+ * discarded) — what this guarantees is that the CALLER settles, so a hung
+ * call can never stall the refresh loop or hold the in-flight guard
+ * forever. True cancellation happens at the transport layer (the
+ * GITHUB_REQUEST_TIMEOUT_MS bounds on the real clients).
+ */
+async function withDeadline<T>(promise: Promise<T>, deadlineMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new DeadlineExceededError(label))
+    }, deadlineMs)
+  })
+  try {
+    return await Promise.race([promise, deadline])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+/**
+ * withDeadline, shaped for the Result-typed deps calls: a deadline breach is
+ * returned AS a value (not thrown) so the existing isErr-style guards at the
+ * call site can branch on it exactly like a transport failure.
+ */
+async function deadlineOr<T>(promise: Promise<T>, deadlineMs: number, label: string): Promise<T | DeadlineExceededError> {
+  try {
+    return await withDeadline(promise, deadlineMs, label)
+  } catch (error) {
+    if (error instanceof DeadlineExceededError) return error
+    throw error
   }
 }
 
@@ -684,12 +797,22 @@ export function createAggregator(
   const now = deps.now ?? (() => Date.now())
   const setIntervalFn = deps.setIntervalFn ?? ((fn, ms) => setInterval(fn, ms))
   const clearIntervalFn = deps.clearIntervalFn ?? (id => clearInterval(id))
+  const fetchDeadlineMs = deps.fetchDeadlineMs ?? AGGREGATOR_FETCH_DEADLINE_MS
+  const refreshConcurrency = Math.max(1, deps.refreshConcurrency ?? AGGREGATOR_REFRESH_CONCURRENCY)
+  const staleAfterMs = deps.staleAfterMs ?? DEFAULT_STALE_AFTER_MS
 
   // Last-good snapshot (serves stale data when refresh fails)
   let lastGoodSnapshot: AggregatorSnapshot | null = null
 
   // Interval handle
   let intervalHandle: ReturnType<typeof setInterval> | null = null
+
+  // Stall watchdog: wall-clock start of the currently in-flight cycle (null
+  // when idle). getSnapshot() serves the stale banner once a cycle has been
+  // running longer than staleAfterMs — a cycle wedged on a hung call would
+  // otherwise hold the in-flight guard forever and keep presenting the
+  // last-good snapshot as fresh.
+  let cycleStartedAt: number | null = null
 
   // In-flight guard: prevents overlapping refreshes. If a refresh cycle takes
   // longer than the 60s interval, the next tick is skipped rather than piling
@@ -724,13 +847,16 @@ export function createAggregator(
    * a fresh union. We serve last-good cache + staleBanner, or empty on cold start.
    */
   async function runRefresh(): Promise<void> {
-    // 1. Read metadata + denylist FIRST
-    const metadataResult = await deps.readMetadata(metadataReader)
+    // 1. Read metadata + denylist FIRST (deadline-bounded)
+    const metadataResult = await deadlineOr(deps.readMetadata(metadataReader), fetchDeadlineMs, 'metadata read')
 
-    if (isErr(metadataResult)) {
-      // FAIL-CLOSED: denylist unavailable — do NOT build a fresh union
-      logger.warning('Metadata read failed; failing closed — serving stale/empty snapshot', {
-        error: sanitizeErrorMessage(metadataResult.error.message),
+    if (metadataResult instanceof DeadlineExceededError || isErr(metadataResult)) {
+      // FAIL-CLOSED: denylist unavailable (or the read hung past its
+      // deadline) — do NOT build a fresh union
+      logger.warning('Metadata read failed or timed out; failing closed — serving stale/empty snapshot', {
+        error: metadataResult instanceof DeadlineExceededError
+          ? metadataResult.message
+          : sanitizeErrorMessage(metadataResult.error.message),
       })
 
       if (lastGoodSnapshot === null) {
@@ -745,13 +871,21 @@ export function createAggregator(
 
     const metadata = metadataResult.data
 
-    // 2. Enumerate installation repos
-    const enumerateResult = await deps.enumerate(installationsClient)
+    // 2. Enumerate installation repos (deadline-bounded)
+    const enumerateResult = await deadlineOr(deps.enumerate(installationsClient), fetchDeadlineMs, 'installation enumeration')
 
     let installRepos: readonly {node_id: string; database_id: number; owner: string; name: string; full_name: string; installation_id: number}[] = []
     let enumerationFailed = false
     let enumerationIncomplete: number | null = 0
-    if (isOk(enumerateResult)) {
+    if (enumerateResult instanceof DeadlineExceededError) {
+      // Enumeration hung past its deadline — treat exactly like an
+      // enumeration failure: incomplete picture, bannered, never silent.
+      enumerationFailed = true
+      enumerationIncomplete = null
+      logger.warning('Installation enumeration timed out; using empty install set — snapshot will be incomplete', {
+        error: enumerateResult.message,
+      })
+    } else if (isOk(enumerateResult)) {
       installRepos = enumerateResult.data.repos
       enumerationIncomplete = enumerateResult.data.failedInstallationIds.length
     } else {
@@ -811,7 +945,7 @@ export function createAggregator(
         }
         // Metadata-only repo: resolve installation_id via App JWT
         try {
-          const resolvedId = await resolveInstallation(entry.owner, entry.name)
+          const resolvedId = await withDeadline(resolveInstallation(entry.owner, entry.name), fetchDeadlineMs, 'installation resolution')
           resolvedEntries.push({...entry, installation_id: resolvedId})
         } catch (resolveError) {
           logger.warning('Could not resolve installation for metadata-only repo; surfacing absence entry', safeRepoErrorContext(entry, resolveError))
@@ -907,15 +1041,42 @@ export function createAggregator(
     // dashboard's freshness contract. Removed; every cycle fetches every
     // working-set repo fresh.
     const dashboardRepos: DashboardRepo[] = []
-    for (const entry of workingSet) {
-      const status = await fetchRepoStatus(entry, graphqlQueryForInstallation, now)
+    // rm-141: bounded-concurrency walk. Results are written to a fixed-index
+    // array — completion order cannot permute the snapshot, so the served
+    // row set stays deterministic no matter how the pool interleaves. Each
+    // fetchRepoStatus call is deadline-bounded internally, so every worker
+    // slot is guaranteed to free up; Promise.all can never hang.
+    const statuses: (RepoCiStatus | undefined)[] = Array.from({length: workingSet.length})
+    let nextIndex = 0
+    const workerCount = Math.max(1, Math.min(refreshConcurrency, workingSet.length))
+    const workers: Promise<void>[] = []
+    for (let worker = 0; worker < workerCount; worker++) {
+      workers.push(
+        (async () => {
+          while (true) {
+            const index = nextIndex
+            nextIndex += 1
+            if (index >= workingSet.length) return
+            const entry = workingSet[index]
+            if (entry === undefined) continue
+            statuses[index] = await fetchRepoStatus(entry, graphqlQueryForInstallation, now, fetchDeadlineMs)
+          }
+        })(),
+      )
+    }
+    await Promise.all(workers)
+    for (const [index, entry] of workingSet.entries()) {
+      if (entry === undefined) continue
       dashboardRepos.push({
         node_id: entry.node_id,
         owner: entry.owner,
         name: entry.name,
         full_name: entry.full_name,
         discovery_channel: entry.discovery_channel,
-        status,
+        // Fixed-index read-back; the ?? is unreachable (every index is
+        // assigned before Promise.all resolves) and exists only to satisfy
+        // noUncheckedIndexedAccess.
+        status: statuses[index] ?? {rollupState: 'unknown', failingChecks: 0, openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt: now()},
       })
     }
 
@@ -951,6 +1112,7 @@ export function createAggregator(
       return
     }
     refreshing = true
+    cycleStartedAt = now()
     try {
       await runRefresh()
     } catch (error) {
@@ -962,6 +1124,7 @@ export function createAggregator(
       markSnapshotStale()
     } finally {
       refreshing = false
+      cycleStartedAt = null
     }
   }
 
@@ -975,6 +1138,15 @@ export function createAggregator(
   function getSnapshot(): AggregatorSnapshot {
     if (lastGoodSnapshot === null) {
       return {repos: [], staleBanner: true, driftCount: 0, enumerationIncomplete: null, refreshedAt: null}
+    }
+    // Stall watchdog: while a cycle is in flight longer than staleAfterMs
+    // (default 2× the refresh interval), the served snapshot carries the
+    // stale banner even though lastGood is unchanged — a wedged cycle must
+    // never keep presenting itself as fresh data. (With the per-call
+    // deadlines above this window is bounded anyway; the watchdog is the
+    // belt to that braces.)
+    if (cycleStartedAt !== null && now() - cycleStartedAt > staleAfterMs) {
+      return {...lastGoodSnapshot, staleBanner: true}
     }
     return lastGoodSnapshot
   }
@@ -1008,7 +1180,7 @@ export function createAggregator(
         })
         markSnapshotStale()
       })
-    }, 60_000)
+    }, AGGREGATOR_REFRESH_INTERVAL_MS)
 
     // rm-197: the first walk is awaited (warm boot) but — with the interval
     // already armed and all five transports time-bounded (see above) — it
