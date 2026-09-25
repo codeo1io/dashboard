@@ -1,4 +1,4 @@
-import {useEffect, useState, useCallback} from 'react'
+import {useEffect, useState, useCallback, useRef} from 'react'
 import {AppShell} from './shell/AppShell.tsx'
 import {Operator} from './views/Operator.tsx'
 import {ListenerChannel} from './views/Listener.tsx'
@@ -42,10 +42,20 @@ export default function App() {
     }
   }, [])
 
+  // rm-209a: in-flight guard — interval ticks and focus events arriving while a
+  // poll is still pending are dropped instead of stacking overlapping requests.
+  const pollInFlight = useRef(false)
+
   const pollUnreadCount = useCallback(async () => {
-    const res = await fetchListenerMessages({ limit: 1, unreadOnly: true })
-    if (res.ok) {
-      setUnreadCount(res.data.unreadCount)
+    if (pollInFlight.current) return
+    pollInFlight.current = true
+    try {
+      const res = await fetchListenerMessages({ limit: 1, unreadOnly: true })
+      if (res.ok) {
+        setUnreadCount(res.data.unreadCount)
+      }
+    } finally {
+      pollInFlight.current = false
     }
   }, [])
 
