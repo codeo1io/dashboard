@@ -20,8 +20,10 @@ import type {Result} from '../src/result.ts'
  *   prompts, tool args, workspace paths, internal URLs, private repo text
  */
 import {Buffer} from 'node:buffer'
+import {mkdtempSync, rmSync, writeFileSync} from 'node:fs'
+import {tmpdir} from 'node:os'
 
-import {beforeEach, describe, expect, it} from 'vitest'
+import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {ok} from '../src/result.ts'
 import {buildDashboardApp, resetRateLimitForTesting} from '../src/server.ts'
 import {SessionManager} from '../src/session.ts'
@@ -115,6 +117,7 @@ interface TestAppOpts {
   gatewayOperatorSessionEnabled?: boolean
   operatorClient?: OperatorClient
   pushNotificationsEnabled?: boolean
+  webDistRoot?: string
 }
 
 async function buildTestApp(opts: TestAppOpts | boolean) {
@@ -127,11 +130,12 @@ async function buildTestApp(opts: TestAppOpts | boolean) {
     cookieKey: TEST_KEY,
     oauthClient: makeFakeOAuthClient(),
     fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null}),
     operatorUiEnabled: resolved.operatorUiEnabled,
     gatewayOperatorSessionEnabled: resolved.gatewayOperatorSessionEnabled,
     operatorClient: resolved.operatorClient,
     pushNotificationsEnabled: resolved.pushNotificationsEnabled,
+    webDistRoot: resolved.webDistRoot,
   })
 }
 
@@ -944,5 +948,65 @@ describe('push-enabled meta injection — served SPA shell integrity', () => {
     const body = await res.text()
     expect(body).not.toContain('push-enabled')
     expect(body).toContain('<div id="root">')
+  })
+
+  it('rm-172: shell is cached — no per-request sync IO; flip honored within the TTL bound', async () => {
+    // rm-172: '/' used to readFileSync(index.html) on EVERY authenticated
+    // request. The handler now reads asynchronously once and caches with a
+    // TTL (5s). Verify: (1) first read injects and serves; (2) a rewrite
+    // within the TTL still serves the CACHED copy; (3) after the TTL the
+    // next request picks up the rebuilt shell.
+    const dir = mkdtempSync(`${tmpdir()}/spa-shell-rm172-`)
+    const shellPath = `${dir}/index.html`
+    const writeShell = (marker: string): void => {
+      writeFileSync(
+        shellPath,
+        `<!doctype html><html><head><title>${marker}</title></head><body><div id="root"></div></body></html>`,
+      )
+    }
+    try {
+      writeShell('MARKER-V1')
+      const app = await buildTestApp({operatorUiEnabled: true, pushNotificationsEnabled: true, webDistRoot: dir})
+
+      // (1) first request loads + injects
+      const first = await authedGet(app, '/')
+      expect(first.status).toBe(200)
+      let body = await first.text()
+      expect(body).toContain('MARKER-V1')
+      expect(body).toContain('<meta name="push-enabled" content="true">')
+
+      // (2) rewrite mid-TTL → cached copy still served (no re-read)
+      writeShell('MARKER-V2')
+      const second = await authedGet(app, '/')
+      expect(second.status).toBe(200)
+      body = await second.text()
+      expect(body).toContain('MARKER-V1')
+      expect(body).not.toContain('MARKER-V2')
+
+      // (3) past the TTL the next request picks up the rebuilt shell
+      vi.useFakeTimers({now: Date.now() + 6_000})
+      try {
+        const third = await authedGet(app, '/')
+        expect(third.status).toBe(200)
+        body = await third.text()
+        expect(body).toContain('MARKER-V2')
+        expect(body).toContain('<meta name="push-enabled" content="true">')
+      } finally {
+        vi.useRealTimers()
+      }
+    } finally {
+      rmSync(dir, {recursive: true, force: true})
+    }
+  })
+
+  it('rm-172: missing shell still falls back to 404, not a 500', async () => {
+    const dir = mkdtempSync(`${tmpdir()}/spa-shell-missing-`)
+    try {
+      const app = await buildTestApp({operatorUiEnabled: true, pushNotificationsEnabled: true, webDistRoot: dir})
+      const res = await authedGet(app, '/')
+      expect(res.status).toBe(404)
+    } finally {
+      rmSync(dir, {recursive: true, force: true})
+    }
   })
 })

@@ -11,6 +11,7 @@
  * - Octokit boundary casts use `as unknown as X`, never `any`.
  */
 
+import type {MintedToken} from './installations.ts'
 import {createAppAuth} from '@octokit/auth-app'
 import {Octokit} from '@octokit/core'
 import {retry} from '@octokit/plugin-retry'
@@ -31,6 +32,12 @@ const ThrottledOctokit = Octokit.plugin(throttling, retry)
 export interface AppClientOptions {
   readonly appId: string
   readonly privateKey: string
+  /**
+   * Per-request timeout (ms) for the App-level Octokit. rm-197: no GitHub
+   * call in this process may hang — the aggregator's serial first refresh
+   * must stay bounded. Defaults to GITHUB_REQUEST_TIMEOUT_MS (30s).
+   */
+  readonly requestTimeoutMs?: number
 }
 
 export interface DashboardAppClient {
@@ -42,7 +49,9 @@ export interface DashboardAppClient {
   readonly octokit: InstanceType<typeof ThrottledOctokit>
   /**
    * Mint a read-only installation token for the given installation ID.
-   * Returns the raw token string. NEVER log this value.
+   * Returns the raw token string plus its REAL expiry (rm-185: previously
+   * the API-provided expiresAt was discarded here, forcing the cache in
+   * installations.ts to guess a 55-min TTL). NEVER log the token value.
    *
    * The permissions type is `Record<string, 'read'>` — write/admin scopes are
    * unrepresentable at the dashboard boundary by construction.
@@ -50,12 +59,19 @@ export interface DashboardAppClient {
   readonly mintInstallationToken: (
     installationId: number,
     permissions: Record<string, 'read'>,
-  ) => Promise<string>
+  ) => Promise<MintedToken>
 }
 
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
+
+/**
+ * rm-197: default per-request timeout for every GitHub transport in this
+ * process. Bounding each request keeps the aggregator's serial first refresh
+ * (and every later walk) finite even when GitHub stalls a connection.
+ */
+export const GITHUB_REQUEST_TIMEOUT_MS = 30_000
 
 /**
  * Create a dashboard App client authenticated as the fro-bot Agent App.
@@ -69,6 +85,7 @@ export function createDashboardAppClient(options: AppClientOptions): DashboardAp
   const octokit = new ThrottledOctokit({
     authStrategy: createAppAuth,
     auth: {appId, privateKey},
+    request: {timeout: options.requestTimeoutMs ?? GITHUB_REQUEST_TIMEOUT_MS},
     throttle: {
       onRateLimit: (retryAfter: number, opts: Record<string, unknown>, _octokit: unknown, retryCount: number) => {
         logger.warning('GitHub rate limit hit', {retryAfter, url: opts.url, retryCount})
@@ -84,13 +101,23 @@ export function createDashboardAppClient(options: AppClientOptions): DashboardAp
   async function mintInstallationToken(
     installationId: number,
     permissions: Record<string, 'read'>,
-  ): Promise<string> {
+  ): Promise<MintedToken> {
     const installAuth = createAppAuth({appId, privateKey, installationId})
     const result = await installAuth({
       type: 'installation',
       permissions,
     })
-    return result.token
+    // rm-185: thread the auth result's real expiry through instead of
+    // discarding it. @octokit/auth-app returns expiresAt as an ISO string
+    // (some versions emit a Date); normalize defensively and yield null on
+    // any ill-formed value so the cache falls back to its capped default.
+    const rawExpiresAt: unknown = (result as {expiresAt?: unknown}).expiresAt
+    let expiresAt: Date | null = null
+    if (typeof rawExpiresAt === 'string' || rawExpiresAt instanceof Date) {
+      const parsed = rawExpiresAt instanceof Date ? rawExpiresAt : new Date(rawExpiresAt)
+      expiresAt = Number.isNaN(parsed.getTime()) ? null : parsed
+    }
+    return {token: result.token, expiresAt}
   }
 
   return {octokit, mintInstallationToken}
