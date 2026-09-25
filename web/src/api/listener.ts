@@ -22,6 +22,10 @@ export interface ListenerMessage {
 export interface ListenerMessagesResponse {
   readonly messages: readonly ListenerMessage[]
   readonly unreadCount: number
+  /** Messages evicted by server-side retention (500 rows / 30 days) since the server process started. 0 when absent (older server). */
+  readonly prunedCount: number
+  /** Messages present in the response but dropped CLIENT-SIDE because they failed the parse contract (rm-198 drift signal). */
+  readonly droppedCount: number
 }
 
 export type FetchListenerResult =
@@ -101,15 +105,26 @@ export async function fetchListenerMessages(opts: {
       return { ok: false, reason: 'contract-drift' }
     }
 
+    // rm-198: per-message parse failures are no longer silent. Messages that
+    // fail the client contract are counted so the UI can surface drift (the
+    // server's unreadCount includes them — a growing gap between badge and
+    // list is the drift tell) instead of quietly rendering a shorter list.
     const messages: ListenerMessage[] = []
+    let droppedCount = 0
     for (const item of data.messages) {
       const parsed = parseMessage(item)
       if (parsed !== null) {
         messages.push(parsed)
+      } else {
+        droppedCount++
       }
     }
 
-    return { ok: true, data: { messages, unreadCount: data.unreadCount } }
+    // rm-199: retention-eviction count — tolerate absence from an older
+    // server build (treat missing as 0) since the field is additive.
+    const prunedCount = typeof data.prunedCount === 'number' ? data.prunedCount : 0
+
+    return { ok: true, data: { messages, unreadCount: data.unreadCount, prunedCount, droppedCount } }
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') {
       return { ok: false, reason: 'timeout' }

@@ -39,6 +39,13 @@ export interface ListenerMessage extends IngestMessage {
 export interface MessagesResponse {
   readonly messages: readonly ListenerMessage[]
   readonly unreadCount: number
+  /**
+   * Messages evicted by the retention policy (500 rows / 30 days) since the
+   * store was created — cumulative for the process lifetime (rm-199-class
+   * visibility: the list is a TRUNCATED view and the operator must be able
+   * to see that). Count only; no message content survives eviction.
+   */
+  readonly prunedCount: number
 }
 
 const KIND_RE = /^[a-z0-9-]{1,64}$/
