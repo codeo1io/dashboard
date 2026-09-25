@@ -11,6 +11,41 @@ describe('listener API', () => {
   })
 
   describe('fetchListenerMessages', () => {
+    it('reports session-expired when the fetch follows a redirect to the login surface', async () => {
+      // A real Response cannot have `redirected` set manually — emulate the
+      // post-redirect shape the browser produces when the session cookie
+      // expired and the server bounced the API call to the login page.
+      const redirectedResponse = {
+        ok: true,
+        redirected: true,
+        url: 'http://localhost/auth/login',
+        json: async () => {
+          throw new SyntaxError('Unexpected token < in JSON')
+        },
+      } as unknown as Response
+      vi.mocked(fetch).mockResolvedValueOnce(redirectedResponse)
+      const res = await fetchListenerMessages()
+      expect(res).toEqual({ ok: false, reason: 'session-expired' })
+    })
+
+    it("returns 'timeout' when the caller's abort signal fires (branch armed by the view's FETCH_TIMEOUT_MS)", async () => {
+      // rm-209c regression: the AbortSignal was previously constructed but
+      // never aborted, making this branch dead code.
+      vi.mocked(fetch).mockImplementationOnce((_input: RequestInfo | URL, init?: RequestInit) => {
+        const signal = init?.signal ?? undefined
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => {
+            reject(new DOMException('Aborted', 'AbortError'))
+          })
+        }) as Promise<Response>
+      })
+      const controller = new AbortController()
+      const pending = fetchListenerMessages({ abortSignal: controller.signal })
+      await Promise.resolve() // let the fetch's abort listener attach
+      controller.abort()
+      await expect(pending).resolves.toEqual({ ok: false, reason: 'timeout' })
+    })
+
     it('returns messages on success', async () => {
       const mockData = {
         messages: [
