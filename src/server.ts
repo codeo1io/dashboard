@@ -167,6 +167,29 @@ export function resetRateLimitForTesting(): void {
 // on / as intended. return_to=/ is NOT on the Gateway allowlist.
 const GATEWAY_LOGIN_REDIRECT = '/operator/auth/github/start?return_to=/operator'
 
+/**
+ * rm-165: optional operator-session login allowlist for the gateway-session
+ * auth branch. The single configured gateway origin is fully trusted, but the
+ * accounts that can hold a gateway session may need to be restricted to a
+ * subset (e.g. only dashboard operators). Set GATEWAY_ALLOWED_OPERATOR_LOGINS
+ * to a comma-separated login list; a session whose login is not in the list
+ * is denied (403, fail closed) AFTER validation.
+ *
+ * Returns null when unset/blank — no restriction (single-trusted-gateway
+ * behavior preserved). DASHBOARD_OPERATOR_LOGIN is NEVER consulted on this
+ * branch: the gateway session IS the identity source here.
+ */
+function parseGatewayAllowedOperatorLogins(): ReadonlySet<string> | null {
+  const raw = process.env.GATEWAY_ALLOWED_OPERATOR_LOGINS
+  if (raw === undefined) return null
+  const entries = raw
+    .split(',')
+    .map(entry => entry.trim())
+    .filter(entry => entry !== '')
+  if (entries.length === 0) return null
+  return new Set(entries)
+}
+
 function sweepRateLimitMap(now: number): void {
   for (const [key, entry] of rateLimitMap) {
     if (now - entry.windowStart > EVICT_STALE_AGE) {
@@ -746,6 +769,18 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
         return c.redirect(GATEWAY_LOGIN_REDIRECT, 302)
       }
 
+      // rm-165: optional allowlist — deny validated gateway sessions whose
+      // login is not an allowed operator (403, fail closed). Skipped entirely
+      // when GATEWAY_ALLOWED_OPERATOR_LOGINS is unset/blank.
+      const gatewayAllowlist = parseGatewayAllowedOperatorLogins()
+      if (gatewayAllowlist !== null && !gatewayAllowlist.has(result.data.login)) {
+        logger.warning('gateway-auth: session login is not in the gateway operator allowlist; denying', {
+          path,
+          login: result.data.login,
+        })
+        return c.text('Forbidden', 403)
+      }
+
       // Valid gateway session: attach to context.
       c.set('gatewaySession', result.data)
       return next()
@@ -860,6 +895,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       }
     }
     app.get('/', async c => {
+      // rm-166 (cycle-10, landed as a rider on rm-172): the injected shell is
+      // identity-reflecting (the push-enabled flag is operator-gated), so no
+      // intermediary may cache it — same no-store posture as /api/monitoring.
+      c.header('Cache-Control', 'no-store')
       if (spaShellCache === null || Date.now() - spaShellCache.at >= SPA_SHELL_CACHE_TTL_MS) {
         const injected = await loadSpaShell()
         if (injected === null) return c.notFound()

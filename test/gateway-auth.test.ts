@@ -12,7 +12,7 @@
 import type {GatewayClientError, OperatorClient, SessionDto} from '../src/gateway/operator-client.ts'
 import type {Result} from '../src/result.ts'
 import {Buffer} from 'node:buffer'
-import {describe, expect, it, vi} from 'vitest'
+import {afterEach, describe, expect, it, vi} from 'vitest'
 import {createOperatorClient} from '../src/gateway/operator-client.ts'
 import {createOperatorServerFetch} from '../src/gateway/operator-server-fetch.ts'
 import {err, ok} from '../src/result.ts'
@@ -848,6 +848,87 @@ describe('flag-ON: nonsensical identity rejection', () => {
     }
     const {client} = makeFakeOperatorClient(async () => ok(validSession))
     const app = await buildGatewayApp(client)
+    const res = await app.request('/', {
+      headers: {cookie: 'gateway_session=some-cookie'},
+    })
+    expect(res.status).toBe(200)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-165 (cycle-10): gateway-session operator allowlist
+// ---------------------------------------------------------------------------
+
+describe('flag-ON: gateway operator allowlist (GATEWAY_ALLOWED_OPERATOR_LOGINS)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('session login not in a configured allowlist → 403, fail closed', async () => {
+    vi.stubEnv('GATEWAY_ALLOWED_OPERATOR_LOGINS', 'octocat, alice')
+    const {client} = makeFakeOperatorClient(async () =>
+      ok({...VALID_SESSION, operatorId: 666, login: 'mallory'}),
+    )
+
+    const app = await buildDashboardApp({
+      cookieKey: TEST_KEY,
+      gatewayOperatorSessionEnabled: true,
+      operatorClient: client,
+    })
+
+    const res = await app.request('/', {
+      headers: {cookie: 'gateway_session=some-cookie'},
+    })
+    expect(res.status).toBe(403)
+  })
+
+  it('session login in the allowlist (one of several entries) → access granted', async () => {
+    vi.stubEnv('GATEWAY_ALLOWED_OPERATOR_LOGINS', 'octocat, alice')
+    const {client} = makeFakeOperatorClient(async () => ok(VALID_SESSION))
+
+    const app = await buildDashboardApp({
+      cookieKey: TEST_KEY,
+      gatewayOperatorSessionEnabled: true,
+      operatorClient: client,
+    })
+
+    const res = await app.request('/', {
+      headers: {cookie: 'gateway_session=some-cookie'},
+    })
+    expect(res.status).toBe(200)
+  })
+
+  it('blank allowlist env → no restriction (single-trusted-gateway behavior preserved)', async () => {
+    vi.stubEnv('GATEWAY_ALLOWED_OPERATOR_LOGINS', '   ')
+    const {client} = makeFakeOperatorClient(async () =>
+      ok({...VALID_SESSION, operatorId: 99999, login: 'different-operator'}),
+    )
+
+    const app = await buildDashboardApp({
+      cookieKey: TEST_KEY,
+      gatewayOperatorSessionEnabled: true,
+      operatorClient: client,
+    })
+
+    const res = await app.request('/', {
+      headers: {cookie: 'gateway_session=some-cookie'},
+    })
+    expect(res.status).toBe(200)
+  })
+
+  it('allowlist grants a login that differs from operatorLogin (R3: DASHBOARD_OPERATOR_LOGIN is never consulted)', async () => {
+    vi.stubEnv('GATEWAY_ALLOWED_OPERATOR_LOGINS', 'alice')
+    const {client} = makeFakeOperatorClient(async () =>
+      ok({...VALID_SESSION, operatorId: 424242, login: 'alice'}),
+    )
+
+    const app = await buildDashboardApp({
+      operatorLogin: TEST_OPERATOR,
+      cookieKey: TEST_KEY,
+      gatewayOperatorSessionEnabled: true,
+      operatorClient: client,
+    })
+
     const res = await app.request('/', {
       headers: {cookie: 'gateway_session=some-cookie'},
     })

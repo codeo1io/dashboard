@@ -87,6 +87,19 @@ export interface MetadataResult {
    * matches first excludes the repo.
    */
   readonly redactedDatabaseIds: ReadonlySet<number>
+  /**
+   * Count of redacted entries that contributed NO numeric databaseId to
+   * `redactedDatabaseIds` (node_id not decodable AND no explicit
+   * `database_id`/`id` field). 0 means the secondary, format-independent
+   * guard covers every redacted entry.
+   *
+   * rm-161: computed at parse time where per-entry knowledge lives — the
+   * aggregator consumes this directly instead of re-deriving an R_-prefix
+   * heuristic that can never clear for modern node_ids (every new-format
+   * node_id starts with `R_`, even when the entry carries an explicit
+   * `database_id` and the guard is therefore fully armed).
+   */
+  readonly redactedEntriesMissingDatabaseId: number
 }
 
 // ---------------------------------------------------------------------------
@@ -272,6 +285,8 @@ export async function readRepoMetadata(reader: MetadataReader): Promise<Result<M
   const publicRepos: PublicRepo[] = []
   const redactedNodeIds = new Set<string>()
   const redactedDatabaseIds = new Set<number>()
+  // rm-161: redacted entries relying on the primary node_id guard alone.
+  let redactedEntriesMissingDatabaseId = 0
   let skippedMalformedCount = 0
   let privateCoercedCount = 0
 
@@ -314,6 +329,9 @@ export async function readRepoMetadata(reader: MetadataReader): Promise<Result<M
       const hasValidNodeId = typeof entry.node_id === 'string' && entry.node_id.length > 0
       const rawDbId = entry.database_id ?? entry.id
       const hasValidDatabaseId = typeof rawDbId === 'number' && Number.isFinite(rawDbId)
+      // rm-161: derive once — the entry arms the format-independent secondary
+      // guard iff this is non-null OR it carries an explicit database_id/id.
+      const derivedId = hasValidNodeId ? deriveDatabaseId(entry.node_id as string) : null
 
       if (!hasValidNodeId && !hasValidDatabaseId) {
         logger.error('Redacted/private repos.yaml entry has no usable deny key (no valid node_id or database_id) — failing closed')
@@ -330,13 +348,19 @@ export async function readRepoMetadata(reader: MetadataReader): Promise<Result<M
         // the same repo under a different node_id format (legacy vs new R_kgDO...),
         // the exact node_id string match misses it — but the derived databaseId
         // (format-independent) catches it via the secondary guard.
-        const derivedId = deriveDatabaseId(nodeIdStr)
         if (derivedId !== null) {
           redactedDatabaseIds.add(derivedId)
         }
       }
       if (typeof rawDbId === 'number' && Number.isFinite(rawDbId)) {
         redactedDatabaseIds.add(rawDbId)
+      }
+      // rm-161: this entry relies on the primary node_id guard alone when no
+      // databaseId reached the set from either path — the aggregator warns
+      // (once per refresh) so operators see the real, current condition instead
+      // of a heuristic that can never clear for modern node_ids.
+      if (derivedId === null && !hasValidDatabaseId) {
+        redactedEntriesMissingDatabaseId++
       }
       // Do NOT add to publicRepos. Do NOT log owner/name.
     } else if (
@@ -378,7 +402,13 @@ export async function readRepoMetadata(reader: MetadataReader): Promise<Result<M
     redactedCount: redactedNodeIds.size,
   })
 
-  return ok({publicRepos, redactedNodeIds, redactedDatabaseIds})
+  return ok({
+    publicRepos,
+    redactedNodeIds,
+    redactedDatabaseIds,
+    // rm-161: per-entry guard-coverage telemetry for the aggregator's warning.
+    redactedEntriesMissingDatabaseId,
+  })
 }
 
 // ---------------------------------------------------------------------------
