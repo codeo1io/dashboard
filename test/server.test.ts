@@ -3,7 +3,7 @@ import {existsSync, readdirSync} from 'node:fs'
 import {join} from 'node:path'
 import process from 'node:process'
 import {beforeAll, describe, expect, it, vi} from 'vitest'
-import {buildDashboardApp, buildSnapshotProvider, readServerBindConfig} from '../src/server.ts'
+import {buildDashboardApp, buildSnapshotProvider, readMonitoringRefreshConfig, readServerBindConfig} from '../src/server.ts'
 import {SessionManager} from '../src/session.ts'
 
 describe('readServerBindConfig — server bind address (issue #13)', () => {
@@ -628,5 +628,32 @@ describe('enumerateRepos — installation_id flows correctly', () => {
     expect(repos).toHaveLength(1)
     // First-seen-wins: installation_id must be 10 (the first installation that saw it)
     expect(repos[0]?.installation_id).toBe(10)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-204: monitoring refresh gate (DASHBOARD_MONITORING_REFRESH)
+// ---------------------------------------------------------------------------
+
+describe('readMonitoringRefreshConfig — refresh loop gate (rm-204)', () => {
+  it('defaults to enabled (behavior-preserving)', () => {
+    expect(readMonitoringRefreshConfig({})).toEqual({enabled: true})
+  })
+
+  it('disables on false/0/off/no, case-insensitive and whitespace-tolerant', () => {
+    for (const value of ['false', '0', 'off', 'no', ' FALSE ', 'Off', 'NO']) {
+      expect(readMonitoringRefreshConfig({DASHBOARD_MONITORING_REFRESH: value}).enabled, `value=${value}`).toBe(false)
+    }
+  })
+
+  it('stays enabled for truthy and arbitrary values', () => {
+    for (const value of ['true', '1', 'yes', 'anything-else']) {
+      expect(readMonitoringRefreshConfig({DASHBOARD_MONITORING_REFRESH: value}).enabled, `value=${value}`).toBe(true)
+    }
+  })
+
+  it('empty/whitespace-only value keeps the default-on behavior', () => {
+    expect(readMonitoringRefreshConfig({DASHBOARD_MONITORING_REFRESH: ''}).enabled).toBe(true)
+    expect(readMonitoringRefreshConfig({DASHBOARD_MONITORING_REFRESH: '   '}).enabled).toBe(true)
   })
 })
