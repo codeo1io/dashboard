@@ -5,6 +5,7 @@ import process from 'node:process'
 import {beforeAll, describe, expect, it, vi} from 'vitest'
 import {buildDashboardApp, buildSnapshotProvider, readMonitoringRefreshConfig, readServerBindConfig} from '../src/server.ts'
 import {SessionManager} from '../src/session.ts'
+import {makeEnumerateSuccess, makeInstallationRecord, makeRepoRecord} from './make-enumerate-result.ts'
 
 describe('readServerBindConfig — server bind address (issue #13)', () => {
   it('defaults to 0.0.0.0:3000 so a sibling reverse-proxy container can reach it', () => {
@@ -91,23 +92,9 @@ describe('buildSnapshotProvider — production wiring', () => {
     }
 
     // Fake enumerate: returns one repo (with installation_id for auth context)
-    const fakeEnumerate = vi.fn().mockResolvedValue({
-      success: true,
-      data: {
-        repos: [
-          {
-            node_id: 'R_kgDOFake',
-            database_id: 999,
-            owner: 'fro-bot',
-            name: 'fake-repo',
-            full_name: 'fro-bot/fake-repo',
-            installation_id: 1,
-          },
-        ],
-        installations: [{id: 1, account: 'fro-bot'}],
-        failedInstallationIds: [],
-      },
-    })
+    const fakeEnumerate = vi.fn().mockResolvedValue(
+      makeEnumerateSuccess({repos: [makeRepoRecord()]}),
+    )
 
     // Fake metadata reader: returns a minimal valid YAML with the fake repo
     const fakeMetadataReader = vi.fn().mockResolvedValue(`
@@ -170,10 +157,7 @@ repos:
     // Minimal wiring: enumerate returns empty, metadata returns empty list.
     // The key assertion is that getSnapshot is the aggregator's function —
     // after start(), refreshedAt is set (not null as in the empty default).
-    const fakeEnumerate = vi.fn().mockResolvedValue({
-      success: true,
-      data: {repos: [], installations: [], failedInstallationIds: []},
-    })
+    const fakeEnumerate = vi.fn().mockResolvedValue(makeEnumerateSuccess())
     const fakeMetadataReader = vi.fn().mockResolvedValue('version: 1\nrepos: []\n')
     const fakeGraphqlQuery = vi.fn().mockResolvedValue({repository: null})
 
@@ -217,10 +201,9 @@ describe('buildSnapshotProvider — auth topology regression tests', () => {
     // (in production, the reader calls resolveInstallationIdForRepo internally)
     // Here we inject the resolver directly and verify it's called
     const fakeMetadataReader = vi.fn().mockResolvedValue('version: 1\nrepos: []\n')
-    const fakeEnumerate = vi.fn().mockResolvedValue({
-      success: true,
-      data: {repos: [], installations: [{id: 42, account: 'codeo1io'}], failedInstallationIds: []},
-    })
+    const fakeEnumerate = vi.fn().mockResolvedValue(
+      makeEnumerateSuccess({installations: [makeInstallationRecord({id: 42, account: 'codeo1io'})]}),
+    )
     const fakeGraphqlQuery = vi.fn().mockResolvedValue({repository: null})
 
     const provider = buildSnapshotProvider({
@@ -262,10 +245,9 @@ describe('buildSnapshotProvider — auth topology regression tests', () => {
     })
 
     const fakeMetadataReader = vi.fn().mockResolvedValue('version: 1\nrepos: []\n')
-    const fakeEnumerate = vi.fn().mockResolvedValue({
-      success: true,
-      data: {repos: [], installations, failedInstallationIds: []},
-    })
+    const fakeEnumerate = vi.fn().mockResolvedValue(
+      makeEnumerateSuccess({installations: installations.map(i => makeInstallationRecord(i))}),
+    )
     const fakeGraphqlQuery = vi.fn().mockResolvedValue({repository: null})
 
     const provider = buildSnapshotProvider({
@@ -303,10 +285,9 @@ describe('buildSnapshotProvider — auth topology regression tests', () => {
     })
 
     const fakeMetadataReader = vi.fn().mockResolvedValue('version: 1\nrepos: []\n')
-    const fakeEnumerate = vi.fn().mockResolvedValue({
-      success: true,
-      data: {repos: [], installations, failedInstallationIds: []},
-    })
+    const fakeEnumerate = vi.fn().mockResolvedValue(
+      makeEnumerateSuccess({installations: installations.map(i => makeInstallationRecord(i))}),
+    )
     const fakeGraphqlQuery = vi.fn().mockResolvedValue({repository: null})
 
     const provider = buildSnapshotProvider({

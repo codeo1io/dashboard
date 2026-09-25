@@ -9,7 +9,7 @@
  * All tests inject fakes — no network calls, no real timers.
  */
 
-import type {AggregatorDeps, GraphqlQueryForInstallationFn} from '../src/github/aggregator.ts'
+import type {AggregatorDeps, AggregatorSnapshot, DashboardRepo, GraphqlQueryForInstallationFn} from '../src/github/aggregator.ts'
 import type {EnumerateReposResult} from '../src/github/installations.ts'
 import type {MetadataResult} from '../src/github/metadata.ts'
 import type {Result} from '../src/result.ts'
@@ -2631,5 +2631,240 @@ describe('rm-141 — bounded-concurrency per-repo refresh', () => {
 
     expect(maxInFlight).toBe(1)
     agg.stop()
+  })
+})
+
+/** DashboardRepo row used to seed a persisted (boot-time) snapshot. */
+function makeBootSnapshotRepo(overrides: {node_id?: string; full_name?: string} = {}): DashboardRepo {
+  return {
+    node_id: overrides.node_id ?? 'NODE_BOOT',
+    owner: 'fro-bot',
+    name: 'agent',
+    full_name: overrides.full_name ?? 'fro-bot/agent',
+    discovery_channel: 'collab',
+    status: {
+      rollupState: 'green',
+      failingChecks: 0,
+      // Required since main's rm-192 failing-check drill-down landed (the
+      // batch's tree pre-dates that interface widening).
+      failingCheckDetails: [],
+      openPrCount: 0,
+      openIssueCount: 0,
+      openAlertCount: null,
+      stale: false,
+      fetchedAt: 1234,
+    },
+  }
+}
+
+/** A fully-formed persisted snapshot for boot-bridge seeding. */
+function makeBootSnapshot(): AggregatorSnapshot {
+  return {
+    repos: [makeBootSnapshotRepo()],
+    staleBanner: false,
+    driftCount: 2,
+    enumerationIncomplete: 0,
+    refreshedAt: 4242,
+  }
+}
+
+/** Boot snapshot whose second row is redacted in the FRESH metadata read (review fix P2-1). */
+function makeBootSnapshotWithRedactedRow(): AggregatorSnapshot {
+  return {
+    ...makeBootSnapshot(),
+    repos: [
+      makeBootSnapshotRepo({node_id: 'NODE_BOOT', full_name: 'fro-bot/agent'}),
+      makeBootSnapshotRepo({node_id: 'NODE_NOW_REDACTED', full_name: 'fro-bot/secret'}),
+    ],
+  }
+}
+
+// ---------------------------------------------------------------------------
+// rm-198 — boot-time last-known snapshot bridge
+// (run 9cb75bf5 minted this as rm-200; renumbered onto main's landed
+// restart-bridge id at this integrate)
+// ---------------------------------------------------------------------------
+
+describe('rm-198 — boot-time last-known snapshot bridge', () => {
+  it('seeds the cold-start window from the persisted snapshot — forced stale, original refreshedAt preserved', () => {
+    const persist = vi.fn()
+    const snapshotStore = {load: vi.fn(() => makeBootSnapshot()), persist}
+
+    // No refresh yet — this is the cold-start window rm-198 exists to bridge
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, makeDeps({snapshotStore}))
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos.map(r => r.full_name)).toEqual(['fro-bot/agent'])
+    // Boot data can NEVER present as fresh truth — staleBanner forced on...
+    expect(snap.staleBanner).toBe(true)
+    // ...while the original refreshedAt survives so consumers can read its age
+    expect(snap.refreshedAt).toBe(4242)
+    expect(snap.driftCount).toBe(2)
+    expect(snap.enumerationIncomplete).toBe(0)
+    // Loading is read-only — nothing is persisted on the boot path
+    expect(persist).not.toHaveBeenCalled()
+  })
+
+  it('the first successful refresh replaces the boot snapshot and persists it', async () => {
+    const snapshotStore = {load: vi.fn(() => makeBootSnapshot()), persist: vi.fn()}
+    const deps = makeDeps({
+      snapshotStore,
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([makeRepo({node_id: 'NODE_A', owner: 'org', name: 'repo-a'})])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_A', owner: 'org', name: 'repo-a'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    // Boot data fully replaced by the fresh refresh — not merged
+    expect(snap.repos.map(r => r.node_id)).toEqual(['NODE_A'])
+    expect(snap.staleBanner).toBe(false)
+    // Every snapshot write persists — the NEXT cold start bridges from this one
+    expect(snapshotStore.persist).toHaveBeenCalled()
+    const persisted = snapshotStore.persist.mock.calls.at(-1)?.[0] as AggregatorSnapshot
+    expect(persisted.repos.map(r => r.node_id)).toEqual(['NODE_A'])
+    expect(persisted.staleBanner).toBe(false)
+  })
+
+  it('no store → empty cold boot exactly as before (the bannered pre-bridge rm-197 contract unchanged)', () => {
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, makeDeps())
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos).toHaveLength(0)
+    // Main's landed rm-197 cold-start contract: the empty pre-refresh window
+    // is BANNERED, never false-fresh (the batch's tree pre-dated that flip).
+    expect(snap.staleBanner).toBe(true)
+    expect(snap.refreshedAt).toBeNull()
+  })
+
+  it('store.load returning null → empty cold boot (fail-open)', () => {
+    const snapshotStore = {load: vi.fn(() => null), persist: vi.fn()}
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, makeDeps({snapshotStore}))
+
+    expect(agg.getSnapshot().repos).toHaveLength(0)
+    // Fail-open on load: still main's bannered empty cold-start window
+    expect(agg.getSnapshot().staleBanner).toBe(true)
+  })
+
+  it('store.load throwing → empty cold boot, never a crashed boot', () => {
+    const snapshotStore = {
+      load: vi.fn(() => {
+        throw new Error('disk on fire')
+      }),
+      persist: vi.fn(),
+    }
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, makeDeps({snapshotStore}))
+
+    expect(agg.getSnapshot().repos).toHaveLength(0)
+    // A throwing load fails open into the same bannered empty window
+    expect(agg.getSnapshot().staleBanner).toBe(true)
+  })
+
+  it('persist throwing inside a refresh does not break the refresh path', async () => {
+    const snapshotStore = {
+      load: vi.fn(() => null),
+      persist: vi.fn(() => {
+        throw new Error('read-only filesystem')
+      }),
+    }
+    const deps = makeDeps({
+      snapshotStore,
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([makeRepo({node_id: 'NODE_A', owner: 'org', name: 'repo-a'})])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_A', owner: 'org', name: 'repo-a'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    // Best-effort persistence: the throw is swallowed and logged, the refresh
+    // path itself must complete and produce the snapshot.
+    await expect(agg.refresh()).resolves.toBeUndefined()
+    expect(agg.getSnapshot().repos).toHaveLength(1)
+    expect(snapshotStore.persist).toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Review fix P2-1 (2026-09-25) — restart redaction re-filter
+// ---------------------------------------------------------------------------
+
+describe('review fix P2-1 — last-good snapshot re-filtered against the fresh denylist', () => {
+  it('warm-empty guard does not serve a row redacted between persist and restart (and persists the scrubbed file)', async () => {
+    const snapshotStore = {load: vi.fn(() => makeBootSnapshotWithRedactedRow()), persist: vi.fn()}
+    const deps = makeDeps({
+      snapshotStore,
+      // Fresh metadata: NODE_NOW_REDACTED is denylisted NOW
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({redactedNodeIds: ['NODE_NOW_REDACTED']}))),
+      // Empty channel → warm-empty guard serves last-good
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([])),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    // The clean row survives; the redacted row must NOT be served by name
+    expect(snap.repos.map(r => r.full_name)).toEqual(['fro-bot/agent'])
+    expect(snap.staleBanner).toBe(true)
+    // The scrubbed snapshot is also what gets persisted — the disk cache
+    // stops carrying the redacted name.
+    const persisted = snapshotStore.persist.mock.calls.at(-1)?.[0] as AggregatorSnapshot
+    expect(persisted.repos.map(r => r.node_id)).toEqual(['NODE_BOOT'])
+  })
+
+  it('enumeration failure after boot also re-filters before serving last-good', async () => {
+    const snapshotStore = {load: vi.fn(() => makeBootSnapshotWithRedactedRow()), persist: vi.fn()}
+    const deps = makeDeps({
+      snapshotStore,
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({redactedNodeIds: ['NODE_NOW_REDACTED']}))),
+      // Channel failure → enumerationFailed path, last-good carries forward
+      enumerate: vi.fn().mockResolvedValue(err('enumeration blew up')),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos.map(r => r.full_name)).toEqual(['fro-bot/agent'])
+    expect(snap.staleBanner).toBe(true)
+  })
+
+  it('metadata unavailable → fail-closed semantics unchanged (no scrub possible, row carries stale-bannered)', async () => {
+    const snapshotStore = {load: vi.fn(() => makeBootSnapshotWithRedactedRow()), persist: vi.fn()}
+    const deps = makeDeps({
+      snapshotStore,
+      // Denylist UNAVAILABLE — the fix deliberately does nothing here: the
+      // current denylist cannot be known without the data-branch read.
+      readMetadata: vi.fn().mockResolvedValue(err('metadata down')),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    // Pins the accepted residual boundary: fail-closed serves last-good
+    // verbatim (stale-bannered) — scrubbing is gated on a fresh metadata read.
+    expect(snap.repos.map(r => r.node_id).sort()).toEqual(['NODE_BOOT', 'NODE_NOW_REDACTED'])
+    expect(snap.staleBanner).toBe(true)
+  })
+
+  it('no redacted rows in last-good → scrub is a no-op (no extra persist churn)', async () => {
+    const snapshotStore = {load: vi.fn(() => makeBootSnapshot()), persist: vi.fn()}
+    const deps = makeDeps({
+      snapshotStore,
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({redactedNodeIds: ['NODE_UNRELATED']}))),
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([])),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    // Warm-empty guard fires exactly once — the scrub itself persisted nothing
+    expect(snapshotStore.persist).toHaveBeenCalledTimes(1)
   })
 })
