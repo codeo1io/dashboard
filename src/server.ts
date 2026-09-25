@@ -19,7 +19,8 @@ import type {AggregatorSnapshot} from './github/aggregator.ts'
 import type {MetadataReader} from './github/metadata.ts'
 import type {ListenerStore} from './listener/store.ts'
 import {Buffer} from 'node:buffer'
-import {existsSync, readFileSync} from 'node:fs'
+import {existsSync} from 'node:fs'
+import {readFile} from 'node:fs/promises'
 import {join} from 'node:path'
 import process from 'node:process'
 import {serve} from '@hono/node-server'
@@ -41,8 +42,8 @@ import {
 import {readFixtureHarnessConfig} from './gateway/operator-fixture-config.ts'
 import {FIXTURE_OPERATOR_PREFIX} from './gateway/operator-fixture-routes.ts'
 import {createOperatorServerFetch} from './gateway/operator-server-fetch.ts'
-import {createAggregator} from './github/aggregator.ts'
-import {createDashboardAppClient} from './github/app-client.ts'
+import {COLD_START_SNAPSHOT, createAggregator} from './github/aggregator.ts'
+import {createDashboardAppClient, GITHUB_REQUEST_TIMEOUT_MS} from './github/app-client.ts'
 import {buildInstallationsClient, enumerateRepos, mintReadOnlyToken} from './github/installations.ts'
 import {makeNotFoundError, readRepoMetadata} from './github/metadata.ts'
 import {readListenerDbPath, readListenerIngestKey} from './listener/config.ts'
@@ -54,6 +55,15 @@ import {buildAuthRouter} from './routes/auth.ts'
 import {buildListenerRouter} from './routes/listener.ts'
 import {readOptionalMultilineSecret, readOptionalSecret} from './secrets.ts'
 import {loadCookieKey, SessionManager} from './session.ts'
+import {installShutdownHandlers} from './shutdown.ts'
+
+/**
+ * rm-172: cache TTL for the injected SPA shell served at '/'. The shell is read
+ * asynchronously once and cached; a rebuilt web/dist/index.html is picked up
+ * within this bound of the next request (or at process restart). Keeps the '/'
+ * hot path free of per-request synchronous file I/O.
+ */
+const SPA_SHELL_CACHE_TTL_MS = 5_000
 
 /** Hono context variables set by auth middleware */
 interface Variables {
@@ -69,16 +79,63 @@ interface Variables {
   gatewaySession?: SessionDto
 }
 
-/** Per-IP rate limiter state */
+/**
+ * Rate-limit path classes. Independent per-class budgets so a flood on one
+ * class (the public pre-auth surface) cannot starve another (the authenticated
+ * operator API or the listener ingest route). See classifyRateLimitPath.
+ */
+export type RateLimitClass = 'public' | 'operator' | 'ingest'
+const RATE_LIMIT_CLASSES = ['public', 'operator', 'ingest'] as const
+
+/** Per-IP rate limiter state: one shared window, per-class counters. */
 interface RateLimitEntry {
-  count: number
   windowStart: number
+  counts: Record<RateLimitClass, number>
 }
 
 /** Simple fixed-window in-memory rate limiter */
 const rateLimitMap = new Map<string, RateLimitEntry>()
 const RATE_LIMIT_WINDOW_MS = 60_000 // 1 minute
-const RATE_LIMIT_MAX = 60 // requests per window per IP
+const RATE_LIMIT_MAX = 60 // requests per window per IP (per-class default)
+
+const envIntOrDefault = (name: string, fallback: number): number => {
+  const raw = process.env[name]
+  if (raw === undefined) return fallback
+  const trimmed = raw.trim()
+  if (trimmed === '' || !/^\d+$/.test(trimmed)) return fallback
+  const parsed = Number.parseInt(trimmed, 10)
+  return parsed > 0 ? parsed : fallback
+}
+
+/**
+ * Per-class maxima. Each defaults to RATE_LIMIT_MAX; override via env when one
+ * class needs a different budget (e.g. a chatty health prober).
+ */
+const RATE_LIMIT_MAX_PER_CLASS: Record<RateLimitClass, number> = {
+  public: envIntOrDefault('RATE_LIMIT_MAX_PUBLIC', RATE_LIMIT_MAX),
+  operator: envIntOrDefault('RATE_LIMIT_MAX_OPERATOR', RATE_LIMIT_MAX),
+  ingest: envIntOrDefault('RATE_LIMIT_MAX_INGEST', RATE_LIMIT_MAX),
+}
+
+/**
+ * Default for the trusted-proxy opt-in: RATE_LIMIT_TRUSTED_PROXY in
+ * {1,true,yes} (case-insensitive). Off unless explicitly enabled.
+ */
+const defaultRateLimitTrustedProxy = (): boolean =>
+  ['1', 'true', 'yes'].includes((process.env.RATE_LIMIT_TRUSTED_PROXY ?? '').trim().toLowerCase())
+
+/**
+ * Classify a sensitive path into its rate-limit budget class.
+ * Mirrors the isPublicPath knowledge below:
+ * - ingest: the machine-write listener route (HMAC-gated by the route itself)
+ * - public: the pre-auth browser surface (SPA root, /auth/*, /api/healthz)
+ * - operator: every other sensitive route (remaining /api/* + /operator*)
+ */
+export function classifyRateLimitPath(path: string): RateLimitClass {
+  if (path === '/api/listener/ingest') return 'ingest'
+  if (path === '/' || path === '/api/healthz' || path.startsWith('/auth/')) return 'public'
+  return 'operator'
+}
 
 /**
  * Eviction sweep counter. Every EVICT_INTERVAL calls we sweep the map for
@@ -123,25 +180,31 @@ function sweepRateLimitMap(now: number): void {
  * Accepts an optional `now` for testability (defaults to Date.now()).
  * Returns true if the request is allowed, false if rate-limited.
  */
-export function checkRateLimit(ip: string, now: number = Date.now()): boolean {
+export function checkRateLimit(ip: string, now: number = Date.now(), pathClass?: RateLimitClass): boolean {
   rateLimitCallCount++
   if (rateLimitCallCount >= EVICT_INTERVAL) {
     rateLimitCallCount = 0
     sweepRateLimitMap(now)
   }
 
-  const entry = rateLimitMap.get(ip)
+  let entry = rateLimitMap.get(ip)
 
   if (entry === undefined || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
-    rateLimitMap.set(ip, {count: 1, windowStart: now})
-    return true
+    entry = {windowStart: now, counts: {public: 0, operator: 0, ingest: 0}}
+    rateLimitMap.set(ip, entry)
+  }
+  const current = entry
+
+  if (pathClass === undefined) {
+    // Unclassified call: count against EVERY class budget. This preserves the
+    // pre-class-split global-bucket semantics (an unclassified request could be
+    // any class, so conservatively consume all of them).
+    for (const cls of RATE_LIMIT_CLASSES) current.counts[cls]++
+    return RATE_LIMIT_CLASSES.every(cls => current.counts[cls] <= RATE_LIMIT_MAX_PER_CLASS[cls])
   }
 
-  entry.count++
-  if (entry.count > RATE_LIMIT_MAX) {
-    return false
-  }
-  return true
+  current.counts[pathClass]++
+  return current.counts[pathClass] <= RATE_LIMIT_MAX_PER_CLASS[pathClass]
 }
 
 /**
@@ -172,6 +235,13 @@ export interface DashboardAppConfig {
    * If undefined, uses the real GitHub API.
    */
   fetchUserLogin?: ((accessToken: string) => Promise<string>) | undefined
+  /**
+   * Key the rate limiter on the first X-Forwarded-For hop instead of the
+   * direct remote address. Off by default — XFF is client-spoofable; enable
+   * only when the app sits behind a proxy that OVERWRITES XFF. Production
+   * default reads RATE_LIMIT_TRUSTED_PROXY.
+   */
+  rateLimitTrustedProxy?: boolean | undefined
   /**
    * Aggregator snapshot provider. Both the SPA monitoring view and /api/status
    * read from this same provider so they always serve the same data.
@@ -326,8 +396,12 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   const fetchUserLogin = opts?.fetchUserLogin ?? fetchGitHubUserLogin
 
   // Resolve snapshot provider — default empty; production wires the real aggregator.
-  const EMPTY_SNAPSHOT = {repos: [], staleBanner: false, driftCount: 0, refreshedAt: null} as const
-  const getSnapshot = opts?.getSnapshot ?? (() => EMPTY_SNAPSHOT)
+  // rm-197: the no-provider default carries the stale banner — an empty payload
+  // must never read as "authoritatively verified empty".
+  // rm-197: bannered — an empty payload must never read as "authoritatively
+  // verified empty". Single shared constant (review fix F3): the same literal
+  // lived in routes/api.ts until this cycle's banner flip had to edit both.
+  const getSnapshot = opts?.getSnapshot ?? (() => COLD_START_SNAPSHOT)
 
   // Resolve operator UI flag — default OFF (fail-closed).
   const operatorUiEnabled =
@@ -517,7 +591,12 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   )
 
   // ── Rate limiting middleware (defense-in-depth; real limiting belongs at Caddy) ──
-  // Keyed on the direct connection remote address, not X-Forwarded-For (client-spoofable).
+  // Keyed on the direct connection remote address. X-Forwarded-For is client-
+  // spoofable and is IGNORED unless rateLimitTrustedProxy is explicitly enabled —
+  // enable that only when the app sits behind a proxy that OVERWRITES XFF.
+  // Budgets are per path class (public / operator / ingest — see
+  // classifyRateLimitPath) so a flood on one class cannot starve the others.
+  const rateLimitTrustedProxy = opts?.rateLimitTrustedProxy ?? defaultRateLimitTrustedProxy()
   app.use('*', async (c: Context, next) => {
     const path = new URL(c.req.url).pathname
     const sensitiveRoutes = ['/', '/auth/login', '/auth/callback', '/operator']
@@ -531,8 +610,21 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       } catch {
         ip = 'unknown'
       }
+      if (rateLimitTrustedProxy) {
+        // Trusted-proxy mode: key on the FIRST X-Forwarded-For hop. That hop
+        // is the real client ONLY when the proxy OVERWRITES XFF (see the
+        // opts comment above: enable only for an overwriting proxy). A proxy
+        // that APPENDS puts the real client LAST — first-hop keying there
+        // would let callers pick their own throttle keys.
+        const firstHop = c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
+        // Cap the key: a plain IP/host is ≤45 chars, so anything longer is
+        // not an address, and an unbounded token alphabet would grow
+        // rateLimitMap without bound inside the sweep window. A
+        // deterministic prefix cap keeps each spoofed token on ONE key.
+        if (firstHop !== undefined && firstHop !== '') ip = firstHop.slice(0, 64)
+      }
 
-      if (!checkRateLimit(ip)) {
+      if (!checkRateLimit(ip, Date.now(), classifyRateLimitPath(path))) {
         logger.warning('Rate limit exceeded', {ip, path})
         return c.text('Too Many Requests', 429)
       }
@@ -746,15 +838,35 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     // length is computed correctly. Post-processing a streamed serveStatic
     // response leaves a stale Content-Length that truncates the injected HTML
     // and drops the <div id="root"> mount target. Reading + injecting + c.html()
-    // recomputes the length. Fall through to serveStatic if the file is missing.
+    // recomputes the length. Fall through to c.notFound() if the file is missing.
+    //
+    // rm-172: the shell is READ ASYNCHRONOUSLY ONCE and cached — this handler
+    // runs on every authenticated '/' request and must not pay synchronous
+    // file I/O each time (a blocking readFileSync on the hot path stalls the
+    // event loop under load). Cache flip bound: a rebuilt web/dist/index.html
+    // is picked up within SPA_SHELL_CACHE_TTL_MS of the next request (or at
+    // process restart) — strictly better than never, which was the previous
+    // serveStatic behavior for the injected variant.
     const indexHtmlPath = join(webDistRoot, 'index.html')
+    let spaShellCache: {injected: string; at: number} | null = null
+    const loadSpaShell = async (): Promise<string | null> => {
+      try {
+        const html = await readFile(indexHtmlPath, 'utf8')
+        return html.includes('<meta name="push-enabled"')
+          ? html
+          : html.replace('</head>', '<meta name="push-enabled" content="true"></head>')
+      } catch {
+        return null // missing/unreadable shell — keep the notFound fallback
+      }
+    }
     app.get('/', async c => {
-      if (!existsSync(indexHtmlPath)) return c.notFound()
-      const html = readFileSync(indexHtmlPath, 'utf8')
-      const injected = html.includes('<meta name="push-enabled"')
-        ? html
-        : html.replace('</head>', '<meta name="push-enabled" content="true"></head>')
-      return c.html(injected)
+      if (spaShellCache === null || Date.now() - spaShellCache.at >= SPA_SHELL_CACHE_TTL_MS) {
+        const injected = await loadSpaShell()
+        if (injected === null) return c.notFound()
+        spaShellCache = {injected, at: Date.now()}
+        return c.html(injected)
+      }
+      return c.html(spaShellCache.injected)
     })
   } else {
     app.get('/', serveStatic({root: webDistRoot, path: 'index.html'}))
@@ -938,7 +1050,10 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
       const installationId = await resolveInstallationIdForRepo('codeo1io', '.github')
       const token = await getReadOnlyToken(installationId)
 
-      const installOctokit = new Octokit({auth: token})
+      // rm-197 (review fix): time-bounded like every other GitHub transport —
+      // the metadata reader sits on the refresh path and must honor the 30s
+      // request contract, not undici's ~300s default.
+      const installOctokit = new Octokit({auth: token, request: {timeout: GITHUB_REQUEST_TIMEOUT_MS}})
       const response = await installOctokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
         owner: 'codeo1io',
         repo: '.github',
@@ -960,7 +1075,12 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
     deps.graphqlQueryFn ??
     (async (installationId: number, query: string, variables: Record<string, unknown>): Promise<unknown> => {
       const token = await getReadOnlyToken(installationId)
-      const gql = graphql.defaults({headers: {authorization: `token ${token}`}})
+      // rm-197 (review fix): the per-repo GraphQL client is the dominant
+      // transport of the serial first walk — it carries the same 30s bound.
+      const gql = graphql.defaults({
+        headers: {authorization: `token ${token}`},
+        request: {timeout: GITHUB_REQUEST_TIMEOUT_MS},
+      })
       return gql(query, variables)
     })
 
@@ -994,6 +1114,23 @@ export function isLoopbackBindHost(host: string | undefined): boolean {
 export interface ServerBindConfig {
   readonly host: string
   readonly port: number
+}
+
+/**
+ * Resolve whether the consumerless monitoring refresh loop should run.
+ *
+ * rm-204 monitoring-refresh gate: readMonitoringRefreshConfig resolves
+ * DASHBOARD_MONITORING_REFRESH (default ON) so the consumerless
+ * aggregator loop can be skipped without removing credentials.
+ */
+export interface MonitoringRefreshConfig {
+  readonly enabled: boolean
+}
+
+export function readMonitoringRefreshConfig(env: NodeJS.ProcessEnv = process.env): MonitoringRefreshConfig {
+  const raw = env.DASHBOARD_MONITORING_REFRESH?.trim().toLowerCase()
+  const disabled = raw === 'false' || raw === '0' || raw === 'off' || raw === 'no'
+  return {enabled: !disabled}
 }
 
 /**
@@ -1098,24 +1235,42 @@ async function createDashboardServer(): Promise<ServerType> {
     },
   )
 
-  // Attach stop handler for graceful shutdown
+  // Attach stop handler for graceful shutdown: the 'close' listener cancels
+  // the aggregator interval whenever the server closes (including via the
+  // signal handlers below); installShutdownHandlers turns SIGTERM/SIGINT —
+  // which as PID 1 have no default dispositions — into an orderly drain
+  // with a bounded force-exit deadline (rm-171).
   if (stopAggregator !== undefined) {
     const stop = stopAggregator
     server.addListener('close', () => {
       stop()
     })
   }
+  installShutdownHandlers({
+    closeServer: callback => server.close(callback),
+    stopAggregator,
+    closeListenerStore: () => listenerStore?.close(),
+    log: (message, context) => logger.warning(message, context ?? {}),
+  })
 
   // Kick the first aggregation refresh in the background — does NOT block the
   // server from accepting requests. Failures are logged but do NOT crash the
   // server; the interval set by start() will retry on the next cycle.
-  if (provider !== undefined) {
+  // rm-204: DASHBOARD_MONITORING_REFRESH=false skips the loop entirely — no
+  // token mint, no per-repo queries; the empty bannered snapshot IS the
+  // fail-closed behavior (identical to running without credentials).
+  const monitoringRefresh = readMonitoringRefreshConfig()
+  if (provider !== undefined && monitoringRefresh.enabled) {
     const p = provider
     p.start().catch((error: unknown) => {
       logger.warning('Failed to start GitHub aggregator; serving empty snapshot until next retry', {
         error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
       })
     })
+  } else if (provider !== undefined) {
+    logger.warning(
+      'DASHBOARD_MONITORING_REFRESH disabled — aggregator refresh loop not started; serving empty snapshot without querying GitHub (rm-204)',
+    )
   }
 
   return server
