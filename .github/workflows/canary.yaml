@@ -1,12 +1,13 @@
-# rm-179 reality canary — weekly read-only proof that the EXACT query the
-# aggregator ships is accepted by the real GitHub GraphQL API.
+# rm-179/rm-225 reality canary — weekly read-only proof that EVERY query
+# template the aggregator ships is accepted by the real GitHub GraphQL API.
 #
 # Class guard, not a required check: this workflow exists because a live-syntax
 # error (rm-177: //-comments inside the templates) shipped for four days with
 # CI green — every aggregator test fakes the transport. A red run here means
 # "the real API would reject our query today". Read-only, GITHUB_TOKEN only,
 # never writes, never gates merges. The structural offline half of the guard
-# lives in test/query-shape-guard.test.ts.
+# lives in test/query-shape-guard.test.ts, which also asserts the canary's
+# template set (the registry) is complete (rm-225).
 name: GraphQL canary
 
 on:
@@ -45,7 +46,7 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Execute the live REPO_STATUS_QUERY
+      - name: Execute every registered query template (rm-225)
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/graphql-canary.ts
