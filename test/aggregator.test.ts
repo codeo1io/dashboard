@@ -55,11 +55,13 @@ function makeMetadataResult(overrides: {
   publicRepos?: ReturnType<typeof makePublicRepo>[]
   redactedNodeIds?: string[]
   redactedDatabaseIds?: number[]
+  redactedEntriesMissingDatabaseId?: number
 } = {}): MetadataResult {
   return {
     publicRepos: overrides.publicRepos ?? [],
     redactedNodeIds: new Set(overrides.redactedNodeIds ?? []),
     redactedDatabaseIds: new Set(overrides.redactedDatabaseIds ?? []),
+    redactedEntriesMissingDatabaseId: overrides.redactedEntriesMissingDatabaseId ?? 0,
   }
 }
 
@@ -2212,5 +2214,76 @@ describe('aggregator — lifecycle hardening (rm-201)', () => {
     agg.stop()
     agg.stop()
     expect(clearIntervalFn).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-161 (cycle-10): denylist completeness telemetry + publicRepos double-check
+// Landed via the integrate-merge of run 449ed1a5 (case e7b03a2f).
+// ---------------------------------------------------------------------------
+
+describe('aggregator — rm-161: denylist guard-coverage', () => {
+  const captured: string[] = []
+  let originalWarn: typeof console.warn
+
+  beforeEach(() => {
+    captured.length = 0
+    originalWarn = console.warn
+    console.warn = (...args: unknown[]): void => {
+      captured.push(args.map((a: unknown) => String(a)).join(' '))
+    }
+  })
+
+  afterEach(() => {
+    console.warn = originalWarn
+  })
+
+  it('warns with the exact uncovered-entry count when metadata reports redacted entries without any databaseId', async () => {
+    const deps = makeDeps({
+      readMetadata: vi.fn().mockResolvedValue(
+        ok(makeMetadataResult({redactedEntriesMissingDatabaseId: 2})),
+      ),
+    })
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.start()
+    const out = captured.join('\n')
+    expect(out.toLowerCase()).toContain('denylist')
+    expect(out).toContain('2')
+    agg.stop()
+  })
+
+  it('does not warn when every redacted entry armed the secondary databaseId guard', async () => {
+    const deps = makeDeps({
+      readMetadata: vi.fn().mockResolvedValue(
+        ok(makeMetadataResult({redactedEntriesMissingDatabaseId: 0})),
+      ),
+    })
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.start()
+    expect(captured.join('\n')).not.toContain('denylist')
+    agg.stop()
+  })
+
+  it('a publicRepo whose node_id is unknown to the denylist but whose derived databaseId matches is excluded (cross-format symmetry)', async () => {
+    // Legacy-format node_id decodes via deriveDatabaseId to databaseId 123456789;
+    // the denylist set carries the id but NOT this node_id string.
+    const legacyNodeId = 'MDEwOlJlcG9zaXRvcnkxMjM0NTY3ODk='
+    const publicRepo = makePublicRepo({node_id: legacyNodeId, owner: 'org', name: 'denylist-shadow'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([])),
+      readMetadata: vi.fn().mockResolvedValue(
+        ok(makeMetadataResult({publicRepos: [publicRepo], redactedDatabaseIds: [123456789]})),
+      ),
+      graphqlQueryForInstallation: vi.fn(),
+    })
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.start()
+
+    const repos = agg.getSnapshot().repos
+    expect(repos.find(r => r.full_name === 'org/denylist-shadow')).toBeUndefined()
+    // Redaction-before-query held: no GraphQL call for the shadowed repo.
+    expect(deps.graphqlQueryForInstallation).not.toHaveBeenCalled()
+
+    agg.stop()
   })
 })
