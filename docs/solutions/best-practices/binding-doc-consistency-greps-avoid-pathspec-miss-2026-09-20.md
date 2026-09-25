@@ -32,6 +32,17 @@ the repository root — git silently returns nothing rather than erroring.
 - Distinguish semantics before "fixing" hits: `fro-bot/.github#3525` in
   `test/aggregator.test.ts` is an upstream **issue-tracker reference**, not a
   metadata-source claim — those stay.
+- Dated research logs under `docs/ideation/` are historical record: their
+  upstream-state facts (including `COPY wiki-writer/...` lines that still live
+  in *upstream's* Dockerfile and the fork-exclusion rationale built on them)
+  are era-qualified snapshots, not live claims. Sweep them with the
+  historical-tree exclusion and never rewrite them to match today's upstream —
+  the canonical wiki-writer residue sweep is
+  `grep -rn 'wiki-writer' . --exclude-dir={.git,node_modules,dist,dist-fixture,.agents,ideation}`
+  (`--exclude-dir` matches bare directory names). Remaining hits are intended:
+  ROADMAP era-qualified history, dated `docs/prioritization/` batch logs,
+  the `docs/solutions/` docs that define the exclusion itself, and the guard
+  tests that enforce it — everything else is actionable residue.
 
 ## Why This Matters
 

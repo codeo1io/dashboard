@@ -1,4 +1,6 @@
-# Weekly read-only drift check for the Dockerfile's node:24-slim base pins.
+# Weekly read-only drift check for the Dockerfile's node:24-slim base pins,
+# plus a report-only pin-drift job (rm-204) covering packageManager, npm
+# ranges, and GitHub Action pins — drift the digest job cannot see.
 #
 # The Dockerfile pins by digest (never a moving tag), so nothing alerts when
 # the upstream tag rebuilds. This workflow compares the pinned digests to the
@@ -140,3 +142,199 @@ jobs:
 
           # Non-zero so the run is visibly red on drift.
           exit 1
+
+  pin-drift:
+    name: Dependency and action pin drift (report-only)
+    # rm-204 (landing 2026-09-25, run a4a97e30 cycle-10 B2; minted as rm-167
+    # in that lineage — renumbered at this integrate: main's landed rm-167
+    # owns that id): surface pin drift the digest job cannot see. Never bumps
+    # anything (dependabot is the sole pin-mover); chronic registry drift must
+    # not turn a weekly watch red, so this job always exits 0 and reports
+    # instead.
+    # rm-188 (cycle 13): pinned ubuntu-24.04 with the digest job — the
+    # ubuntu-latest alias maps to 24.04 while 26.04 images are published.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Report packageManager pin vs upstream fro-bot/dashboard
+        run: |
+          set -euo pipefail
+          SUMMARY="$GITHUB_STEP_SUMMARY"
+          {
+            echo '## Pin drift (report-only, rm-204)'
+            echo '### packageManager'
+          } >> "$SUMMARY"
+
+          FORK_PIN="$(node -p "require('./package.json').packageManager")"
+          UPSTREAM_PIN="$(curl -fsSL https://raw.githubusercontent.com/fro-bot/dashboard/main/package.json \
+            | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).packageManager" 2>/dev/null || true)"
+
+          if [ -z "$UPSTREAM_PIN" ]; then
+            echo '::warning::could not read upstream packageManager (network or layout change)'
+            echo '- upstream lookup failed' >> "$SUMMARY"
+          elif [ "$FORK_PIN" != "$UPSTREAM_PIN" ]; then
+            echo "::warning::packageManager fork=$FORK_PIN upstream=$UPSTREAM_PIN"
+            echo "- fork \`$FORK_PIN\` vs upstream \`$UPSTREAM_PIN\` — drift" >> "$SUMMARY"
+          else
+            echo "- fork \`$FORK_PIN\` matches upstream" >> "$SUMMARY"
+          fi
+
+      - name: Report npm dependencies vs registry latest
+        run: |
+          set -euo pipefail
+          SUMMARY="$GITHUB_STEP_SUMMARY"
+          echo '### npm dependencies vs registry latest' >> "$SUMMARY"
+
+          PKGS="$(node -e '
+            const fs = require("fs");
+            const out = new Set();
+            for (const f of ["package.json", "web/package.json"]) {
+              if (!fs.existsSync(f)) continue;
+              const p = JSON.parse(fs.readFileSync(f, "utf8"));
+              for (const dep of [p.dependencies, p.devDependencies]) {
+                if (dep) Object.keys(dep).forEach((k) => out.add(k));
+              }
+            }
+            console.log([...out].sort().join("\n"));
+          ')"
+
+          DRIFT=0
+          MAJOR_PINNED=0
+          TOTAL=0
+          # npm view's range queries answer in npm's own text format — always
+          # ask for --json and take the highest matching version from the array.
+          resolve_range() {
+            npm view "${1}@${2}" version --json 2>/dev/null | node -e '
+              let s = "";
+              process.stdin.on("data", (d) => (s += d));
+              process.stdin.on("end", () => {
+                try {
+                  const j = JSON.parse(s);
+                  console.log(Array.isArray(j) ? j[j.length - 1] : j);
+                } catch {
+                  console.log("");
+                }
+              });
+            '
+          }
+          major_of() { echo "$1" | grep -oE '^[0-9]+' || echo '?'; }
+          while IFS= read -r pkg; do
+            [ -n "$pkg" ] || continue
+            TOTAL=$((TOTAL + 1))
+            PINNED="$(node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('package.json','utf8')); console.log(p.dependencies?.['$pkg'] ?? p.devDependencies?.['$pkg'] ?? '?')")"
+            LATEST="$(npm view "$pkg" version 2>/dev/null || true)"
+            if [ -z "$LATEST" ]; then
+              continue # private/local/unresolvable — not a drift signal
+            fi
+            # The lockfile is what ships, so compare the version the pinned
+            # range RESOLVES to against registry latest — a range that already
+            # resolves to latest is current, not drift.
+            RESOLVED="$(resolve_range "$pkg" "$PINNED")"
+            if [ -z "$RESOLVED" ] || [ "$RESOLVED" = "$LATEST" ]; then
+              continue
+            fi
+            if [ "$(major_of "$RESOLVED")" -lt "$(major_of "$LATEST")" ] 2>/dev/null; then
+              # Majors are deliberately pinned until a migration is planned
+              # (rm-133) — report in the summary, but do not warn weekly.
+              MAJOR_PINNED=$((MAJOR_PINNED + 1))
+              echo "- \`$pkg\`: resolves \`$RESOLVED\`, latest major \`$LATEST\` — major pinned by design (rm-133)" >> "$SUMMARY"
+            else
+              DRIFT=$((DRIFT + 1))
+              echo "::warning::$pkg resolves $RESOLVED (range $PINNED) vs latest $LATEST"
+              echo "- \`$pkg\`: range \`$PINNED\` resolves \`$RESOLVED\` vs latest \`$LATEST\`" >> "$SUMMARY"
+            fi
+          done <<< "$PKGS"
+
+          echo "checked $TOTAL packages, $DRIFT behind latest, $MAJOR_PINNED major-pinned by design"
+          echo "checked: $TOTAL, behind latest: $DRIFT, major-pinned by design: $MAJOR_PINNED (rm-133) — dependabot owns the bumps (rm-102)" >> "$SUMMARY"
+
+      - name: Report workflow action and image pins vs latest releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SUMMARY="$GITHUB_STEP_SUMMARY"
+          echo '### GitHub Action and image pins' >> "$SUMMARY"
+
+          # External action refs (owner/repo@ref) — local composite actions are
+          # versioned with the repo itself and are skipped. The repo's pin
+          # convention records the pinned version in a trailing '# vX.Y.Z'
+          # comment on the uses: line; that comment is captured here and is
+          # the AUTHORITY for sha pins (a sha never string-equals a tag, and
+          # commit messages can carry unrelated semvers — e.g. build-push-action
+          # shas resolve to a spurious 0.100.0). The commit-message fallback
+          # below stays only for hypothetical comment-less sha pins and is
+          # labelled as inferred. This also covers the fro-bot/agent action
+          # pin (sha ref with the version in a trailing comment); mcr/playwright
+          # image pins are by-design deterministic (deterministic visual gate)
+          # and are not drift signals.
+          ACTIONS="$(grep -rhoE 'uses: [A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+( +# *v?[A-Za-z0-9_.-]+)?' .github/workflows .github/actions \
+            | sed 's/^uses: //' | sort -u || true)"
+
+          report_action_pin() {
+            local ref="$1" repo="$2" pinned="$3" latest resolved='' msg
+            latest="$(gh api "repos/$repo/releases/latest" --jq .tag_name 2>/dev/null || true)"
+            if [ -z "$latest" ]; then
+              echo "- \`$repo@$ref\` — no releases (unresolvable)" >> "$SUMMARY"
+              return
+            fi
+            # Release tags may or may not carry a leading v — compare without it.
+            local latest_plain="${latest#v}"
+            if [ -n "$pinned" ]; then
+              # Trailing '# vX.Y.Z' comment — authoritative for this pin.
+              if [ "${pinned#v}" = "$latest_plain" ]; then
+                echo "- \`$repo@$pinned\` — current" >> "$SUMMARY"
+              else
+                echo "::warning::$repo pinned $pinned ($ref) vs latest $latest"
+                echo "- \`$repo@$pinned\` ($ref) vs latest \`$latest\` — drift" >> "$SUMMARY"
+              fi
+            elif [[ "$ref" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              # Tag-pinned without a comment — the ref itself is the version.
+              if [ "${ref#v}" = "$latest_plain" ]; then
+                echo "- \`$repo@$ref\` — current" >> "$SUMMARY"
+              else
+                echo "::warning::$repo pinned $ref vs latest $latest"
+                echo "- \`$repo@$ref\` vs latest \`$latest\` — drift" >> "$SUMMARY"
+              fi
+            else
+              # Sha pin with no version comment — best-effort commit-message
+              # resolution, labelled as inferred wherever it appears.
+              msg="$(gh api "repos/$repo/commits/$ref" --jq .commit.message 2>/dev/null | head -1 || true)"
+              resolved="$(echo "$msg" | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+              if [ -n "$resolved" ]; then
+                if [ "${resolved#v}" = "$latest_plain" ]; then
+                  echo "- \`$repo@$ref\` → $resolved (inferred) — current" >> "$SUMMARY"
+                else
+                  echo "::warning::$repo pinned ~$resolved (inferred from $ref) vs latest $latest"
+                  echo "- \`$repo@$ref\` → $resolved (inferred) vs latest \`$latest\` — drift" >> "$SUMMARY"
+                fi
+              else
+                echo "::warning::$repo pinned $ref (no version comment) vs latest $latest"
+                echo "- \`$repo@$ref\` (no version comment) vs latest \`$latest\`" >> "$SUMMARY"
+              fi
+            fi
+          }
+
+          while IFS= read -r ref_line; do
+            [ -n "$ref_line" ] || continue
+            repo="${ref_line%%@*}"
+            rest="${ref_line#*@}"
+            ref="${rest%%[[:space:]]*}"
+            pinned=''
+            case "$rest" in
+              *'#'*)
+                pinned="${rest##*#}"
+                pinned="${pinned# }"
+                # Only a version-looking comment is authoritative.
+                if ! [[ "$pinned" =~ ^v?[0-9][A-Za-z0-9_.-]*$ ]]; then
+                  pinned=''
+                fi
+                ;;
+            esac
+            report_action_pin "$ref" "$repo" "$pinned"
+          done <<< "$ACTIONS"
+
+          echo 'report complete — action pins listed above; dependabot owns action bumps (rm-102)'
