@@ -67,6 +67,26 @@ export function getPushSupport(): PushSupport {
   }
 }
 
+/**
+ * rm-228: this build ships NO push-capable service worker.
+ *
+ * The emitted `sw.js` is an uninstall-only kill-switch (`web/src/sw.ts`) and
+ * nothing registers it anymore (`injectRegister: false` in
+ * `web/vite.config.ts`), so `navigator.serviceWorker.ready` never settles in
+ * production. Every push flow in `subscribe.ts` gates on that promise, which
+ * made the opt-in permanently stuck on `sw-not-ready` while the UI still
+ * advertised enablement. Until a push-capable client is deliberately
+ * re-introduced (roadmap rm-106/rm-163), callers must treat push as
+ * unavailable on this build instead of gating flows on `ready`.
+ *
+ * Kept as a function (not an inlined literal) so tests can mock the module
+ * and keep the flow logic in `subscribe.ts`/`reconcile.ts` covered for the
+ * future re-introduction.
+ */
+export function isPushClientSupported(): boolean {
+  return false
+}
+
 /** Read the current `Notification.permission`. Never requests permission. */
 export function getNotificationPermission(): NotificationPermission | 'unsupported' {
   if (typeof Notification === 'undefined') return 'unsupported'

@@ -1,5 +1,5 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
-import {getNotificationPermission, getPushSupport} from './capability.ts'
+import {getNotificationPermission, getPushSupport, isPushClientSupported} from './capability.ts'
 
 function definePlatform(platform: string): void {
   Object.defineProperty(navigator, 'platform', {value: platform, configurable: true})
@@ -114,6 +114,16 @@ describe('getPushSupport', () => {
   // Real desktop Safari/Chrome (no touchscreen) correctly omit it, which is
   // what production relies on; that path is covered by the browser
   // verification pass, not a unit test.
+})
+
+describe('isPushClientSupported', () => {
+  it('returns false — rm-228: this build ships no push-capable service worker', () => {
+    // The kill-switch SW (web/src/sw.ts) is never registered and
+    // navigator.serviceWorker.ready therefore never settles. Any caller
+    // gating on it must first check this flag. If this test is redone to
+    // re-enable push, rm-106/rm-163 own the re-introduction decision.
+    expect(isPushClientSupported()).toBe(false)
+  })
 })
 
 describe('getNotificationPermission', () => {

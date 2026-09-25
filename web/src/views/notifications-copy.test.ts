@@ -15,6 +15,7 @@ const ALL_STATES: NotificationUiState[] = [
   'denied',
   'dismissed',
   'unsupported',
+  'unavailable',
   'ios-not-installed',
   'sw-not-ready',
   'subscribe-failed',
@@ -38,6 +39,12 @@ describe('getNotificationCopy distinctness', () => {
     const headlines = ALL_STATES.map(s => getNotificationCopy(s).headline)
     const uniqueHeadlines = new Set(headlines)
     expect(uniqueHeadlines.size).toBe(ALL_STATES.length)
+  })
+
+  it("'unavailable' (rm-228) offers no CTA — push cannot be enabled on this build", () => {
+    const copy = getNotificationCopy('unavailable')
+    expect(copy.ctaText).toBeNull()
+    expect(copy.headline).toBe('Alerts Not Available')
   })
 })
 
