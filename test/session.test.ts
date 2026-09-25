@@ -279,3 +279,57 @@ describe('decodeKey hardening (FIX P2 — weak key rejection)', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// Canonical format enforcement (rm-206, cycle 10)
+// ---------------------------------------------------------------------------
+
+async function withKey(
+  envValue: string,
+  run: () => Promise<void>,
+): Promise<void> {
+  const {loadCookieKey} = await import('../src/session.ts')
+  const original = process.env.DASHBOARD_COOKIE_KEY
+  process.env.DASHBOARD_COOKIE_KEY = envValue
+  try {
+    await run()
+    expect(loadCookieKey).toBeTypeOf('function')
+  } finally {
+    if (original === undefined) {
+      delete process.env.DASHBOARD_COOKIE_KEY
+    } else {
+      process.env.DASHBOARD_COOKIE_KEY = original
+    }
+  }
+}
+
+describe('canonical format enforcement (rm-206)', () => {
+  it('rejects stripped-padding base64 (canonical minus the trailing =)', async () => {
+    const raw = Buffer.from('deadbeefcafebabe0102030405060708090a0b0c0d0e0f101112131415161718', 'hex')
+    const canonical = raw.toString('base64') // 44 chars, padded
+    expect(canonical.length).toBe(44)
+    const stripped = canonical.slice(0, -1)
+    await expect(withKey(stripped, async () => {
+      const {loadCookieKey} = await import('../src/session.ts')
+      await loadCookieKey()
+    })).rejects.toThrow(/canonically encoded/)
+  })
+
+  it('rejects a raw passphrase (neither hex nor base64 charset)', async () => {
+    await expect(withKey('this is a long passphrase with spaces and punctuation!', async () => {
+      const {loadCookieKey} = await import('../src/session.ts')
+      await loadCookieKey()
+    })).rejects.toThrow(/canonically encoded/)
+  })
+
+  it('accepts canonical padded base64 of 48 bytes (64 chars)', async () => {
+    const raw = Buffer.from('0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f30', 'hex')
+    expect(raw.length).toBe(48)
+    expect(raw.toString('base64').length).toBe(64)
+    await withKey(raw.toString('base64'), async () => {
+      const {loadCookieKey} = await import('../src/session.ts')
+      const key = await loadCookieKey()
+      expect(key.length).toBe(48)
+    })
+  })
+})

@@ -66,6 +66,14 @@ Access is single-operator: GitHub OAuth authenticates the request and an exact, 
 login allowlist gates every non-public route. Sessions are HttpOnly, Secure, SameSite=Lax signed
 cookies; logout is CSRF-protected.
 
+The cookie-signing key (`DASHBOARD_COOKIE_KEY`, or a file via
+`DASHBOARD_COOKIE_KEY_FILE` defaulting to `/data/cookie.key`) must decode to
+at least 32 bytes and be canonically encoded: hex at 2 chars/byte, or padded
+base64 at the canonical 4-chars-per-3-bytes length. Shorter keys — and
+non-canonical encodings such as base64 with stripped padding, or a raw
+passphrase — are rejected at load (fail-closed) instead of being silently
+signed with.
+
 The dashboard mints each GitHub App installation token with an explicit read-only permissions
 subset (`pull_requests`/`checks`/`issues`/`contents`/`metadata:read`, with
 `security_events`/`vulnerability_alerts:read` optional). It is read-only by construction — there
