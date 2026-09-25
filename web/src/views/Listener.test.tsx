@@ -204,4 +204,45 @@ describe('ListenerChannel', () => {
 
     expect(listenerApi.fetchListenerMessages).toHaveBeenCalled() // at least once
   })
+
+  it('rm-209c: a hung list fetch holds the poll guard — overlapping triggers do not stack requests', async () => {
+    // The initial load never resolves. Focus-triggered reloads must be dropped
+    // while the in-flight guard is held — without it every focus event stacks
+    // another fetch. The FETCH_TIMEOUT_MS wiring keeps this hold bounded: a
+    // wedged fetch aborts after 10s, releasing the guard (armed at :36).
+    let resolveFetch: (v: Awaited<ReturnType<typeof listenerApi.fetchListenerMessages>>) => void = () => {}
+    const hang = new Promise<Awaited<ReturnType<typeof listenerApi.fetchListenerMessages>>>(resolve => {
+      resolveFetch = resolve
+    })
+    vi.mocked(listenerApi.fetchListenerMessages).mockImplementationOnce(() => hang)
+    // The module mock is shared across every test in this file — isolate the
+    // call count to this test's own invocations (mockClear keeps the queued
+    // once-implementation; it only resets recorded calls).
+    vi.mocked(listenerApi.fetchListenerMessages).mockClear()
+
+    render(<ListenerChannel />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+    expect(listenerApi.fetchListenerMessages).toHaveBeenCalledTimes(1) // mount poll, hung
+
+    // Focus while hung: dropped by the guard.
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+      await Promise.resolve()
+    })
+    expect(listenerApi.fetchListenerMessages).toHaveBeenCalledTimes(1)
+
+    // Settle the hung fetch; the guard releases and the next focus polls again.
+    await act(async () => {
+      resolveFetch({ ok: false, reason: 'network' })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+      await Promise.resolve()
+    })
+    expect(listenerApi.fetchListenerMessages).toHaveBeenCalledTimes(2)
+  })
 })
