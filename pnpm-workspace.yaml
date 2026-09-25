@@ -8,6 +8,8 @@ allowBuilds:
 minimumReleaseAgeExclude:
   - '@bfra.me/eslint-config@0.51.2 || 0.51.3 || 0.51.4 || 0.52.0 || 0.52.1 || 0.52.2'
   - '@bfra.me/tsconfig@0.13.2'
+  - hono@4.13.9
+  - vite@8.3.1
 
 overrides:
   brace-expansion@2: '>=2.1.2 <3.0.0'
