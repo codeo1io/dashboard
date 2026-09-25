@@ -46,6 +46,7 @@ import {COLD_START_SNAPSHOT, createAggregator} from './github/aggregator.ts'
 import {createDashboardAppClient, GITHUB_REQUEST_TIMEOUT_MS} from './github/app-client.ts'
 import {buildInstallationsClient, enumerateRepos, mintReadOnlyToken} from './github/installations.ts'
 import {makeNotFoundError, readRepoMetadata} from './github/metadata.ts'
+import {fetchScorecard} from './github/scorecard.ts'
 import {readListenerDbPath, readListenerIngestKey} from './listener/config.ts'
 import {createListenerStore} from './listener/store.ts'
 import {logger, sanitizeErrorMessage} from './logger.ts'
@@ -1136,6 +1137,9 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
     readMetadata: readRepoMetadata,
     graphqlQueryForInstallation: graphqlQueryFn,
     resolveInstallationIdForRepo,
+    // rm-229 (cycle-18): OpenSSF Scorecard posture columns — public zero-auth
+    // REST, fail-soft inside the module (absent column on any failure).
+    fetchScorecard,
   })
 
   return {

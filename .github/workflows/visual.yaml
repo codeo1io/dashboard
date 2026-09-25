@@ -81,8 +81,9 @@ jobs:
         run: >
           pnpm exec playwright test
           ${{ (github.event_name == 'workflow_dispatch' && inputs.update-baselines) && '--update-snapshots' || '' }}
-        env:
-          UPDATE_BASELINES: ${{ (github.event_name == 'workflow_dispatch' && inputs.update-baselines) && 'true' || 'false' }}
+        # rm-231a (cycle-18): the UPDATE_BASELINES env var that used to sit here
+        # was never read by anything — playwright receives --update-snapshots
+        # directly on the run line above — so it is removed as dead config.
 
       - name: Upload report on failure
         if: failure()
