@@ -1,17 +1,9 @@
 import type {AggregatorSnapshot, DashboardRepo, RepoCiStatus} from '../github/aggregator.ts'
 import {Hono} from 'hono'
+import {COLD_START_SNAPSHOT} from '../github/aggregator.ts'
 
 /** Injectable snapshot provider — returns the current aggregator snapshot. */
 export type SnapshotProvider = () => AggregatorSnapshot
-
-/** Empty snapshot returned when no provider is configured. */
-const EMPTY_SNAPSHOT: AggregatorSnapshot = {
-  repos: [],
-  staleBanner: false,
-  driftCount: 0,
-  enumerationIncomplete: null,
-  refreshedAt: null,
-}
 
 // ---------------------------------------------------------------------------
 // Client DTO — /api/monitoring
@@ -90,7 +82,7 @@ export function buildApiRouter(getSnapshot?: SnapshotProvider): Hono {
    * If you need to add a consumer, prefer /api/monitoring (the minimized DTO).
    */
   api.get('/status', c => {
-    const snapshot = getSnapshot === undefined ? EMPTY_SNAPSHOT : getSnapshot()
+    const snapshot = getSnapshot === undefined ? COLD_START_SNAPSHOT : getSnapshot()
     c.header('Cache-Control', 'no-store')
     return c.json(snapshot)
   })
@@ -110,7 +102,7 @@ export function buildApiRouter(getSnapshot?: SnapshotProvider): Hono {
    * - The DTO mapper is the final whitelist: only explicitly mapped fields are emitted.
    */
   api.get('/monitoring', c => {
-    const snapshot = getSnapshot === undefined ? EMPTY_SNAPSHOT : getSnapshot()
+    const snapshot = getSnapshot === undefined ? COLD_START_SNAPSHOT : getSnapshot()
     c.header('Cache-Control', 'no-store')
     return c.json(toMonitoringDto(snapshot))
   })
