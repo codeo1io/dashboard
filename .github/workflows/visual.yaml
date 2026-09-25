@@ -4,10 +4,18 @@ name: visual
 # Intentionally NOT a required check: failures here surface drift for review
 # without blocking merges. Baselines under tests/visual/__screenshots__.
 # Promote to required once baselines are stable across runner generations.
+# rm-207 (cycle-17, 2026-09-25): the fixture server serves `public/` (the
+# ~3k-line operator runtime) and `web/dist/` built from `web/` — the paths
+# filter must cover every non-test surface that reaches the browser, else
+# visually-material changes skip this gate entirely. `test/visual-gate-paths.test.ts`
+# pins this coverage set.
 on:
   pull_request:
     paths:
       - web/src/**
+      - web/index.html
+      - web/vite.config.ts
+      - public/**
       - tests/visual/**
       - playwright.config.ts
       - .github/workflows/visual.yaml
