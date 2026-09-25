@@ -1192,6 +1192,28 @@ describe('createOperatorSseReader — buffer overflow', () => {
     expect(errors[0]?.message).not.toContain('x'.repeat(10))
     expect(closed).toBe(true)
   })
+
+  it('rm-114: the cap counts UTF-8 BYTES, not UTF-16 code units — astral text trips it', async () => {
+    // '𝕏' (U+1D54F) is 4 UTF-8 bytes but 2 UTF-16 code units. 250_001 chars =
+    // 1_000_004 bytes (over the cap) yet only 500_002 string code units
+    // (under it) — the pre-rm-114 `.length` check admitted this buffer; the
+    // byte-accurate counter must fail closed on it.
+    const astral = '𝕏'.repeat(Math.ceil((MAX_SSE_BUFFER_BYTES + 4) / 4))
+    expect(astral.length).toBeLessThan(MAX_SSE_BUFFER_BYTES) // the bug's precondition
+    const {fetchImpl} = makeFakeFetch(makeResponse(200, [astral]))
+    const reader = createOperatorSseReader({fetchImpl})
+
+    const errors: Error[] = []
+    let closed = false
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: () => {},
+      onError: err => errors.push(err),
+      onClose: () => { closed = true },
+    })
+
+    expect(errors).toHaveLength(1)
+    expect(closed).toBe(true)
+  })
 })
 
 describe('createOperatorSseReader — flush path contract gate', () => {

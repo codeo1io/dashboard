@@ -1,6 +1,7 @@
 ---
 title: Binding-doc consistency greps must be repo-wide pattern greps, not bare-filename pathspecs
 date: 2026-09-20
+last_updated: 2026-09-25
 category: best-practices
 module: dashboard
 problem_type: tooling_decision
@@ -69,3 +70,25 @@ $ git grep -n 'fro-bot/.github' aa4ff9f -- copilot-instructions.md
 $ grep -rn 'fro-bot/.github' AGENTS.md README.md .github/copilot-instructions.md src/ test/
 test/aggregator.test.ts:1163:  // (tracked: fro-bot/.github#3525).   ← issue ref, keep
 ```
+
+## Update 2026-09-25 — plural test trees hid a LIVE dependency (near-miss dead-dep removal)
+
+The same filter class nearly shipped a wrong removal. A research-phase "is this
+dependency dead?" check ran
+`grep -rn 'axe-core|AxeBuilder' test/ web/` → zero hits, and `@axe-core/playwright`
+was recorded as a dead devDep candidate for wire-or-drop. The repository has TWO
+test roots: `test/` (server Vitest suites) and `tests/` (Playwright visual suite).
+The unscoped re-check at implement time found
+`tests/visual/dashboard.spec.ts` importing `@axe-core/playwright` and running an
+accessibility scan on every visual page — dropping the dep would have broken the
+CI visual gate. The dep was kept; no change was the correct change.
+
+- Dead-dependency (or dead-export) determination must enumerate every source
+  root or use no pathspec at all. In this repo that is `test/` AND `tests/`,
+  plus `web/`, `public/`, `scripts/`, and `.github/workflows/` (workflow
+  action-adjacent tooling).
+- A zero-hit grep is only evidence if the scope provably contains every place
+  a usage could live; otherwise prefer `grep -rn '<term>' .` with known-noise
+  excludes over an enumerated allowlist of directories.
+- Record the grep command verbatim when a finding says "zero usages" — the
+  next phase must be able to reproduce or refute the scope, as happened here.
