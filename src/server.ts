@@ -15,7 +15,7 @@
 import type {ServerType} from '@hono/node-server'
 import type {GitHubOAuthClient} from './auth/oauth.ts'
 import type {OperatorClient, SessionDto} from './gateway/operator-client.ts'
-import type {AggregatorSnapshot} from './github/aggregator.ts'
+import type {AggregatorSnapshot, SnapshotStore} from './github/aggregator.ts'
 import type {MetadataReader} from './github/metadata.ts'
 import type {ListenerStore} from './listener/store.ts'
 import {Buffer} from 'node:buffer'
@@ -46,6 +46,7 @@ import {COLD_START_SNAPSHOT, createAggregator} from './github/aggregator.ts'
 import {createDashboardAppClient, GITHUB_REQUEST_TIMEOUT_MS} from './github/app-client.ts'
 import {buildInstallationsClient, enumerateRepos, mintReadOnlyToken} from './github/installations.ts'
 import {makeNotFoundError, readRepoMetadata} from './github/metadata.ts'
+import {createFileSnapshotStore} from './github/snapshot-store.ts'
 import {readListenerDbPath, readListenerIngestKey} from './listener/config.ts'
 import {createListenerStore} from './listener/store.ts'
 import {logger, sanitizeErrorMessage} from './logger.ts'
@@ -1040,6 +1041,11 @@ export interface SnapshotProviderDeps {
    * Used to find the installation ID for a repo by owner/name.
    */
   readonly resolveInstallationIdForRepo?: (owner: string, name: string) => Promise<number>
+  /**
+   * Optional snapshot persistence (rm-198). Default: file-backed store at
+   * `DASHBOARD_SNAPSHOT_CACHE` when that env is set, disabled otherwise.
+   */
+  readonly snapshotStore?: SnapshotStore
 }
 
 /**
@@ -1136,6 +1142,7 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
     readMetadata: readRepoMetadata,
     graphqlQueryForInstallation: graphqlQueryFn,
     resolveInstallationIdForRepo,
+    snapshotStore: deps.snapshotStore ?? createFileSnapshotStore(process.env.DASHBOARD_SNAPSHOT_CACHE),
   })
 
   return {
@@ -1297,8 +1304,16 @@ async function createDashboardServer(): Promise<ServerType> {
       stop()
     })
   }
+  // rm-171: ServerType's union includes http2 variants whose typings lack
+  // the socket-drain APIs; @hono/node-server's serve() always returns a plain
+  // node:http Server at runtime, so narrow once at the seam.
+  const httpServer = server as import('node:http').Server
   installShutdownHandlers({
     closeServer: callback => server.close(callback),
+    // rm-171: idle keep-alive sockets otherwise hold close() open through the
+    // whole grace deadline; long-lived streams are destroyed at the deadline.
+    closeIdleConnections: () => httpServer.closeIdleConnections(),
+    closeAllConnections: () => httpServer.closeAllConnections(),
     stopAggregator,
     closeListenerStore: () => listenerStore?.close(),
     log: (message, context) => logger.warning(message, context ?? {}),
