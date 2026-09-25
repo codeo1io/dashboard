@@ -3,7 +3,7 @@ import {existsSync, readdirSync} from 'node:fs'
 import {join} from 'node:path'
 import process from 'node:process'
 import {beforeAll, describe, expect, it, vi} from 'vitest'
-import {buildDashboardApp, buildSnapshotProvider, readServerBindConfig} from '../src/server.ts'
+import {buildDashboardApp, buildSnapshotProvider, readMonitoringRefreshConfig, readServerBindConfig} from '../src/server.ts'
 import {SessionManager} from '../src/session.ts'
 
 describe('readServerBindConfig — server bind address (issue #13)', () => {
@@ -105,6 +105,7 @@ describe('buildSnapshotProvider — production wiring', () => {
           },
         ],
         installations: [{id: 1, account: 'fro-bot'}],
+        failedInstallationIds: [],
       },
     })
 
@@ -171,7 +172,7 @@ repos:
     // after start(), refreshedAt is set (not null as in the empty default).
     const fakeEnumerate = vi.fn().mockResolvedValue({
       success: true,
-      data: {repos: [], installations: []},
+      data: {repos: [], installations: [], failedInstallationIds: []},
     })
     const fakeMetadataReader = vi.fn().mockResolvedValue('version: 1\nrepos: []\n')
     const fakeGraphqlQuery = vi.fn().mockResolvedValue({repository: null})
@@ -218,7 +219,7 @@ describe('buildSnapshotProvider — auth topology regression tests', () => {
     const fakeMetadataReader = vi.fn().mockResolvedValue('version: 1\nrepos: []\n')
     const fakeEnumerate = vi.fn().mockResolvedValue({
       success: true,
-      data: {repos: [], installations: [{id: 42, account: 'codeo1io'}]},
+      data: {repos: [], installations: [{id: 42, account: 'codeo1io'}], failedInstallationIds: []},
     })
     const fakeGraphqlQuery = vi.fn().mockResolvedValue({repository: null})
 
@@ -263,7 +264,7 @@ describe('buildSnapshotProvider — auth topology regression tests', () => {
     const fakeMetadataReader = vi.fn().mockResolvedValue('version: 1\nrepos: []\n')
     const fakeEnumerate = vi.fn().mockResolvedValue({
       success: true,
-      data: {repos: [], installations},
+      data: {repos: [], installations, failedInstallationIds: []},
     })
     const fakeGraphqlQuery = vi.fn().mockResolvedValue({repository: null})
 
@@ -304,7 +305,7 @@ describe('buildSnapshotProvider — auth topology regression tests', () => {
     const fakeMetadataReader = vi.fn().mockResolvedValue('version: 1\nrepos: []\n')
     const fakeEnumerate = vi.fn().mockResolvedValue({
       success: true,
-      data: {repos: [], installations},
+      data: {repos: [], installations, failedInstallationIds: []},
     })
     const fakeGraphqlQuery = vi.fn().mockResolvedValue({repository: null})
 
@@ -584,7 +585,7 @@ describe('enumerateRepos — installation_id flows correctly', () => {
         {id: 10, account: 'org-a'},
         {id: 20, account: 'org-b'},
       ]),
-      mintInstallationToken: vi.fn().mockResolvedValue('ghs_fake_token'),
+      mintInstallationToken: vi.fn().mockResolvedValue({token: 'ghs_fake_token', expiresAt: null}),
       listInstallationRepos: vi.fn()
         .mockResolvedValueOnce([repoA])
         .mockResolvedValueOnce([repoB]),
@@ -613,7 +614,7 @@ describe('enumerateRepos — installation_id flows correctly', () => {
         {id: 10, account: 'org-a'},
         {id: 20, account: 'org-b'},
       ]),
-      mintInstallationToken: vi.fn().mockResolvedValue('ghs_fake_token'),
+      mintInstallationToken: vi.fn().mockResolvedValue({token: 'ghs_fake_token', expiresAt: null}),
       listInstallationRepos: vi.fn()
         .mockResolvedValueOnce([sharedRepo]) // install 10 sees it first
         .mockResolvedValueOnce([sharedRepo]), // install 20 also sees it
@@ -627,5 +628,32 @@ describe('enumerateRepos — installation_id flows correctly', () => {
     expect(repos).toHaveLength(1)
     // First-seen-wins: installation_id must be 10 (the first installation that saw it)
     expect(repos[0]?.installation_id).toBe(10)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-204: monitoring refresh gate (DASHBOARD_MONITORING_REFRESH)
+// ---------------------------------------------------------------------------
+
+describe('readMonitoringRefreshConfig — refresh loop gate (rm-204)', () => {
+  it('defaults to enabled (behavior-preserving)', () => {
+    expect(readMonitoringRefreshConfig({})).toEqual({enabled: true})
+  })
+
+  it('disables on false/0/off/no, case-insensitive and whitespace-tolerant', () => {
+    for (const value of ['false', '0', 'off', 'no', ' FALSE ', 'Off', 'NO']) {
+      expect(readMonitoringRefreshConfig({DASHBOARD_MONITORING_REFRESH: value}).enabled, `value=${value}`).toBe(false)
+    }
+  })
+
+  it('stays enabled for truthy and arbitrary values', () => {
+    for (const value of ['true', '1', 'yes', 'anything-else']) {
+      expect(readMonitoringRefreshConfig({DASHBOARD_MONITORING_REFRESH: value}).enabled, `value=${value}`).toBe(true)
+    }
+  })
+
+  it('empty/whitespace-only value keeps the default-on behavior', () => {
+    expect(readMonitoringRefreshConfig({DASHBOARD_MONITORING_REFRESH: ''}).enabled).toBe(true)
+    expect(readMonitoringRefreshConfig({DASHBOARD_MONITORING_REFRESH: '   '}).enabled).toBe(true)
   })
 })

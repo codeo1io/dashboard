@@ -19,7 +19,7 @@ import type {DashboardAppClient} from './app-client.ts'
 import {Octokit} from '@octokit/core'
 import {logger} from '../logger.ts'
 import {err, ok} from '../result.ts'
-import {safeErrorMessage} from './app-client.ts'
+import {GITHUB_REQUEST_TIMEOUT_MS, safeErrorMessage} from './app-client.ts'
 
 // ---------------------------------------------------------------------------
 // Read-only permissions
@@ -88,6 +88,14 @@ export interface InstallationRecord {
 export interface EnumerateReposResult {
   readonly repos: readonly RepoRecord[]
   readonly installations: readonly InstallationRecord[]
+  /**
+   * Installations whose token mint or repo listing failed during enumeration
+   * (ids only — account names never leave this module). Non-empty means the
+   * union is PARTIAL: repos reachable only through these installations are
+   * missing from `repos`. Callers must surface this instead of presenting the
+   * snapshot as complete (fail-visible enumeration).
+   */
+  readonly failedInstallationIds: readonly number[]
 }
 
 export class FetchInstallationsError extends Error {
@@ -101,6 +109,18 @@ export class FetchInstallationsError extends Error {
 // Dependency injection interface (for testability)
 // ---------------------------------------------------------------------------
 
+/**
+ * Result of minting an installation token (rm-185).
+ *
+ * `expiresAt` is the API-provided token expiry; `null` when the mint
+ * boundary could not determine one (the cache then falls back to its
+ * capped 55-min default).
+ */
+export interface MintedToken {
+  readonly token: string
+  readonly expiresAt: Date | null
+}
+
 export interface InstallationsClient {
   /**
    * List all App installations (App-JWT-level call).
@@ -108,12 +128,12 @@ export interface InstallationsClient {
   readonly listInstallations: () => Promise<readonly InstallationRecord[]>
   /**
    * Mint a read-only installation token for the given installation ID.
-   * Returns the raw token string. NEVER log this value.
+   * Returns the raw token string plus its real expiry. NEVER log the token.
    */
   readonly mintInstallationToken: (
     installationId: number,
     permissions: Record<string, 'read'>,
-  ) => Promise<string>
+  ) => Promise<MintedToken>
   /**
    * List all repos accessible to the given installation token.
    * Returns records without installation_id — enumerateRepos attaches it.
@@ -145,7 +165,14 @@ function getCachedToken(installationId: number): string | null {
 }
 
 function setCachedToken(installationId: number, token: string, expiresAt: Date | null): void {
-  const expiresAtMs = expiresAt === null ? Date.now() + 55 * 60 * 1000 : expiresAt.getTime() // default 55 min
+  // rm-185: honor the API-provided expiry, but CAP it at the historical
+  // 55-min guess — a far-future expiry can never extend a token's cached
+  // life beyond the pre-seam behavior. The cap doubles as the fallback when
+  // the mint boundary could not determine an expiry. Ill-formed dates
+  // (NaN) fall back to the cap too: a NaN expiry would never compare stale.
+  const cappedDefaultMs = Date.now() + 55 * 60 * 1000
+  const rawMs = expiresAt === null ? Number.NaN : expiresAt.getTime()
+  const expiresAtMs = Number.isNaN(rawMs) ? cappedDefaultMs : Math.min(rawMs, cappedDefaultMs)
   tokenCache.set(installationId, {token, expiresAt: expiresAtMs})
 }
 
@@ -154,15 +181,43 @@ function setCachedToken(installationId: number, token: string, expiresAt: Date |
 // ---------------------------------------------------------------------------
 
 /**
+ * Classify a mint error as permission-shaped (rm-170).
+ *
+ * GitHub App installation-token minting rejects ungranted permissions with
+ * HTTP 403. Only that class can plausibly be fixed by retrying with the core
+ * subset. Everything else (5xx, 429, timeouts, network errors without a
+ * status) is transient/infra and must fail visibly instead.
+ */
+function isPermissionShapedMintError(error: unknown): boolean {
+  const shaped = error as
+    | {status?: unknown; response?: {headers?: Record<string, unknown>} | null}
+    | null
+    | undefined
+  if (shaped?.status !== 403) return false
+  // GitHub returns 403 — not 429 — for rate limits: primary exhaustion sends
+  // `x-ratelimit-remaining: 0` and secondary limits send `retry-after`. Those
+  // are transient conditions, not permission verdicts: classify them OUT of
+  // the permission shape so a rate-limited mint rethrows instead of caching
+  // a reduced-scope token for the cache TTL (review finding F1).
+  const headers = shaped.response?.headers ?? {}
+  const remaining = headers['x-ratelimit-remaining']
+  if (remaining === '0' || remaining === 0) return false
+  if ('retry-after' in headers) return false
+  return true
+}
+
+/**
  * Mint a read-only installation token with graceful optional-scope degradation.
  *
  * First attempts to mint with FULL_READ_PERMISSIONS (core + optional).
- * If that fails, retries with only CORE_READ_PERMISSIONS.
+ * If that fails with a permission-shaped 403 (rm-170), retries with only
+ * CORE_READ_PERMISSIONS. Any other error rethrows — never cached, never
+ * silently degraded — so the caller reports the failure.
  * If the core-only mint also fails, throws.
  */
 export async function mintReadOnlyToken(
   installationId: number,
-  mintFn: (installationId: number, permissions: Record<string, 'read'>) => Promise<string>,
+  mintFn: (installationId: number, permissions: Record<string, 'read'>) => Promise<MintedToken>,
 ): Promise<string> {
   // Check cache first
   const cached = getCachedToken(installationId)
@@ -170,28 +225,42 @@ export async function mintReadOnlyToken(
 
   // Try full permissions first
   try {
-    const token = await mintFn(installationId, FULL_READ_PERMISSIONS)
-    // Cache with a default expiry (we don't have expiry info from the injected fn)
-    setCachedToken(installationId, token, null)
-    return token
+    const minted = await mintFn(installationId, FULL_READ_PERMISSIONS)
+    // rm-185: cache against the API-provided expiry (capped in setCachedToken)
+    setCachedToken(installationId, minted.token, minted.expiresAt)
+    return minted.token
   } catch (fullError) {
-    logger.warning('Failed to mint token with optional scopes; retrying with core scopes only', {
+    if (!isPermissionShapedMintError(fullError)) {
+      // rm-170: only permission-shaped 403s justify the scope fallback. A
+      // transient error (network blip, 5xx, 429, timeout) must NOT degrade
+      // the permission subset — rethrow so the caller records this
+      // installation as failed (fail-visible) instead of caching a
+      // reduced-scope token for the cache TTL.
+      logger.error('Installation token mint failed (non-permission error; no scope fallback)', {
+        installationId,
+        error: safeErrorMessage(fullError),
+      })
+      throw fullError
+    }
+    logger.warning('Failed to mint token with optional scopes (permission-shaped); retrying with core scopes only', {
       installationId,
       error: safeErrorMessage(fullError),
     })
   }
 
   // Retry with core-only permissions
-  const token = await mintFn(installationId, CORE_READ_PERMISSIONS)
-  setCachedToken(installationId, token, null)
-  return token
+  const minted = await mintFn(installationId, CORE_READ_PERMISSIONS)
+  setCachedToken(installationId, minted.token, minted.expiresAt)
+  return minted.token
 }
 
 /**
  * Enumerate all installations, mint read-only tokens, and union accessible repos.
  *
  * Returns `err(FetchInstallationsError)` if `listInstallations` fails.
- * Per-install token mint failures are logged and skipped (fail-soft per install).
+ * Per-install token mint/list failures are logged, skipped (fail-soft per
+ * install), and reported via `failedInstallationIds` so callers can surface
+ * the partial union instead of presenting it as complete.
  * Repos are deduped by `node_id` across all installs.
  */
 export async function enumerateRepos(
@@ -207,22 +276,24 @@ export async function enumerateRepos(
   }
 
   if (installations.length === 0) {
-    return ok({repos: [], installations: []})
+    return ok({repos: [], installations: [], failedInstallationIds: []})
   }
 
   logger.debug('Enumerating repos across installations', {count: installations.length})
 
   const reposByNodeId = new Map<string, RepoRecord>()
+  const failedInstallationIds: number[] = []
 
   for (const installation of installations) {
     let token: string
     try {
       token = await mintReadOnlyToken(installation.id, client.mintInstallationToken)
     } catch (mintError) {
-      logger.warning('Failed to mint installation token; skipping install', {
+      logger.warning('Failed to mint installation token; counting degraded installation', {
         installationId: installation.id,
         error: safeErrorMessage(mintError),
       })
+      failedInstallationIds.push(installation.id)
       continue
     }
 
@@ -230,10 +301,11 @@ export async function enumerateRepos(
     try {
       repos = await client.listInstallationRepos(token)
     } catch (repoError) {
-      logger.warning('Failed to list repos for installation; skipping', {
+      logger.warning('Failed to list repos for installation; counting degraded installation', {
         installationId: installation.id,
         error: safeErrorMessage(repoError),
       })
+      failedInstallationIds.push(installation.id)
       continue
     }
 
@@ -250,6 +322,7 @@ export async function enumerateRepos(
   return ok({
     repos: [...reposByNodeId.values()],
     installations,
+    failedInstallationIds,
   })
 }
 
@@ -258,7 +331,12 @@ export async function enumerateRepos(
 // ---------------------------------------------------------------------------
 
 async function listInstallationReposWithToken(token: string): Promise<readonly Omit<RepoRecord, 'installation_id'>[]> {
-  const installOctokit = new Octokit({auth: token})
+  const installOctokit = new Octokit({
+    auth: token,
+    // rm-197: per-repo installation walks are serial — a stalled request must
+    // not stall the whole refresh indefinitely.
+    request: {timeout: GITHUB_REQUEST_TIMEOUT_MS},
+  })
 
   const repos: Omit<RepoRecord, 'installation_id'>[] = []
   let page = 1
