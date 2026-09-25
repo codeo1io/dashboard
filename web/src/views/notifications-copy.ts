@@ -1,7 +1,7 @@
 /**
  * Fixed copy for the operator push notifications consent/settings surface.
  *
- * Maps each of the 8 permission/support states to human-readable, safe copy.
+ * Maps each of the 9 permission/support states to human-readable, safe copy.
  *
  * Security invariants:
  * - NO raw endpoints, tokens, cookies, CSRF values, or HTTP status/error codes.
@@ -15,6 +15,7 @@ export type NotificationUiState =
   | 'denied'
   | 'dismissed'
   | 'unsupported'
+  | 'unavailable'
   | 'ios-not-installed'
   | 'sw-not-ready'
   | 'subscribe-failed'
@@ -69,6 +70,16 @@ const COPY: Record<NotificationUiState, NotificationStateCopy> = {
     privacyPolicyLinkText: 'How we handle notification data',
     ctaText: 'Install App',
     recoveryHint: 'Open the share menu and select "Add to Home Screen" to install.',
+  },
+  unavailable: {
+    // rm-228: this build ships no push-capable service worker, so push is
+    // surfaced as unavailable rather than as an opt-in that can never finish.
+    headline: 'Alerts Not Available',
+    detail:
+      'This dashboard build does not include a push-capable background worker, so browser alerts cannot be enabled from it. The linked notice describes how notification data is handled by design.',
+    privacyPolicyLinkText: 'How we handle notification data',
+    ctaText: null,
+    recoveryHint: '',
   },
   'sw-not-ready': {
     headline: 'Initializing background sync',

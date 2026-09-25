@@ -399,10 +399,11 @@ describe('PWA SW asset serving — /sw.js', () => {
 // ---------------------------------------------------------------------------
 // PWA SW asset serving — /registerSW.js
 // ---------------------------------------------------------------------------
-// NOTE: vite-plugin-pwa only emits registerSW.js when using auto-register mode.
-// Since the app uses useRegisterSW() in a component (ReloadPrompt), the
-// registration code is bundled into the main JS chunk and registerSW.js is NOT
-// emitted. The route remains in isPublicPath for forward-compatibility.
+// NOTE: vite-plugin-pwa only emits registerSW.js when a registration script is
+// requested. Since rm-228 the app requests NONE: vite.config.ts sets
+// injectRegister: false, so registerSW.js is not emitted and the built
+// index.html carries no loader tag. The route stays in isPublicPath for
+// forward-compatibility (a future push-capable client may register again).
 
 describe('PWA SW asset serving — /registerSW.js', () => {
   it('GET /registerSW.js is in the public allowlist (no auth redirect)', async () => {
@@ -410,6 +411,42 @@ describe('PWA SW asset serving — /registerSW.js', () => {
     const res = await app.request('/registerSW.js')
     expect(res.status).not.toBe(302)
     expect(res.status).not.toBe(401)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// PWA strip — the built bundle registers no service worker (rm-228)
+// ---------------------------------------------------------------------------
+// The emitted sw.js is an uninstall-only kill-switch kept servable so clients
+// that registered the OLD precaching worker can fetch it and uninstall. The
+// build must not emit or reference any registration loader — under
+// vite-plugin-pwa's default injectRegister 'auto' the built index.html gained
+// a <script id="vite-plugin-pwa:register-sw"> tag that re-registered the
+// kill-switch on every page load.
+
+describe('PWA strip — built bundle registers no service worker (rm-228)', () => {
+  it('built index.html carries no registerSW loader tag or /sw.js script reference', async () => {
+    const fs = await import('node:fs/promises')
+    const body = await fs.readFile('web/dist/index.html', 'utf8')
+    expect(body).not.toContain('vite-plugin-pwa:register-sw')
+    expect(body).not.toContain('registerSW.js')
+    expect(body).not.toMatch(/<script[^>]*["']\/sw\.js["']/)
+  })
+
+  it('dist no longer contains registerSW.js, and sw.js stays emitted for legacy uninstall', async () => {
+    const fs = await import('node:fs/promises')
+    await expect(fs.stat('web/dist/registerSW.js')).rejects.toMatchObject({code: 'ENOENT'})
+    const swStats = await fs.stat('web/dist/sw.js')
+    expect(swStats.isFile()).toBe(true)
+  })
+
+  it('served / shell carries no registerSW loader tag', async () => {
+    const app = await buildTestApp(true)
+    const res = await authedGet(app, '/')
+    expect(res.status).toBe(200)
+    const body = await res.text()
+    expect(body).not.toContain('vite-plugin-pwa:register-sw')
+    expect(body).not.toContain('registerSW.js')
   })
 })
 

@@ -59,10 +59,11 @@ async function assertAccessible(
 }
 
 test.beforeEach(async ({page}) => {
-  // Block the PWA service worker: it precaches the SPA shell and can serve a
-  // stale/intercepted response, which makes screenshots depend on prior runs.
-  await page.route('/sw.js', async route => route.fulfill({status: 200, body: ''}))
-  await page.route('/registerSW.js', async route => route.fulfill({status: 200, body: ''}))
+  // rm-228: the app registers NO service worker — the emitted sw.js is an
+  // uninstall-only kill-switch and vite.config.ts sets injectRegister: false,
+  // so the built index.html carries no registerSW loader. The old stubs that
+  // blocked /sw.js and /registerSW.js here MASKED the auto-injection
+  // regression this suite now detects below (nothing may register a worker).
   // Deterministic dark theme: tokens.css has `@media (prefers-color-scheme:
   // light) { :root { ... light tokens ... } }` which overrides dark for ALL
   // pages when the host prefers light — data-theme="dark" cannot beat it
@@ -87,6 +88,20 @@ test.beforeEach(async ({page}) => {
 
 test('dashboard home — operator view (dark theme)', async ({page}) => {
   await page.goto('/')
+  // rm-228 strip shape: nothing may register a service worker. If an
+  // auto-injected loader ever returns (vite-plugin-pwa injectRegister 'auto'),
+  // this fails instead of a stale screenshot diff.
+  const registrations: unknown[] = await page.evaluate(async () => {
+    const nav = (
+      globalThis as unknown as {
+        navigator?: {serviceWorker?: {getRegistrations: () => Promise<unknown[]>}}
+      }
+    ).navigator
+    const swContainer = nav?.serviceWorker
+    if (swContainer === undefined) return []
+    return swContainer.getRegistrations()
+  })
+  expect(registrations).toEqual([])
   // Settled operator state: fixture bootstrap fetched, run index rendered.
   const shell = page.getByTestId('operator-shell')
   await expect(shell).toHaveAttribute('data-state', 'ready')

@@ -47,8 +47,13 @@ describe('sw.js build output (kill-switch SW)', () => {
     // After injectManifest substitution the token is replaced with an array
     // literal; the raw token appearing would mean workbox never processed it.
     expect(content).not.toContain('self.__WB_MANIFEST')
-    // The injected precache manifest is present as an array literal...
-    expect(content).toMatch(/\[\{"revision":/)
+    // rm-138 strip: the injected precache manifest is deliberately EMPTY —
+    // vite.config.ts sets globPatterns: [] because the kill-switch never
+    // precaches. The substitution must be the empty array literal (compiled
+    // output reads `;[],` — global decl, empty manifest, first listener),
+    // never a list of hashed entries and never the raw token.
+    expect(content).toMatch(/;\[\],/)
+    expect(content).not.toMatch(/\[\{"revision":/)
   })
 
   it('GUARD: activate purges ALL caches — caches.keys() then delete per key', () => {
