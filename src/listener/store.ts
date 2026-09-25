@@ -84,15 +84,32 @@ export function createListenerStore(dbPath: string): ListenerStore {
       WHERE dedupe_key IS NOT NULL
   `)
 
-  const findByDedupeStmt = db.prepare('SELECT id FROM messages WHERE source = ? AND dedupe_key = ?')
-  const insertStmt = db.prepare(`
+  // rm-227: one atomic statement replaces the old check-then-insert pair.
+  // That pair was TOCTOU-unsound against the partial UNIQUE index
+  // idx_messages_source_dedupe: two ingests with the same (source, dedupe_key)
+  // racing the SELECT-then-INSERT would see the loser die on
+  // SQLITE_CONSTRAINT_UNIQUE and surface a 500 to the webhook caller. Under
+  // the current single-process deployment (node:sqlite is synchronous, no
+  // await between the two statements) the interleaving is a hazard, not an
+  // observed race — it becomes live for a second process sharing the DB file
+  // or a future async driver. ON CONFLICT against the partial index (the
+  // conflict target repeats its WHERE clause) makes duplicate delivery
+  // idempotent by construction regardless; rows with a NULL dedupe_key never
+  // match the partial index and always insert fresh.
+  const upsertStmt = db.prepare(`
     INSERT INTO messages (id, source, kind, severity, title, body, links, dedupe_key, created_at, received_at, read_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-  `)
-  const updateByIdStmt = db.prepare(`
-    UPDATE messages
-    SET kind = ?, severity = ?, title = ?, body = ?, links = ?, created_at = ?, received_at = ?, read_at = messages.read_at
-    WHERE id = ?
+    ON CONFLICT (source, dedupe_key) WHERE dedupe_key IS NOT NULL
+    DO UPDATE SET
+      kind = excluded.kind,
+      severity = excluded.severity,
+      title = excluded.title,
+      body = excluded.body,
+      links = excluded.links,
+      created_at = excluded.created_at,
+      received_at = excluded.received_at,
+      read_at = messages.read_at
+    RETURNING id
   `)
   const selectAllStmt = db.prepare('SELECT * FROM messages ORDER BY received_at DESC LIMIT ?')
   const selectUnreadStmt = db.prepare('SELECT * FROM messages WHERE read_at IS NULL ORDER BY received_at DESC LIMIT ?')
@@ -112,30 +129,12 @@ export function createListenerStore(dbPath: string): ListenerStore {
     const receivedAt = new Date().toISOString()
     const linksJson = JSON.stringify(input.links)
 
-    if (input.dedupeKey !== null) {
-      const existing = findByDedupeStmt.get(input.source, input.dedupeKey) as unknown as {id: string} | undefined
-      if (existing !== undefined) {
-        // rm-169: replay (dedupe hit) refreshes content but PRESERVES read_at —
-        // a redelivered webhook must not silently un-ack an operator-read
-        // message. The SQL sets read_at = messages.read_at (no-op on itself).
-        updateByIdStmt.run(
-          input.kind,
-          input.severity,
-          input.title,
-          input.body,
-          linksJson,
-          input.createdAt,
-          receivedAt,
-          existing.id,
-        )
-        prune()
-        return {id: existing.id, receivedAt}
-      }
-    }
-
-    const id = randomUUID()
-    insertStmt.run(
-      id,
+    // rm-169: a replay (dedupe hit) refreshes content but PRESERVES read_at —
+    // a redelivered webhook must not silently un-ack an operator-read message.
+    // The DO UPDATE arm sets read_at = messages.read_at (a no-op on the row
+    // itself), so ack state survives redelivery exactly as before.
+    const row = upsertStmt.get(
+      randomUUID(),
       input.source,
       input.kind,
       input.severity,
@@ -145,9 +144,10 @@ export function createListenerStore(dbPath: string): ListenerStore {
       input.dedupeKey,
       input.createdAt,
       receivedAt,
-    )
+    ) as unknown as {id: string}
+
     prune()
-    return {id, receivedAt}
+    return {id: row.id, receivedAt}
   }
 
   function list(opts: {unreadOnly?: boolean; limit?: number}): MessagesResponse {

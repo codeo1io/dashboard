@@ -1,3 +1,13 @@
+---
+title: renovate.yaml reintroduced by upstream sync
+date: 2026-09-21
+category: workflow-issues
+module: dashboard
+tags: [renovate, upstream-sync, fleet-audit, workflows]
+problem_type: workflow_issue
+component: development_workflow
+---
+
 # renovate.yaml reintroduced by upstream sync (2026-09-21)
 
 ## What happened
