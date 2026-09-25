@@ -939,6 +939,9 @@ describe('push-enabled meta injection — served SPA shell integrity', () => {
     if (contentLength !== null) {
       expect(Number(contentLength)).toBe(Buffer.byteLength(body))
     }
+    // rm-166 (cycle-10 rider): the injected shell is identity-reflecting
+    // (push flag is operator-gated) — no intermediary may cache it.
+    expect(res.headers.get('cache-control')).toBe('no-store')
   })
 
   it('does not inject the meta when push is disabled', async () => {
@@ -974,6 +977,7 @@ describe('push-enabled meta injection — served SPA shell integrity', () => {
       let body = await first.text()
       expect(body).toContain('MARKER-V1')
       expect(body).toContain('<meta name="push-enabled" content="true">')
+      expect(first.headers.get('cache-control')).toBe('no-store')
 
       // (2) rewrite mid-TTL → cached copy still served (no re-read)
       writeShell('MARKER-V2')
@@ -982,6 +986,7 @@ describe('push-enabled meta injection — served SPA shell integrity', () => {
       body = await second.text()
       expect(body).toContain('MARKER-V1')
       expect(body).not.toContain('MARKER-V2')
+      expect(second.headers.get('cache-control')).toBe('no-store')
 
       // (3) past the TTL the next request picks up the rebuilt shell
       vi.useFakeTimers({now: Date.now() + 6_000})

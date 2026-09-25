@@ -41,7 +41,10 @@ view of Fro Bot's cross-repo footprint.
 - `Result<T,E>` error-return shape for the app client (extraction seam).
 - Gates: `pnpm check-types` (server + `web/` + `.opencode`), `pnpm lint`, `pnpm test` (rebuilds the
   client via `pretest`, then runs Vitest). Build the client with `pnpm build:web` →
-  `web/dist`; `pnpm dev` serves that prebuilt bundle.
+  `web/dist`; `pnpm dev` serves that prebuilt bundle. Direct `vitest run`
+  invocations bypass `pretest` — suites that hit `/` will 404 on a stale or
+  missing `web/dist`; build first (see
+  `docs/solutions/workflow-issues/targeted-vitest-without-pretest-build-webdist-404s-2026-09-24.md`).
 - `docs/runbooks/gateway-access.md` — how to reach the gateway behind `/operator/*` and read its
   logs. The operator surface is proxied to `fro-bot/agent`, so operator auth, session, and push
   evidence lives there and no test in this repo can reach it. Requires a local `marcusrbrown/infra`
