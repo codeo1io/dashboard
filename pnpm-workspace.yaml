@@ -20,6 +20,10 @@ overrides:
   brace-expansion@2: '>=2.1.2 <3.0.0'
   brace-expansion@5: '>=5.0.7 <6.0.0'
   fast-uri@3: '>=3.1.5 <4.0.0'
+  # GHSA-82x6-q7mm-w9cf — toml is dev-transitive via
+  # @opencode-ai/plugin>effect; >=4.2.0 is the patched line
+  # (rescued by content from run b4aac9ba / PR #82 via cycle-13;
+  # the batch's internal rm-171 numbering collided with landed ids).
   toml: '>=4.2.0'
   undici@7: '>=7.29.0 <8.0.0'
 
