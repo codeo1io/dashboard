@@ -1,4 +1,5 @@
 ---
+title: Recover into the session authority's own login flow, not your own
 module: src/server.ts
 tags: [auth, oauth, session, gateway, recovery, mode-aware, open-redirect, csrf]
 problem_type: security_issue
