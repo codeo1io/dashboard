@@ -8,6 +8,19 @@ not this repository's — and no test here can reach it.
 This runbook covers getting to that evidence. Every trap below cost real time during a production
 outage, so read them before improvising a command.
 
+## Same-origin proxy acknowledgement (`DASHBOARD_GATEWAY_PROXY_ACK`, rm-127)
+
+The dashboard's gateway login redirect (`/operator/auth/github/start?return_to=/operator`) is a
+RELATIVE path that this app does not serve — it only terminates on the gateway because Caddy maps
+`/operator/*` on `dashboard.fro.bot` to it. Gateway operator-session mode
+(`DASHBOARD_GATEWAY_OPERATOR_SESSION_ENABLED=true`) therefore REFUSES to start unless
+`DASHBOARD_GATEWAY_PROXY_ACK=same-origin` is also set: without that acknowledgement a standalone
+dashboard mis-set into gateway mode would redirect unauthenticated browsers into a silent loop.
+If the container crash-loops at startup with the acknowledgement error, either set the env (you
+are behind the Caddy topology) or turn gateway mode off. A related request-time guard: if a
+request for `/operator/auth/*` ever reaches the dashboard itself (proxy misroute), it answers
+`502` with a pointer here instead of redirecting.
+
 ---
 
 ## Prerequisites

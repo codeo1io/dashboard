@@ -105,6 +105,8 @@ async function buildGatewayApp(
     operatorLogin: extraOpts?.operatorLogin,
     cookieKey: extraOpts?.cookieKey ?? TEST_KEY,
     gatewayOperatorSessionEnabled: true,
+    // rm-127: gateway mode refuses to start without the same-origin-proxy ack.
+    gatewayProxyAcknowledged: true,
     operatorClient,
   })
 }
@@ -482,6 +484,7 @@ describe('flag-ON: gateway branch ignores DASHBOARD_OPERATOR_LOGIN', () => {
       operatorLogin: TEST_OPERATOR, // 'octocat'
       cookieKey: TEST_KEY,
       gatewayOperatorSessionEnabled: true,
+      gatewayProxyAcknowledged: true,
       operatorClient: client,
     })
 
@@ -503,6 +506,7 @@ describe('flag-ON: gateway branch ignores DASHBOARD_OPERATOR_LOGIN', () => {
       operatorLogin: TEST_OPERATOR,
       cookieKey: TEST_KEY,
       gatewayOperatorSessionEnabled: true,
+      gatewayProxyAcknowledged: true,
       operatorClient: client,
     })
 
@@ -531,6 +535,7 @@ describe('flag-ON: no union, no fallback between modes', () => {
       operatorLogin: TEST_OPERATOR,
       cookieKey: TEST_KEY,
       gatewayOperatorSessionEnabled: true,
+      gatewayProxyAcknowledged: true,
       operatorClient: client,
     })
 
@@ -553,6 +558,7 @@ describe('flag-ON: no union, no fallback between modes', () => {
       operatorLogin: TEST_OPERATOR,
       cookieKey: TEST_KEY,
       gatewayOperatorSessionEnabled: true,
+      gatewayProxyAcknowledged: true,
       operatorClient: client,
     })
 
@@ -605,6 +611,7 @@ describe('flag-ON: configured origin is always used, not the inbound Host', () =
     const trustedOrigin = 'https://dashboard.fro.bot'
     const app = await buildDashboardApp({
       gatewayOperatorSessionEnabled: true,
+      gatewayProxyAcknowledged: true,
       gatewayOperatorOrigin: trustedOrigin,
       gatewayFetchImpl: recordingFetch,
     })
@@ -643,6 +650,7 @@ describe('flag-ON: configured origin is always used, not the inbound Host', () =
     const trustedOrigin = 'https://dashboard.fro.bot'
     const app = await buildDashboardApp({
       gatewayOperatorSessionEnabled: true,
+      gatewayProxyAcknowledged: true,
       gatewayOperatorOrigin: trustedOrigin,
       gatewayFetchImpl: recordingFetch,
     })
@@ -674,6 +682,7 @@ describe('flag-ON: configured origin is always used, not the inbound Host', () =
     // Inject an invalid origin — should cause fail-closed behavior
     const app = await buildDashboardApp({
       gatewayOperatorSessionEnabled: true,
+      gatewayProxyAcknowledged: true,
       gatewayOperatorOrigin: 'not-a-valid-url',
       gatewayFetchImpl: recordingFetch,
     })
@@ -713,6 +722,7 @@ describe('flag-ON: production client-construction path (gatewayFetchImpl seam)',
     const inboundCookie = 'gateway_session=prod-path-cookie-xyz'
     const app = await buildDashboardApp({
       gatewayOperatorSessionEnabled: true,
+      gatewayProxyAcknowledged: true,
       gatewayOperatorOrigin: 'https://dashboard.fro.bot',
       gatewayFetchImpl: recordingFetch,
       // operatorClient is NOT injected — the production branch runs
@@ -741,6 +751,7 @@ describe('flag-ON: production client-construction path (gatewayFetchImpl seam)',
 
     const app = await buildDashboardApp({
       gatewayOperatorSessionEnabled: true,
+      gatewayProxyAcknowledged: true,
       gatewayOperatorOrigin: 'https://dashboard.fro.bot',
       gatewayFetchImpl: recordingFetch,
     })
@@ -761,6 +772,7 @@ describe('flag-ON: production client-construction path (gatewayFetchImpl seam)',
 
     const app = await buildDashboardApp({
       gatewayOperatorSessionEnabled: true,
+      gatewayProxyAcknowledged: true,
       gatewayOperatorOrigin: 'https://dashboard.fro.bot',
       gatewayFetchImpl: abortingFetch,
     })
@@ -852,5 +864,49 @@ describe('flag-ON: nonsensical identity rejection', () => {
       headers: {cookie: 'gateway_session=some-cookie'},
     })
     expect(res.status).toBe(200)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-127 — same-origin-proxy topology guard (2026-09-26, cycle batch B3)
+// ---------------------------------------------------------------------------
+
+describe('rm-127 gateway topology guard', () => {
+  it('gateway mode WITHOUT the same-origin-proxy acknowledgement throws at construction (fail fast, never silent)', async () => {
+    const {client} = makeFakeOperatorClient(async () =>
+      ok({operatorId: 1, login: 'octocat', expiresAt: Date.now() + 3600_000}),
+    )
+    await expect(
+      buildDashboardApp({
+        gatewayOperatorSessionEnabled: true,
+        gatewayProxyAcknowledged: false,
+        operatorClient: client,
+      }),
+    ).rejects.toThrow(/DASHBOARD_GATEWAY_PROXY_ACK=same-origin/)
+
+    // Explicitly unacknowledged must throw even with a syntactically valid origin.
+    await expect(
+      buildDashboardApp({
+        gatewayOperatorSessionEnabled: true,
+        gatewayProxyAcknowledged: false,
+        gatewayOperatorOrigin: 'https://dashboard.fro.bot',
+      }),
+    ).rejects.toThrow(/same-origin-proxy acknowledgement/)
+  })
+
+  it('a request for /operator/auth/* that reaches the dashboard gets a diagnosable 502, NOT a redirect (loop-breaker)', async () => {
+    // In the correct topology the reverse proxy owns /operator/* — this arm
+    // only runs on a misroute. Redirecting would send the browser straight
+    // back to the dashboard: the classic silent loop (rm-127).
+    const {client} = makeFakeOperatorClient(async () =>
+      ok({operatorId: 1, login: 'octocat', expiresAt: Date.now() + 3600_000}),
+    )
+    const app = await buildGatewayApp(client)
+    const res = await app.request('/operator/auth/github/start?return_to=/operator', {
+      headers: {cookie: 'gateway_session=some-cookie'},
+    })
+    expect(res.status).toBe(502)
+    expect(res.headers.get('location')).toBeNull()
+    expect(await res.text()).toContain('reverse-proxied to the gateway')
   })
 })

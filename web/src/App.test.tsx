@@ -1,4 +1,4 @@
-import {render, screen, waitFor} from '@testing-library/react'
+import {cleanup, render, screen, waitFor} from '@testing-library/react'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import App from './App.tsx'
 
@@ -361,5 +361,137 @@ describe('App — fixture detection race: runtime must not mount before detectio
 
     fetchSpy.mockRestore()
     createSpy.mockRestore()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Listener poll resilience (2026-09-26, cycle batch B1): response classes are
+// surfaced/acted on — 401/403 stops the poller as 'auth', 404/410 stops it as
+// 'unavailable', transient failures keep the last good badge and back off.
+// ---------------------------------------------------------------------------
+describe('App — listener poll response classes', () => {
+  // Self-contained setup: this describe sits outside describe('App') above,
+  // so it replicates that suite's stubs (matchMedia, fixture detection,
+  // operator runtime, default ok poll mock) instead of inheriting them.
+  beforeEach(async () => {
+    vi.useFakeTimers()
+    stubMatchMedia()
+    window.localStorage.clear()
+    document.documentElement.removeAttribute('data-theme')
+    const fixtureLoader = await import('./operator/fixture-runtime-loader.ts')
+    vi.spyOn(fixtureLoader, 'fetchFixtureSession').mockResolvedValue(null)
+    const runtimeModule = await import('./operator/runtime.ts')
+    vi.spyOn(runtimeModule, 'createOperatorRuntime').mockImplementation(() => ({
+      isMounted: true,
+      cleanup: vi.fn(),
+    }))
+    const listenerApi = await import('./api/listener.ts')
+    vi.spyOn(listenerApi, 'fetchListenerMessages').mockResolvedValue({
+      ok: true,
+      data: {messages: [], unreadCount: 0},
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  async function renderApp() {
+    const {act} = await import('@testing-library/react')
+    await act(async () => {
+      render(<App />)
+    })
+    // Flush the mount tick's promise chain (fetch mock resolves as a
+    // microtask — advanceTimersByTimeAsync(0) lets it settle without firing
+    // the next scheduled poll).
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+  }
+
+  it('401 → surfaces an auth status node and stops polling permanently', async () => {
+    const listenerApi = await import('./api/listener.ts')
+    const fetchSpy = vi
+      .spyOn(listenerApi, 'fetchListenerMessages')
+      .mockResolvedValue({ok: false, reason: 'auth'})
+
+    await renderApp()
+
+    expect(screen.getByTestId('listener-poll-status').textContent).toMatch(
+      /sign-in expired/i,
+    )
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+
+    // No further polls: advance far past the base cadence.
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+
+    // Focus must not resurrect a stopped poller.
+    window.dispatchEvent(new Event('focus'))
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('404 → surfaces an unavailable status node and stops polling permanently', async () => {
+    const listenerApi = await import('./api/listener.ts')
+    const fetchSpy = vi
+      .spyOn(listenerApi, 'fetchListenerMessages')
+      .mockResolvedValue({ok: false, reason: 'unavailable'})
+
+    await renderApp()
+
+    expect(screen.getByTestId('listener-poll-status').textContent).toMatch(
+      /not available on this deployment/i,
+    )
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(300_000)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('transient failure → no status node, badge keeps last good value, poll backs off then recovers', async () => {
+    const listenerApi = await import('./api/listener.ts')
+    const fetchSpy = vi
+      .spyOn(listenerApi, 'fetchListenerMessages')
+      .mockResolvedValueOnce({ok: true, data: {messages: [], unreadCount: 5}})
+      .mockResolvedValueOnce({ok: false, reason: 'network'})
+      .mockResolvedValueOnce({ok: true, data: {messages: [], unreadCount: 7}})
+
+    await renderApp()
+    expect(screen.getByTestId('unread-badge').textContent).toBe('5')
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+
+    // 30s later: transient failure. Badge keeps the last good value, no
+    // status node appears, and the next attempt is scheduled at 60s (backoff).
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    expect(screen.getByTestId('unread-badge').textContent).toBe('5')
+    expect(screen.queryByTestId('listener-poll-status')).toBeNull()
+
+    // 30s more (60s since the failure): the backed-off poll runs and recovers.
+    // Wrapped in act so the badge re-render flushes before asserting.
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    const {act} = await import('@testing-library/react')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
+    expect(fetchSpy).toHaveBeenCalledTimes(3)
+    expect(screen.getByTestId('unread-badge').textContent).toBe('7')
+    expect(screen.queryByTestId('listener-poll-status')).toBeNull()
+  })
+
+  it('ok → no status node in the default DOM (healthy state unchanged)', async () => {
+    const listenerApi = await import('./api/listener.ts')
+    vi.spyOn(listenerApi, 'fetchListenerMessages').mockResolvedValue({
+      ok: true,
+      data: {messages: [], unreadCount: 0},
+    })
+
+    await renderApp()
+
+    expect(screen.queryByTestId('listener-poll-status')).toBeNull()
   })
 })

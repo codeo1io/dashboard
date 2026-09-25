@@ -134,6 +134,33 @@ const tokenCache = new Map<number, CachedToken>()
 
 const TOKEN_EXPIRY_BUFFER_MS = 60_000 // refresh 1 min before expiry
 
+/**
+ * Upper bound on cached installation tokens. Insertion-ordered Map eviction:
+ * when the cache is full and a NEW installation id is being cached, the
+ * oldest entry (first insertion) is dropped. The live installation census is
+ * normally far smaller; this bound exists so churn (install/uninstall
+ * cycles) can never grow the map without limit (2026-09-26, cycle batch B2b).
+ */
+const TOKEN_CACHE_MAX = 32
+
+/** Drop entries whose tokens are fully expired (not merely near-expiry). */
+function sweepExpiredTokens(now = Date.now()): void {
+  for (const [installationId, cached] of tokenCache) {
+    if (now >= cached.expiresAt) {
+      tokenCache.delete(installationId)
+    }
+  }
+}
+
+/** Drop cached tokens for installations absent from a successful census. */
+function pruneTokenCache(knownInstallationIds: ReadonlySet<number>): void {
+  for (const installationId of tokenCache.keys()) {
+    if (!knownInstallationIds.has(installationId)) {
+      tokenCache.delete(installationId)
+    }
+  }
+}
+
 function getCachedToken(installationId: number): string | null {
   const cached = tokenCache.get(installationId)
   if (cached === undefined) return null
@@ -145,6 +172,16 @@ function getCachedToken(installationId: number): string | null {
 }
 
 function setCachedToken(installationId: number, token: string, expiresAt: Date | null): void {
+  // Opportunistic hygiene on every insert: expired entries left behind by
+  // departed installations used to linger forever (entries were only ever
+  // deleted on their own re-access).
+  sweepExpiredTokens()
+  if (!tokenCache.has(installationId) && tokenCache.size >= TOKEN_CACHE_MAX) {
+    const oldest = tokenCache.keys().next()
+    if (!oldest.done) {
+      tokenCache.delete(oldest.value)
+    }
+  }
   const expiresAtMs = expiresAt === null ? Date.now() + 55 * 60 * 1000 : expiresAt.getTime() // default 55 min
   tokenCache.set(installationId, {token, expiresAt: expiresAtMs})
 }
@@ -207,8 +244,17 @@ export async function enumerateRepos(
   }
 
   if (installations.length === 0) {
+    // Prune against the (empty) census before the early return — an empty
+    // census means NO installations are reachable, so no cached token can
+    // still be needed.
+    pruneTokenCache(new Set<number>())
     return ok({repos: [], installations: []})
   }
+
+  // The successful census is the ground truth for which installation tokens
+  // may still be needed — drop tokens for installations that no longer exist
+  // instead of leaving them to expire silently in the map.
+  pruneTokenCache(new Set(installations.map(installation => installation.id)))
 
   logger.debug('Enumerating repos across installations', {count: installations.length})
 

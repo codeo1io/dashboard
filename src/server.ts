@@ -195,6 +195,21 @@ export interface DashboardAppConfig {
    */
   gatewayOperatorSessionEnabled?: boolean | undefined
   /**
+   * Explicit acknowledgement that a same-origin reverse proxy maps /operator/*
+   * to the gateway (rm-127 topology guard). If undefined, reads from the
+   * DASHBOARD_GATEWAY_PROXY_ACK env: gateway operator-session mode REFUSES to
+   * start unless it is exactly 'same-origin'.
+   *
+   * Rationale: GATEWAY_LOGIN_REDIRECT is a RELATIVE path and this server
+   * registers no /operator/auth/* handlers — the login redirect only
+   * terminates on the gateway when the proxy fronts both. A standalone
+   * deployment mis-set into gateway mode would otherwise browser-loop with
+   * zero server-side diagnostics. Fail fast at startup instead (throw), and
+   * additionally break the loop at request time (see the /operator/auth/*
+   * misroute guard in the gateway middleware branch).
+   */
+  gatewayProxyAcknowledged?: boolean | undefined
+  /**
    * Whether the operator push-notifications consent surface is enabled.
    * If undefined, reads from DASHBOARD_OPERATOR_PUSH_ENABLED env (default: false).
    * When true, a `<meta name="push-enabled" content="true">` tag is injected
@@ -338,6 +353,23 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     opts?.gatewayOperatorSessionEnabled === undefined
       ? readGatewayOperatorSessionConfig().enabled
       : opts.gatewayOperatorSessionEnabled
+
+  // Resolve the rm-127 same-origin-proxy acknowledgement (gateway mode only).
+  const gatewayProxyAcknowledged =
+    opts?.gatewayProxyAcknowledged === undefined
+      ? process.env.DASHBOARD_GATEWAY_PROXY_ACK?.trim() === 'same-origin'
+      : opts.gatewayProxyAcknowledged
+  if (gatewayOperatorSessionEnabled && !gatewayProxyAcknowledged) {
+    // Fail fast, never silent (rm-127): without the acknowledgement the
+    // gateway login redirect cannot be proven to terminate on the gateway.
+    throw new Error(
+      'gateway operator-session mode requires an explicit same-origin-proxy acknowledgement: ' +
+      'set DASHBOARD_GATEWAY_PROXY_ACK=same-origin (a reverse proxy must map /operator/* on THIS ' +
+      'origin to the gateway — see docs/runbooks/gateway-access.md). Without it, unauthenticated ' +
+      'requests redirect to /operator/auth/github/start, which this server does not serve, ' +
+      'producing an undiagnosable browser redirect loop on a standalone deployment.',
+    )
+  }
 
   // Resolve push notifications flag — default OFF (fail-closed). Gates only the
   // consent-surface meta tag; the dashboard never mounts /operator/push/* routes.
@@ -589,6 +621,22 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
 
     if (gatewayOperatorSessionEnabled) {
       // ── GATEWAY BRANCH ────────────────────────────────────────────────────
+      // rm-127 misroute guard: /operator/auth/* reaching THIS server means the
+      // same-origin proxy did not intercept it. Redirecting would send the
+      // browser right back here — the classic silent loop. Refuse with a
+      // diagnosable 502 instead. In the correct topology this arm is
+      // unreachable (the proxy owns /operator/*).
+      if (path.startsWith('/operator/auth/')) {
+        logger.error(
+          'gateway-auth: /operator/auth/* reached the dashboard itself — same-origin proxy is not mapping /operator/* to the gateway (rm-127 misroute); refusing to redirect',
+          {path},
+        )
+        return c.text(
+          'dashboard misconfigured: /operator/auth/* reached the dashboard, but gateway login paths must be reverse-proxied to the gateway (DASHBOARD_GATEWAY_PROXY_ACK topology). See docs/runbooks/gateway-access.md',
+          502,
+        )
+      }
+
       if (isPublicPath(path)) {
         return next()
       }

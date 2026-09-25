@@ -980,3 +980,69 @@ describe('security — token-shaped secrets redacted in error log paths', () => 
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// Public-entry validation parity (2026-09-26, cycle batch B2d)
+// ---------------------------------------------------------------------------
+
+describe('public entries — empty-string field parity with the redacted branch', () => {
+  it('an all-empty-strings public entry is skipped AND counted, never aggregated', async () => {
+    // Parity: the redacted branch rejects empty node_id outright (fail
+    // closed). The public branch used to accept empty strings (typeof-only
+    // guard) — such rows are garbage aggregation input and must land in the
+    // counted malformed-skip branch instead.
+    const yaml = `
+version: 1
+repos:
+  - owner: marcusrbrown
+    name: ha-config
+    discovery_channel: collab
+    private: false
+    node_id: R_kgDOJ_bMaQ
+  - owner: ''
+    name: ''
+    discovery_channel: ''
+    private: false
+    node_id: ''
+`
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const result = await readRepoMetadata(makeReader(yaml))
+
+      expect(isOk(result)).toBe(true)
+      if (!isOk(result)) return
+      expect(result.data.publicRepos).toHaveLength(1)
+      expect(result.data.publicRepos[0]?.name).toBe('ha-config')
+
+      const warnLine = warnSpy.mock.calls.map(c => c.join(' ')).find(l => l.includes('skipped malformed entries'))
+      expect(warnLine).toBeDefined()
+      expect(warnLine).toContain('"skippedCount":1')
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  it('a public entry with a non-empty node_id but empty owner is also rejected', async () => {
+    const yaml = `
+version: 1
+repos:
+  - owner: ''
+    name: some-repo
+    discovery_channel: collab
+    private: false
+    node_id: R_kgDOJ_bMaQ
+`
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const result = await readRepoMetadata(makeReader(yaml))
+
+      expect(isOk(result)).toBe(true)
+      if (!isOk(result)) return
+      expect(result.data.publicRepos).toHaveLength(0)
+      const warnLine = warnSpy.mock.calls.map(c => c.join(' ')).find(l => l.includes('skipped malformed entries'))
+      expect(warnLine).toContain('"skippedCount":1')
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+})

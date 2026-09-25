@@ -130,6 +130,7 @@ async function buildTestApp(opts: TestAppOpts | boolean) {
     getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
     operatorUiEnabled: resolved.operatorUiEnabled,
     gatewayOperatorSessionEnabled: resolved.gatewayOperatorSessionEnabled,
+    gatewayProxyAcknowledged: resolved.gatewayOperatorSessionEnabled === true,
     operatorClient: resolved.operatorClient,
     pushNotificationsEnabled: resolved.pushNotificationsEnabled,
   })

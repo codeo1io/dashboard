@@ -250,6 +250,28 @@ describe('subscribeOptIn', () => {
     expect(pushClient.subscribePush).toHaveBeenCalledTimes(1)
   })
 
+  // Fail-closed idempotency-key minting (2026-09-26, cycle batch B2a): when
+  // the environment cannot mint a securely random key there must be NO
+  // browser subscription attempt — a predictable key would defeat the
+  // gateway's zero-duplicate-subscription retry invariant.
+  it('fail closed: mintIdempotencyKey -> null -> subscribe-failed, no permission prompt, no subscribePush', async () => {
+    const requestPermission = vi.fn()
+    const pushClient = fakePushClient()
+
+    const outcome = await subscribeOptIn({
+      serviceWorkerReady: () => Promise.resolve(fakeRegistration(fakeSubscription())),
+      getSupport: () => ({supported: true, needsInstall: false}),
+      getPermission: () => 'default',
+      requestPermission,
+      pushClient,
+      mintIdempotencyKey: () => null,
+    })
+
+    expect(outcome).toEqual({kind: 'subscribe-failed'})
+    expect(requestPermission).not.toHaveBeenCalled()
+    expect(pushClient.subscribePush).not.toHaveBeenCalled()
+  })
+
   it('iOS non-installed -> needsInstall, no requestPermission call', async () => {
     const requestPermission = vi.fn()
     const outcome = await subscribeOptIn({
@@ -453,6 +475,28 @@ describe('resubscribeStaleKey', () => {
     expect(pushClient.subscribePush).toHaveBeenCalledTimes(1)
   })
 
+  // Fail closed before any side effect: a null mint must not even run the
+  // unsubscribe-old-then-resubscribe sequence (no gateway churn without a
+  // securely minted idempotency key).
+  it('fail closed: mintIdempotencyKey -> null -> subscribe-failed, no browser unsubscribe/resubscribe', async () => {
+    const oldSubscription = fakeSubscription('https://push.example/old')
+    const registration = fakeRegistration(fakeSubscription())
+    registration.pushManager.getSubscription = vi.fn().mockResolvedValue(oldSubscription)
+    const pushClient = fakePushClient()
+
+    const outcome = await resubscribeStaleKey({
+      serviceWorkerReady: () => Promise.resolve(registration),
+      requestPermission: vi.fn(),
+      pushClient,
+      mintIdempotencyKey: () => null,
+    })
+
+    expect(outcome).toEqual({kind: 'subscribe-failed'})
+    expect(oldSubscription.unsubscribeMock).not.toHaveBeenCalled()
+    expect(registration.subscribeMock).not.toHaveBeenCalled()
+    expect(pushClient.subscribePush).not.toHaveBeenCalled()
+  })
+
   it('reachable from subscribed state (no permission re-prompt) and failure -> subscribe-failed', async () => {
     const requestPermission = vi.fn()
     const subscription = fakeSubscription()
@@ -617,6 +661,23 @@ describe('unsubscribeOptOut', () => {
     })
 
     expect(result).toEqual({gatewayUnsubscribeCalled: false})
+    expect(pushClient.unsubscribePush).not.toHaveBeenCalled()
+  })
+
+  // Fail closed: without a securely minted key the gateway POST is skipped —
+  // the local unsubscribe still runs (the browser is unsubscribed either way).
+  it('fail closed: mintIdempotencyKey -> null -> local unsubscribe only, no gateway POST', async () => {
+    const subscription = fakeSubscription()
+    const pushClient = fakePushClient()
+
+    const result = await unsubscribeOptOut({
+      getLocalSubscription: () => Promise.resolve(subscription),
+      pushClient,
+      mintIdempotencyKey: () => null,
+    })
+
+    expect(result).toEqual({gatewayUnsubscribeCalled: false})
+    expect(subscription.unsubscribeMock).toHaveBeenCalledTimes(1)
     expect(pushClient.unsubscribePush).not.toHaveBeenCalled()
   })
 })

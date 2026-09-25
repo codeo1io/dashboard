@@ -647,3 +647,86 @@ describe('security — token-shaped secrets redacted in error log paths', () => 
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// Token cache hygiene — bounded + departure-pruned (2026-09-26, cycle batch B2b)
+// ---------------------------------------------------------------------------
+
+function censusClient(installations: readonly InstallationRecord[]) {
+  const mintInstallationToken = vi.fn().mockResolvedValue('ghs_fake_token')
+  const client = makeClient({
+    listInstallations: vi.fn().mockResolvedValue(installations),
+    mintInstallationToken,
+    listInstallationRepos: vi.fn().mockResolvedValue([]),
+  })
+  return {client, mintInstallationToken}
+}
+
+function mintsFor(mint: ReturnType<typeof vi.fn>, installationId: number): number {
+  return mint.mock.calls.filter(([id]) => id === installationId).length
+}
+
+describe('token cache hygiene — bounded + departure-pruned', () => {
+  // Fresh, high-numbered installation ids so the module-level cache shared
+  // across this file never aliases entries minted by earlier describes.
+  const ID_A = 901
+  const ID_B = 902
+
+  it('census hit: same installation does not re-mint while cached', async () => {
+    const {client, mintInstallationToken} = censusClient([makeInstall(ID_A)])
+
+    await enumerateRepos(client)
+    await enumerateRepos(client)
+
+    expect(mintsFor(mintInstallationToken, ID_A)).toBe(1)
+  })
+
+  it('prunes cached tokens for installations absent from a later census', async () => {
+    const both = censusClient([makeInstall(ID_A), makeInstall(ID_B)])
+    await enumerateRepos(both.client)
+
+    // Later census sees only B -> A's cached token is dropped.
+    const onlyB = censusClient([makeInstall(ID_B)])
+    await enumerateRepos(onlyB.client)
+
+    // A returns in a subsequent census -> must mint again (cache was pruned).
+    const bothAgain = censusClient([makeInstall(ID_A), makeInstall(ID_B)])
+    await enumerateRepos(bothAgain.client)
+
+    expect(mintsFor(bothAgain.mintInstallationToken, ID_A)).toBe(1)
+    // B was never absent from any census, so its token stayed cached —
+    // pruning is surgical: only departed ids are dropped.
+    expect(mintsFor(bothAgain.mintInstallationToken, ID_B)).toBe(0)
+  })
+
+  it('empty census prunes the entire cache', async () => {
+    const first = censusClient([makeInstall(ID_A)])
+    await enumerateRepos(first.client)
+
+    const empty = censusClient([])
+    await enumerateRepos(empty.client)
+
+    const again = censusClient([makeInstall(ID_A)])
+    await enumerateRepos(again.client)
+
+    expect(mintsFor(again.mintInstallationToken, ID_A)).toBe(1)
+  })
+
+  it('FIFO bound: cache size never exceeds 32 — the oldest entry is evicted', async () => {
+    const mint = vi.fn().mockResolvedValue('ghs_fake_token')
+    const base = 9100
+    // 33 distinct ids > TOKEN_CACHE_MAX(32): the first (base+1) must be evicted.
+    for (let i = 1; i <= 33; i++) {
+      await mintReadOnlyToken(base + i, mint)
+    }
+    expect(mint).toHaveBeenCalledTimes(33)
+
+    // Re-mint the evicted oldest -> a fresh call happens.
+    await mintReadOnlyToken(base + 1, mint)
+    expect(mintsFor(mint, base + 1)).toBe(2)
+
+    // The most recent id is still cached -> no extra call.
+    await mintReadOnlyToken(base + 33, mint)
+    expect(mintsFor(mint, base + 33)).toBe(1)
+  })
+})

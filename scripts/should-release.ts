@@ -15,8 +15,9 @@
 //   2 = usage/parse error (prints error to stderr)
 //
 // Decision logic:
-//   1. If any changed file matches a "hard release" pattern (src/**, Dockerfile,
-//      .github/workflows/release.yaml, scripts/should-release.ts, tsconfig*.json) => release.
+//   1. If any changed file matches a "hard release" pattern (src/**, web/**,
+//      public/**, Dockerfile, .github/workflows/release.yaml,
+//      scripts/should-release.ts, tsconfig*.json) => release.
 //   2. If package.json is in the changed set, diff the runtime fields
 //      (dependencies, engines, packageManager, overrides, pnpm.overrides,
 //       scripts, type, exports, imports) between base and head.

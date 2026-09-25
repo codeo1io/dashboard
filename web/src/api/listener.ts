@@ -26,7 +26,22 @@ export interface ListenerMessagesResponse {
 
 export type FetchListenerResult =
   | { ok: true; data: ListenerMessagesResponse }
-  | { ok: false; reason: 'timeout' | 'network' | 'contract-drift' }
+  | {
+      ok: false
+      /**
+       * Response classes — the caller must be able to tell them apart (see
+       * the poll loop in App.tsx):
+       * - 'auth' — 401/403: the operator session expired; the poll cannot
+       *   recover on its own and must surface + stop.
+       * - 'unavailable' — 404/410: the listener surface is not mounted on
+       *   this deployment (the server mounts /api/listener only when a
+       *   listener store is configured); polling would 404 forever.
+       * - 'network' — every other non-ok response and transport failure:
+       *   transient, back off and retry.
+       * - 'timeout' / 'contract-drift' — request deadline / schema mismatch.
+       */
+      reason: 'timeout' | 'network' | 'auth' | 'unavailable' | 'contract-drift'
+    }
 
 function isPlainObject(val: unknown): val is Record<string, unknown> {
   return typeof val === 'object' && val !== null && !Array.isArray(val)
@@ -93,6 +108,12 @@ export async function fetchListenerMessages(opts: {
     })
 
     if (!res.ok) {
+      if (res.status === 401 || res.status === 403) {
+        return { ok: false, reason: 'auth' }
+      }
+      if (res.status === 404 || res.status === 410) {
+        return { ok: false, reason: 'unavailable' }
+      }
       return { ok: false, reason: 'network' }
     }
 
