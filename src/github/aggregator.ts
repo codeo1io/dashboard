@@ -391,12 +391,12 @@ function buildWorkingSet(
   // undecodable new-format node_id. We log a warning instead.
   let denylistComplete = true
   for (const nodeId of redactedNodeIds) {
-    // Check if this node_id has a corresponding databaseId in the denylist.
-    // We can't reverse-lookup by node_id here, so we check if redactedDatabaseIds
-    // is non-empty as a proxy — if it's empty and redactedNodeIds is non-empty,
-    // at least one entry has no derived databaseId.
-    // More precise: new-format node_ids (R_kgDO...) can't be decoded, so if any
-    // redacted node_id starts with R_, denylistComplete is false.
+    // A node_id's databaseId cannot be reverse-looked-up here, so completeness
+    // is decided structurally: new-format node_ids (R_kgDO...) cannot be decoded
+    // into a databaseId at all, so if any redacted node_id starts with R_, that
+    // entry has no derived databaseId and denylistComplete is false. (This is
+    // the precise check — an earlier draft used "redactedDatabaseIds non-empty"
+    // as a proxy, which the R_ prefix test replaced.)
     if (nodeId.startsWith('R_')) {
       denylistComplete = false
       break
