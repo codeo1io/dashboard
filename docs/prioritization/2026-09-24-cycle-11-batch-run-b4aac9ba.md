@@ -1,0 +1,86 @@
+<!-- LANDING RENAME 2026-09-25 (integrate of run b4aac9ba candidate 399447b,
+conflict case 636b69c7): this batch doc was authored as
+`2026-09-24-cycle-11-batch.md` in the b4aac9ba lineage (campaign 74ec70c5
+cycle 1, PR #82) while the repo-landed cycle-11 doc (run 41c7d471, PR #79
+lineage) already owns that path on origin/main — add/add at the integrate.
+The landed doc keeps the canonical path; this one is renamed with the run id,
+the lineage-disambiguation convention (cf. 2026-09-24-cycle-10-batch-run-a4a97e30.md).
+Id reconciliation at this integrate: the batch minted rm-171..rm-176 in-flight;
+landed meanings won rm-171/rm-172, the batch's toml-override/enumeration/gitignore
+items converged with cycle-13's content-rescue of this very batch, rm-173 folded
+into rm-105, rm-176 folded into rm-147, and the one surviving new item (zlib
+CVE-2023-45853 triage) lands as rm-205. Full dispositions in the INTEGRATE-MERGE
+comment of ROADMAP.md; the dated signals below are preserved verbatim here, not
+duplicated into the ledger. -->
+---
+date: 2026-09-24
+topic: dashboard maintenance cycle 11 — scoring and batch selection (campaign 74ec70c5 cycle 1, stale-frame audit-green batch)
+mode: delegated-conductor
+run: b4aac9ba84e64ce9af339d6c1489b8ae
+phase: prioritize
+attempt: 6924305d316c4665bb5dafded887ac86
+skill: ce-plan (scoring/batch selection — no dedicated ce-prioritize skill in the installed router; fleet precedent cycles 1-3 used ce-plan identically). Deviations declared: no subagent surface in this session, frames run in-process and disclosed (convention #3768). Label disclosure per #4323: the engine cycle label is 1 (new campaign 74ec70c5); the repo lineage has consumed cycle numbers 1-9 on origin/main plus parallel-unlanded cycle-10 (run 449ed1a5), so this is lineage cycle 11 and the artifact is named accordingly.
+---
+
+# Dashboard maintenance — cycle 11 batch (2026-09-24)
+
+## Live frame facts (re-measured this phase, not carried stale)
+
+- Worktree `7809df6` (`conductor/run-b4aac9ba84e6`), 18 behind `origin/main` `82312f7`; uncommitted tree state: `ROADMAP.md` cycle-1 extension (items `rm-171..rm-176`) + this batch doc. Gates at this HEAD per the assess phase: lint 0, check-types clean, suite 3115/3115.
+- `origin/main` is LIVE-RED on its own push: Main run `35954752299` failed at `82312f7` on `test/fork-exclusion-guard.test.ts` — the landing merge tracks 13 `.conductor/progress/*.ndjson` (the recurring rm-131 class). CodeQL and Scorecard green at the same push. The cure must ride the next landing change on main itself (`git rm -r --cached .conductor`, disk preserved); this batch's B3 is the prevention side.
+- `pnpm audit -r` re-run this phase: exactly 1 HIGH — `toml` uncontrolled recursion GHSA-82x6-q7mm-w9cf, path `.>@opencode-ai/plugin>effect>toml`, vulnerable <4.2.0, patched >=4.2.0. GitHub-side Dependabot has the same advisory `auto_dismissed`.
+- Code scanning: one OPEN CRITICAL — alert #67, zlib1g CVE-2023-45853 inside the container base, Fixed Version EMPTY (disputed minizip-contrib; Debian no-dsa) — document-and-watch class, not fixable in-tree.
+- Scorecard 7.1: Signed-Releases -1, License 0, Fuzzing 0, CII 0, Code-Review 0, Maintained 0, Branch-Protection -1. No LICENSE file on fork or upstream.
+- Upstream drift 5 (fresh fetch this run): all dependency pins — agent v0.115.0 (new pin `8e6494ed`), v0.114.1, eslint 10.11.0, pnpm 11.27.1, bfra-me v4.32.0 (SKIP on absorb: touches the fork-excluded renovate.yaml).
+- **Parallel-campaign collision resolved this phase**: run 449ed1a5's unlanded cycle-10 extension already mints roadmap ids `rm-160..rm-170` and the doc name `2026-09-24-cycle-10-batch.md`. This run's roadmap items were RENUMBERED from the initial rm-160..165 allocation to `rm-171..rm-176`, and this doc takes sequence 11 — the documented parallel-conductor-campaigns collision class, caught before either side landed.
+
+## Five-axis scoring (1–5; Effort 5 = cheapest; Dep-free 5 = no external landing dependency)
+
+| Ref | Impact | Delay | Effort | Dep-free | Strategic | Total | Standing |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| toml override closes the open HIGH (rm-171) | 5 | 4 | 5 | 5 | 3 | 22 | SELECTED B1 (mechanical security rider) |
+| Fail-visible partial enumeration (rm-172) | 5 | 4 | 3 | 4 | 5 | 21 | SELECTED B2 (anchor) |
+| Gitignore belt-and-braces .conductor/.pnpm-store (rm-175) | 4 | 3 | 5 | 5 | 3 | 20 | SELECTED B3 (droppable last) |
+| GHCR keyless signing/attestations (rm-173) | 4 | 2 | 2 | 2 | 4 | 14 | DEFER (needs live Release-run proof; sequenced after rm-105 SBOM/provenance) |
+| zlib CVE triage doc + alert annotation (rm-174) | 2 | 3 | 4 | 3 | 2 | 14 | DEFER (annotation is a remote write; pairs with next base-digest bump / first base-drift fire 2026-09-28) |
+| Upstream pin absorb batch (rm-103 signal) | 2 | 2 | 4 | 2 | 3 | 13 | DEFER (origin/main already carries eslint 10.11.0; pin bumps on this 18-behind tree are merge noise — absorb at a fresh tip next cycle) |
+| License posture (rm-176) | 2 | 3 | 3 | 1 | 2 | 11 | DEFER (OWNER DECISION REQUIRED — cannot be selected by a delegated batch) |
+| Majors waves vitest5/TS7/pnpm12 (rm-133) | 3 | 2 | 4 | 5 | 2 | 16 | DEFER (standing ignore rules; external clock 2026-10-03/2026-10-21) |
+| Drift-identity + /api/monitoring consumer (rm-126) | 4 | 3 | 2 | 5 | 3 | 17 | DEFER (product decision; B2 records the partial consumer note it needs) |
+| Branch protection (rm-116) | 4 | 4 | 3 | 2 | 4 | 17 | DEFER (stewardship/ops surface, unchanged) |
+
+Selection rule applied: one medium anchor + mechanical riders — the fleet's proven batch shape (cycle-2/3 precedent). rm-172 is the anchor: it is the cycle's one genuinely fresh defect (assess finding, codex-corroborated, live on origin/main, invisible to every existing signal), and its DTO work is locally verifiable with the standard gates. B1 and B3 are near-zero-risk riders with outsized standing value (audit-green tree; prevention of the class that is RED on main right now). No file overlap between B1 (package.json/pnpm-lock.yaml), B2 (src/github/installations.ts, src/github/aggregator.ts, src/routes DTO + tests), and B3 (.gitignore + guard test) — three disjoint surfaces, each independently landable.
+
+## Selected batch — "audit-green + fail-visible enumeration + tracking-prevention riders"
+
+Three work units. One landing; CI proof at the pushed sha (Main + CodeQL minimum). No B0 status-flip unit this cycle: nothing from a prior batch is in a pending-landing state against a green main — statuses for rm-171..176 flip at the landing commit itself. A pre-landing rider for the COMMIT phase only (not implement): the integrate/landing move must carry `git rm -r --cached .conductor` per rm-131 discipline, because origin/main is currently tracking 13 ndjson and this branch must not restage them.
+
+### B1. Close the toml advisory with a pnpm override (rm-171)
+
+Add `pnpm.overrides` forcing `toml@>=4.2.0` in package.json (the vulnerable version rides `@opencode-ai/plugin>effect` — an override is the only direct control), refresh the lockfile, and record the Dependabot `auto_dismissed` divergence rationale in the commit message (a solution doc only if the story grows).
+
+- acceptance: `pnpm audit -r` reports 0 vulnerabilities; lockfile diff shows only the toml resolution change; `pnpm install --frozen-lockfile` clean; full gates green.
+- evidence: before/after `pnpm audit -r` output; `git diff pnpm-lock.yaml` scope; suite green (no behavioral surface — dev-transitive only).
+
+### B2. Fail-visible partial installation enumeration (rm-172, anchor)
+
+Make a partially-failed enumeration impossible to present as a fresh healthy snapshot. Touch points verified this cycle: `src/github/installations.ts:227-238` (per-installation mint/list failures `continue` into `ok(partial)`), `src/github/aggregator.ts:654-662` (banner only on TOTAL enumeration failure), `aggregator.ts:783-787` (runRefresh unexpected-throw path logs but never sets the banner).
+
+- implementation shape: propagate per-installation failure accounting out of `enumerateInstallations` (failed count + failed installation node ids — ids only, never names: redaction invariant), surface it on the monitoring snapshot (`enumerationIncomplete`), and set the staleness banner on the unexpected-throw path; tests pin: (a) one failed installation → snapshot carries `enumerationIncomplete` with the count, `stale:false` only when the rest enumerated clean, (b) total failure keeps existing behavior, (c) throw-path sets the banner.
+- recorded consumer note for rm-126 (decision recorded here, full fold decision stays deferred): the new signal rides MonitoringDto, which `/api/status` already serves to the SPA; the separate `/api/monitoring` endpoint's wire-or-fold question remains rm-126's own decision, unchanged by this batch.
+- acceptance: the three pinned test cases green in `pnpm test`; no `ok(partial)` path reaches a fresh-stamped snapshot unmarked; no installation NAME crosses the boundary (node ids/counts only); `pnpm lint` + `pnpm check-types` green.
+- evidence: new test names in the suite output; `git diff src/github/installations.ts src/github/aggregator.ts` showing the accounting propagation and banner set.
+
+### B3. Gitignore belt-and-braces (rm-175, droppable last)
+
+`.gitignore` gains `.conductor/` and `.pnpm-store/`; the fork-exclusion-guard test asserts both entries exist so renders/merges cannot silently drop them.
+
+- acceptance: `git check-ignore .conductor/progress/x.ndjson .pnpm-store/v10/x` both exit 0; guard test extended with the two assertions (red if either entry is removed); disk `.conductor/` untouched (ignored ≠ deleted); suite green.
+- evidence: `git check-ignore -v` output; negative-verified guard (remove an entry on a scratch copy → red); `git status --porcelain` clean on tracked files after.
+
+## Deferred with pre-recorded reasons
+
+- **rm-173 signing**: real Scorecard value but requires a live Release run to prove (`gh attestation verify` against the pushed digest) and the #3317 buildx readback trap; sequenced after rm-105's SBOM/provenance lands — next cycle if rm-105 rides then.
+- **rm-174 zlib triage**: the in-repo half is a solution doc; the alert annotation is a remote write best batched with the next base-digest bump (first scheduled base-drift fire is 2026-09-28 — a natural re-check rider).
+- **rm-176 license**: explicitly gated on the owner's decision; the roadmap item records both options and the upstream-coordination constraint. No delegated batch may pick.
+- **Upstream pin absorb**: 18-behind tree; pin bumps would conflict with origin/main's already-landed eslint 10.11.0. Absorb at a fresh tip where the drift gate (rm-103 cadence) belongs anyway.
