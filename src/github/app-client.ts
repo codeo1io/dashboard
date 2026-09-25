@@ -32,6 +32,12 @@ const ThrottledOctokit = Octokit.plugin(throttling, retry)
 export interface AppClientOptions {
   readonly appId: string
   readonly privateKey: string
+  /**
+   * Per-request timeout (ms) for the App-level Octokit. rm-197: no GitHub
+   * call in this process may hang — the aggregator's serial first refresh
+   * must stay bounded. Defaults to GITHUB_REQUEST_TIMEOUT_MS (30s).
+   */
+  readonly requestTimeoutMs?: number
 }
 
 export interface DashboardAppClient {
@@ -61,6 +67,13 @@ export interface DashboardAppClient {
 // ---------------------------------------------------------------------------
 
 /**
+ * rm-197: default per-request timeout for every GitHub transport in this
+ * process. Bounding each request keeps the aggregator's serial first refresh
+ * (and every later walk) finite even when GitHub stalls a connection.
+ */
+export const GITHUB_REQUEST_TIMEOUT_MS = 30_000
+
+/**
  * Create a dashboard App client authenticated as the fro-bot Agent App.
  *
  * The returned `octokit` is JWT-authenticated (App-level) and is suitable for
@@ -72,6 +85,7 @@ export function createDashboardAppClient(options: AppClientOptions): DashboardAp
   const octokit = new ThrottledOctokit({
     authStrategy: createAppAuth,
     auth: {appId, privateKey},
+    request: {timeout: options.requestTimeoutMs ?? GITHUB_REQUEST_TIMEOUT_MS},
     throttle: {
       onRateLimit: (retryAfter: number, opts: Record<string, unknown>, _octokit: unknown, retryCount: number) => {
         logger.warning('GitHub rate limit hit', {retryAfter, url: opts.url, retryCount})
