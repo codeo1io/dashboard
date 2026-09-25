@@ -27,6 +27,20 @@ export interface ShutdownDeps {
   readonly stopAggregator?: () => void
   /** Close the listener SQLite store, if any. */
   readonly closeListenerStore?: () => void
+  /**
+   * Destroy idle keep-alive sockets once the drain begins (rm-197). Node's
+   * `http.Server.close()` only stops accepting NEW connections — idle
+   * keep-alives (the SPA's same-origin poll) hold the close callback open,
+   * so a quiet stop still rides the whole grace deadline without this.
+   * In-flight requests keep their sockets; `close()` still waits for them.
+   */
+  readonly closeIdleConnections?: () => void
+  /**
+   * Destroy ALL remaining sockets at the force-exit deadline (rm-197).
+   * Long-lived proxied SSE streams never self-complete; without this the
+   * forced exit leaves dangling handles.
+   */
+  readonly closeAllConnections?: () => void
   /** Upper bound on graceful drain before forced exit (ms). */
   readonly forceExitAfterMs?: number
   /** Timer injection for tests. */
@@ -48,6 +62,8 @@ export function installShutdownHandlers(deps: ShutdownDeps): readonly string[] {
     closeServer,
     stopAggregator,
     closeListenerStore,
+    closeIdleConnections,
+    closeAllConnections,
     forceExitAfterMs = 9_000, // under docker's 10s stop grace so the deadline log lands before SIGKILL (F4)
     setTimeoutFn = (fn, ms) => setTimeout(fn, ms),
     exit = code => process.exit(code),
@@ -76,6 +92,14 @@ export function installShutdownHandlers(deps: ShutdownDeps): readonly string[] {
     const timer = setTimeoutFn(() => {
       if (settled) return
       log('Graceful drain deadline exceeded; forcing exit', {signal, forceExitAfterMs})
+      // rm-197: long-lived streams (proxied operator SSE) never self-complete
+      // — destroy every remaining socket so the forced exit doesn't leave
+      // dangling handles. Best-effort; the exit happens either way.
+      try {
+        closeAllConnections?.()
+      } catch (error) {
+        log('Failed to close all connections at drain deadline', {error: String(error)})
+      }
       exit(1)
     }, forceExitAfterMs)
 
@@ -91,6 +115,14 @@ export function installShutdownHandlers(deps: ShutdownDeps): readonly string[] {
       closeListenerStore?.()
     } catch (error) {
       log('Failed to close listener store during shutdown', {error: String(error)})
+    }
+    // rm-197: destroy idle keep-alive sockets BEFORE close() — they hold the
+    // close callback open, so a quiet stop would otherwise ride the whole
+    // deadline. In-flight requests keep their sockets by design.
+    try {
+      closeIdleConnections?.()
+    } catch (error) {
+      log('Failed to close idle connections during shutdown', {error: String(error)})
     }
 
     closeServer(err => {
