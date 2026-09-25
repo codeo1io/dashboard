@@ -53,6 +53,10 @@ describe('fork exclusion invariants (rm-131)', () => {
     expect(existsSync(resolve(repoRoot, '.github/workflows/renovate.yaml'))).toBe(false)
   })
 
+  it('.github/renovate.json5 stays absent (rm-136 keep-deleted fork policy; rm-213 guard — the re-injection this catches empirically recurred 2026-09-24..25, cured at 0616de2)', () => {
+    expect(existsSync(resolve(repoRoot, '.github/renovate.json5'))).toBe(false)
+  })
+
   it('Dockerfile pins pnpm 11.27.1 in both stages', () => {
     expect(read('Dockerfile').match(/pnpm@11\.27\.1/g)?.length).toBe(2)
   })
