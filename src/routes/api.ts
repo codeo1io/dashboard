@@ -4,10 +4,13 @@ import {Hono} from 'hono'
 /** Injectable snapshot provider — returns the current aggregator snapshot. */
 export type SnapshotProvider = () => AggregatorSnapshot
 
-/** Empty snapshot returned when no provider is configured. */
+/**
+ * Empty snapshot returned when no provider is configured. rm-197: bannered —
+ * an empty payload must never read as "authoritatively verified empty".
+ */
 const EMPTY_SNAPSHOT: AggregatorSnapshot = {
   repos: [],
-  staleBanner: false,
+  staleBanner: true,
   driftCount: 0,
   enumerationIncomplete: null,
   refreshedAt: null,

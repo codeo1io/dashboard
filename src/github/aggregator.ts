@@ -501,14 +501,32 @@ export function redactRepoIdentityFromText(text: string, entry: RepoLogIdentity)
   // and no partial fragment survives when tokens overlap (e.g. the name is a
   // substring of the owner). An error string may carry the full `owner/name`,
   // or the owner or name in isolation.
+  // rm-200: matches are boundary-anchored (no [\w.-] adjacent) so that
+  // single-character tokens — legal GitHub owner/repo names — are redacted
+  // when standalone WITHOUT shredding every occurrence of that character
+  // inside unrelated words. The previous `length > 1` filter was a
+  // split/join workaround that silently leaked 1-char identities; with
+  // anchoring the filter only needs to drop empty strings.
   const tokens = [`${entry.owner}/${entry.name}`, entry.owner, entry.name]
-    .filter(token => token.length > 1)
+    .filter(token => token.length > 0)
     .sort((a, b) => b.length - a.length)
   let out = text
   for (const token of tokens) {
-    out = out.split(token).join('[REDACTED_REPO]')
+    out = out.replaceAll(
+      new RegExp(String.raw`(?<![\w.-])${escapeRegExp(token)}(?![\w.-])`, 'g'),
+      '[REDACTED_REPO]',
+    )
   }
   return out
+}
+
+/**
+ * Escape all regex metacharacters so a literal token stays literal.
+ * Exported as an extraction seam for the boundary assertions in the property
+ * suite (rm-200).
+ */
+export function escapeRegExp(text: string): string {
+  return text.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)
 }
 
 /**
@@ -922,20 +940,36 @@ export function createAggregator(
   }
 
   /**
-   * Get the current snapshot. Returns empty state if no refresh has run yet.
+   * Get the current snapshot. If no refresh has ever completed, serves the
+   * same empty bannered snapshot the fail-visible paths serve (rm-197): a
+   * refresh may still be in flight, and `staleBanner: false` with `repos: []`
+   * would present "authoritatively verified empty" while the very first walk
+   * is still running.
    */
   function getSnapshot(): AggregatorSnapshot {
     if (lastGoodSnapshot === null) {
-      return {repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null}
+      return {repos: [], staleBanner: true, driftCount: 0, enumerationIncomplete: null, refreshedAt: null}
     }
     return lastGoodSnapshot
   }
 
   /**
    * Start the background refresh interval (60s). Also triggers an immediate refresh.
+   *
+   * rm-201: a duplicate start() must not leak the first interval — intervalHandle
+   * holds only one id, so a second assignment would orphan the first tick
+   * forever (stop() clears only the latest handle).
    */
   async function start(): Promise<void> {
-    await refresh()
+    if (intervalHandle !== null) {
+      logger.debug('Aggregator already started; ignoring duplicate start')
+      return
+    }
+    // rm-197: install the interval BEFORE awaiting the first refresh so a
+    // stalled first walk cannot leave the process without a tick. The
+    // `refreshing` overlap guard makes an early tick a no-op, and every
+    // transport is time-bounded (requestTimeoutMs), so the awaited first
+    // walk is bounded too.
     intervalHandle = setIntervalFn(() => {
       refresh().catch(error => {
         // Belt-and-braces: refresh() already catches and marks stale; this
@@ -946,6 +980,11 @@ export function createAggregator(
         markSnapshotStale()
       })
     }, 60_000)
+
+    // rm-197: the first walk is awaited (warm boot) but — with the interval
+    // already armed and every transport time-bounded — it can no longer
+    // wedge the process if it stalls.
+    await refresh()
   }
 
   /**

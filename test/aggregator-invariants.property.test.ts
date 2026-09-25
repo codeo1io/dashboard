@@ -13,6 +13,7 @@
 import fc from 'fast-check'
 import {describe, expect, it} from 'vitest'
 import {
+  escapeRegExp,
   parseRepoResponse,
   redactRepoIdentityFromText,
   sortAttentionFirst,
@@ -24,7 +25,9 @@ import {
 // Generators
 // ---------------------------------------------------------------------------
 
-const nameArb = fc.stringMatching(/^\w[\w.-]{1,30}$/)
+// 1-char identities are legal GitHub names — the redaction boundary must
+// cover them (rm-200).
+const nameArb = fc.stringMatching(/^\w[\w.-]{0,30}$/)
 
 const identityArb = fc.record({
   node_id: fc.stringMatching(/^R_[A-Za-z0-9]{8,20}$/),
@@ -114,10 +117,20 @@ describe('aggregator redaction invariants (rm-144)', () => {
         // Strip the redaction marker first: the marker string itself can
         // contain a short owner as a substring (e.g. owner 'ED' inside
         // '[REDACTED_REPO]') without any real identity leaking.
+        //
+        // rm-200: "never survive" means no BOUNDARY-ANCHORED occurrence
+        // survives — the redaction contract. A token embedded inside a longer
+        // identity-charset word (name 'one' inside 'alone', 1-char 'a' inside
+        // 'name') is a lexical collision with unrelated text, not identity
+        // survival, and anchoring deliberately leaves it untouched.
         const stripped = out.replaceAll('[REDACTED_REPO]', '')
-        expect(stripped).not.toContain(entry.owner)
-        expect(stripped).not.toContain(entry.name)
-        expect(stripped).not.toContain(full)
+        for (const token of [entry.owner, entry.name, full]) {
+          if (token.length === 0) continue
+          const standalone = new RegExp(
+            String.raw`(?<![\w.-])${escapeRegExp(token)}(?![\w.-])`,
+          )
+          expect(standalone.test(stripped), `standalone '${token}' survived in: ${stripped}`).toBe(false)
+        }
       }),
       {numRuns: 200},
     )
