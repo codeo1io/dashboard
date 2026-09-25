@@ -87,6 +87,27 @@ describe('listener API', () => {
       if (res.ok) {
         expect(res.data.messages).toHaveLength(1)
         expect(res.data.messages[0]?.id).toBe('2')
+        // rm-198: the dropped item is counted, not silently ignored.
+        expect(res.data.droppedCount).toBe(1)
+        // rm-197: absent prunedCount tolerates an older server → 0.
+        expect(res.data.prunedCount).toBe(0)
+      }
+    })
+
+    it('rm-197/rm-198: surfaces server prunedCount alongside client droppedCount', async () => {
+      const mockData = {
+        messages: [],
+        unreadCount: 3,
+        prunedCount: 42
+      }
+
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+      const res = await fetchListenerMessages()
+      expect(res.ok).toBe(true)
+      if (res.ok) {
+        expect(res.data.prunedCount).toBe(42)
+        expect(res.data.droppedCount).toBe(0)
+        expect(res.data.unreadCount).toBe(3)
       }
     })
 

@@ -108,6 +108,14 @@ export function createListenerStore(dbPath: string): ListenerStore {
   `)
   const pruneAgeStmt = db.prepare('DELETE FROM messages WHERE received_at < ?')
 
+  // rm-199-class visibility: cumulative count of messages evicted by the
+  // retention policy since the store was created. In-memory by design — it
+  // reports "how much history the current process dropped", not a durable
+  // total (a restart resets it, which is honest: the new process has pruned
+  // nothing). Surfaced through list() so the messages DTO can tell the
+  // operator the list is a truncated view.
+  let prunedTotal = 0
+
   function insert(input: IngestMessage): {id: string; receivedAt: string} {
     const receivedAt = new Date().toISOString()
     const linksJson = JSON.stringify(input.links)
@@ -164,6 +172,7 @@ export function createListenerStore(dbPath: string): ListenerStore {
     return {
       messages: rows.map(rowToMessage),
       unreadCount: unreadCountRow.n,
+      prunedCount: prunedTotal,
     }
   }
 
@@ -184,10 +193,12 @@ export function createListenerStore(dbPath: string): ListenerStore {
   function prune(): void {
     const totalRow = pruneCountStmt.get() as unknown as {n: number}
     if (totalRow.n > RETENTION_MAX_ROWS) {
-      pruneOverflowStmt.run(RETENTION_MAX_ROWS)
+      const overflowResult = pruneOverflowStmt.run(RETENTION_MAX_ROWS)
+      prunedTotal += Number(overflowResult.changes)
     }
     const cutoff = new Date(Date.now() - RETENTION_MAX_AGE_MS).toISOString()
-    pruneAgeStmt.run(cutoff)
+    const ageResult = pruneAgeStmt.run(cutoff)
+    prunedTotal += Number(ageResult.changes)
   }
 
   function close(): void {

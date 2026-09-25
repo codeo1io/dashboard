@@ -2,6 +2,7 @@ import {useEffect, useState, useCallback} from 'react'
 import {AppShell} from './shell/AppShell.tsx'
 import {Operator} from './views/Operator.tsx'
 import {ListenerChannel} from './views/Listener.tsx'
+import {Monitoring} from './views/Monitoring.tsx'
 import {fetchListenerMessages} from './api/listener.ts'
 import type {OperatorState} from './operator/state.ts'
 
@@ -16,7 +17,7 @@ export default function App() {
   const [fixtureState, setFixtureState] = useState<FixtureState | null>(null)
   const [fixtureDetectionSettled, setFixtureDetectionSettled] = useState(!import.meta.env.DEV)
   
-  const [currentView, setCurrentView] = useState<'operator' | 'listener'>('operator')
+  const [currentView, setCurrentView] = useState<'operator' | 'listener' | 'monitoring'>('operator')
   const [unreadCount, setUnreadCount] = useState(0)
 
   useEffect(() => {
@@ -81,6 +82,10 @@ export default function App() {
         />
       </div>
       
+      {currentView === 'monitoring' && (
+        <Monitoring />
+      )}
+
       {currentView === 'listener' && (
         <ListenerChannel />
       )}
