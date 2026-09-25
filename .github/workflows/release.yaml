@@ -8,6 +8,10 @@ on:
       - Dockerfile
       - package.json
       - pnpm-lock.yaml
+      # rm-154 (cycle-9): COPY'd into BOTH Docker stages (builder + prod-deps);
+      # carries allowBuilds/shamefullyHoist/minimumReleaseAge — build-behavior
+      # config that changes image contents with zero code diff.
+      - pnpm-workspace.yaml
       - 'tsconfig*.json'
       - 'src/**'
       - 'web/**'
@@ -31,7 +35,10 @@ defaults:
 jobs:
   guard:
     name: Release guard
-    runs-on: ubuntu-latest
+    # rm-188 (cycle 13, 2026-09-25): pinned ubuntu-24.04 — ubuntu-26.04 images are
+    # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
+    # at the rm-139 Node-26 window (2026-10-28).
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       should-release: ${{ steps.check.outputs.should-release }}
@@ -115,7 +122,7 @@ jobs:
     name: Release
     needs: [guard]
     if: needs.guard.outputs.should-release == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: read
@@ -161,6 +168,13 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: ghcr.io/${{ github.repository }}:ci-${{ github.run_id }}-${{ github.run_attempt }}
+          # rm-105: registry-side supply-chain attestations. Provenance v1 ships
+          # by default at mode=min; mode=max adds full materials/builder data and
+          # sbom adds the SPDX attestation the image was missing (verified absent
+          # on the pre-change :latest digest). See
+          # docs/solutions/workflow-issues/registry-attestation-verification-2026-09-25.md
+          sbom: true
+          provenance: mode=max
 
       - name: 🧪 Smoke-test candidate image by digest
         run: |
@@ -321,7 +335,7 @@ jobs:
           retention-days: 5
 
       - name: 🛡️ Upload Trivy results to code scanning
-        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
         with:
           sarif_file: trivy-results-${{ steps.digest.outputs.normalized }}.sarif
           category: trivy/release-image
@@ -435,11 +449,12 @@ jobs:
             done
           done
 
-          # NOTE: buildx v0.30.1 on the self-hosted runner prints the default pretty
-          # dump for `imagetools inspect --format '{{.Manifest.Digest}}'` on
-          # attestation-bearing OCI indexes (template silently ignored, exit 0), so
-          # parse the Digest line from the default output instead of trusting the
-          # template across buildx versions.
+          # NOTE (historical quirk, any runner): buildx v0.30.1 printed the default
+          # pretty dump for `imagetools inspect --format '{{.Manifest.Digest}}'` on
+          # attestation-bearing OCI indexes (template silently ignored, exit 0 —
+          # observed 2026-09 on the workstation-era self-hosted runner), so parse the
+          # Digest line from the default output instead of trusting the template
+          # across buildx versions.
           for TAG in "$CALVER" "sha-${SHORT_SHA}"; do
             got=$(docker buildx imagetools inspect \
               "ghcr.io/${{ github.repository }}:$TAG" \
@@ -533,7 +548,7 @@ jobs:
     name: Dispatch infra deploy
     needs: [release]
     if: needs.release.result == 'success' && needs.release.outputs.tag != '' && needs.release.outputs.digest != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     # Best-effort for the WHOLE job: the release is already published, so nothing here
     # may fail the workflow run. continue-on-error covers every step — validation,

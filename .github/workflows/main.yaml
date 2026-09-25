@@ -4,7 +4,7 @@ name: Main
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, 'conductor/ci-base-**']
     types: [opened, ready_for_review, reopened, synchronize]
   push:
     branches: [main]
@@ -26,7 +26,10 @@ jobs:
     name: Lint
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    # rm-188 (cycle 13, 2026-09-25): pinned ubuntu-24.04 — ubuntu-26.04 images are
+    # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
+    # at the rm-139 Node-26 window (2026-10-28).
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch
@@ -48,7 +51,7 @@ jobs:
     name: Design Check
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch
@@ -76,7 +79,7 @@ jobs:
     name: Check Types
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch
@@ -96,7 +99,7 @@ jobs:
     name: Test
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch
@@ -118,7 +121,7 @@ jobs:
     name: Check Workflows
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch
@@ -128,9 +131,12 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
-      # raven-actions/actionlint needs pipx (pyflakes default) which the
-      # self-hosted runner lacks — 'Unable to locate executable file: pipx'
-      # (Main run 35413084207). The container form needs nothing on the host.
+      # raven-actions/actionlint defaults to pyflakes via pipx, which is not
+      # guaranteed present on any runner image (it was missing entirely on the
+      # workstation-era self-hosted runner: Main run 35413084207, 'Unable to locate
+      # executable file: pipx'). The container form assumes nothing from the
+      # host and pins actionlint itself (see docs/solutions/
+      # workflow-issues/actionlint-pipx-missing-container-form-2026-09-19.md).
       - name: 🛠 Lint Workflows
         run: >
           docker run --rm -v "$PWD:/repo" -w /repo
@@ -140,7 +146,7 @@ jobs:
     name: Test Scripts Load
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch

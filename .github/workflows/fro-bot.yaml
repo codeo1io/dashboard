@@ -125,15 +125,19 @@ env:
     detail for an LLM agent to act on later (see AGENT NOTES).
 
     DEPENDENCY OWNERSHIP
-    Renovate owns routine dependency and version bumps. Change dependency
-    versions only to remediate a confirmed critical/high security advisory or to
-    repair an existing security-update PR. Never open a non-security version-bump
-    PR and never batch unrelated dependency changes into a security fix.
+    Dependabot owns routine dependency and version bumps on this fork (weekly
+    grouped PRs per .github/dependabot.yml; first window opened 2026-09-19).
+    Renovate does not run here — its workflow was retired during CI migration
+    and its config deleted 2026-09-22. Change dependency
+    versions only to remediate a confirmed critical/high security advisory or
+    to repair an existing security-update PR. Never open a non-security
+    version-bump PR and never batch unrelated dependency changes into a
+    security fix.
 
     TRUSTED AUTHORS
     Only repair a PR branch authored by the repository owner/a collaborator with
-    write access, or an approved automation bot (renovate[bot], dependabot[bot],
-    fro-bot). If author trust cannot be established, skip the PR and log it under
+    write access, or an approved automation bot (dependabot[bot], fro-bot). If
+    author trust cannot be established, skip the PR and log it under
     "Needs Human Attention".
 
     CATEGORIES (work in order)
@@ -258,7 +262,10 @@ env:
 jobs:
   fro-bot:
     name: Fro Bot
-    runs-on: ubuntu-latest
+    # rm-188 (cycle 13, 2026-09-25): pinned ubuntu-24.04 — ubuntu-26.04 images are
+    # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
+    # at the rm-139 Node-26 window (2026-10-28).
+    runs-on: ubuntu-24.04
     # 2026-09-19: this repo has no FRO_BOT_PAT secret configured, so the job's
     # token input is empty and every scheduled run fails at input validation
     # ("Input required and not supplied: token"). Skip scheduled runs until the
@@ -330,7 +337,7 @@ jobs:
       - name: Run Fro Bot
         if: github.event_name != 'schedule' || env.HAS_FRO_BOT_PAT == 'true'
         id: fro-bot-agent
-        uses: fro-bot/agent@b711f08e4049ff0add1ec06859743b2dcb7764ce # v0.114.0
+        uses: fro-bot/agent@8e6494ed020b49cfb4c18aabe229514a4d00eca5 # v0.115.0
         env:
           OPENCODE_PROMPT_ARTIFACT: 'true'
           TASK_PROMPT: >-
