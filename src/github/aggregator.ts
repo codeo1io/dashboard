@@ -123,6 +123,21 @@ export interface AggregatorSnapshot {
   readonly refreshedAt: number | null
 }
 
+/**
+ * Optional snapshot persistence seam (rm-200). `load()` is consulted ONCE
+ * at aggregator-factory time to bridge the cold-start window (the loaded
+ * snapshot is forced stale, its original `refreshedAt` preserved so
+ * consumers can read its age); `persist()` is called best-effort after
+ * every snapshot write. Absent → in-memory-only behavior (the pre-rm-200
+ * contract). Implementations must not throw into the refresh path.
+ */
+export interface SnapshotStore {
+  /** Last persisted snapshot, or null when none is usable (fail-open). */
+  readonly load: () => AggregatorSnapshot | null
+  /** Best-effort persist of the latest snapshot. */
+  readonly persist: (snapshot: AggregatorSnapshot) => void
+}
+
 // ---------------------------------------------------------------------------
 // GraphQL query + response types
 // ---------------------------------------------------------------------------
@@ -283,6 +298,11 @@ export interface AggregatorDeps {
    * enumeration channel. If absent, such repos are skipped (not queried).
    */
   readonly resolveInstallationIdForRepo?: (owner: string, name: string) => Promise<number>
+  /**
+   * Optional snapshot persistence (rm-200) — see {@link SnapshotStore}.
+   * Absent → in-memory-only snapshots (the pre-rm-200 contract).
+   */
+  readonly snapshotStore?: SnapshotStore
 }
 
 // ---------------------------------------------------------------------------
@@ -645,7 +665,41 @@ export function createAggregator(
   const clearIntervalFn = deps.clearIntervalFn ?? (id => clearInterval(id))
 
   // Last-good snapshot (serves stale data when refresh fails)
-  let lastGoodSnapshot: AggregatorSnapshot | null = null
+  //
+  // rm-200 boot-time bridge: the last persisted snapshot, if any, seeds the
+  // cold-start window — forced stale (it can never present as fresh truth)
+  // with its original refreshedAt so consumers can read its age. Fail-open:
+  // no store / unusable file / a store that throws on load → empty boot
+  // exactly as before — persistence must never be able to crash the boot.
+  const bootSnapshot = (() => {
+    try {
+      return deps.snapshotStore?.load() ?? null
+    } catch (error) {
+      logger.warning('Snapshot store load threw at boot; starting empty (fail-open)', {
+        error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
+      })
+      return null
+    }
+  })()
+  let lastGoodSnapshot: AggregatorSnapshot | null =
+    bootSnapshot === null ? null : {...bootSnapshot, staleBanner: true}
+
+  /**
+   * Every snapshot write goes through here (rm-200): set + best-effort
+   * persist so the next cold start bridges from this snapshot. Persist
+   * failures are logged and swallowed — persistence must never break the
+   * refresh path.
+   */
+  function setSnapshot(next: AggregatorSnapshot): void {
+    lastGoodSnapshot = next
+    try {
+      deps.snapshotStore?.persist(next)
+    } catch (error) {
+      logger.warning('Snapshot persist failed; continuing in-memory only', {
+        error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
+      })
+    }
+  }
 
   // Interval handle
   let intervalHandle: ReturnType<typeof setInterval> | null = null
@@ -664,16 +718,53 @@ export function createAggregator(
    */
   function markSnapshotStale(): void {
     if (lastGoodSnapshot === null) {
-      lastGoodSnapshot = {
+      setSnapshot({
         repos: [],
         staleBanner: true,
         driftCount: 0,
         enumerationIncomplete: null,
         refreshedAt: null,
-      }
+      })
     } else {
-      lastGoodSnapshot = {...lastGoodSnapshot, staleBanner: true}
+      setSnapshot({...lastGoodSnapshot, staleBanner: true})
     }
+  }
+
+  /**
+   * Review fix (independent review P2-1, 2026-09-25): the persisted/boot-seeded
+   * lastGoodSnapshot was denylist-clean AS OF ITS PERSIST TIME ONLY. A repo
+   * redacted in repos.yaml between persist and restart would otherwise be
+   * served by name on every last-good path — the fail-closed carry, the
+   * warm-empty guard, degraded serve — until a fully successful refresh
+   * replaced the snapshot, and the disk cache would keep carrying the name.
+   *
+   * Called once per refresh, immediately after a FRESH metadata read
+   * succeeds (the denylist is in hand): drop denylisted rows from the
+   * in-memory lastGoodSnapshot AND persist the scrubbed snapshot so the
+   * disk file stops carrying the name too. Restores the pre-rm-200 implicit
+   * privacy reset in the only dimension it can be restored without breaking
+   * fail-closed semantics — when metadata is UNavailable nothing changes
+   * (we cannot know the current denylist without it).
+   *
+   * Matches on node_id only (DashboardRepo rows carry no database_id); this
+   * is the primary denylist guard, same key buildWorkingSet applies.
+   */
+  function scrubLastGoodAgainstDenylist(metadata: MetadataResult): void {
+    if (lastGoodSnapshot === null || lastGoodSnapshot.repos.length === 0) return
+    const denylisted = lastGoodSnapshot.repos.filter(repo => metadata.redactedNodeIds.has(repo.node_id))
+    if (denylisted.length === 0) return
+    const denylistedNodeIds = new Set(denylisted.map(repo => repo.node_id))
+    setSnapshot({
+      ...lastGoodSnapshot,
+      repos: lastGoodSnapshot.repos.filter(repo => !denylistedNodeIds.has(repo.node_id)),
+      // staleBanner untouched: scrubbing is a privacy repair, not a freshness
+      // signal — it must not re-present a stale snapshot as fresh (nor flag
+      // a fresh one stale).
+    })
+    // Count only — never log names or node_ids (denylist convention).
+    logger.warning('Scrubbed redacted repo rows from last-good snapshot after fresh metadata read', {
+      scrubbedCount: denylisted.length,
+    })
   }
 
   /**
@@ -694,15 +785,22 @@ export function createAggregator(
 
       if (lastGoodSnapshot === null) {
         // Cold start with no cache — serve empty with banner
-        lastGoodSnapshot = {repos: [], staleBanner: true, driftCount: 0, enumerationIncomplete: null, refreshedAt: null}
+        setSnapshot({repos: [], staleBanner: true, driftCount: 0, enumerationIncomplete: null, refreshedAt: null})
       } else {
         // Serve last-good with staleBanner
-        lastGoodSnapshot = {...lastGoodSnapshot, staleBanner: true}
+        setSnapshot({...lastGoodSnapshot, staleBanner: true})
       }
       return
     }
 
     const metadata = metadataResult.data
+
+    // Review fix (P2-1): with a fresh denylist in hand, first purge any rows
+    // the current denylist redacts from the carried/boot-seeded last-good
+    // snapshot — every downstream serve path (warm-empty guard, fail-closed
+    // carry on LATER cycles, degraded serve) reads lastGoodSnapshot after
+    // this point.
+    scrubLastGoodAgainstDenylist(metadata)
 
     // 2. Enumerate installation repos
     const enumerateResult = await deps.enumerate(installationsClient)
@@ -825,13 +923,13 @@ export function createAggregator(
         for (const absence of absentEntries) {
           if (!lastGoodNodeIds.has(absence.node_id)) servedRepos.push(absence)
         }
-        lastGoodSnapshot = {
+        setSnapshot({
           repos: sortAttentionFirst(servedRepos),
           staleBanner: true,
           enumerationIncomplete,
           driftCount,
           refreshedAt: lastGoodSnapshot.refreshedAt,
-        }
+        })
         return
       }
       // Cold or already-empty state — absence entries (if any) are the whole
@@ -839,13 +937,13 @@ export function createAggregator(
       // staleBanner=true if enumeration failed OR is incomplete — a partially
       // enumerated empty set must never read as authoritative emptiness
       // (review finding F2).
-      lastGoodSnapshot = {
+      setSnapshot({
         repos: sortAttentionFirst([...absentEntries]),
         staleBanner: enumerationFailed || (enumerationIncomplete ?? 0) > 0,
         enumerationIncomplete,
         driftCount,
         refreshedAt: now(),
-      }
+      })
       return
     }
 
@@ -885,7 +983,7 @@ export function createAggregator(
     // incomplete (install repos missing). We still show metadata publicRepos
     // (they are public and safe), but the operator must know the installation
     // channel data is absent.
-    lastGoodSnapshot = {repos: sorted, staleBanner: enumerationFailed || (enumerationIncomplete ?? 0) > 0, driftCount, enumerationIncomplete, refreshedAt: now()}
+    setSnapshot({repos: sorted, staleBanner: enumerationFailed || (enumerationIncomplete ?? 0) > 0, driftCount, enumerationIncomplete, refreshedAt: now()})
 
     logger.info('Aggregator refresh complete', {
       repoCount: sorted.length,
