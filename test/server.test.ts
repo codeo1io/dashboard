@@ -632,10 +632,10 @@ describe('enumerateRepos — installation_id flows correctly', () => {
 })
 
 // ---------------------------------------------------------------------------
-// rm-204: monitoring refresh gate (DASHBOARD_MONITORING_REFRESH)
+// rm-223: monitoring refresh gate (DASHBOARD_MONITORING_REFRESH)
 // ---------------------------------------------------------------------------
 
-describe('readMonitoringRefreshConfig — refresh loop gate (rm-204)', () => {
+describe('readMonitoringRefreshConfig — refresh loop gate (rm-223)', () => {
   it('defaults to enabled (behavior-preserving)', () => {
     expect(readMonitoringRefreshConfig({})).toEqual({enabled: true})
   })
