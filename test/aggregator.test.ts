@@ -63,8 +63,11 @@ function makeMetadataResult(overrides: {
   }
 }
 
-function makeEnumerateResult(repos: ReturnType<typeof makeRepo>[]): Result<EnumerateReposResult, FetchInstallationsError> {
-  return ok({repos, installations: [{id: 1, account: 'fro-bot'}]})
+function makeEnumerateResult(
+  repos: ReturnType<typeof makeRepo>[],
+  failedInstallationIds: readonly number[] = [],
+): Result<EnumerateReposResult, FetchInstallationsError> {
+  return ok({repos, installations: [{id: 1, account: 'fro-bot'}], failedInstallationIds})
 }
 
 /**
@@ -77,8 +80,12 @@ function makeGraphqlResponse(overrides: {
   openPrCount?: number
   openIssueCount?: number
   openAlertCount?: number | null
+  repository?: null
 } = {}) {
   const failingChecks = overrides.failingChecks ?? 0
+  if (overrides.repository === null) {
+    return {repository: null}
+  }
   return {
     repository: {
       defaultBranchRef: {
@@ -420,6 +427,34 @@ describe('aggregator — edge cases', () => {
     expect(snap.driftCount).toBe(1)
   })
 
+  it('driftCount equals installation-only, non-denylisted repos and discovered rows keep full identity (rm-126)', async () => {
+    const discoveredA = makeRepo({node_id: 'NODE_D_A', owner: 'org', name: 'drift-a'})
+    const discoveredB = makeRepo({node_id: 'NODE_D_B', owner: 'org', name: 'drift-b'})
+    const redacted = makeRepo({node_id: 'NODE_REDACTED', owner: 'org', name: 'hidden'})
+    const listed = makeRepo({node_id: 'NODE_LISTED', owner: 'org', name: 'listed'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([discoveredA, discoveredB, redacted, listed])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_LISTED', owner: 'org', name: 'listed'})],
+        redactedNodeIds: ['NODE_REDACTED'],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse()),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    // Listed repo + two installation-only repos; the denylisted repo is
+    // filtered BEFORE any query and counts toward nothing.
+    expect(snap.repos.map(repo => repo.full_name).sort()).toEqual(['org/drift-a', 'org/drift-b', 'org/listed'])
+    expect(snap.repos.find(repo => repo.full_name === 'org/drift-a')?.discovery_channel).toBe('discovered')
+    expect(snap.repos.find(repo => repo.full_name === 'org/drift-b')?.discovery_channel).toBe('discovered')
+    // driftCount is the bare size of the installation-only gap — denylisted
+    // and metadata-listed repos never contribute.
+    expect(snap.driftCount).toBe(2)
+  })
+
   it('metadata publicRepos carry their discovery_channel label', async () => {
     const repo = makeRepo({node_id: 'NODE_COLLAB', owner: 'org', name: 'collab-repo'})
     const deps = makeDeps({
@@ -517,6 +552,76 @@ describe('aggregator — error paths', () => {
     expect(snap.repos).toHaveLength(1)
     expect(snap.repos[0]?.node_id).toBe('NODE_META')
     // staleBanner=true — data is incomplete (installation channel failed)
+    expect(snap.staleBanner).toBe(true)
+    // rm-112/B1: enumerationIncomplete is null (unknown) when enumeration
+    // failed entirely — distinct from a partial failure's count.
+    expect(snap.enumerationIncomplete).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Fail-visible partial enumeration (rm-112 remaining scope / cycle-13 B1)
+// ---------------------------------------------------------------------------
+
+describe('aggregator — fail-visible partial enumeration', () => {
+  it('successful enumeration → enumerationIncomplete is 0, no stale banner', async () => {
+    const repo = makeRepo({node_id: 'NODE_OK', owner: 'org', name: 'repo-ok'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_OK', owner: 'org', name: 'repo-ok'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.enumerationIncomplete).toBe(0)
+    expect(snap.staleBanner).toBe(false)
+  })
+
+  it('partial enumeration → enumerationIncomplete carries the failed-installation count', async () => {
+    const repo = makeRepo({node_id: 'NODE_P', owner: 'org', name: 'repo-p'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo], [11, 12])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_P', owner: 'org', name: 'repo-p'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    // The union is partial: 2 installations failed. The snapshot must SAY so
+    // (count only — never ids/names) while still serving the reachable repos.
+    // Review F2: any incomplete enumeration also flips staleBanner — the
+    // operator-facing degradation channel until rm-107 renders the count.
+    expect(snap.enumerationIncomplete).toBe(2)
+    expect(snap.staleBanner).toBe(true)
+    expect(snap.repos).toHaveLength(1)
+  })
+
+  it('partial enumeration with an empty working set → empty snapshot is bannered, never reads as authoritative emptiness (review F2)', async () => {
+    // Every installation fails to mint while listInstallations succeeds and
+    // repos.yaml yields no public repos: the snapshot must carry the banner.
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([], [11, 12])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [],
+      }))),
+      graphqlQueryForInstallation: vi.fn(),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos).toHaveLength(0)
+    expect(snap.enumerationIncomplete).toBe(2)
     expect(snap.staleBanner).toBe(true)
   })
 })
@@ -724,10 +829,10 @@ describe('security — repo-name redaction in operational logs (#54)', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Cache refresh with fake timers
+// Interval refresh with fake timers
 // ---------------------------------------------------------------------------
 
-describe('aggregator — cache refresh with fake timers', () => {
+describe('aggregator — interval refresh with fake timers', () => {
   beforeEach(() => {
     vi.useFakeTimers()
   })
@@ -736,7 +841,7 @@ describe('aggregator — cache refresh with fake timers', () => {
     vi.useRealTimers()
   })
 
-  it('cache refresh replaces stale payload after interval', async () => {
+  it('interval refresh replaces stale payload after interval', async () => {
     let callCount = 0
     const graphqlQueryForInstallation: GraphqlQueryForInstallationFn = vi.fn().mockImplementation(async () => {
       callCount++
@@ -756,7 +861,7 @@ describe('aggregator — cache refresh with fake timers', () => {
       }))),
       graphqlQueryForInstallation,
       now: () => {
-        nowMs += 70_000 // advance past 60s TTL on each call
+        nowMs += 70_000 // advance the clock well past the 60s refresh interval
         return nowMs
       },
       setIntervalFn: (fn, ms) => setInterval(fn, ms),
@@ -776,6 +881,58 @@ describe('aggregator — cache refresh with fake timers', () => {
     expect(snap2.repos[0]?.status.rollupState).toBe('red')
 
     agg.stop()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-112 (cycle-9): repository:null fails visible
+// ---------------------------------------------------------------------------
+
+describe('aggregator — repository:null fails visible (rm-112)', () => {
+  it('repository:null in a successful GraphQL response marks the repo stale, not calm', async () => {
+    const repo = makeRepo({node_id: 'NODE_VANISHED', owner: 'org', name: 'vanished-repo'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({repository: null})),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    const snapshot = agg.getSnapshot()
+    expect(snapshot.repos).toHaveLength(1)
+    const status = snapshot.repos[0]?.status
+    expect(status?.rollupState).toBe('unknown')
+    // The fix: a vanished repo (deleted/renamed/private or access lost) must
+    // surface as stale:true — matching the installation_id:null precedent.
+    // Pre-cycle-9 this was stale:false and the repo rendered calm.
+    expect(status?.stale).toBe(true)
+  })
+
+  it('a vanished repo sorts attention-first ahead of a healthy green repo', async () => {
+    const healthy = makeRepo({node_id: 'NODE_HEALTHY', owner: 'org', name: 'healthy-repo'})
+    const vanished = makeRepo({node_id: 'NODE_VANISHED', owner: 'org', name: 'vanished-repo'})
+    const graphqlQueryForInstallation: GraphqlQueryForInstallationFn = vi.fn().mockImplementation(async (_installId, _query, vars) => {
+      if ((vars as {name: string}).name === 'vanished-repo') {
+        return makeGraphqlResponse({repository: null})
+      }
+      return makeGraphqlResponse({rollupState: 'SUCCESS'})
+    })
+
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([healthy, vanished])),
+      graphqlQueryForInstallation,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    const snapshot = agg.getSnapshot()
+    expect(snapshot.repos).toHaveLength(2)
+    expect(snapshot.repos[0]?.name).toBe('vanished-repo')
+    expect(snapshot.repos[0]?.status.stale).toBe(true)
+    expect(snapshot.repos[1]?.name).toBe('healthy-repo')
+    expect(snapshot.repos[1]?.status.stale).toBe(false)
   })
 })
 
@@ -1664,6 +1821,58 @@ describe('P1 regression — vulnerabilityAlerts graceful: permission error → o
     // Only one call (no retry for non-permission errors)
     expect((graphqlQueryForInstallation as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1)
   })
+
+  it('rm-168: bare "Resource not accessible by integration" (no vulnerability keyword) → graceful no-alerts retry, NOT stale', async () => {
+    // The App-token denial for a missing security_events:vulnerability_alerts
+    // read often arrives as the generic integration message with no
+    // vulnerability keyword. Before rm-168 the matcher missed it and the whole
+    // repo went stale on a pure alerts-permission gap.
+    const repo = makeRepo({node_id: 'NODE_GENERIC_FORBIDDEN', owner: 'org', name: 'generic-forbidden', installation_id: 1})
+
+    let callCount = 0
+    const graphqlQueryForInstallation: GraphqlQueryForInstallationFn = vi.fn().mockImplementation(
+      async (_installId: number, _query: string, _vars: Record<string, unknown>) => {
+        callCount++
+        if (callCount === 1) {
+          throw new Error('Resource not accessible by integration')
+        }
+        return {
+          repository: {
+            defaultBranchRef: {
+              target: {
+                statusCheckRollup: {state: 'SUCCESS'},
+                checkSuites: {nodes: []},
+              },
+            },
+            pullRequests: {totalCount: 3},
+            issues: {totalCount: 4},
+          },
+        }
+      },
+    )
+
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_GENERIC_FORBIDDEN', owner: 'org', name: 'generic-forbidden'})],
+      }))),
+      graphqlQueryForInstallation,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos).toHaveLength(1)
+    const repoStatus = snap.repos[0]?.status
+    expect(repoStatus?.openAlertCount).toBeNull()
+    expect(repoStatus?.stale).toBe(false)
+    expect(repoStatus?.rollupState).toBe('green')
+    expect(repoStatus?.openPrCount).toBe(3)
+    expect(repoStatus?.openIssueCount).toBe(4)
+    // Retry happened: the no-alerts variant succeeded on the second call
+    expect(callCount).toBe(2)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -1679,9 +1888,9 @@ describe('P1 regression — per-install token cache: no cross-install reuse', ()
     const INSTALL_ID_2 = 8002
 
     const mintFn = vi.fn()
-      .mockResolvedValueOnce('token-for-8001')
-      .mockResolvedValueOnce('token-for-8002')
-      .mockResolvedValue('should-not-be-called-again')
+      .mockResolvedValueOnce({token: 'token-for-8001', expiresAt: null})
+      .mockResolvedValueOnce({token: 'token-for-8002', expiresAt: null})
+      .mockResolvedValue({token: 'should-not-be-called-again', expiresAt: null})
 
     // First call for each installation
     const token1a = await mintReadOnlyToken(INSTALL_ID_1, mintFn)
@@ -1743,5 +1952,374 @@ describe('aggregator — check-suite cap (rm-110)', () => {
     for (const query of queries) {
       expect(query).toContain('checkSuites(first: 100)')
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-112 (cycle-1, 2026-09-25): absence entries, warm-empty banner, degraded installs
+// ---------------------------------------------------------------------------
+
+describe('aggregator — rm-112 fail-visible enumeration', () => {
+  it('resolver failure surfaces an absence entry (repo no longer vanishes)', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(err(new FetchInstallationsError('enum down'))),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_ABS', owner: 'fro-bot', name: 'agent', discovery_channel: 'collab'})],
+      }))),
+      resolveInstallationIdForRepo: vi.fn().mockRejectedValue(new Error('cannot resolve')),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos).toHaveLength(1)
+    const entry = snap.repos[0]
+    expect(entry?.node_id).toBe('NODE_ABS')
+    expect(entry?.status.rollupState).toBe('unknown')
+    expect(entry?.status.stale).toBe(true)
+    expect(entry?.status.openAlertCount).toBeNull()
+  })
+
+  it('absence entry sorts attention-first ahead of healthy fetched repos', async () => {
+    const healthy = makeRepo({node_id: 'NODE_OK', owner: 'fro-bot', name: 'healthy', installation_id: 1})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([healthy])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [
+          makePublicRepo({node_id: 'NODE_OK', owner: 'fro-bot', name: 'healthy', discovery_channel: 'discovered'}),
+          makePublicRepo({node_id: 'NODE_ABS2', owner: 'fro-bot', name: 'unresolved', discovery_channel: 'collab'}),
+        ],
+      }))),
+      resolveInstallationIdForRepo: vi.fn().mockRejectedValue(new Error('nope')),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos).toHaveLength(2)
+    expect(snap.repos[0]?.node_id).toBe('NODE_ABS2')
+    expect(snap.repos[0]?.status.stale).toBe(true)
+    expect(snap.repos[1]?.node_id).toBe('NODE_OK')
+    expect(snap.repos[1]?.status.stale).toBe(false)
+  })
+
+  it('no resolver configured: null-installation repos become absence entries, not silent drops', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_NORES', owner: 'fro-bot', name: 'agent', discovery_channel: 'collab'})],
+      }))),
+    })
+    // makeDeps defaults resolveInstallationIdForRepo to a resolving mock — remove it.
+    ;(deps as unknown as Record<string, unknown>).resolveInstallationIdForRepo = undefined
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos).toHaveLength(1)
+    expect(snap.repos[0]?.node_id).toBe('NODE_NORES')
+    expect(snap.repos[0]?.status.stale).toBe(true)
+  })
+
+  it('warm-empty refresh keeps last-good repos under a stale banner', async () => {
+    let call = 0
+    const deps = makeDeps({
+      enumerate: vi.fn().mockImplementation(async () => {
+        call++
+        return call === 1
+          ? makeEnumerateResult([makeRepo({node_id: 'NODE_WARM', owner: 'fro-bot', name: 'warm', installation_id: 1})])
+          : makeEnumerateResult([], [11, 12])
+      }),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult())),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const warm = agg.getSnapshot()
+    expect(warm.repos).toHaveLength(1)
+    expect(warm.staleBanner).toBe(false)
+    expect(warm.refreshedAt).not.toBeNull()
+
+    await agg.refresh()
+    const after = agg.getSnapshot()
+    // rm-112: empty working set must NOT replace a populated last-good snapshot
+    expect(after.repos).toHaveLength(1)
+    expect(after.repos[0]?.node_id).toBe('NODE_WARM')
+    expect(after.staleBanner).toBe(true)
+    expect(after.enumerationIncomplete).toBe(2)
+    // refreshedAt preserved — the age of the served data stays honest
+    expect(after.refreshedAt).toBe(warm.refreshedAt)
+  })
+
+  it('warm-empty + resolver failure for a last-good repo → ONE absence row (dedup), inheriting the last true fetchedAt', async () => {
+    let call = 0
+    let metaCall = 0
+    const deps = makeDeps({
+      enumerate: vi.fn().mockImplementation(async () => {
+        call++
+        return call === 1
+          ? makeEnumerateResult([makeRepo({node_id: 'NODE_WARM', owner: 'fro-bot', name: 'warm', installation_id: 1})])
+          : makeEnumerateResult([], [41])
+      }),
+      // readMetadata runs BEFORE enumerate each cycle, so it keeps its own
+      // counter. Cycle 2 re-surfaces the same repo via metadata with no
+      // installation_id and the resolver then fails — the exact
+      // enumeration-loss + resolver-failure overlap from the review.
+      readMetadata: vi.fn().mockImplementation(async () => {
+        metaCall++
+        return ok(metaCall <= 1
+          ? makeMetadataResult()
+          : makeMetadataResult({publicRepos: [makePublicRepo({node_id: 'NODE_WARM', owner: 'fro-bot', name: 'warm', discovery_channel: 'collab'})]}))
+      }),
+      resolveInstallationIdForRepo: vi.fn().mockRejectedValue(new Error('cannot resolve')),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const warm = agg.getSnapshot()
+    expect(warm.repos).toHaveLength(1)
+    expect(warm.repos[0]?.status.stale).toBe(false)
+    const warmFetchedAt = warm.repos[0]?.status.fetchedAt
+
+    await agg.refresh()
+    const after = agg.getSnapshot()
+    // Dedup: the repo must render ONCE, not twice (last-good + absence)
+    expect(after.repos).toHaveLength(1)
+    expect(after.repos.filter(r => r.node_id === 'NODE_WARM')).toHaveLength(1)
+    // The absence verdict wins: unknown + stale
+    expect(after.repos[0]?.status.rollupState).toBe('unknown')
+    expect(after.repos[0]?.status.stale).toBe(true)
+    // fetchedAt honesty: inherited from last-good, NOT re-stamped now()
+    expect(after.repos[0]?.status.fetchedAt).toBe(warmFetchedAt)
+    expect(after.staleBanner).toBe(true)
+  })
+
+  it('warm-empty + resolver failure for a NEW metadata repo → absence row appended alongside last-good', async () => {
+    let call = 0
+    let metaCall = 0
+    const deps = makeDeps({
+      enumerate: vi.fn().mockImplementation(async () => {
+        call++
+        return call === 1
+          ? makeEnumerateResult([makeRepo({node_id: 'NODE_KEEP', owner: 'fro-bot', name: 'keep', installation_id: 1})])
+          : makeEnumerateResult([], [41])
+      }),
+      // The new repo only surfaces in cycle 2 (own counter — readMetadata
+      // runs before enumerate).
+      readMetadata: vi.fn().mockImplementation(async () => {
+        metaCall++
+        return ok(metaCall <= 1
+          ? makeMetadataResult()
+          : makeMetadataResult({publicRepos: [makePublicRepo({node_id: 'NODE_NEWABS', owner: 'fro-bot', name: 'unresolved', discovery_channel: 'collab'})]}))
+      }),
+      resolveInstallationIdForRepo: vi.fn().mockRejectedValue(new Error('cannot resolve')),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    expect(agg.getSnapshot().repos).toHaveLength(1)
+
+    await agg.refresh()
+    const after = agg.getSnapshot()
+    // Last-good preserved + new absence appended — both visible, no overlap
+    expect(after.repos).toHaveLength(2)
+    const kept = after.repos.find(r => r.node_id === 'NODE_KEEP')
+    const absence = after.repos.find(r => r.node_id === 'NODE_NEWABS')
+    expect(kept?.status.stale).toBe(false)
+    expect(absence?.status.rollupState).toBe('unknown')
+    expect(absence?.status.stale).toBe(true)
+    expect(after.staleBanner).toBe(true)
+  })
+
+  it('cold empty refresh still yields the empty snapshot (no last-good to protect)', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult())),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos).toHaveLength(0)
+    expect(snap.staleBanner).toBe(false)
+    expect(snap.enumerationIncomplete).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-197: outbound deadline bounds never-settling calls
+// ---------------------------------------------------------------------------
+
+describe('rm-197 — deadline bounds a never-settling per-repo GraphQL fetch', () => {
+  it('completes the cycle with a stale row instead of hanging the loop', async () => {
+    const repo = makeRepo({node_id: 'NODE_HUNG', owner: 'org', name: 'hung-repo'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      // Never settles — the pre-rm-197 failure mode that froze the loop and
+      // pinned the in-flight guard forever.
+      graphqlQueryForInstallation: vi.fn().mockImplementation(async () => new Promise(() => {})),
+      fetchDeadlineMs: 25,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    // start() awaits refresh() — before rm-197 this line never resolved.
+    await agg.start()
+
+    const snap = agg.getSnapshot()
+    expect(snap.repos).toHaveLength(1)
+    expect(snap.repos[0]?.name).toBe('hung-repo')
+    expect(snap.repos[0]?.status.stale).toBe(true)
+    expect(snap.repos[0]?.status.rollupState).toBe('unknown')
+    agg.stop()
+  })
+
+  it('a never-settling metadata read fails closed with the stale banner', async () => {
+    const deps = makeDeps({
+      readMetadata: vi.fn().mockImplementation(async () => new Promise(() => {})),
+      fetchDeadlineMs: 25,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.start()
+
+    const snap = agg.getSnapshot()
+    expect(snap.repos).toHaveLength(0)
+    expect(snap.staleBanner).toBe(true)
+    agg.stop()
+  })
+
+  it('a never-settling enumeration read marks the snapshot incomplete, not silent', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockImplementation(async () => new Promise(() => {})),
+      fetchDeadlineMs: 25,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.start()
+
+    const snap = agg.getSnapshot()
+    expect(snap.repos).toHaveLength(0)
+    expect(snap.staleBanner).toBe(true)
+    expect(snap.enumerationIncomplete).toBeNull()
+    agg.stop()
+  })
+})
+
+describe('rm-197 — stall watchdog trips the stale banner on a wedged cycle', () => {
+  it('serves staleBanner=true once an in-flight cycle exceeds staleAfterMs', async () => {
+    let releaseMetadata: (() => void) | undefined
+    const gate = new Promise<void>(resolve => {
+      releaseMetadata = resolve
+    })
+    const clock = {t: 0}
+    const deps = makeDeps({
+      readMetadata: vi.fn().mockImplementation(async () => gate.then(() => ok(makeMetadataResult()))),
+      now: () => {
+        clock.t += 1
+        return clock.t
+      },
+      // Long deadline so the watchdog (not the per-call deadline) is what we
+      // observe; tight staleAfterMs so the threshold is easy to cross.
+      fetchDeadlineMs: 5_000,
+      staleAfterMs: 100,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    const started = agg.start() // hangs at the metadata gate
+
+    // Cycle in flight but young → empty snapshot, no banner.
+    expect(agg.getSnapshot().staleBanner).toBe(false)
+
+    // Age the clock past staleAfterMs while the cycle is still wedged → the
+    // served view must go bannered even though lastGood never changed.
+    clock.t = 500
+    const wedged = agg.getSnapshot()
+    expect(wedged.staleBanner).toBe(true)
+
+    // Release the wedge: the cycle completes and the banner clears.
+    releaseMetadata?.()
+    await started
+    clock.t += 1
+    expect(agg.getSnapshot().staleBanner).toBe(false)
+    agg.stop()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-141: bounded-concurrency fleet refresh
+// ---------------------------------------------------------------------------
+
+describe('rm-141 — bounded-concurrency per-repo refresh', () => {
+  it('runs at most refreshConcurrency fetches concurrently', async () => {
+    const repos = [1, 2, 3, 4, 5, 6].map(i => makeRepo({node_id: `NODE_POOL_${i}`, owner: 'org', name: `pool-repo-${i}`}))
+    let inFlight = 0
+    let maxInFlight = 0
+    const graphqlQueryForInstallation: GraphqlQueryForInstallationFn = vi.fn().mockImplementation(
+      async (_installationId: number, _query: string, variables: Record<string, unknown>) => {
+        inFlight += 1
+        maxInFlight = Math.max(maxInFlight, inFlight)
+        await new Promise(resolve => setTimeout(resolve, 10))
+        inFlight -= 1
+        // Distinct payload per repo so a completion-order permutation cannot
+        // masquerade as correct results.
+        const name = String(variables.name)
+        const index = Number(name.slice('pool-repo-'.length))
+        return makeGraphqlResponse({openPrCount: index})
+      },
+    )
+
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult(repos)),
+      graphqlQueryForInstallation,
+      refreshConcurrency: 2,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.start()
+
+    expect(maxInFlight).toBeGreaterThan(1) // pool actually overlaps
+    expect(maxInFlight).toBeLessThanOrEqual(2) // and never exceeds the bound
+
+    // Fixed-index read-back: every row carries ITS OWN payload — completion
+    // order cannot permute the served rows.
+    const byName = new Map(agg.getSnapshot().repos.map(repo => [repo.name, repo]))
+    for (let i = 1; i <= 6; i++) {
+      const row = byName.get(`pool-repo-${i}`)
+      expect(row?.status.openPrCount).toBe(i)
+    }
+    agg.stop()
+  })
+
+  it('refreshConcurrency=1 restores the serial walk', async () => {
+    const repos = [1, 2, 3].map(i => makeRepo({node_id: `NODE_SERIAL_${i}`, owner: 'org', name: `serial-repo-${i}`}))
+    let inFlight = 0
+    let maxInFlight = 0
+    const graphqlQueryForInstallation: GraphqlQueryForInstallationFn = vi.fn().mockImplementation(async () => {
+      inFlight += 1
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      await new Promise(resolve => setTimeout(resolve, 5))
+      inFlight -= 1
+      return makeGraphqlResponse()
+    })
+
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult(repos)),
+      graphqlQueryForInstallation,
+      refreshConcurrency: 1,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.start()
+
+    expect(maxInFlight).toBe(1)
+    agg.stop()
   })
 })
