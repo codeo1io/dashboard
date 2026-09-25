@@ -21,6 +21,16 @@ on:
       - tests/visual/**
       - playwright.config.ts
       - .github/workflows/visual.yaml
+      # rm-208: render inputs beyond web/src. index.html is the document shell;
+      # vite.config.ts selects build plugins (tailwind/pwa) that change markup;
+      # package.json + pnpm-lock.yaml pin the dependency versions that ship the
+      # rendered bundle — a dep bump can shift rendered output without touching
+      # web/src, and must still run the visual gate. Guarded by
+      # test/visual-trigger-paths.test.ts.
+      - web/index.html
+      - web/vite.config.ts
+      - package.json
+      - pnpm-lock.yaml
   push:
     branches: [main]
   workflow_dispatch:

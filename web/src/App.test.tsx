@@ -362,4 +362,35 @@ describe('App — fixture detection race: runtime must not mount before detectio
     fetchSpy.mockRestore()
     createSpy.mockRestore()
   })
+
+  // ── rm-209a: unread-count poll in-flight guard ───────────────────────
+
+  it('drops focus-triggered polls while one is already in flight', async () => {
+    // The mount poll never resolves while we fire focus events — without the
+    // in-flight guard each focus event would stack another fetch.
+    const listenerApi = await import('./api/listener.ts')
+    const fetchSpy = vi.spyOn(listenerApi, 'fetchListenerMessages')
+    let resolvePoll: (v: {ok: true; data: {messages: never[]; unreadCount: number}}) => void = () => {}
+    fetchSpy.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          resolvePoll = resolve
+        }),
+    )
+
+    render(<App />)
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1))
+
+    window.dispatchEvent(new Event('focus'))
+    window.dispatchEvent(new Event('focus'))
+    window.dispatchEvent(new Event('focus'))
+    await waitFor(() => expect(document.documentElement).toBeTruthy())
+    expect(fetchSpy).toHaveBeenCalledTimes(1) // still the mount poll only
+
+    resolvePoll({ok: true, data: {messages: [], unreadCount: 0}})
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1)) // settle
+
+    window.dispatchEvent(new Event('focus'))
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2)) // guard released
+  })
 })
