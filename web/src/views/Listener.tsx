@@ -15,6 +15,11 @@ type ViewState =
 
 const POLL_INTERVAL_MS = 30000
 
+// rm-224c: cap a single list fetch so a wedged request cannot hold the poll
+// guard open forever. This is what actually arms the AbortSignal that was
+// previously constructed but never aborted (dead 'timeout' branch).
+const FETCH_TIMEOUT_MS = 10000
+
 export function ListenerChannel() {
   const [viewState, setViewState] = useState<ViewState>({ state: 'loading' })
   const [ackingId, setAckingId] = useState<string | 'all' | null>(null)
@@ -29,7 +34,14 @@ export function ListenerChannel() {
     }
 
     const abortController = new AbortController()
-    const result = await fetchListenerMessages({ limit: 100, abortSignal: abortController.signal })
+    const timeoutId = setTimeout(() => abortController.abort(), FETCH_TIMEOUT_MS)
+
+    let result: Awaited<ReturnType<typeof fetchListenerMessages>>
+    try {
+      result = await fetchListenerMessages({ limit: 100, abortSignal: abortController.signal })
+    } finally {
+      clearTimeout(timeoutId)
+    }
     isFetchingRef.current = false
 
     if (!result.ok) {
