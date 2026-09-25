@@ -1278,7 +1278,11 @@ async function createDashboardServer(): Promise<ServerType> {
       port,
     },
     info => {
-      console.warn(`Dashboard listening on http://${info.address}:${info.port}`)
+      // rm-229 (landed at this integrate; the sibling cycle-7 batch's rm-146
+      // banner half): route the bind banner through the structured logger so it
+      // carries the repo's redaction discipline and level formatting instead of
+      // a bare console.warn. stdout stays reserved for structured output.
+      logger.info(`Dashboard listening on http://${info.address}:${info.port}`)
     },
   )
 
