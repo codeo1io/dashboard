@@ -55,6 +55,7 @@ function makeRepo(overrides: Partial<DashboardRepo> = {}): DashboardRepo {
     status: {
       rollupState: 'green',
       failingChecks: 0,
+      failingCheckDetails: [],
       openPrCount: 0,
       openIssueCount: 0,
       openAlertCount: null,
@@ -181,7 +182,62 @@ describe('/api/monitoring — BFF aggregation endpoint', () => {
         expect(r.full_name).toBe('fro-bot/agent')
         expect(r.discovery_channel).toBe('collab')
         expect(r.status.rollupState).toBe('green')
+        // rm-192: green repos carry the (empty) drill-down list — the field is
+        // always present, never undefined, so clients can rely on it.
+        expect(r.status.failingCheckDetails).toEqual([])
       }
+    })
+
+    it('rm-192: red-repo failingCheckDetails survive the DTO projection (workflow title + attempt + check link)', async () => {
+      const repo = makeRepo({
+        full_name: 'fro-bot/agent',
+        status: {
+          rollupState: 'red',
+          failingChecks: 2,
+          failingCheckDetails: [
+            {
+              workflowTitle: 'CI',
+              runAttempt: 2,
+              checkName: 'build',
+              detailsUrl: 'https://github.com/fro-bot/agent/actions/runs/1',
+            },
+            {
+              workflowTitle: null,
+              runAttempt: null,
+              checkName: 'legacy-status',
+              detailsUrl: 'https://github.com/fro-bot/agent/runs/2',
+            },
+          ],
+          openPrCount: 0,
+          openIssueCount: 0,
+          openAlertCount: null,
+          stale: false,
+          fetchedAt: 1_700_000_000_000,
+        },
+      })
+      const app = await buildTestApp(makeSnapshot({repos: [repo]}))
+      const res = await authedGet(app, '/api/monitoring')
+
+      expect(res.status).toBe(200)
+      const body = await res.json() as AggregatorSnapshot
+      const r = body.repos[0]
+      expect(r).toBeDefined()
+      if (r === undefined) return
+      expect(r.status.failingChecks).toBe(2)
+      expect(r.status.failingCheckDetails).toEqual([
+        {
+          workflowTitle: 'CI',
+          runAttempt: 2,
+          checkName: 'build',
+          detailsUrl: 'https://github.com/fro-bot/agent/actions/runs/1',
+        },
+        {
+          workflowTitle: null,
+          runAttempt: null,
+          checkName: 'legacy-status',
+          detailsUrl: 'https://github.com/fro-bot/agent/runs/2',
+        },
+      ])
     })
 
     it('returns empty snapshot when no repos', async () => {

@@ -1,4 +1,4 @@
-import type {AggregatorSnapshot, DashboardRepo, RepoCiStatus} from '../github/aggregator.ts'
+import type {AggregatorSnapshot, DashboardRepo, FailingCheckDetail, RepoCiStatus} from '../github/aggregator.ts'
 import {Hono} from 'hono'
 import {COLD_START_SNAPSHOT} from '../github/aggregator.ts'
 
@@ -16,6 +16,12 @@ export type SnapshotProvider = () => AggregatorSnapshot
 interface MonitoringRepoStatusDto {
   readonly rollupState: RepoCiStatus['rollupState']
   readonly failingChecks: number
+  /**
+   * Drill-down details for failing check runs (rm-192): which check failed,
+   * in which workflow run. Bounded by FAILING_CHECK_DETAILS_CAP. URLs are
+   * public GitHub check-run pages — safe for the display-only client.
+   */
+  readonly failingCheckDetails: readonly FailingCheckDetail[]
   readonly openPrCount: number
   readonly openIssueCount: number
   readonly openAlertCount: number | null
@@ -44,6 +50,7 @@ function toMonitoringRepoDto(repo: DashboardRepo): MonitoringRepoDto {
     status: {
       rollupState: repo.status.rollupState,
       failingChecks: repo.status.failingChecks,
+      failingCheckDetails: repo.status.failingCheckDetails,
       openPrCount: repo.status.openPrCount,
       openIssueCount: repo.status.openIssueCount,
       openAlertCount: repo.status.openAlertCount,

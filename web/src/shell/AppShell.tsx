@@ -126,9 +126,9 @@ interface AppShellProps {
   /** Fixture-mode session id, appended as a query param by the push client. */
   pushFixtureSessionId?: string
   /** Current active view */
-  currentView?: 'operator' | 'listener'
+  currentView?: 'operator' | 'listener' | 'monitoring'
   /** Navigation handler */
-  onNavigate?: (view: 'operator' | 'listener') => void
+  onNavigate?: (view: 'operator' | 'listener' | 'monitoring') => void
   /** Global unread count for listener messages */
   listenerUnreadCount?: number
 }
@@ -325,6 +325,24 @@ export function AppShell({
                 }}
               >
                 Runs
+              </button>
+              <button
+                type="button"
+                onClick={() => onNavigate?.('monitoring')}
+                style={{
+                  minHeight: '32px',
+                  padding: 'var(--space-1) var(--space-3)',
+                  background: currentView === 'monitoring' ? 'var(--color-surface-raised)' : 'transparent',
+                  color: currentView === 'monitoring' ? 'var(--color-text)' : 'var(--color-text-muted)',
+                  border: 'none',
+                  borderRadius: 'var(--radius-md)',
+                  cursor: 'pointer',
+                  fontSize: 'var(--text-body-sm)',
+                  fontWeight: 600,
+                  transition: 'all var(--duration-fast) var(--ease-standard)'
+                }}
+              >
+                Repos
               </button>
               <button
                 type="button"

@@ -39,7 +39,7 @@ describe('App', () => {
     const listenerApi = await import('./api/listener.ts')
     vi.spyOn(listenerApi, 'fetchListenerMessages').mockResolvedValue({
       ok: true,
-      data: {messages: [], unreadCount: 0},
+      data: {messages: [], unreadCount: 0, prunedCount: 0, droppedCount: 0},
     })
   })
 
@@ -70,19 +70,22 @@ describe('App', () => {
     expect(screen.getByRole('heading', {level: 1})).toBeInTheDocument()
   })
 
-  // ── Regression: no monitoring artifacts ────────────────────────────────────
+  // ── Regression: monitoring surface renders only on nav, never by default ───
+  // (rm-192's drill-down view landed at the 7cf68fea integrate — App mounts it
+  // lazily behind the third nav button ('Repos'); the default render must stay
+  // free of monitoring artifacts so the operator shell remains the landing view.)
 
-  it('does not render monitoring loading state', () => {
+  it('does not render monitoring loading state by default', () => {
     render(<App />)
     expect(document.querySelector('[data-testid="monitoring-loading"]')).toBeNull()
   })
 
-  it('does not render monitoring view', () => {
+  it('does not render monitoring view by default (it renders on nav, rm-192)', () => {
     render(<App />)
     expect(document.querySelector('[data-testid="monitoring-view"]')).toBeNull()
   })
 
-  it('does not render monitoring dashboard title', () => {
+  it('does not render monitoring dashboard title by default', () => {
     render(<App />)
     expect(screen.queryByText(/repository status/i)).not.toBeInTheDocument()
   })
@@ -138,7 +141,7 @@ describe('App — runtime state wiring', () => {
     const listenerApi = await import('./api/listener.ts')
     vi.spyOn(listenerApi, 'fetchListenerMessages').mockResolvedValue({
       ok: true,
-      data: {messages: [], unreadCount: 0},
+      data: {messages: [], unreadCount: 0, prunedCount: 0, droppedCount: 0},
     })
   })
 

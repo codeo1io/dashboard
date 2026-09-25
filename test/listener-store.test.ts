@@ -1,5 +1,5 @@
 import type {IngestMessage} from '../src/listener/contract.ts'
-import {beforeEach, describe, expect, it} from 'vitest'
+import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {createListenerStore, type ListenerStore} from '../src/listener/store.ts'
 
 function makeMessage(overrides: Partial<IngestMessage> = {}): IngestMessage {
@@ -126,6 +126,43 @@ describe('listener store', () => {
     // list() clamps to 200 max; verify by unreadCount, which is unfiltered by limit.
     expect(store.list({}).unreadCount).toBeLessThanOrEqual(500)
     expect(messages.length).toBeLessThanOrEqual(200)
+  })
+
+  it('rm-244: prunedCount starts at 0 and counts retention evictions in the messages DTO', () => {
+    // Fresh store: nothing pruned yet.
+    expect(store.list({}).prunedCount).toBe(0)
+
+    // Overflow eviction: 505 inserts → 5 pruned, and the count surfaces.
+    for (let i = 0; i < 505; i++) {
+      store.insert(makeMessage({dedupeKey: `prune-${i}`, title: `msg-${i}`}))
+    }
+    const afterOverflow = store.list({})
+    expect(afterOverflow.prunedCount).toBe(5)
+    expect(afterOverflow.unreadCount).toBeLessThanOrEqual(500)
+
+    // Cumulative: another overflow eviction adds to the same counter.
+    for (let i = 0; i < 10; i++) {
+      store.insert(makeMessage({dedupeKey: `prune2-${i}`, title: `msg2-${i}`}))
+    }
+    const afterSecond = store.list({})
+    expect(afterSecond.prunedCount).toBeGreaterThan(5)
+  })
+
+  it('rm-244: age-based eviction also counts toward prunedCount', () => {
+    // received_at is stamped at insert time and prune() runs on every insert,
+    // so age eviction needs a clock jump: insert at T0, advance past the 30d
+    // retention window, then insert again — the age prune deletes + counts.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-01T00:00:00Z'))
+    store.insert(makeMessage({dedupeKey: 'ancient', title: 'ancient message'}))
+
+    vi.setSystemTime(new Date('2026-09-25T00:00:00Z'))
+    store.insert(makeMessage({dedupeKey: 'fresh', title: 'fresh message'}))
+    const {messages, prunedCount} = store.list({})
+    vi.useRealTimers()
+
+    expect(messages.map(m => m.title)).toEqual(['fresh message'])
+    expect(prunedCount).toBe(1)
   })
 
   it('close does not throw', () => {

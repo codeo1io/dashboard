@@ -54,6 +54,17 @@ const statusArb = (fetchedAt: number): fc.Arbitrary<RepoCiStatus> =>
   fc.record({
     rollupState: fc.constantFrom('green', 'red', 'pending', 'unknown'),
     failingChecks: fc.nat({max: 12}),
+    // rm-192: the drill-down sample is generated independently of the count
+    // (the count stays authoritative — details are additive metadata).
+    failingCheckDetails: fc.array(
+      fc.record({
+        workflowTitle: fc.option(fc.string(), {nil: null}),
+        runAttempt: fc.option(fc.nat({max: 9}), {nil: null}),
+        checkName: fc.string(),
+        detailsUrl: fc.string(),
+      }),
+      {maxLength: 25},
+    ),
     openPrCount: fc.nat({max: 50}),
     openIssueCount: fc.nat({max: 500}),
     openAlertCount: fc.option(fc.nat({max: 30}), {nil: null}),
@@ -173,6 +184,7 @@ describe('aggregator parseRepoResponse invariants (rm-144)', () => {
           expect(status).toEqual({
             rollupState: 'unknown',
             failingChecks: 0,
+            failingCheckDetails: [],
             openPrCount: 0,
             openIssueCount: 0,
             openAlertCount: null,

@@ -10,7 +10,7 @@ describe('ListenerChannel', () => {
     vi.useFakeTimers()
     vi.mocked(listenerApi.fetchListenerMessages).mockResolvedValue({
       ok: true,
-      data: { messages: [], unreadCount: 0 }
+      data: { messages: [], unreadCount: 0, prunedCount: 0, droppedCount: 0 }
     })
   })
 
@@ -38,7 +38,7 @@ describe('ListenerChannel', () => {
             links: [{ label: 'Log', url: 'https://example.com' }]
           }
         ],
-        unreadCount: 1
+        unreadCount: 1, prunedCount: 0, droppedCount: 0
       }
     } as const
 
@@ -61,7 +61,7 @@ describe('ListenerChannel', () => {
   it('renders empty state', async () => {
     vi.mocked(listenerApi.fetchListenerMessages).mockResolvedValueOnce({
       ok: true,
-      data: { messages: [], unreadCount: 0 }
+      data: { messages: [], unreadCount: 0, prunedCount: 0, droppedCount: 0 }
     })
 
     render(<ListenerChannel />)
@@ -106,7 +106,7 @@ describe('ListenerChannel', () => {
             links: []
           }
         ],
-        unreadCount: 1
+        unreadCount: 1, prunedCount: 0, droppedCount: 0
       }
     } as const
 
@@ -125,7 +125,7 @@ describe('ListenerChannel', () => {
       ok: true,
       data: {
         messages: [{ ...mockMessages.data.messages[0], read: true }],
-        unreadCount: 0
+        unreadCount: 0, prunedCount: 0, droppedCount: 0
       }
     })
 
@@ -158,7 +158,7 @@ describe('ListenerChannel', () => {
             links: []
           }
         ],
-        unreadCount: 1
+        unreadCount: 1, prunedCount: 0, droppedCount: 0
       }
     } as const
 
@@ -174,7 +174,7 @@ describe('ListenerChannel', () => {
     
     vi.mocked(listenerApi.fetchListenerMessages).mockResolvedValueOnce({
       ok: true,
-      data: { messages: [], unreadCount: 0 }
+      data: { messages: [], unreadCount: 0, prunedCount: 0, droppedCount: 0 }
     })
 
     await act(async () => {
@@ -188,7 +188,7 @@ describe('ListenerChannel', () => {
   it('polls on interval', async () => {
     vi.mocked(listenerApi.fetchListenerMessages).mockResolvedValue({
       ok: true,
-      data: { messages: [], unreadCount: 0 }
+      data: { messages: [], unreadCount: 0, prunedCount: 0, droppedCount: 0 }
     })
 
     render(<ListenerChannel />)
@@ -203,5 +203,51 @@ describe('ListenerChannel', () => {
     })
 
     expect(listenerApi.fetchListenerMessages).toHaveBeenCalled() // at least once
+  })
+
+  it('rm-243: shows the contract-drift notice when the client drops a malformed message', async () => {
+    vi.mocked(listenerApi.fetchListenerMessages).mockResolvedValueOnce({
+      ok: true,
+      data: {
+        messages: [
+          {
+            id: 'msg-1',
+            source: 'infra' as const,
+            kind: 'deploy-health',
+            severity: 'warning' as const,
+            title: 'Valid message',
+            body: 'Body',
+            createdAt: '2026-07-11T12:00:00Z',
+            receivedAt: '2026-07-11T12:00:01Z',
+            read: false,
+            links: []
+          }
+        ],
+        unreadCount: 1, prunedCount: 0, droppedCount: 2
+      }
+    })
+
+    render(<ListenerChannel />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.getByTestId('listener-drift-notice')).toHaveTextContent('2 messages were skipped')
+    expect(screen.getByTestId('listener-drift-notice')).toHaveTextContent('contract drift')
+  })
+
+  it('rm-244: shows the retention notice when the server reports pruned rows', async () => {
+    vi.mocked(listenerApi.fetchListenerMessages).mockResolvedValueOnce({
+      ok: true,
+      data: { messages: [], unreadCount: 0, prunedCount: 7, droppedCount: 0 }
+    })
+
+    render(<ListenerChannel />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.getByTestId('listener-pruned-notice')).toHaveTextContent('7 older messages removed')
+    expect(screen.getByTestId('listener-pruned-notice')).toHaveTextContent('retention (500')
   })
 })
