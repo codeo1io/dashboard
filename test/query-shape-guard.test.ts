@@ -96,13 +96,33 @@ describe('GraphQL query-shape guard (rm-177)', () => {
     expect(registered, 'no duplicate registrations').toEqual([...new Set(registered)])
   })
 
+  it('rm-192: both templates select the failing-workflow depth fields', () => {
+    // The drill-down column (title/attempt + failing check name/URL) is only
+    // as good as the selection both templates carry — a template that drops
+    // the nodes silently degrades the column for every token that lands on
+    // it (the no-alerts fallback included). Both templates, symmetric, at
+    // author time; the weekly canary still proves the selection live.
+    for (const [name, query] of Object.entries(QUERIES)) {
+      for (const field of ['totalCount', 'detailsUrl', 'displayTitle', 'runAttempt']) {
+        expect(query.includes(field), `${name}: missing depth field ${field}`).toBe(true)
+      }
+    }
+  })
+
   it('rm-225: the canary iterates the registry, not a hand-picked template import', () => {
     // The runtime half of completeness: the canary must draw its template set
     // from the registry (single source of truth) so registry membership ==
     // live coverage. A direct `import {REPO_STATUS_QUERY}` into the canary
     // reintroduces the one-template blind spot. Checked line-by-line with two
     // linear tests instead of one backtracking regex (unicorn/no-unsafe-regex).
-    expect(canarySource).toContain('import {REPO_STATUS_QUERY_REGISTRY}')
+    // rm-228 (cycle-18): the canary's aggregator import also carries the
+    // alerts-permission classifier, so assert "an import line names the
+    // registry" linearly instead of matching one exact brace layout.
+    const importLines = canarySource.split('\n').filter(line => /^import\s*\{/.test(line))
+    expect(
+      importLines.some(line => line.includes('REPO_STATUS_QUERY_REGISTRY')),
+      'canary must import the registry',
+    ).toBe(true)
     expect(canarySource).toContain('for (const entry of REPO_STATUS_QUERY_REGISTRY)')
     const directTemplateImports = canarySource
       .split('\n')

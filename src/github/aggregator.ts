@@ -27,6 +27,7 @@
 import type {Result} from '../result.ts'
 import type {EnumerateReposResult, InstallationsClient} from './installations.ts'
 import type {MetadataError, MetadataReader, MetadataResult} from './metadata.ts'
+import type {ScorecardInfo} from './scorecard.ts'
 
 import {logger, sanitizeErrorMessage, type LogContext} from '../logger.ts'
 import {isErr, isOk} from '../result.ts'
@@ -77,6 +78,30 @@ export interface RepoCiStatus {
   readonly stale: boolean
   /** When this data was fetched (ms since epoch) */
   readonly fetchedAt: number
+  /**
+   * rm-192 (cycle-18): failing-workflow drill-down — which workflow and
+   * which check runs failed on the default branch. Absent when the query
+   * response carries no failing check-run nodes (green repos, or a payload
+   * from before the depth fields existed). Absent-tolerant by design.
+   */
+  readonly failing?: FailingWorkflowRef
+}
+
+/** One failing check run (already filtered to failing conclusions by the query). */
+export interface FailingCheckRef {
+  readonly name: string
+  readonly conclusion: string
+  readonly detailsUrl: string
+}
+
+/** The workflow a repo's failing checks roll up to (most recently updated suite). */
+export interface FailingWorkflowRef {
+  /** Workflow run title; empty string when the check run carries no workflow linkage. */
+  readonly title: string
+  /** Workflow run attempt (1-based); 0 when linkage is absent. */
+  readonly runAttempt: number
+  /** Failing check runs of that suite, most recent first, capped at 10 rows. */
+  readonly checks: readonly FailingCheckRef[]
 }
 
 /**
@@ -94,6 +119,12 @@ export interface DashboardRepo {
    */
   readonly discovery_channel: string
   readonly status: RepoCiStatus
+  /**
+   * rm-229 (cycle-18): OpenSSF Scorecard posture column. Optional — present
+   * only when the fetcher is wired (server) AND the public API answered.
+   * Absent-tolerant: private/unanalyzed/slow repos simply carry no column.
+   */
+  readonly scorecard?: ScorecardInfo
 }
 
 /**
@@ -155,11 +186,27 @@ export const REPO_STATUS_QUERY = `
             statusCheckRollup {
               state
             }
-            # GraphQL max page size; repos with >100 suites still understate failingChecks (documented ceiling, rm-110)
+            # GraphQL max page size; repos with >100 suites still understate failingChecks (documented ceiling, rm-110).
+            # rm-192 (cycle-18): the same filtered selection now also reads the
+            # depth nodes (name/conclusion/detailsUrl + the suite's workflowRun
+            # title/attempt) so the count ceiling stays put while the drill-down
+            # column gains identity; both templates stay shape-identical.
             checkSuites(first: 100) {
               nodes {
                 checkRuns(first: 50, filterBy: { status: COMPLETED, conclusions: [FAILURE, TIMED_OUT, CANCELLED, ACTION_REQUIRED, STARTUP_FAILURE] }) {
                   totalCount
+                  nodes {
+                    name
+                    conclusion
+                    detailsUrl
+                    checkSuite {
+                      updatedAt
+                      workflowRun {
+                        displayTitle
+                        runAttempt
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -193,11 +240,26 @@ export const REPO_STATUS_QUERY_NO_ALERTS = `
             statusCheckRollup {
               state
             }
-            # GraphQL max page size; repos with >100 suites still understate failingChecks (documented ceiling, rm-110)
+            # GraphQL max page size; repos with >100 suites still understate failingChecks (documented ceiling, rm-110).
+            # rm-192 (cycle-18): depth nodes kept shape-identical with
+            # REPO_STATUS_QUERY (the registry contract, rm-225) — only the
+            # vulnerabilityAlerts selection differs.
             checkSuites(first: 100) {
               nodes {
                 checkRuns(first: 50, filterBy: { status: COMPLETED, conclusions: [FAILURE, TIMED_OUT, CANCELLED, ACTION_REQUIRED, STARTUP_FAILURE] }) {
                   totalCount
+                  nodes {
+                    name
+                    conclusion
+                    detailsUrl
+                    checkSuite {
+                      updatedAt
+                      workflowRun {
+                        displayTitle
+                        runAttempt
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -220,7 +282,16 @@ interface GraphqlRepoResponse {
       target: {
         statusCheckRollup: {state: string} | null
         checkSuites: {
-          nodes: {checkRuns: {totalCount: number}}[]
+          nodes: {checkRuns: {
+            totalCount: number
+            /** rm-192 (cycle-18): optional so pre-depth fixtures/payloads stay valid. */
+            nodes?: {
+              name: string
+              conclusion: string
+              detailsUrl: string
+              checkSuite?: {workflowRun?: {displayTitle?: string; runAttempt?: number} | null} | null
+            }[]
+          }}[]
         }
       }
     } | null
@@ -325,6 +396,13 @@ export interface AggregatorDeps {
    * enumeration channel. If absent, such repos are skipped (not queried).
    */
   readonly resolveInstallationIdForRepo?: (owner: string, name: string) => Promise<number>
+  /**
+   * rm-229 (cycle-18): optional OpenSSF Scorecard fetcher (public zero-auth
+   * REST). When absent, snapshots carry no scorecard column — tests inject
+   * stubs, the server wires the real src/github/scorecard.ts fetcher.
+   * Fail-soft by contract: any failure resolves undefined, never rejects.
+   */
+  readonly fetchScorecard?: (owner: string, name: string) => Promise<ScorecardInfo | undefined>
   /**
    * Per-call-site deadline raced against each outbound call site in a refresh
    * cycle (this run's rm-203: deadline racing + stall watchdog — a second layer
@@ -602,7 +680,7 @@ export function escapeRegExp(text: string): string {
  * Detect whether a GraphQL error is specifically about the vulnerabilityAlerts
  * field being inaccessible (permission/scope error).
  */
-function isVulnerabilityAlertsPermissionError(error: unknown): boolean {
+export function isVulnerabilityAlertsPermissionError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
   const msg = error.message.toLowerCase()
   // GitHub GraphQL returns errors like:
@@ -654,13 +732,33 @@ export function parseRepoResponse(raw: unknown, fetchedAt: number, openAlertCoun
     }
   }
 
+  // rm-192 (cycle-18): surface the drill-down the query now carries — the
+  // first suite with failing check-run nodes names the workflow. Absent when
+  // the payload carries no failing nodes (green repos, or a pre-depth
+  // fixture); empty title / runAttempt 0 mean the check run had no workflow
+  // linkage. Absent-tolerant by design.
+  let failing: FailingWorkflowRef | undefined
+  if (target?.checkSuites?.nodes) {
+    for (const suite of target.checkSuites.nodes) {
+      const nodes = suite.checkRuns.nodes
+      if (nodes === undefined || nodes.length === 0) continue
+      const linkage = nodes.find(node => node.checkSuite?.workflowRun != null)?.checkSuite?.workflowRun
+      failing = {
+        title: linkage?.displayTitle ?? '',
+        runAttempt: linkage?.runAttempt ?? 0,
+        checks: nodes.slice(0, 10).map(node => ({name: node.name, conclusion: node.conclusion, detailsUrl: node.detailsUrl})),
+      }
+      break
+    }
+  }
+
   const openPrCount = repo.pullRequests.totalCount
   const openIssueCount = repo.issues.totalCount
 
   // Use the provided openAlertCount (may be from the response or null if no-alerts variant)
   const alertCount = openAlertCount ?? (repo.vulnerabilityAlerts?.totalCount ?? null)
 
-  return {rollupState, failingChecks, openPrCount, openIssueCount, openAlertCount: alertCount, stale: false, fetchedAt}
+  return {rollupState, failingChecks, openPrCount, openIssueCount, openAlertCount: alertCount, stale: false, fetchedAt, failing}
 }
 
 async function fetchRepoStatus(
@@ -823,6 +921,8 @@ export function createAggregator(
   const fetchDeadlineMs = deps.fetchDeadlineMs ?? AGGREGATOR_FETCH_DEADLINE_MS
   const refreshConcurrency = Math.max(1, deps.refreshConcurrency ?? AGGREGATOR_REFRESH_CONCURRENCY)
   const staleAfterMs = deps.staleAfterMs ?? DEFAULT_STALE_AFTER_MS
+  // rm-229: optional posture-column fetcher; undefined disables the column.
+  const fetchScorecardFor = deps.fetchScorecard
 
   // Last-good snapshot (serves stale data when refresh fails)
   let lastGoodSnapshot: AggregatorSnapshot | null = null
@@ -1070,6 +1170,10 @@ export function createAggregator(
     // fetchRepoStatus call is deadline-bounded internally, so every worker
     // slot is guaranteed to free up; Promise.all can never hang.
     const statuses: (RepoCiStatus | undefined)[] = Array.from({length: workingSet.length})
+    // rm-229 (cycle-18): fixed-index posture columns; undefined until the
+    // worker fills it, and stays undefined whenever the fetcher is unwired or
+    // the public API failed — the column never blocks the snapshot.
+    const scorecards: (ScorecardInfo | undefined)[] = Array.from({length: workingSet.length})
     let nextIndex = 0
     const workerCount = Math.max(1, Math.min(refreshConcurrency, workingSet.length))
     const workers: Promise<void>[] = []
@@ -1083,6 +1187,12 @@ export function createAggregator(
             const entry = workingSet[index]
             if (entry === undefined) continue
             statuses[index] = await fetchRepoStatus(entry, graphqlQueryForInstallation, now, fetchDeadlineMs)
+            if (fetchScorecardFor !== undefined) {
+              // Fail-soft by contract (the module catches its own failures);
+              // the belt-and-braces catch keeps one weird rejection from
+              // taking the whole refresh down.
+              scorecards[index] = await fetchScorecardFor(entry.owner, entry.name).catch(() => undefined)
+            }
           }
         })(),
       )
@@ -1090,6 +1200,7 @@ export function createAggregator(
     await Promise.all(workers)
     for (const [index, entry] of workingSet.entries()) {
       if (entry === undefined) continue
+      const scorecard = scorecards[index]
       dashboardRepos.push({
         node_id: entry.node_id,
         owner: entry.owner,
@@ -1100,6 +1211,7 @@ export function createAggregator(
         // assigned before Promise.all resolves) and exists only to satisfy
         // noUncheckedIndexedAccess.
         status: statuses[index] ?? {rollupState: 'unknown', failingChecks: 0, openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt: now()},
+        ...(scorecard === undefined ? {} : {scorecard}),
       })
     }
 

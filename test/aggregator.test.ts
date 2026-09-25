@@ -12,6 +12,7 @@
 import type {AggregatorDeps, GraphqlQueryForInstallationFn} from '../src/github/aggregator.ts'
 import type {EnumerateReposResult} from '../src/github/installations.ts'
 import type {MetadataResult} from '../src/github/metadata.ts'
+import type {ScorecardInfo} from '../src/github/scorecard.ts'
 import type {Result} from '../src/result.ts'
 
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
@@ -78,7 +79,11 @@ function makeEnumerateResult(
 function makeGraphqlResponse(overrides: {
   rollupState?: string
   failingChecks?: number
-  checkSuites?: {checkRuns: {totalCount: number}}[]
+  checkSuites?: {checkRuns: {
+    totalCount: number
+    /** rm-192 (cycle-18): failing-check depth nodes; optional so pre-depth fixtures stay valid. */
+    nodes?: {name: string; conclusion: string; detailsUrl: string; checkSuite?: {workflowRun?: {displayTitle?: string; runAttempt?: number} | null} | null}[]
+  }}[]
   openPrCount?: number
   openIssueCount?: number
   openAlertCount?: number | null
@@ -2462,5 +2467,199 @@ describe('rm-141 — bounded-concurrency per-repo refresh', () => {
 
     expect(maxInFlight).toBe(1)
     agg.stop()
+  })
+})
+
+describe('rm-192 (cycle-18) — failing-workflow drill-down depth', () => {
+  it('surfaces title/attempt + failing check rows from the depth nodes', async () => {
+    const repo = makeRepo({node_id: 'NODE_DEPTH', owner: 'org', name: 'depth-repo'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_DEPTH', owner: 'org', name: 'depth-repo'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({
+        rollupState: 'FAILURE',
+        checkSuites: [{
+          checkRuns: {
+            totalCount: 2,
+            nodes: [
+              {name: 'build', conclusion: 'FAILURE', detailsUrl: 'https://example.test/run/build', checkSuite: {workflowRun: {displayTitle: 'Release v2', runAttempt: 2}}},
+              {name: 'test', conclusion: 'TIMED_OUT', detailsUrl: 'https://example.test/run/test'},
+            ],
+          },
+        }],
+      })),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    expect(agg.getSnapshot().repos[0]?.status.failing).toEqual({
+      title: 'Release v2',
+      runAttempt: 2,
+      checks: [
+        {name: 'build', conclusion: 'FAILURE', detailsUrl: 'https://example.test/run/build'},
+        {name: 'test', conclusion: 'TIMED_OUT', detailsUrl: 'https://example.test/run/test'},
+      ],
+    })
+  })
+
+  it('failing stays absent when the payload carries no depth nodes (green / pre-depth fixtures)', async () => {
+    const repo = makeRepo({node_id: 'NODE_NO_DEPTH', owner: 'org', name: 'no-depth-repo'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_NO_DEPTH', owner: 'org', name: 'no-depth-repo'})],
+      }))),
+      // Legacy count-only shape: totalCount without nodes.
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({
+        rollupState: 'FAILURE',
+        checkSuites: [{checkRuns: {totalCount: 3}}],
+      })),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    const status = agg.getSnapshot().repos[0]?.status
+    expect(status?.failingChecks).toBe(3)
+    expect(status?.failing).toBeUndefined()
+  })
+
+  it('degrades to empty title / attempt 0 when no node carries workflow linkage', async () => {
+    const repo = makeRepo({node_id: 'NODE_NO_LINK', owner: 'org', name: 'no-link-repo'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_NO_LINK', owner: 'org', name: 'no-link-repo'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({
+        rollupState: 'FAILURE',
+        checkSuites: [{
+          checkRuns: {
+            totalCount: 1,
+            nodes: [{name: 'lint', conclusion: 'FAILURE', detailsUrl: 'https://example.test/run/lint', checkSuite: null}],
+          },
+        }],
+      })),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    expect(agg.getSnapshot().repos[0]?.status.failing).toEqual({
+      title: '',
+      runAttempt: 0,
+      checks: [{name: 'lint', conclusion: 'FAILURE', detailsUrl: 'https://example.test/run/lint'}],
+    })
+  })
+
+  it('caps the exposed check rows at 10 even when the suite reports more', async () => {
+    const repo = makeRepo({node_id: 'NODE_CAP', owner: 'org', name: 'cap-repo'})
+    const nodes = Array.from({length: 12}, (_, i) => ({
+      name: `check-${i}`,
+      conclusion: 'FAILURE',
+      detailsUrl: `https://example.test/run/${i}`,
+      checkSuite: {workflowRun: {displayTitle: 'Big Matrix', runAttempt: 1}},
+    }))
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_CAP', owner: 'org', name: 'cap-repo'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({
+        rollupState: 'FAILURE',
+        checkSuites: [{checkRuns: {totalCount: 12, nodes}}],
+      })),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    const failing = agg.getSnapshot().repos[0]?.status.failing
+    expect(failing?.checks).toHaveLength(10)
+    expect(failing?.checks[0]?.name).toBe('check-0')
+  })
+})
+
+describe('rm-229 (cycle-18) — OpenSSF Scorecard posture column', () => {
+  const scorecard: ScorecardInfo = {
+    score: 7.8,
+    analyzedAt: '2026-09-25T13:14:10Z',
+    checks: [{name: 'Branch-Protection', state: 'pass'}],
+  }
+
+  it('attaches the column when the fetcher is wired; absent for repos the API does not answer', async () => {
+    const repos = [
+      makeRepo({node_id: 'NODE_SC_1', owner: 'org', name: 'sc-one'}),
+      makeRepo({node_id: 'NODE_SC_2', owner: 'org', name: 'sc-two'}),
+    ]
+    const fetchScorecard = vi.fn(async (_owner: string, name: string) =>
+      name === 'sc-one' ? scorecard : undefined)
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult(repos)),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [
+          makePublicRepo({node_id: 'NODE_SC_1', owner: 'org', name: 'sc-one'}),
+          makePublicRepo({node_id: 'NODE_SC_2', owner: 'org', name: 'sc-two'}),
+        ],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+      fetchScorecard,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos.find(r => r.name === 'sc-one')?.scorecard).toEqual(scorecard)
+    expect(snap.repos.find(r => r.name === 'sc-two')?.scorecard).toBeUndefined()
+    expect(fetchScorecard).toHaveBeenCalledTimes(2)
+  })
+
+  it('a rejected fetch leaves the column absent and the snapshot otherwise green (fail-soft)', async () => {
+    const repos = [
+      makeRepo({node_id: 'NODE_SC_3', owner: 'org', name: 'sc-three'}),
+      makeRepo({node_id: 'NODE_SC_4', owner: 'org', name: 'sc-four'}),
+    ]
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult(repos)),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [
+          makePublicRepo({node_id: 'NODE_SC_3', owner: 'org', name: 'sc-three'}),
+          makePublicRepo({node_id: 'NODE_SC_4', owner: 'org', name: 'sc-four'}),
+        ],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+      fetchScorecard: vi.fn().mockRejectedValue(new Error('scorecard host unreachable')),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos).toHaveLength(2)
+    expect(snap.repos.every(r => r.scorecard === undefined)).toBe(true)
+    expect(snap.repos.every(r => r.status.rollupState === 'green')).toBe(true)
+  })
+
+  it('unwired fetcher (default deps) produces snapshots with no scorecard keys at all', async () => {
+    const repo = makeRepo({node_id: 'NODE_SC_5', owner: 'org', name: 'sc-five'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_SC_5', owner: 'org', name: 'sc-five'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    // The API serializes through JSON — an absent column must not even appear
+    // as a null key, so existing pinned snapshots stay byte-stable.
+    const row = JSON.parse(JSON.stringify(agg.getSnapshot().repos[0])) as Record<string, unknown>
+    expect('scorecard' in row).toBe(false)
   })
 })
