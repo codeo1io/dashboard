@@ -87,6 +87,14 @@ export interface MetadataResult {
    * matches first excludes the repo.
    */
   readonly redactedDatabaseIds: ReadonlySet<number>
+  /**
+   * Redacted entries that contributed NO database_id deny key — neither a
+   * base64-derived id nor an explicit `database_id`/`id` field (typically
+   * new-format `R_kgDO...` node_ids). 0 means the cross-format secondary
+   * guard covers every redacted entry; the aggregator uses this to decide
+   * whether its partial-protection warning should fire.
+   */
+  readonly redactedEntriesMissingDatabaseId: number
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +282,7 @@ export async function readRepoMetadata(reader: MetadataReader): Promise<Result<M
   const redactedDatabaseIds = new Set<number>()
   let skippedMalformedCount = 0
   let privateCoercedCount = 0
+  let redactedEntriesMissingDatabaseId = 0
 
   for (const rawEntry of doc.repos) {
     if (rawEntry === null || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) {
@@ -290,6 +299,9 @@ export async function readRepoMetadata(reader: MetadataReader): Promise<Result<M
     // aggregator's working set and past the redaction boundary. Every value
     // that is not strictly `false` or absent is classified private;
     // coerced values are counted and surfaced in the summary log below.
+    // (Supersedes the cycle-8 rm-152 normalizePrivateFlag three-way split at
+    // the 2026-09-25 integrate: this landed coercion is strictly more
+    // fail-closed — quoted falsy forms coerce private too.)
     let isPrivate = entry.private === true
     if (!isPrivate && entry.private !== undefined && entry.private !== false) {
       isPrivate = true
@@ -314,6 +326,7 @@ export async function readRepoMetadata(reader: MetadataReader): Promise<Result<M
       const hasValidNodeId = typeof entry.node_id === 'string' && entry.node_id.length > 0
       const rawDbId = entry.database_id ?? entry.id
       const hasValidDatabaseId = typeof rawDbId === 'number' && Number.isFinite(rawDbId)
+      let derivedId: number | null = null
 
       if (!hasValidNodeId && !hasValidDatabaseId) {
         logger.error('Redacted/private repos.yaml entry has no usable deny key (no valid node_id or database_id) — failing closed')
@@ -330,13 +343,21 @@ export async function readRepoMetadata(reader: MetadataReader): Promise<Result<M
         // the same repo under a different node_id format (legacy vs new R_kgDO...),
         // the exact node_id string match misses it — but the derived databaseId
         // (format-independent) catches it via the secondary guard.
-        const derivedId = deriveDatabaseId(nodeIdStr)
+        derivedId = deriveDatabaseId(nodeIdStr)
         if (derivedId !== null) {
           redactedDatabaseIds.add(derivedId)
         }
       }
-      if (typeof rawDbId === 'number' && Number.isFinite(rawDbId)) {
+      if (hasValidDatabaseId) {
         redactedDatabaseIds.add(rawDbId)
+      }
+      // Cross-format coverage accounting for the aggregator's
+      // partial-protection warning: an entry is covered when EITHER channel
+      // produced a database_id (derived from a legacy base64 node_id OR an
+      // explicit field). An explicit `database_id` fully covers an entry even
+      // when its node_id is an undecodable new-format `R_kgDO...` id.
+      if (derivedId === null && !hasValidDatabaseId) {
+        redactedEntriesMissingDatabaseId++
       }
       // Do NOT add to publicRepos. Do NOT log owner/name.
     } else if (
@@ -376,9 +397,10 @@ export async function readRepoMetadata(reader: MetadataReader): Promise<Result<M
   logger.info('metadata/repos.yaml loaded', {
     publicCount: publicRepos.length,
     redactedCount: redactedNodeIds.size,
+    redactedMissingDatabaseId: redactedEntriesMissingDatabaseId,
   })
 
-  return ok({publicRepos, redactedNodeIds, redactedDatabaseIds})
+  return ok({publicRepos, redactedNodeIds, redactedDatabaseIds, redactedEntriesMissingDatabaseId})
 }
 
 // ---------------------------------------------------------------------------
@@ -388,6 +410,26 @@ export async function readRepoMetadata(reader: MetadataReader): Promise<Result<M
 function isNotFoundError(error: unknown): boolean {
   if (error === null || typeof error !== 'object') return false
   return (error as Record<string, unknown>).code === NOT_FOUND_CODE
+}
+
+/**
+ * Denylist membership for a possibly bigint-widened database id (rm-151).
+ *
+ * SameValueZero never matches a `bigint` against the `number` members of the
+ * denylist, so a widened id silently disables the secondary guard (the
+ * failure class upstream fro-bot/agent hit in #1513). This helper normalizes
+ * both forms. GitHub repository database ids are far below 2^53, so the
+ * bigint → number conversion is exact for every real id; the widening hazard
+ * is the type mismatch, not precision.
+ */
+export function redactedDatabaseIdIn(
+  denylist: ReadonlySet<number>,
+  id: number | bigint | null | undefined,
+): boolean {
+  if (id === null || id === undefined) return false
+  if (typeof id === 'number') return denylist.has(id)
+  const asNumber = Number(id)
+  return Number.isFinite(asNumber) && denylist.has(asNumber)
 }
 
 /**

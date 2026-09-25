@@ -19,6 +19,7 @@ import {
   MetadataTransportError,
   MetadataUnavailableError,
   readRepoMetadata,
+  redactedDatabaseIdIn,
 } from '../src/github/metadata.ts'
 import {isErr, isOk} from '../src/result.ts'
 
@@ -1056,5 +1057,80 @@ repos:
     } finally {
       warnSpy.mockRestore()
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-151 — int64-safe denylist membership helper
+// ---------------------------------------------------------------------------
+
+describe('rm-151 — redactedDatabaseIdIn', () => {
+  const denylist = new Set([186915400, 42])
+
+  it('number members match directly', () => {
+    expect(redactedDatabaseIdIn(denylist, 186915400)).toBe(true)
+    expect(redactedDatabaseIdIn(denylist, 999)).toBe(false)
+  })
+
+  it('bigint-widened ids normalize to number and match (SameValueZero never would)', () => {
+    expect(redactedDatabaseIdIn(denylist, 186915400n)).toBe(true)
+    expect(redactedDatabaseIdIn(denylist, 42n)).toBe(true)
+    expect(redactedDatabaseIdIn(denylist, 999n)).toBe(false)
+  })
+
+  it('null/undefined ids never match', () => {
+    expect(redactedDatabaseIdIn(denylist, null)).toBe(false)
+    expect(redactedDatabaseIdIn(denylist, undefined)).toBe(false)
+  })
+
+  it('a bigint beyond the denylist never throws and never matches', () => {
+    expect(redactedDatabaseIdIn(denylist, 2n ** 63n)).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-197 (renumbered from the cycle-8 rm-154 at the 2026-09-25 integrate) — databaseId coverage accounting
+// ---------------------------------------------------------------------------
+
+describe('rm-197 — redactedEntriesMissingDatabaseId accounting', () => {
+  const redactedEntry = (extra: Record<string, string> = {}) => `
+  - owner: '[REDACTED]'
+    name: R_kgDOSomePrivate
+    added: 2026-01-01
+    onboarding_status: pending
+    last_survey_at: null
+    last_survey_status: null
+    has_fro_bot_workflow: false
+    has_renovate: false
+    discovery_channel: collab
+    next_survey_eligible_at: null
+    private: true
+    node_id: R_kgDOSomePrivate
+${Object.entries(extra).map(([k, v]) => `    ${k}: ${v}`).join('\n')}
+`
+
+  it('an R_ node_id WITH an explicit database_id is fully covered (missing count 0)', async () => {
+    const result = await readRepoMetadata(makeReader(`
+version: 1
+repos:
+${redactedEntry({database_id: '186915400'})}
+`))
+
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+    expect(result.data.redactedEntriesMissingDatabaseId).toBe(0)
+    expect(result.data.redactedDatabaseIds.has(186915400)).toBe(true)
+  })
+
+  it('an R_ node_id WITHOUT any database_id counts as uncovered', async () => {
+    const result = await readRepoMetadata(makeReader(`
+version: 1
+repos:
+${redactedEntry()}
+`))
+
+    expect(isOk(result)).toBe(true)
+    if (!isOk(result)) return
+    expect(result.data.redactedEntriesMissingDatabaseId).toBe(1)
   })
 })

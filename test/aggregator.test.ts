@@ -55,11 +55,13 @@ function makeMetadataResult(overrides: {
   publicRepos?: ReturnType<typeof makePublicRepo>[]
   redactedNodeIds?: string[]
   redactedDatabaseIds?: number[]
+  redactedEntriesMissingDatabaseId?: number
 } = {}): MetadataResult {
   return {
     publicRepos: overrides.publicRepos ?? [],
     redactedNodeIds: new Set(overrides.redactedNodeIds ?? []),
     redactedDatabaseIds: new Set(overrides.redactedDatabaseIds ?? []),
+    redactedEntriesMissingDatabaseId: overrides.redactedEntriesMissingDatabaseId ?? 0,
   }
 }
 
@@ -2151,5 +2153,119 @@ describe('aggregator — rm-112 fail-visible enumeration', () => {
     expect(snap.repos).toHaveLength(0)
     expect(snap.staleBanner).toBe(false)
     expect(snap.enumerationIncomplete).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-151 / rm-197 — secondary-guard precision (rm-197 renumbered from the cycle-8 rm-154 at the 2026-09-25 integrate)
+// ---------------------------------------------------------------------------
+
+describe('rm-151/rm-197 — denylist secondary guard precision', () => {
+  it('bigint-widened database_id still matches the denylist (int64 guard, rm-151)', async () => {
+    // When the GitHub contract widens int64 ids to bigint (upstream fro-bot/agent
+    // hit this class in #1513), Set<number>.has(bigint) is ALWAYS false — the
+    // secondary guard would silently stop excluding. The membership call must
+    // normalize.
+    const SHARED_DATABASE_ID = 186915400
+
+    const privateRepo = makeRepo({
+      node_id: 'NODE_BIGINT_PRIVATE', // deliberately NOT in the node denylist
+      database_id: BigInt(SHARED_DATABASE_ID) as unknown as number, // widened form
+      owner: 'private-org',
+      name: 'bigint-secret',
+    })
+    const publicRepo = makeRepo({node_id: 'NODE_SAFE_BIGINT', database_id: 9999, owner: 'org', name: 'safe-bigint'})
+
+    const graphqlQueryForInstallation: GraphqlQueryForInstallationFn = vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'}))
+
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([privateRepo, publicRepo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_SAFE_BIGINT', owner: 'org', name: 'safe-bigint'})],
+        redactedNodeIds: ['R_kgDOUnrelated'],
+        redactedDatabaseIds: [SHARED_DATABASE_ID],
+      }))),
+      graphqlQueryForInstallation,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    // GraphQL was called exactly once — only for the public repo
+    expect(graphqlQueryForInstallation).toHaveBeenCalledTimes(1)
+    const call = (graphqlQueryForInstallation as ReturnType<typeof vi.fn>).mock.calls[0]
+    const vars = call?.[2] as {owner: string; name: string}
+    expect(vars.name).toBe('safe-bigint')
+
+    const serialized = JSON.stringify(agg.getSnapshot())
+    expect(serialized).not.toContain('bigint-secret')
+    expect(serialized).not.toContain('private-org')
+  })
+
+  it('an R_ node_id entry WITH an explicit database_id does NOT fire the partial-protection warning (rm-197)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const privateRepo = makeRepo({
+        node_id: 'R_kgDOCoveredByField',
+        database_id: 186915400,
+        owner: 'private-org',
+        name: 'covered-by-field',
+      })
+      const publicRepo = makeRepo({node_id: 'NODE_SAFE_COVERED', database_id: 9999, owner: 'org', name: 'safe-covered'})
+
+      const deps = makeDeps({
+        enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([privateRepo, publicRepo])),
+        readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+          publicRepos: [makePublicRepo({node_id: 'NODE_SAFE_COVERED', owner: 'org', name: 'safe-covered'})],
+          redactedNodeIds: ['R_kgDOCoveredByField'],
+          redactedDatabaseIds: [186915400],
+          // The R_ entry carried an explicit database_id — fully covered.
+          redactedEntriesMissingDatabaseId: 0,
+        }))),
+        graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+      })
+
+      const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+      await agg.refresh()
+
+      const warned = warnSpy.mock.calls.some(args =>
+        String(args[0]).includes('Denylist cross-format protection is partial'),
+      )
+      expect(warned).toBe(false)
+    } finally {
+      warnSpy.mockRestore()
+      errorSpy.mockRestore()
+    }
+  })
+
+  it('an entry with NO database_id in either form still fires the partial-protection warning (rm-197)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const publicRepo = makeRepo({node_id: 'NODE_SAFE_UNCOVERED', database_id: 9999, owner: 'org', name: 'safe-uncovered'})
+
+      const deps = makeDeps({
+        enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([publicRepo])),
+        readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+          publicRepos: [makePublicRepo({node_id: 'NODE_SAFE_UNCOVERED', owner: 'org', name: 'safe-uncovered'})],
+          redactedNodeIds: ['R_kgDONoDbId'],
+          redactedDatabaseIds: [],
+          redactedEntriesMissingDatabaseId: 1,
+        }))),
+        graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+      })
+
+      const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+      await agg.refresh()
+
+      const warned = warnSpy.mock.calls.some(args =>
+        String(args[0]).includes('Denylist cross-format protection is partial'),
+      )
+      expect(warned).toBe(true)
+    } finally {
+      warnSpy.mockRestore()
+      errorSpy.mockRestore()
+    }
   })
 })

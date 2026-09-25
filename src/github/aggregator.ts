@@ -27,9 +27,9 @@
 import type {Result} from '../result.ts'
 import type {EnumerateReposResult, InstallationsClient} from './installations.ts'
 import type {MetadataError, MetadataReader, MetadataResult} from './metadata.ts'
-
 import {logger, sanitizeErrorMessage, type LogContext} from '../logger.ts'
 import {isErr, isOk} from '../result.ts'
+import {redactedDatabaseIdIn} from './metadata.ts'
 
 // ---------------------------------------------------------------------------
 // Injectable GraphQL transport
@@ -362,28 +362,17 @@ function buildWorkingSet(
   installRepos: readonly {node_id: string; database_id: number; owner: string; name: string; full_name: string; installation_id: number}[],
   metadata: MetadataResult,
 ): {workingSet: WorkingSetEntry[]; driftCount: number; denylistComplete: boolean} {
-  const {publicRepos, redactedNodeIds, redactedDatabaseIds} = metadata
+  const {publicRepos, redactedNodeIds, redactedDatabaseIds, redactedEntriesMissingDatabaseId} = metadata
 
-  // denylistComplete: true if every redacted node_id also has a derived databaseId in
-  // redactedDatabaseIds. False means at least one redacted entry (likely a new-format
-  // R_kgDO... node_id) could not contribute a databaseId — the cross-format secondary
-  // guard is partial for that entry. The primary node_id guard still applies.
-  // Tradeoff: we do NOT fail fully closed here — the primary guard covers same-format
-  // matches, and full fail-closed-to-empty would be too aggressive for a single
-  // undecodable new-format node_id. We log a warning instead.
-  let denylistComplete = true
-  for (const nodeId of redactedNodeIds) {
-    // Check if this node_id has a corresponding databaseId in the denylist.
-    // We can't reverse-lookup by node_id here, so we check if redactedDatabaseIds
-    // is non-empty as a proxy — if it's empty and redactedNodeIds is non-empty,
-    // at least one entry has no derived databaseId.
-    // More precise: new-format node_ids (R_kgDO...) can't be decoded, so if any
-    // redacted node_id starts with R_, denylistComplete is false.
-    if (nodeId.startsWith('R_')) {
-      denylistComplete = false
-      break
-    }
-  }
+  // denylistComplete: true when EVERY redacted entry contributed a databaseId
+  // to the secondary guard (base64-derived from a legacy node_id OR an explicit
+  // `database_id` field — counted at metadata parse time). False means at least
+  // one redacted entry has neither, so the cross-format secondary guard is
+  // partial for that entry. The primary node_id guard still applies.
+  // Tradeoff: we do NOT fail fully closed here — the primary guard covers
+  // same-format matches, and full fail-closed-to-empty would be too aggressive
+  // for a single entry lacking a databaseId. We log a warning instead.
+  const denylistComplete = redactedEntriesMissingDatabaseId === 0
 
   // Index install repos by node_id AND database_id for O(1) lookup.
   // This is the auth-context index: when a metadata publicRepo matches an install
@@ -429,8 +418,11 @@ function buildWorkingSet(
     //   (b) database_id matches redactedDatabaseIds (secondary — format-independent,
     //       closes the node_id format-mismatch gap; populated from derived databaseIds
     //       extracted from legacy base64 node_ids AND explicit database_id fields).
+    //       Membership goes through redactedDatabaseIdIn so an int64-widened
+    //       (bigint) database_id from a future Octokit contract still matches
+    //       (rm-151 — SameValueZero would never match bigint against number).
     // A match on either key is sufficient to exclude the repo.
-    if (redactedNodeIds.has(repo.node_id) || redactedDatabaseIds.has(repo.database_id)) {
+    if (redactedNodeIds.has(repo.node_id) || redactedDatabaseIdIn(redactedDatabaseIds, repo.database_id)) {
       continue
     }
 
@@ -782,13 +774,15 @@ export function createAggregator(
       workingSet = resolvedEntries
     }
 
-    // Warn if cross-format denylist protection is partial (new-format node_ids that
-    // couldn't be decoded to a databaseId). The primary node_id guard still applies;
-    // only the secondary databaseId guard is absent for those entries.
+    // Warn if cross-format denylist protection is partial — i.e. at least one
+    // redacted entry contributed no database_id to the secondary guard
+    // (neither a decodable legacy base64 node_id nor an explicit `database_id`
+    // field). The primary node_id guard still applies; only the secondary
+    // database_id guard is absent for those entries.
     if (!denylistComplete) {
       logger.warning(
-        'Denylist cross-format protection is partial: one or more redacted entries have new-format node_ids (R_kgDO...) ' +
-        'that could not be decoded to a numeric databaseId. The primary node_id guard still applies for same-format matches. ' +
+        'Denylist cross-format protection is partial: one or more redacted entries contributed no database_id ' +
+        '(neither a derivable legacy node_id nor an explicit database_id field). The primary node_id guard still applies for same-format matches. ' +
         'If the installation channel returns the same repo under a different node_id format, it may not be excluded by the secondary guard.',
       )
     }

@@ -112,9 +112,13 @@ Field rules (validated server-side, fail-closed):
 
 If `dedupeKey` is present, `(source, dedupeKey)` is unique. A second POST with
 the same pair **updates the existing message in place** (title/body/severity/
-links/createdAt refreshed, `id` preserved) and resets it to unread. This keeps a
-recurring producer — e.g. a Daily Maintenance Report keyed on the run date —
-from stacking duplicates. Without a `dedupeKey`, every POST is a new message.
+links/createdAt refreshed, `id` preserved) and **preserves its read state** —
+a re-delivered event must never re-unread a message the operator already
+acked (rm-169; the cycle-8 batch originally carried this as its rm-154 before
+that id was reassigned — see ROADMAP rm-197). This keeps a recurring producer — e.g. a Daily Maintenance
+Report keyed on the run date — from stacking duplicates, and keeps webhook
+replays from resetting operator progress. Without a `dedupeKey`, every POST is
+a new message.
 
 ### Responses
 
