@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useRef, useState} from 'react'
-import {getPushSupport} from '../push/capability.ts'
+import {getPushSupport, isPushClientSupported} from '../push/capability.ts'
 import {getLogoutAbortSignal} from '../push/logout-abort.ts'
 import {
   INITIAL_RECONCILE_SWEEP_CACHE,
@@ -83,6 +83,16 @@ export function Notifications({
 
   // Run pure sweep and execute reconcile actions
   const runSweep = useCallback(async () => {
+    // rm-228: this build ships no push-capable service worker, and every
+    // reconcile flow below awaits navigator.serviceWorker.ready — which never
+    // settles when nothing registers a worker. Short-circuit to the honest
+    // unavailable state before any of those flows (or any capability probe)
+    // run. See capability.ts#isPushClientSupported and web/vite.config.ts.
+    if (!isPushClientSupported()) {
+      setCurrentUiState('unavailable')
+      return
+    }
+
     // Immediate capability checks before sweep to avoid starting service workers on unsupported platforms
     const support = getPushSupport()
     if (support.needsInstall) {
@@ -271,7 +281,9 @@ export function Notifications({
   const copy = getNotificationCopy(currentUiState)
 
   const handleEnable = async () => {
-    if (enableInFlightRef.current) return
+    // rm-228: unreachable while isPushClientSupported() is false (the
+    // unavailable state renders no CTA); kept as the re-introduction seam.
+    if (!isPushClientSupported() || enableInFlightRef.current) return
     enableInFlightRef.current = true
     setInFlight(true)
     try {
@@ -300,7 +312,9 @@ export function Notifications({
   }
 
   const handleDisable = async () => {
-    if (disableInFlightRef.current) return
+    // rm-228: unreachable while isPushClientSupported() is false (the
+    // unavailable state renders no CTA); kept as the re-introduction seam.
+    if (!isPushClientSupported() || disableInFlightRef.current) return
     disableInFlightRef.current = true
     setInFlight(true)
     try {

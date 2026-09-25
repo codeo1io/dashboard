@@ -982,8 +982,13 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   app.use('/manifest.webmanifest', serveStatic({root: webDistRoot}))
 
   // ── PWA service worker + registration helper ──────────────────────────────
-  // /sw.js and /registerSW.js must be served at root scope so the SW covers the
-  // entire origin. CSP is removed from /sw.js by the pre-secureHeaders middleware.
+  // /sw.js must stay served at root scope: the emitted worker is an
+  // uninstall-only kill-switch (web/src/sw.ts), and clients that registered
+  // the OLD precaching worker need it to update-and-uninstall. Since rm-228
+  // nothing registers a worker (vite.config.ts sets injectRegister: false),
+  // so /registerSW.js is no longer emitted — its route stays for
+  // forward-compatibility and now 404s. CSP is removed from /sw.js by the
+  // pre-secureHeaders middleware.
   app.use('/sw.js', serveStatic({root: webDistRoot}))
 
   app.use('/registerSW.js', async (c, next) => {

@@ -26,32 +26,27 @@ export default defineConfig({
       // The <link rel="manifest"> stays in web/index.html (already present).
       manifest: false,
 
+      // rm-228: the app registers NO service worker. The emitted sw.js is an
+      // uninstall-only kill-switch (web/src/sw.ts) served so clients that
+      // registered the OLD precaching SW can fetch it and uninstall.
+      // injectRegister false stops vite-plugin-pwa from emitting registerSW.js
+      // and injecting its loader <script> into the built index.html — under
+      // the default 'auto' it re-registered the kill-switch on every page
+      // load, so navigator.serviceWorker.ready only ever resolved to a worker
+      // that immediately unregisters itself, leaving the push opt-in
+      // permanently stuck. A push-capable client must be re-introduced
+      // deliberately (roadmap rm-106/rm-163) with its own registration call.
+      injectRegister: false,
+
       // registerType omitted → defaults to 'prompt' (never silently reload).
 
       injectManifest: {
-        // Exclude the SW itself and the manifest from the precache list.
-        // The default globPatterns cover hashed JS/CSS/assets in web/dist.
-        globIgnores: [
-          '**/sw.js',
-          '**/manifest.webmanifest',
-          '**/registerSW.js',
-          '**/privacy.html',
-        ],
-
-        // Rewrite the precache manifest entry for index.html → '/' so the
-        // generated workbox manifest stays consistent with the server's '/'
-        // route (GET /index.html has no route and 404s). The deployed SW is a
-        // kill-switch (web/src/sw.ts) that purges caches, unregisters itself,
-        // and never precaches or serves — this transform only shapes the
-        // manifest the build emits.
-        manifestTransforms: [
-          (entries) => {
-            const manifest = entries.map((entry) =>
-              entry.url === 'index.html' ? {...entry, url: '/'} : entry,
-            )
-            return {manifest, warnings: []}
-          },
-        ],
+        // rm-138: the kill-switch never precaches and never serves cached
+        // assets, so the injected manifest stays EMPTY — the build must not
+        // glob hashed JS/CSS into self.__WB_MANIFEST. The `void [self.__WB_MANIFEST]`
+        // token in web/src/sw.ts stays: workbox's injectManifest build step
+        // requires it, and it is erased from the runtime output.
+        globPatterns: [],
       },
     }),
   ],

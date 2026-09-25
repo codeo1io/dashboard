@@ -1,6 +1,6 @@
 import {render, screen, fireEvent, act} from '@testing-library/react'
 import {beforeEach, describe, expect, it, vi} from 'vitest'
-import {getNotificationPermission, getPushSupport} from '../push/capability.ts'
+import {getNotificationPermission, getPushSupport, isPushClientSupported} from '../push/capability.ts'
 import {
   buildPushClient,
   resubscribeStaleKey,
@@ -13,6 +13,11 @@ import {Notifications} from './Notifications.tsx'
 vi.mock('../push/capability.ts', () => ({
   getNotificationPermission: vi.fn(),
   getPushSupport: vi.fn(),
+  // rm-228: default TRUE here so the flow seam (subscribe/reconcile/
+  // unsubscribe logic kept as the re-introduction seam) stays covered. The
+  // production default is false — pinned by capability.test.ts and asserted
+  // end-to-end in the 'rm-228' describe below.
+  isPushClientSupported: vi.fn(),
 }))
 
 vi.mock('../push/subscribe.ts', () => ({
@@ -49,6 +54,7 @@ describe('Notifications Component', () => {
     // Default mock behavior
     vi.mocked(getPushSupport).mockReturnValue({supported: true, needsInstall: false})
     vi.mocked(getNotificationPermission).mockReturnValue('default')
+    vi.mocked(isPushClientSupported).mockReturnValue(true)
     vi.mocked(runReconcileSweep).mockResolvedValue({
       skipped: false,
       action: undefined,
@@ -689,5 +695,54 @@ describe('Notifications Component', () => {
       type: 'MOCK_SYNTHETIC_PUSH',
       payload: {type: 'approval'},
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-228: strip shape — when this build ships no push-capable client
+// (isPushClientSupported() false, the production default), the surface must
+// render the honest unavailable state and never enter any flow that awaits
+// navigator.serviceWorker.ready.
+// ---------------------------------------------------------------------------
+
+describe('Notifications — push unavailable on this build (rm-228)', () => {
+  let metaTag: HTMLMetaElement | null = null
+
+  const addMetaTag = () => {
+    metaTag = document.createElement('meta')
+    metaTag.setAttribute('name', 'push-enabled')
+    metaTag.setAttribute('content', 'true')
+    document.head.appendChild(metaTag)
+  }
+
+  beforeEach(() => {
+    if (metaTag && metaTag.parentNode) metaTag.parentNode.removeChild(metaTag)
+    localStorage.clear()
+    vi.clearAllMocks()
+    vi.mocked(isPushClientSupported).mockReturnValue(false)
+    vi.mocked(getPushSupport).mockReturnValue({supported: true, needsInstall: false})
+  })
+
+  it('renders the unavailable state instead of running the reconcile sweep', async () => {
+    addMetaTag()
+    await act(async () => {
+      render(<Notifications />)
+    })
+
+    expect(screen.getByTestId('notifications-headline')).toHaveTextContent('Alerts Not Available')
+    // The sweep never started: runReconcileSweep must not have been called,
+    // because it awaits navigator.serviceWorker.ready, which never settles
+    // when nothing registers the kill-switch worker.
+    expect(runReconcileSweep).not.toHaveBeenCalled()
+    expect(getPushSupport).not.toHaveBeenCalled()
+  })
+
+  it('renders no enable/disable CTA in the unavailable state', async () => {
+    addMetaTag()
+    await act(async () => {
+      render(<Notifications />)
+    })
+
+    expect(screen.queryByTestId('notifications-cta')).toBeNull()
   })
 })

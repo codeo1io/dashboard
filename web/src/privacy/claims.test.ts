@@ -4,6 +4,7 @@ import type {Claim, ClaimCategory, ClaimValue, RetentionValue} from './claims.ts
 import {describe, expect, it} from 'vitest'
 import {
   CLAIMS,
+  PUSH_AVAILABILITY_NOTE,
   formatClaimValue,
   formatRetention,
   getPublishedClaims,
@@ -73,6 +74,25 @@ describe('retention claims', () => {
     const rendered = formatRetention({amount: 30, unit: 'days', configurable: true})
     expect(rendered).toMatch(/days/)
     expect(rendered).toMatch(/configurable/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-228: the claim set is scope-annotated as send-path-only until a
+// push-capable client ships — no data instances in the note itself.
+// ---------------------------------------------------------------------------
+
+describe('availability note (rm-228)', () => {
+  it('is a non-empty sentence describing the client-build scope', () => {
+    expect(PUSH_AVAILABILITY_NOTE.length).toBeGreaterThan(40)
+    expect(PUSH_AVAILABILITY_NOTE).toMatch(/push-capable background worker/)
+    expect(PUSH_AVAILABILITY_NOTE).toMatch(/cannot be enabled/)
+  })
+
+  it('carries no data instances (no endpoints, paths, or identifiers)', () => {
+    expect(PUSH_AVAILABILITY_NOTE).not.toMatch(/https?:\/\//)
+    expect(PUSH_AVAILABILITY_NOTE).not.toMatch(/\/operator\//)
+    expect(PUSH_AVAILABILITY_NOTE).not.toMatch(/\bp256dh\b/i)
   })
 })
 

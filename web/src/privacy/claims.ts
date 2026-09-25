@@ -37,6 +37,19 @@ export const REQUIRED_CLAIM_CATEGORIES = [
   'export-surface',
 ] as const satisfies readonly ClaimCategory[]
 
+/**
+ * rm-228: availability scope of the claim set. These claims describe the
+ * Gateway-owned push surface — subscription storage, read surfaces, dispatch,
+ * retention — as designed. The dashboard build shipped alongside them carries
+ * no push-capable service worker (nothing registers `sw.js`, which is an
+ * uninstall-only kill-switch), so no subscription can currently be created
+ * from this client. The claims remain the contract a push-capable client
+ * (roadmap rm-106/rm-163) must honor when one ships; the public page carries
+ * the same note.
+ */
+export const PUSH_AVAILABILITY_NOTE =
+  'The current dashboard build does not include a push-capable background worker, so notifications cannot be enabled from it at this time; these disclosures take effect when a build that can subscribe ships.'
+
 /** A retention duration, always unit-bearing and always marked configurable. */
 export interface RetentionValue {
   readonly amount: number
