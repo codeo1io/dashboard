@@ -63,4 +63,28 @@ describe('GraphQL query-shape guard (rm-177)', () => {
     const symmetricDiff = [...a].filter(f => !b.has(f)).concat([...b].filter(f => !a.has(f)))
     expect(symmetricDiff).toEqual(['vulnerabilityAlerts'])
   })
+
+  it('rm-192: both templates select the failing-check drill-down (workflowRun + check-run nodes)', () => {
+    for (const [name, query] of Object.entries(QUERIES)) {
+      expect(query.includes('workflowRun {'), `${name}: missing workflowRun selection`).toBe(true)
+      expect(query.includes('displayTitle'), `${name}: missing workflowRun.displayTitle`).toBe(true)
+      expect(query.includes('runAttempt'), `${name}: missing workflowRun.runAttempt`).toBe(true)
+      expect(query.includes('nodes {'), `${name}: missing checkRuns nodes selection`).toBe(true)
+      expect(query.includes('name'), `${name}: missing check-run name`).toBe(true)
+      expect(query.includes('detailsUrl'), `${name}: missing check-run detailsUrl`).toBe(true)
+      // The drill-down must remain within the existing checkSuites/checkRuns
+      // read path — no new top-level selections, no page-size drift.
+      expect(query.includes('checkSuites(first: 100)'), `${name}: checkSuites page size drifted`).toBe(true)
+      expect(query.includes('checkRuns(first: 50,'), `${name}: checkRuns page size drifted`).toBe(true)
+    }
+  })
+
+  it('rm-192: drill-down stays strictly read-only (no mutations anywhere in the templates)', () => {
+    for (const [name, query] of Object.entries(QUERIES)) {
+      expect(
+        /\bmutation\b/i.test(query),
+        `${name}: mutation root or keyword found — queries must stay read-only`,
+      ).toBe(false)
+    }
+  })
 })

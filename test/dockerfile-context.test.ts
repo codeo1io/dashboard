@@ -80,7 +80,13 @@ function patternToRegExp(pattern: string): RegExp {
 }
 
 function isExcludedBy(path: string, {ignores, negations}: {ignores: string[]; negations: string[]}): boolean {
-  const candidates = [path, path.split('/')[0] ?? path]
+  // dockerignore semantics: a pattern with no '/' matches at ANY path level
+  // (so unanchored `node_modules` also excludes `web/node_modules`, and
+  // `test-results` also excludes `web/test-results`). Test the full path, the
+  // first segment, and every individual component. rm-197: the nested case is
+  // now asserted, not just assumed.
+  const segments = path.split('/')
+  const candidates = [path, segments[0] ?? path, ...segments]
   for (const candidate of candidates) {
     for (const pattern of ignores) {
       if (!patternToRegExp(pattern).test(candidate)) continue
@@ -116,6 +122,9 @@ describe('Dockerfile build-context validity (rm-132)', () => {
 describe('Docker build-context seal (rm-186)', () => {
   const dockerignorePath = resolve(repoRoot, '.dockerignore')
   const requiredSecurityEntries = ['.git', 'node_modules', '.env*', '*.pem', '*.key']
+  // rm-197: locally generated test-runner/pnpm artifacts must never reach the
+  // build context. Unanchored entries so nested copies (web/…) match too.
+  const requiredArtifactEntries = ['test-results', 'playwright-report', '.pnpm-store']
 
   it('.dockerignore exists in the repo root', () => {
     expect(existsSync(dockerignorePath)).toBe(true)
@@ -125,6 +134,20 @@ describe('Docker build-context seal (rm-186)', () => {
     const {ignores} = parseDockerignore(readFileSync(dockerignorePath, 'utf8'))
     const missing = requiredSecurityEntries.filter(entry => !ignores.includes(entry))
     expect(missing).toEqual([])
+  })
+
+  it('keeps the test-runner artifact entry set (test-results, playwright-report, .pnpm-store) — rm-197', () => {
+    const {ignores} = parseDockerignore(readFileSync(dockerignorePath, 'utf8'))
+    const missing = requiredArtifactEntries.filter(entry => !ignores.includes(entry))
+    expect(missing).toEqual([])
+  })
+
+  it('artifact entries actually seal nested copies (web/test-results is excluded) — rm-197', () => {
+    const seal = parseDockerignore(readFileSync(dockerignorePath, 'utf8'))
+    for (const entry of requiredArtifactEntries) {
+      expect(isExcludedBy(entry, seal), `root ${entry}/ must be excluded`).toBe(true)
+      expect(isExcludedBy(`web/${entry}`, seal), `nested web/${entry}/ must be excluded (unanchored pattern)`).toBe(true)
+    }
   })
 
   it('never excludes a Dockerfile COPY/ADD source from the build context', () => {

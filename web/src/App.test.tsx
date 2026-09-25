@@ -39,7 +39,7 @@ describe('App', () => {
     const listenerApi = await import('./api/listener.ts')
     vi.spyOn(listenerApi, 'fetchListenerMessages').mockResolvedValue({
       ok: true,
-      data: {messages: [], unreadCount: 0},
+      data: {messages: [], unreadCount: 0, prunedCount: 0, droppedCount: 0},
     })
   })
 
@@ -138,7 +138,7 @@ describe('App — runtime state wiring', () => {
     const listenerApi = await import('./api/listener.ts')
     vi.spyOn(listenerApi, 'fetchListenerMessages').mockResolvedValue({
       ok: true,
-      data: {messages: [], unreadCount: 0},
+      data: {messages: [], unreadCount: 0, prunedCount: 0, droppedCount: 0},
     })
   })
 

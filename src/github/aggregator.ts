@@ -61,11 +61,39 @@ export type GraphqlQueryForInstallationFn = (
 
 export type CiRollupState = 'green' | 'red' | 'pending' | 'unknown'
 
+/**
+ * Drill-down detail for one failing check run on a repo's default branch
+ * (rm-192). Extracted from checkSuites → checkRuns nodes so the operator can
+ * see WHICH check failed, in which workflow run, without leaving the
+ * dashboard. `workflowTitle`/`runAttempt` are null for legacy check suites
+ * that have no workflowRun association (e.g. legacy commit-status API runs).
+ */
+export interface FailingCheckDetail {
+  readonly workflowTitle: string | null
+  readonly runAttempt: number | null
+  readonly checkName: string
+  readonly detailsUrl: string
+}
+
+/**
+ * Upper bound on failingCheckDetails entries in a RepoCiStatus. The
+ * failingChecks COUNT (summed totalCount) remains the authoritative number;
+ * the details list is the drill-down sample, capped so a pathological repo
+ * (100 suites x 50 runs) cannot blow up the snapshot/DTO size.
+ */
+export const FAILING_CHECK_DETAILS_CAP = 25
+
 export interface RepoCiStatus {
   /** Mapped from statusCheckRollup.state: SUCCESS→green, FAILURE/ERROR→red, PENDING→pending */
   readonly rollupState: CiRollupState
   /** Number of failing check runs on the default branch */
   readonly failingChecks: number
+  /**
+   * Drill-down details for failing check runs (rm-192). Empty when the repo
+   * is green/unknown or the API returned no check-run nodes (count-only
+   * consumers keep using failingChecks). Capped at FAILING_CHECK_DETAILS_CAP.
+   */
+  readonly failingCheckDetails: readonly FailingCheckDetail[]
   /** Number of open pull requests */
   readonly openPrCount: number
   /** Number of open issues */
@@ -139,8 +167,18 @@ export const REPO_STATUS_QUERY = `
             # GraphQL max page size; repos with >100 suites still understate failingChecks (documented ceiling, rm-110)
             checkSuites(first: 100) {
               nodes {
+                # rm-192 drill-down: workflow identity + failing check names/URLs
+                # (additive selection only — read-only query, no mutations)
+                workflowRun {
+                  displayTitle
+                  runAttempt
+                }
                 checkRuns(first: 50, filterBy: { status: COMPLETED, conclusions: [FAILURE, TIMED_OUT, CANCELLED, ACTION_REQUIRED, STARTUP_FAILURE] }) {
                   totalCount
+                  nodes {
+                    name
+                    detailsUrl
+                  }
                 }
               }
             }
@@ -177,8 +215,18 @@ export const REPO_STATUS_QUERY_NO_ALERTS = `
             # GraphQL max page size; repos with >100 suites still understate failingChecks (documented ceiling, rm-110)
             checkSuites(first: 100) {
               nodes {
+                # rm-192 drill-down: workflow identity + failing check names/URLs
+                # (additive selection only — read-only query, no mutations)
+                workflowRun {
+                  displayTitle
+                  runAttempt
+                }
                 checkRuns(first: 50, filterBy: { status: COMPLETED, conclusions: [FAILURE, TIMED_OUT, CANCELLED, ACTION_REQUIRED, STARTUP_FAILURE] }) {
                   totalCount
+                  nodes {
+                    name
+                    detailsUrl
+                  }
                 }
               }
             }
@@ -201,7 +249,13 @@ interface GraphqlRepoResponse {
       target: {
         statusCheckRollup: {state: string} | null
         checkSuites: {
-          nodes: {checkRuns: {totalCount: number}}[]
+          nodes: {
+            workflowRun?: {displayTitle?: string | null; runAttempt?: number | null} | null
+            checkRuns: {
+              totalCount: number
+              nodes?: readonly {name?: string | null; detailsUrl?: string | null}[] | null
+            }
+          }[]
         }
       }
     } | null
@@ -538,6 +592,35 @@ function isVulnerabilityAlertsPermissionError(error: unknown): boolean {
   )
 }
 
+type GraphqlCommitTarget = NonNullable<NonNullable<NonNullable<GraphqlRepoResponse['repository']>['defaultBranchRef']>['target']>
+
+/**
+ * Extract failing-check drill-down details from the check suites of a
+ * response target (rm-192). Defensive against missing/null selections —
+ * legacy check suites have no workflowRun association and some check runs
+ * carry no detailsUrl. Capped at FAILING_CHECK_DETAILS_CAP; the totalCount
+ * sum (failingChecks) stays authoritative for the count.
+ */
+function extractFailingCheckDetails(target: GraphqlCommitTarget | null | undefined): FailingCheckDetail[] {
+  const details: FailingCheckDetail[] = []
+  const suites = target?.checkSuites?.nodes
+  if (!suites) return details
+  for (const suite of suites) {
+    const workflowTitle = suite.workflowRun?.displayTitle ?? null
+    const runAttempt = suite.workflowRun?.runAttempt ?? null
+    for (const run of suite.checkRuns?.nodes ?? []) {
+      details.push({
+        workflowTitle,
+        runAttempt,
+        checkName: run.name ?? '(unnamed check)',
+        detailsUrl: run.detailsUrl ?? '',
+      })
+      if (details.length >= FAILING_CHECK_DETAILS_CAP) return details
+    }
+  }
+  return details
+}
+
 /**
  * Parse a GraphQL response into a RepoCiStatus, with openAlertCount from the response
  * (or null if the field is absent/null).
@@ -552,7 +635,7 @@ export function parseRepoResponse(raw: unknown, fetchedAt: number, openAlertCoun
     // installation lost access. That is a degradation the operator must see,
     // so we fail visible (stale:true), matching the installation_id:null and
     // fetch-failure paths below. Serving a calm unknown here hid silent drift.
-    return {rollupState: 'unknown', failingChecks: 0, openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
   }
 
   const target = repo.defaultBranchRef?.target
@@ -566,6 +649,7 @@ export function parseRepoResponse(raw: unknown, fetchedAt: number, openAlertCoun
       failingChecks += suite.checkRuns.totalCount
     }
   }
+  const failingCheckDetails = extractFailingCheckDetails(target)
 
   const openPrCount = repo.pullRequests.totalCount
   const openIssueCount = repo.issues.totalCount
@@ -573,7 +657,7 @@ export function parseRepoResponse(raw: unknown, fetchedAt: number, openAlertCoun
   // Use the provided openAlertCount (may be from the response or null if no-alerts variant)
   const alertCount = openAlertCount ?? (repo.vulnerabilityAlerts?.totalCount ?? null)
 
-  return {rollupState, failingChecks, openPrCount, openIssueCount, openAlertCount: alertCount, stale: false, fetchedAt}
+  return {rollupState, failingChecks, failingCheckDetails, openPrCount, openIssueCount, openAlertCount: alertCount, stale: false, fetchedAt}
 }
 
 async function fetchRepoStatus(
@@ -586,7 +670,7 @@ async function fetchRepoStatus(
   // installation_id must be present — if null, we cannot authenticate the query
   if (entry.installation_id === null) {
     logger.warning('No installation_id for repo; marking stale', safeRepoLogIdentity(entry))
-    return {rollupState: 'unknown', failingChecks: 0, openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
   }
 
   const installationId = entry.installation_id
@@ -612,12 +696,12 @@ async function fetchRepoStatus(
         return parseRepoResponse(raw, fetchedAt, null)
       } catch (retryError) {
         logger.warning('Per-repo GraphQL fetch failed (no-alerts retry); marking stale', safeRepoErrorContext(entry, retryError))
-        return {rollupState: 'unknown', failingChecks: 0, openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+        return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
       }
     }
 
     logger.warning('Per-repo GraphQL fetch failed; marking stale', safeRepoErrorContext(entry, error))
-    return {rollupState: 'unknown', failingChecks: 0, openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
   }
 }
 
@@ -738,6 +822,7 @@ export function createAggregator(
     const absenceStatus = (): RepoCiStatus => ({
       rollupState: 'unknown',
       failingChecks: 0,
+      failingCheckDetails: [],
       openPrCount: 0,
       openIssueCount: 0,
       openAlertCount: null,
