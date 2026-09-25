@@ -15,6 +15,8 @@
 import type {ServerType} from '@hono/node-server'
 import type {GitHubOAuthClient} from './auth/oauth.ts'
 import type {OperatorClient, SessionDto} from './gateway/operator-client.ts'
+import {createGatewaySessionCache} from './gateway/session-cache.ts'
+import type {GatewaySessionCache} from './gateway/session-cache.ts'
 import type {AggregatorSnapshot} from './github/aggregator.ts'
 import type {MetadataReader} from './github/metadata.ts'
 import type {ListenerStore} from './listener/store.ts'
@@ -296,6 +298,13 @@ export interface DashboardAppConfig {
    * Only used when operatorClient is undefined. Ignored when operatorClient is injected.
    */
   gatewayFetchImpl?: ((url: string, init?: RequestInit) => Promise<Response>) | undefined
+  /**
+   * Injectable positive-result cache for gateway session validation (rm-207).
+   * If undefined, a per-app cache with the documented 15s TTL is constructed.
+   * Only positive verdicts are cached; failures are never cached (fail closed
+   * stays per-request). Tests inject a cache to pin TTL/expiry behavior.
+   */
+  gatewaySessionCache?: GatewaySessionCache | undefined
   /**
    * DEV-ONLY auto-login bypass. Skips OAuth and mints a real signed session for
    * the configured operatorLogin (Arctic branch only).
@@ -676,6 +685,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     // (non-production + loopback bind + flag enabled). Otherwise not in public list.
     (fixtureHarnessActive && path.startsWith(FIXTURE_OPERATOR_PREFIX))
 
+  // rm-207: per-app positive cache for gateway session validation (15s TTL,
+  // cookie-keyed; failures never cached). Injectable via opts for tests.
+  const gatewaySessionCache = opts?.gatewaySessionCache ?? createGatewaySessionCache()
+
   app.use('*', async (c: Context, next) => {
     const path = new URL(c.req.url).pathname
 
@@ -695,6 +708,17 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       if (resolvedGatewayOrigin === null) {
         logger.warning('gateway-auth: configured gateway origin is invalid or missing', {path})
         return c.redirect(GATEWAY_LOGIN_REDIRECT, 302)
+      }
+
+      // rm-207: consult the positive cache first. A still-fresh entry for this
+      // exact cookie header (age < TTL AND session.expiresAt in the future)
+      // vouches for the session without the upstream roundtrip. Failures are
+      // never cached, so this branch only ever short-circuits KNOWN-good
+      // sessions; the revocation bound is the documented 15s TTL.
+      const cachedSession = gatewaySessionCache.get(inboundCookie)
+      if (cachedSession !== undefined) {
+        c.set('gatewaySession', cachedSession)
+        return next()
       }
 
       // Build the OperatorClient: use injected client (tests) or build per-request (production).
@@ -746,7 +770,8 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
         return c.redirect(GATEWAY_LOGIN_REDIRECT, 302)
       }
 
-      // Valid gateway session: attach to context.
+      // Valid gateway session: attach to context and remember it for the TTL.
+      gatewaySessionCache.set(inboundCookie, result.data)
       c.set('gatewaySession', result.data)
       return next()
     } else {
