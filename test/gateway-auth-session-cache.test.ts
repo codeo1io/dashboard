@@ -1,5 +1,5 @@
 /**
- * rm-207: gateway session-validation cache focused tests.
+ * rm-222: gateway session-validation cache focused tests.
  *
  * Four acceptance cases from the roadmap item, plus cache-unit tests:
  *  1. cached-hit — a second request within the TTL performs NO upstream call
@@ -105,7 +105,7 @@ describe('createGatewaySessionCache (unit)', () => {
 // middleware integration — the four acceptance cases
 // ---------------------------------------------------------------------------
 
-describe('rm-207 gateway session-validation cache (middleware)', () => {
+describe('rm-222 gateway session-validation cache (middleware)', () => {
   it('case 1: second request within the TTL performs no upstream call', async () => {
     const {client, getCurrentSessionSpy} = makeFakeOperatorClient(async () => ok(validSession()))
     const app = await buildApp(client)

@@ -96,7 +96,7 @@ export async function fetchListenerMessages(opts: {
       return { ok: false, reason: 'network' }
     }
 
-    // rm-209b: a followed redirect means the server bounced the request to the
+    // rm-224b: a followed redirect means the server bounced the request to the
     // login surface — the SPA session expired. Report it distinctly instead of
     // falling through to a misleading 'network' error from the HTML json parse.
     if (res.redirected) {

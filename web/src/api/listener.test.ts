@@ -29,7 +29,7 @@ describe('listener API', () => {
     })
 
     it("returns 'timeout' when the caller's abort signal fires (branch armed by the view's FETCH_TIMEOUT_MS)", async () => {
-      // rm-209c regression: the AbortSignal was previously constructed but
+      // rm-224c regression: the AbortSignal was previously constructed but
       // never aborted, making this branch dead code.
       vi.mocked(fetch).mockImplementationOnce((_input: RequestInfo | URL, init?: RequestInit) => {
         const signal = init?.signal ?? undefined

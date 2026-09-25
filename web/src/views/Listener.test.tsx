@@ -205,7 +205,7 @@ describe('ListenerChannel', () => {
     expect(listenerApi.fetchListenerMessages).toHaveBeenCalled() // at least once
   })
 
-  it('rm-209c: a hung list fetch holds the poll guard — overlapping triggers do not stack requests', async () => {
+  it('rm-224c: a hung list fetch holds the poll guard — overlapping triggers do not stack requests', async () => {
     // The initial load never resolves. Focus-triggered reloads must be dropped
     // while the in-flight guard is held — without it every focus event stacks
     // another fetch. The FETCH_TIMEOUT_MS wiring keeps this hold bounded: a

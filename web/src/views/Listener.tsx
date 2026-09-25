@@ -15,7 +15,7 @@ type ViewState =
 
 const POLL_INTERVAL_MS = 30000
 
-// rm-209c: cap a single list fetch so a wedged request cannot hold the poll
+// rm-224c: cap a single list fetch so a wedged request cannot hold the poll
 // guard open forever. This is what actually arms the AbortSignal that was
 // previously constructed but never aborted (dead 'timeout' branch).
 const FETCH_TIMEOUT_MS = 10000

@@ -42,7 +42,7 @@ export default function App() {
     }
   }, [])
 
-  // rm-209a: in-flight guard — interval ticks and focus events arriving while a
+  // rm-224a: in-flight guard — interval ticks and focus events arriving while a
   // poll is still pending are dropped instead of stacking overlapping requests.
   const pollInFlight = useRef(false)
 

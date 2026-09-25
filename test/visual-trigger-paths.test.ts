@@ -3,7 +3,7 @@ import {resolve} from 'node:path'
 import process from 'node:process'
 import {describe, expect, it} from 'vitest'
 
-// rm-208 (cycle:1 batch B3): visual.yaml's pull_request.paths filter covered
+// rm-223 (cycle:1 batch B3): visual.yaml's pull_request.paths filter covered
 // only web/src/**, tests/visual/**, playwright.config.ts and the workflow
 // itself — but a visual regression can arrive through four other render-input
 // surfaces that never touch web/src:
@@ -41,7 +41,7 @@ function parseVisualYamlPaths(yamlText: string): string[] {
 }
 
 // Every surface that feeds the rendered bundle the screenshots capture. The
-// four rm-208 additions are load-bearing: each has shipped a render change
+// four rm-223 additions are load-bearing: each has shipped a render change
 // without touching web/src in this repo's history (vite pin drift, shell
 // edits) or can (plugin selection, dependency bumps).
 const REQUIRED_PATHS = [
@@ -55,7 +55,7 @@ const REQUIRED_PATHS = [
   '.github/workflows/visual.yaml',
 ] as const
 
-describe('Visual-trigger completeness (rm-208)', () => {
+describe('Visual-trigger completeness (rm-223)', () => {
   const visualYamlPath = resolve(repoRoot, '.github/workflows/visual.yaml')
   const yamlText = readFileSync(visualYamlPath, 'utf8')
   const paths = parseVisualYamlPaths(yamlText)
@@ -82,7 +82,7 @@ describe('Visual-trigger completeness (rm-208)', () => {
   })
 
   it('negative proof: the completeness check actually fails on a regression', () => {
-    // Simulate the pre-rm-208 state (the four render-input entries removed).
+    // Simulate the pre-rm-223 state (the four render-input entries removed).
     const regressed = paths.filter(
       p => !['web/index.html', 'web/vite.config.ts', 'package.json', 'pnpm-lock.yaml'].includes(p),
     )

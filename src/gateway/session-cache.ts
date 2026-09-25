@@ -1,5 +1,5 @@
 /**
- * rm-207: short-TTL positive cache for gateway session validation.
+ * rm-222: short-TTL positive cache for gateway session validation.
  *
  * Decision record (revocation bound, pre-authorized by the roadmap item's
  * acceptance): the gateway auth branch previously paid a synchronous upstream

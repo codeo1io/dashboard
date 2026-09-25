@@ -18,7 +18,7 @@ jobs:
       - name: Dependency Review
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
-          # rm-209e rationale: 'high' blocks vulnerabilities with direct exploit
+          # rm-224e rationale: 'high' blocks vulnerabilities with direct exploit
           # impact (CVSS high/critical) while not failing the gate on unexploitable
           # low/moderate advisories in the lockfile's transitive surface.
           # 'critical'-only would silently pass high-severity drops; 'moderate'

@@ -363,7 +363,7 @@ describe('App — fixture detection race: runtime must not mount before detectio
     createSpy.mockRestore()
   })
 
-  // ── rm-209a: unread-count poll in-flight guard ───────────────────────
+  // ── rm-224a: unread-count poll in-flight guard ───────────────────────
 
   it('drops focus-triggered polls while one is already in flight', async () => {
     // The mount poll never resolves while we fire focus events — without the
