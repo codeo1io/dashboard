@@ -1,9 +1,14 @@
 /**
  * Typed Gateway operator API client contract.
  *
- * @contract-churn-prone — several gateway operator routes have not landed yet.
- * This module defines the mocked boundary contract only; no live /operator/* calls
- * are made until the gateway operator surface is ready and verified.
+ * @contract-churn-prone — the gateway operator surface is partially live.
+ * Server-side live use (src/server.ts gateway-auth middleware) is session
+ * validation via getCurrentSession only. launchRun/getRunSnapshot/connectRunStream
+ * still have zero non-test callers here — the browser runtime modules
+ * (public/operator-launch.js, web/src/operator/runtime.ts) carry their own
+ * clients against the same gateway routes — but they are retained as
+ * contract surfaces and hardened by the rm-193 operator-contract parsers,
+ * so this module is the boundary contract of record, not mocked-only.
  *
  * Security invariants:
  * - All paths must be relative (/operator/*); absolute URLs are rejected.
