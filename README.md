@@ -50,7 +50,7 @@ client changes). The test suite rebuilds the client automatically via `pretest`.
 ### Endpoints
 
 - `GET /` — operator PWA shell (requires a valid operator session).
-- `GET /api/healthz` — public health check; returns `{ ok, lastFetch, rateLimit }`.
+- `GET /api/healthz` — public liveness check; `lastFetch` and `rateLimit` are reserved placeholder fields served as `null` (rm-107: healthz is liveness-only by design — the data-bearing shape lives at `/api/status`).
 - `GET /api/monitoring` — minimized monitoring snapshot for the client (authenticated).
 - `GET /api/status` — full internal snapshot (authenticated).
 - `GET /api/listener/messages` — operator listener-channel digest feed (authenticated; mounted only when the ingest store is configured).
@@ -83,6 +83,47 @@ Redaction is enforced from `metadata/repos.yaml` on the `codeo1io/.github` `data
 denylisted repos are excluded before any per-repo query, and the app fails closed if that read
 fails. The App private key and cookie key are never committed (`*.pem`/`*.key` are gitignored
 in-repo).
+
+### Environment variables (rm-214)
+
+Every `DASHBOARD_*` / `RATE_LIMIT_*` environment variable actually read from `src/` is listed
+here; this table is machine-checked by `test/env-docs-guard.test.ts`, which fails when a variable
+is read in `src/` but missing from this table — or documented here but no longer read.
+
+Every variable read through the secret readers additionally supports file indirection via a
+`<VAR>_FILE` path (file wins over the environment; the file is read once at boot; a set-but-
+missing `_FILE` path silently falls back to the environment variable).
+
+| Variable | Read at | Default | Purpose |
+|---|---|---|---|
+| `DASHBOARD_COOKIE_KEY` | `src/session.ts` | — (falls through to file) | Cookie-signing key: hex or padded base64 decoding to ≥32 bytes, else load throws (fail-closed). |
+| `DASHBOARD_COOKIE_KEY_FILE` | `src/session.ts` | `/data/cookie.key` | File fallback for the cookie key (text-encoded or raw ≥32 bytes). |
+| `DASHBOARD_DEV_AUTOLOGIN` | `src/server.ts` | unset (off) | Dev/test-only auth bypass; refused unless `NODE_ENV` is `development`/`test` and the bind host is loopback. |
+| `DASHBOARD_FIXTURE_HARNESS_ENABLED` | `src/gateway/operator-fixture-config.ts` | off | Operator fixture-harness flag; only the exact value `true` enables (fail-closed). |
+| `DASHBOARD_GATEWAY_OPERATOR_ORIGIN` | `src/gateway/operator-config.ts` | `https://dashboard.fro.bot` | Pinned trusted origin for the `/operator/*` proxy target — never derived from the request Host header. Must be an absolute http(s) origin with no path/query/fragment. |
+| `DASHBOARD_GATEWAY_OPERATOR_SESSION_ENABLED` | `src/gateway/operator-config.ts` | off | Gateway-backed operator session forwarding; only the exact value `true` enables (fail-closed). |
+| `DASHBOARD_GITHUB_APP_ID` | `src/server.ts` | unset | GitHub App id; together with the key below — when either is unset the GitHub data layer is disabled and an empty snapshot is served with a warning. |
+| `DASHBOARD_GITHUB_APP_KEY` | `src/server.ts` | unset | GitHub App private key (multiline PEM). |
+| `DASHBOARD_HOST` | `src/server.ts` | `0.0.0.0` | Bind host; must be loopback for `DASHBOARD_DEV_AUTOLOGIN` to be honored. |
+| `DASHBOARD_LISTENER_DB` | `src/listener/config.ts` | `/data/listener/messages.db` | SQLite file path for the listener message store. |
+| `DASHBOARD_LISTENER_INGEST_KEY` | `src/listener/config.ts` | unset (route unmounted) | HMAC key for `POST /api/listener/ingest`; when unset the ingest route is not mounted at all (fail-closed). |
+| `DASHBOARD_OAUTH_CLIENT_ID` | `src/server.ts` | `''` | GitHub OAuth app client id. |
+| `DASHBOARD_OAUTH_CLIENT_SECRET` | `src/server.ts` | `''` | GitHub OAuth app client secret. |
+| `DASHBOARD_OAUTH_REDIRECT_URI` | `src/server.ts` | `http://localhost:3000/auth/callback` | OAuth callback URL. |
+| `DASHBOARD_OPERATOR_LOGIN` | `src/server.ts` | unset | The single-operator allowlist login (exact, case-sensitive match); a whitespace-only value throws at construction (fail-closed). |
+| `DASHBOARD_OPERATOR_PUSH_ENABLED` | `src/gateway/operator-config.ts` | off | Push-notification delivery flag; only the exact value `true` enables (fail-closed). |
+| `DASHBOARD_OPERATOR_UI_ENABLED` | `src/gateway/operator-config.ts` | off | Operator UI mount flag; only the exact value `true` enables (fail-closed). |
+| `DASHBOARD_PORT` | `src/server.ts` | `3000` | Bind port; anything but an integer in 1–65535 throws at startup (fail loud). |
+| `DASHBOARD_WEB_DIST` | `src/server.ts` | `./web/dist` | Client bundle root served at `/`. |
+| `RATE_LIMIT_MAX_PUBLIC` | `src/server.ts` | `60` | Requests per 60s window per client, pre-auth public class (SPA root, `/auth/*`, `/api/healthz`). |
+| `RATE_LIMIT_MAX_OPERATOR` | `src/server.ts` | `60` | Same budget, operator class (remaining `/api/*` and `/operator/*`). |
+| `RATE_LIMIT_MAX_INGEST` | `src/server.ts` | `60` | Same budget, ingest class (`/api/listener/ingest`; HMAC-gated by the route itself). |
+| `RATE_LIMIT_TRUSTED_PROXY` | `src/server.ts` | off | `1`/`true`/`yes` (case-insensitive) opts in to X-Forwarded-For-based client resolution for rate-limit keying behind a trusted reverse proxy. Off (the default) keys budgets on the remote address, so an untrusted direct client cannot spoof its way to multiple budgets. |
+
+The rate-limit window itself is fixed at 60 seconds in code — there is no environment knob for
+it. Identifiers you may see in `src/server.ts` such as `RATE_LIMIT_MAX`, `RATE_LIMIT_CLASSES`,
+`RATE_LIMIT_MAX_PER_CLASS`, and `RATE_LIMIT_WINDOW_MS` are code constants (the per-class defaults
+the three `RATE_LIMIT_MAX_*` variables override), not environment variables.
 
 ## Development
 
