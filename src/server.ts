@@ -396,7 +396,9 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   const fetchUserLogin = opts?.fetchUserLogin ?? fetchGitHubUserLogin
 
   // Resolve snapshot provider — default empty; production wires the real aggregator.
-  const EMPTY_SNAPSHOT = {repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null} as const
+  // rm-197: the no-provider default carries the stale banner — an empty payload
+  // must never read as "authoritatively verified empty".
+  const EMPTY_SNAPSHOT = {repos: [], staleBanner: true, driftCount: 0, enumerationIncomplete: null, refreshedAt: null} as const
   const getSnapshot = opts?.getSnapshot ?? (() => EMPTY_SNAPSHOT)
 
   // Resolve operator UI flag — default OFF (fail-closed).
