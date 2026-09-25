@@ -37,9 +37,12 @@ export function ListenerChannel() {
       return
     }
 
-    if (result.data.messages.length === 0) {
+    if (result.data.messages.length === 0 && result.data.droppedCount === 0 && result.data.prunedCount === 0) {
       setViewState({ state: 'empty' })
     } else {
+      // Still 'ready' when the parsed list is empty but drift/retention
+      // notices exist (rm-243/rm-244): those signals must render, not be
+      // swallowed by the Inbox Zero state.
       setViewState({ state: 'ready', data: result.data })
     }
   }, [])
@@ -139,6 +142,24 @@ export function ListenerChannel() {
 
       {viewState.state === 'ready' && (
         <div data-testid="listener-list" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+          {(viewState.data.droppedCount > 0 || viewState.data.prunedCount > 0) && (
+            <div data-testid="listener-integrity-notices" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+              {viewState.data.droppedCount > 0 && (
+                <div data-testid="listener-drift-notice" className="operator-warning-panel" role="status">
+                  {viewState.data.droppedCount}{' '}
+                  {viewState.data.droppedCount === 1 ? 'message was' : 'messages were'} skipped — incompatible
+                  format (server/client contract drift). The unread count can differ from this list.
+                </div>
+              )}
+              {viewState.data.prunedCount > 0 && (
+                <div data-testid="listener-pruned-notice" className="operator-warning-panel" role="status">
+                  {viewState.data.prunedCount} older{' '}
+                  {viewState.data.prunedCount === 1 ? 'message' : 'messages'} removed by retention (500
+                  messages / 30 days). This list is a truncated view of channel history.
+                </div>
+              )}
+            </div>
+          )}
           {viewState.data.messages.map(msg => (
             <MessageCard
               key={msg.id}

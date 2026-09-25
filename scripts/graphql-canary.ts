@@ -77,6 +77,16 @@ async function runTemplate(token: string, entry: {readonly name: string; readonl
 
   // The shipped templates deliberately select no identity field (each is the
   // exact string the aggregator sends), so report the local target coords.
+  // rm-192: every template now also selects the failing-check drill-down
+  // (workflowRun{displayTitle,runAttempt} + checkRuns nodes{name,detailsUrl}).
+  // Report how many suites answered those selections so the weekly log gives
+  // explicit evidence the new sub-selection round-trips against the live API
+  // (absent selections are legitimate — suites may be empty on a green target).
+  const rollupTarget = (body as {data?: {repository?: {defaultBranchRef?: {target?: {checkSuites?: {nodes?: unknown[] | null} | null} | null} | null} | null}} | null)?.data?.repository?.defaultBranchRef?.target
+  const suites = (rollupTarget?.checkSuites?.nodes ?? []) as {workflowRun?: unknown; checkRuns?: {nodes?: unknown[] | null} | null}[]
+  const suitesWithWorkflowRun = suites.filter(suite => suite.workflowRun !== null && suite.workflowRun !== undefined).length
+  const suitesWithCheckRunNodes = suites.filter(suite => (suite.checkRuns?.nodes ?? []).length > 0).length
+  console.log(`canary: drill-down coverage — ${suites.length} check suite(s), ${suitesWithWorkflowRun} with workflowRun, ${suitesWithCheckRunNodes} with check-run nodes (rm-192, ${entry.name})`)
   console.log(`canary: OK — ${owner}/${name} answered the exact shipped ${entry.name}`)
 }
 

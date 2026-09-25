@@ -78,7 +78,10 @@ function makeEnumerateResult(
 function makeGraphqlResponse(overrides: {
   rollupState?: string
   failingChecks?: number
-  checkSuites?: {checkRuns: {totalCount: number}}[]
+  checkSuites?: {
+    workflowRun?: {displayTitle: string | null; runAttempt: number} | null
+    checkRuns: {totalCount: number; nodes?: {name: string | null; detailsUrl: string | null}[] | null}
+  }[]
   openPrCount?: number
   openIssueCount?: number
   openAlertCount?: number | null
@@ -176,6 +179,51 @@ describe('aggregator — happy path: CI state mapping', () => {
     expect(snap.repos[0]?.status.rollupState).toBe('red')
   })
 
+  it('rm-192: maps FAILURE rollup to red with drill-down details (workflow title, attempt, check name, details URL)', async () => {
+    const repo = makeRepo({node_id: 'NODE_B2', owner: 'org', name: 'repo-b2'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_B2', owner: 'org', name: 'repo-b2'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({
+        rollupState: 'FAILURE',
+        failingChecks: 2,
+        checkSuites: [{
+          workflowRun: {displayTitle: 'CI · main', runAttempt: 3},
+          checkRuns: {
+            totalCount: 2,
+            nodes: [
+              {name: 'build', detailsUrl: 'https://github.com/org/repo-b2/actions/runs/1'},
+              {name: 'test', detailsUrl: 'https://github.com/org/repo-b2/actions/runs/2'},
+            ],
+          },
+        }],
+      })),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const status = agg.getSnapshot().repos[0]?.status
+
+    expect(status?.rollupState).toBe('red')
+    expect(status?.failingChecks).toBe(2)
+    expect(status?.failingCheckDetails).toEqual([
+      {
+        workflowTitle: 'CI · main',
+        runAttempt: 3,
+        checkName: 'build',
+        detailsUrl: 'https://github.com/org/repo-b2/actions/runs/1',
+      },
+      {
+        workflowTitle: 'CI · main',
+        runAttempt: 3,
+        checkName: 'test',
+        detailsUrl: 'https://github.com/org/repo-b2/actions/runs/2',
+      },
+    ])
+  })
+
   it('maps PENDING rollup to pending', async () => {
     const repo = makeRepo({node_id: 'NODE_C', owner: 'org', name: 'repo-c'})
     const deps = makeDeps({
@@ -255,6 +303,127 @@ describe('aggregator — happy path: CI state mapping', () => {
 // ---------------------------------------------------------------------------
 // Happy path: attention-first sorting
 // ---------------------------------------------------------------------------
+
+describe('aggregator — rm-192 failingChecks drill-down extraction', () => {
+  it('legacy suites without workflowRun extract details with null workflow fields', async () => {
+    const repo = makeRepo({node_id: 'NODE_LEGACY', owner: 'org', name: 'repo-legacy'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_LEGACY', owner: 'org', name: 'repo-legacy'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({
+        rollupState: 'FAILURE',
+        failingChecks: 1,
+        checkSuites: [{
+          // legacy check suite: no workflowRun object at all (e.g. commits
+          // whose checks predate workflow runs)
+          checkRuns: {
+            totalCount: 1,
+            nodes: [{name: 'legacy-status', detailsUrl: 'https://github.com/org/repo-legacy/runs/9'}],
+          },
+        }],
+      })),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const status = agg.getSnapshot().repos[0]?.status
+
+    expect(status?.failingChecks).toBe(1)
+    expect(status?.failingCheckDetails).toEqual([
+      {
+        workflowTitle: null,
+        runAttempt: null,
+        checkName: 'legacy-status',
+        detailsUrl: 'https://github.com/org/repo-legacy/runs/9',
+      },
+    ])
+  })
+
+  it('count-only responses (no checkRuns.nodes) keep the count with an empty detail list', async () => {
+    const repo = makeRepo({node_id: 'NODE_COUNT', owner: 'org', name: 'repo-count'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_COUNT', owner: 'org', name: 'repo-count'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({
+        rollupState: 'FAILURE',
+        failingChecks: 3,
+      })),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const status = agg.getSnapshot().repos[0]?.status
+
+    expect(status?.failingChecks).toBe(3)
+    expect(status?.failingCheckDetails).toEqual([])
+  })
+
+  it('caps the drill-down list at 25 while failingChecks stays authoritative', async () => {
+    const repo = makeRepo({node_id: 'NODE_CAP', owner: 'org', name: 'repo-cap'})
+    const runs = Array.from({length: 30}, (_, i) => ({
+      name: `check-${i}`,
+      detailsUrl: `https://github.com/org/repo-cap/runs/${i}`,
+    }))
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_CAP', owner: 'org', name: 'repo-cap'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({
+        rollupState: 'FAILURE',
+        failingChecks: 30,
+        checkSuites: [{
+          workflowRun: {displayTitle: 'CI', runAttempt: 1},
+          checkRuns: {totalCount: 30, nodes: runs},
+        }],
+      })),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const status = agg.getSnapshot().repos[0]?.status
+
+    expect(status?.failingChecks).toBe(30)
+    expect(status?.failingCheckDetails).toHaveLength(25)
+    expect(status?.failingCheckDetails[0]).toMatchObject({checkName: 'check-0'})
+    expect(status?.failingCheckDetails[24]).toMatchObject({checkName: 'check-24'})
+  })
+
+  it('null checkRun name/detailsUrl are coerced, not dropped from the drill-down', async () => {
+    const repo = makeRepo({node_id: 'NODE_NULL', owner: 'org', name: 'repo-null'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_NULL', owner: 'org', name: 'repo-null'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({
+        rollupState: 'FAILURE',
+        failingChecks: 1,
+        checkSuites: [{
+          workflowRun: {displayTitle: null, runAttempt: 2},
+          checkRuns: {totalCount: 1, nodes: [{name: null, detailsUrl: null}]},
+        }],
+      })),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const status = agg.getSnapshot().repos[0]?.status
+
+    expect(status?.failingCheckDetails).toEqual([
+      {
+        workflowTitle: null,
+        runAttempt: 2,
+        checkName: '(unnamed check)',
+        detailsUrl: '',
+      },
+    ])
+  })
+})
 
 describe('aggregator — happy path: attention-first sorting', () => {
   it('repos with failing checks sort before healthy repos', async () => {
