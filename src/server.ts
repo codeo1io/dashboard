@@ -15,6 +15,7 @@
 import type {ServerType} from '@hono/node-server'
 import type {GitHubOAuthClient} from './auth/oauth.ts'
 import type {OperatorClient, SessionDto} from './gateway/operator-client.ts'
+import type {GatewaySessionCache} from './gateway/session-cache.ts'
 import type {AggregatorSnapshot} from './github/aggregator.ts'
 import type {MetadataReader} from './github/metadata.ts'
 import type {ListenerStore} from './listener/store.ts'
@@ -42,6 +43,7 @@ import {
 import {readFixtureHarnessConfig} from './gateway/operator-fixture-config.ts'
 import {FIXTURE_OPERATOR_PREFIX} from './gateway/operator-fixture-routes.ts'
 import {createOperatorServerFetch} from './gateway/operator-server-fetch.ts'
+import {createGatewaySessionCache} from './gateway/session-cache.ts'
 import {COLD_START_SNAPSHOT, createAggregator} from './github/aggregator.ts'
 import {createDashboardAppClient, GITHUB_REQUEST_TIMEOUT_MS} from './github/app-client.ts'
 import {buildInstallationsClient, enumerateRepos, mintReadOnlyToken} from './github/installations.ts'
@@ -319,6 +321,13 @@ export interface DashboardAppConfig {
    * Only used when operatorClient is undefined. Ignored when operatorClient is injected.
    */
   gatewayFetchImpl?: ((url: string, init?: RequestInit) => Promise<Response>) | undefined
+  /**
+   * Injectable positive-result cache for gateway session validation (rm-222).
+   * If undefined, a per-app cache with the documented 15s TTL is constructed.
+   * Only positive verdicts are cached; failures are never cached (fail closed
+   * stays per-request). Tests inject a cache to pin TTL/expiry behavior.
+   */
+  gatewaySessionCache?: GatewaySessionCache | undefined
   /**
    * DEV-ONLY auto-login bypass. Skips OAuth and mints a real signed session for
    * the configured operatorLogin (Arctic branch only).
@@ -699,6 +708,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     // (non-production + loopback bind + flag enabled). Otherwise not in public list.
     (fixtureHarnessActive && path.startsWith(FIXTURE_OPERATOR_PREFIX))
 
+  // rm-222: per-app positive cache for gateway session validation (15s TTL,
+  // cookie-keyed; failures never cached). Injectable via opts for tests.
+  const gatewaySessionCache = opts?.gatewaySessionCache ?? createGatewaySessionCache()
+
   app.use('*', async (c: Context, next) => {
     const path = new URL(c.req.url).pathname
 
@@ -718,6 +731,28 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       if (resolvedGatewayOrigin === null) {
         logger.warning('gateway-auth: configured gateway origin is invalid or missing', {path})
         return c.redirect(GATEWAY_LOGIN_REDIRECT, 302)
+      }
+
+      // rm-222: consult the positive cache first. A still-fresh entry for this
+      // exact cookie header (age < TTL AND session.expiresAt in the future)
+      // vouches for the session without the upstream roundtrip. Failures are
+      // never cached, so this branch only ever short-circuits KNOWN-good
+      // sessions; the revocation bound is the documented 15s TTL.
+      const cachedSession = gatewaySessionCache.get(inboundCookie)
+      if (cachedSession !== undefined) {
+        // rm-165: the allowlist is a local check (env read + Set lookup, no
+        // upstream roundtrip), so it still runs on cache hits — an operator
+        // dropped from the allowlist is denied immediately, not after the TTL.
+        const cachedAllowlist = parseGatewayAllowedOperatorLogins()
+        if (cachedAllowlist !== null && !cachedAllowlist.has(cachedSession.login)) {
+          logger.warning('gateway-auth: session login is not in the gateway operator allowlist; denying', {
+            path,
+            login: cachedSession.login,
+          })
+          return c.text('Forbidden', 403)
+        }
+        c.set('gatewaySession', cachedSession)
+        return next()
       }
 
       // Build the OperatorClient: use injected client (tests) or build per-request (production).
@@ -781,7 +816,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
         return c.text('Forbidden', 403)
       }
 
-      // Valid gateway session: attach to context.
+      // Valid gateway session: attach to context and remember it for the TTL.
+      // Set runs after ALL defenses (identity, expiry, allowlist) so only
+      // fully approved sessions are ever cached.
+      gatewaySessionCache.set(inboundCookie, result.data)
       c.set('gatewaySession', result.data)
       return next()
     } else {

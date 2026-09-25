@@ -26,7 +26,7 @@ export interface ListenerMessagesResponse {
 
 export type FetchListenerResult =
   | { ok: true; data: ListenerMessagesResponse }
-  | { ok: false; reason: 'timeout' | 'network' | 'contract-drift' }
+  | { ok: false; reason: 'timeout' | 'network' | 'session-expired' | 'contract-drift' }
 
 function isPlainObject(val: unknown): val is Record<string, unknown> {
   return typeof val === 'object' && val !== null && !Array.isArray(val)
@@ -94,6 +94,13 @@ export async function fetchListenerMessages(opts: {
 
     if (!res.ok) {
       return { ok: false, reason: 'network' }
+    }
+
+    // rm-224b: a followed redirect means the server bounced the request to the
+    // login surface — the SPA session expired. Report it distinctly instead of
+    // falling through to a misleading 'network' error from the HTML json parse.
+    if (res.redirected) {
+      return { ok: false, reason: 'session-expired' }
     }
 
     const data = await res.json()
