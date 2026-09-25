@@ -16,19 +16,24 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  # Mint-family match (AGENTS.md invariant 1): the aggregator's installation
-  # tokens carry pull_requests/checks/issues/contents/metadata read, and the
-  # query reads statusCheckRollup (checks family) and checkWorkflowRuns
-  # (actions family) — so the canary must hold the same read-only scope
-  # profile, not a narrower one, to verify the production contract. Workflow
-  # scope names are hyphenated and `metadata` is not a GITHUB_TOKEN scope
-  # (it is an installation-token mint-family permission), so the closest
-  # schema-valid set is used; all read-only.
+  # rm-228 (cycle-18, run 743f2e47) — truthful scope parity. The query
+  # reads: statusCheckRollup/checkSuites/checkRuns (checks family),
+  # pullRequests (pull-requests), issues, vulnerabilityAlerts (security-events
+  # family, the optional selection), and the repo/branch itself (contents).
+  # The previous comment claimed a `checkWorkflowRuns` (actions) read that no
+  # shipped template performs, so actions:read padded the set for a read that
+  # never happens — dropped. `security-events: read` is added to mirror the
+  # optional mint family; if the hosted token still cannot read Dependabot
+  # alerts (not provable from inside the workflow), the script degrades the
+  # alerts-carrying template to a SCOPE-LIMITED notice exactly like
+  # production's rm-170 fallback instead of red. `metadata` is not a
+  # GITHUB_TOKEN scope (installation-token mint family). All read-only,
+  # matching the aggregator's read-only-by-construction invariant.
   contents: read
   checks: read
-  actions: read
   pull-requests: read
   issues: read
+  security-events: read
 
 jobs:
   canary:
