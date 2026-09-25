@@ -169,8 +169,21 @@ jobs:
           } >> "$SUMMARY"
 
           FORK_PIN="$(node -p "require('./package.json').packageManager")"
-          UPSTREAM_PIN="$(curl -fsSL https://raw.githubusercontent.com/fro-bot/dashboard/main/package.json \
-            | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).packageManager" 2>/dev/null || true)"
+          # rm-209 (cycle-17, 2026-09-25): fetch inside node instead of piping
+          # curl into node — CodeQL flags the shell download-then-run shape
+          # (PinnedDependencies alert at this line). The bytes stay data-only:
+          # parsed as JSON, never executed.
+          UPSTREAM_PIN="$(node -e '
+            fetch("https://raw.githubusercontent.com/fro-bot/dashboard/main/package.json")
+              .then((res) => (res.ok ? res.json() : Promise.reject(new Error("HTTP " + res.status))))
+              .then((pkg) => {
+                if (typeof pkg.packageManager !== "string") {
+                  throw new Error("packageManager missing");
+                }
+                process.stdout.write(pkg.packageManager);
+              })
+              .catch(() => process.exit(1));
+          ' 2>/dev/null || true)"
 
           if [ -z "$UPSTREAM_PIN" ]; then
             echo '::warning::could not read upstream packageManager (network or layout change)'
