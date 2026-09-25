@@ -46,3 +46,10 @@ web/dist-fixture
 my-profile/
 test-results/
 playwright-report/
+# pnpm repo-local store fallback: created whenever installs run inside a
+# container against this bind-mounted worktree (e.g. the visual-baseline regen
+# procedure in tests/visual/dashboard.spec.ts). Cache only — never commit.
+.pnpm-store/
+# Conductor engine state (progress breadcrumbs) — run artifacts only, never
+# tracked (see test/fork-exclusion-guard.test.ts: both entries are guarded).
+.conductor/
