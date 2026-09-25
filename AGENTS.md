@@ -92,3 +92,28 @@ Read-only dependency source repositories are available under
   gateway's operator OAuth return path contract, GitHub App client, secret
   readers, Hono build/serve split, and runtime logger/Result primitives that
   this app mirrors.
+
+## Landing-pipeline traps
+
+- A landing merge can itself re-track `.conductor/` engine state on main (landing
+  commits may carry breadcrumbs) — after EVERY merge, `git ls-files .conductor`
+  must end empty; staged untracks do NOT ride candidate-delta merges (the
+  validation clone's `:(exclude).conductor/**` pathspec drops them), so the cure
+  is a main-direct `git rm -r --cached .conductor` whose deletions ride the
+  landing merge itself. `.conductor/` is also gitignored in-repo (rm-175,
+  belt-and-braces) so fresh breadcrumbs cannot be `git add`-ed — but the
+  post-merge emptiness check stands, because a candidate lineage's landing
+  commit can still carry already-tracked breadcrumbs. Root mechanism + cure:
+  `docs/solutions/workflow-issues/validation-clone-exclude-pathspec-drops-staged-breadcrumb-deletion-2026-09-24.md`.
+- Branch protection on `main` is a shell today: the protection object exists
+  but carries no required checks and does not enforce for admins (re-probed
+  2026-09-25; rm-116 tracks filling it with the Main job conclusions + CodeQL,
+  strict, admin-enforced). Nothing structurally blocks red-check merges until
+  rm-116 lands — verify the live object before relying on any protection
+  claim. Once checks are in force, if a hotfix must land while a required
+  check cannot run, the override path is: temporarily
+  `enforce_admins.enabled=false` via `gh api -X PUT
+  /repos/codeo1io/dashboard/branches/main/protection` with the full protection
+  body preserved, land, then re-enable enforcement in the same session — never
+  delete the protection object (recreating it drops the check list; a
+  body-less recreate produces exactly the current all-empty shell state).
