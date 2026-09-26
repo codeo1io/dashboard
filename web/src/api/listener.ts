@@ -133,11 +133,38 @@ export async function fetchListenerMessages(opts: {
   }
 }
 
+/** Header carrying the listener-ack CSRF token (mirrors src/routes/listener.ts). */
+const ACK_CSRF_HEADER = 'x-csrf-token'
+
+/**
+ * Fetches the session-scoped ack CSRF token from GET /api/listener/csrf.
+ * Returns null on any failure so callers fail closed (no token → no POST).
+ */
+async function fetchAckCsrfToken(): Promise<string | null> {
+  try {
+    const res = await fetch('/api/listener/csrf', {
+      method: 'GET',
+      credentials: 'same-origin',
+    })
+    if (!res.ok) return null
+    const data: unknown = await res.json()
+    if (!isPlainObject(data) || typeof data.csrfToken !== 'string' || data.csrfToken.length === 0) {
+      return null
+    }
+    return data.csrfToken
+  } catch {
+    return null
+  }
+}
+
 export async function ackListenerMessage(id: string): Promise<boolean> {
+  const csrfToken = await fetchAckCsrfToken()
+  if (csrfToken === null) return false
   try {
     const res = await fetch(`/api/listener/messages/${encodeURIComponent(id)}/ack`, {
       method: 'POST',
       credentials: 'same-origin',
+      headers: { [ACK_CSRF_HEADER]: csrfToken },
     })
     return res.status === 202
   } catch {
@@ -146,10 +173,13 @@ export async function ackListenerMessage(id: string): Promise<boolean> {
 }
 
 export async function ackAllListenerMessages(): Promise<boolean> {
+  const csrfToken = await fetchAckCsrfToken()
+  if (csrfToken === null) return false
   try {
     const res = await fetch('/api/listener/ack-all', {
       method: 'POST',
       credentials: 'same-origin',
+      headers: { [ACK_CSRF_HEADER]: csrfToken },
     })
     return res.status === 202
   } catch {
