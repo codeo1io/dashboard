@@ -48,7 +48,9 @@ view of Fro Bot's cross-repo footprint.
 - `docs/runbooks/gateway-access.md` — how to reach the gateway behind `/operator/*` and read its
   logs. The operator surface is proxied to `fro-bot/agent`, so operator auth, session, and push
   evidence lives there and no test in this repo can reach it. Requires a local `marcusrbrown/infra`
-  checkout.
+  checkout. Since gateway v0.114.1, operator surfaces behind a reverse proxy additionally require
+  `GATEWAY_OPERATOR_TRUSTED_PROXIES` on the gateway deployment (sign-in/rate limits are keyed on
+  the resolved client address) — see the runbook's Trusted proxies section.
 - `docs/solutions/` — documented solutions to past problems, organized by category
   with YAML frontmatter (`module`, `tags`, `problem_type`). Relevant when
   implementing or debugging in documented areas.

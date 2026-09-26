@@ -2956,3 +2956,53 @@ describe('aggregator — refresh watchdog (rm-156)', () => {
     expect(snap.refreshDegraded).toBe(true)
   })
 })
+
+// ---------------------------------------------------------------------------
+// rm-151 — int64-safe denylist secondary-guard membership
+// (landed at the cycle-8 integrate: main's landed rm-161 already pins the
+// partial-protection warning branches this batch also carried; this block is
+// the net-new guard — bigint-widened database_id must still exclude)
+// ---------------------------------------------------------------------------
+
+describe('rm-151 — denylist secondary guard accepts bigint-widened database ids', () => {
+  it('bigint-widened database_id still matches the denylist (int64 guard)', async () => {
+    // When the GitHub contract widens int64 ids to bigint (upstream fro-bot/agent
+    // hit this class in #1513), Set<number>.has(bigint) is ALWAYS false — the
+    // secondary guard would silently stop excluding. The membership call must
+    // normalize.
+    const SHARED_DATABASE_ID = 186915400
+
+    const privateRepo = makeRepo({
+      node_id: 'NODE_BIGINT_PRIVATE', // deliberately NOT in the node denylist
+      database_id: BigInt(SHARED_DATABASE_ID) as unknown as number, // widened form
+      owner: 'private-org',
+      name: 'bigint-secret',
+    })
+    const publicRepo = makeRepo({node_id: 'NODE_SAFE_BIGINT', database_id: 9999, owner: 'org', name: 'safe-bigint'})
+
+    const graphqlQueryForInstallation: GraphqlQueryForInstallationFn = vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'}))
+
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([privateRepo, publicRepo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_SAFE_BIGINT', owner: 'org', name: 'safe-bigint'})],
+        redactedNodeIds: ['R_kgDOUnrelated'],
+        redactedDatabaseIds: [SHARED_DATABASE_ID],
+      }))),
+      graphqlQueryForInstallation,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+
+    // GraphQL was called exactly once — only for the public repo
+    expect(graphqlQueryForInstallation).toHaveBeenCalledTimes(1)
+    const call = (graphqlQueryForInstallation as ReturnType<typeof vi.fn>).mock.calls[0]
+    const vars = call?.[2] as {owner: string; name: string}
+    expect(vars.name).toBe('safe-bigint')
+
+    const serialized = JSON.stringify(agg.getSnapshot())
+    expect(serialized).not.toContain('bigint-secret')
+    expect(serialized).not.toContain('private-org')
+  })
+})

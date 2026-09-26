@@ -30,7 +30,7 @@ import type {MetadataError, MetadataReader, MetadataResult} from './metadata.ts'
 
 import {logger, sanitizeErrorMessage, type LogContext} from '../logger.ts'
 import {isErr, isOk} from '../result.ts'
-import {deriveDatabaseId} from './metadata.ts'
+import {deriveDatabaseId, redactedDatabaseIdIn} from './metadata.ts'
 
 // ---------------------------------------------------------------------------
 // Injectable GraphQL transport
@@ -588,8 +588,11 @@ function buildWorkingSet(
     //   (b) database_id matches redactedDatabaseIds (secondary — format-independent,
     //       closes the node_id format-mismatch gap; populated from derived databaseIds
     //       extracted from legacy base64 node_ids AND explicit database_id fields).
+    //       rm-151: the membership call normalizes — a bigint-widened
+    //       database_id from a future Octokit contract still matches
+    //       (SameValueZero would never match bigint against number).
     // A match on either key is sufficient to exclude the repo.
-    if (redactedNodeIds.has(repo.node_id) || redactedDatabaseIds.has(repo.database_id)) {
+    if (redactedNodeIds.has(repo.node_id) || redactedDatabaseIdIn(redactedDatabaseIds, repo.database_id)) {
       continue
     }
 

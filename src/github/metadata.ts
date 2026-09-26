@@ -85,6 +85,12 @@ export interface MetadataResult {
    * both node_id formats. Currently empty unless repos.yaml entries include a
    * `database_id`/`id` field. The aggregator checks BOTH sets — whichever
    * matches first excludes the repo.
+   *
+   * rm-151: membership MUST go through `redactedDatabaseIdIn` (below), never
+   * raw `Set.has` — if the GitHub contract ever widens int64 ids to bigint
+   * (the exact failure class the gateway project hit at v0.107.1,
+   * fro-bot/agent PR #1513), `Set<number>.has(bigint)` is ALWAYS false and
+   * the secondary guard would silently stop excluding.
    */
   readonly redactedDatabaseIds: ReadonlySet<number>
   /**
@@ -409,6 +415,24 @@ export async function readRepoMetadata(reader: MetadataReader): Promise<Result<M
     // rm-161: per-entry guard-coverage telemetry for the aggregator's warning.
     redactedEntriesMissingDatabaseId,
   })
+}
+
+/**
+ * rm-151: int64-safe denylist membership for `redactedDatabaseIds`.
+ *
+ * `Set<number>.has(bigint)` is ALWAYS false (SameValueZero never widens), so a
+ * bigint-widened database_id arriving from a future Octokit contract
+ * (fro-bot/agent PR #1513 class) would silently bypass the secondary guard.
+ * Normalize the candidate to a number before the membership check.
+ */
+export function redactedDatabaseIdIn(
+  denylist: ReadonlySet<number>,
+  id: number | bigint | null | undefined,
+): boolean {
+  if (id === null || id === undefined) return false
+  if (typeof id === 'number') return denylist.has(id)
+  const asNumber = Number(id)
+  return Number.isFinite(asNumber) && denylist.has(asNumber)
 }
 
 // ---------------------------------------------------------------------------
