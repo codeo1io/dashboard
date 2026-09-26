@@ -29,6 +29,21 @@ export {
   parseOperatorOk,
   parseOperatorSessionInfo,
 } from './parse.ts'
+export type {
+  OperatorCheckoutHead,
+  OperatorCheckoutObservation,
+  OperatorCheckoutOperation,
+  OperatorCheckoutPreparation,
+  OperatorCheckoutPreparationFailed,
+  OperatorCheckoutPreparationRefused,
+  OperatorCheckoutProvenance,
+  OperatorLayoutRefusalReason,
+  OperatorObstructionKind,
+  OperatorRemoteFreshness,
+  OperatorUpdateFailureReason,
+  OperatorWorktreeState,
+} from './provenance.ts'
+export {parseOperatorCheckoutPreparation, parseOperatorCheckoutProvenance} from './provenance.ts'
 export type {PushHandoffState, PushSubscriptionMetadata, VapidKeyResponse} from './push.ts'
 export {parsePushHandoffState, parsePushSubscriptionMetadata, parseVapidKeyResponse} from './push.ts'
 export {assertRedactionApplied, AUTHORIZATION_OBLIGATION, REDACTION_OBLIGATION} from './redaction.ts'
@@ -56,6 +71,7 @@ export type {
   RunSnapshotResponse,
 } from './run-responses.ts'
 export {PHASE_TO_WEB_STATUS} from './run-status.ts'
+export {isOperatorFailureKind, OPERATOR_FAILURE_KINDS} from './run-status.ts'
 export type {
   OperatorFailureKind,
   OperatorRunStatus,
