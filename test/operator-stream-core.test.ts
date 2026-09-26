@@ -1225,8 +1225,8 @@ describe('backoff constants', () => {
     expect(Number.isInteger(RETRY_MAX_COUNT)).toBe(true)
   })
 
-  it('PINNED_CONTRACT_VERSION is 1.6.0', () => {
-    expect(PINNED_CONTRACT_VERSION).toBe('1.6.0')
+  it('PINNED_CONTRACT_VERSION is 1.8.0', () => {
+    expect(PINNED_CONTRACT_VERSION).toBe('1.8.0')
   })
 })
 
