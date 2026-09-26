@@ -2665,6 +2665,12 @@ function makeBootSnapshot(): AggregatorSnapshot {
     driftCount: 2,
     enumerationIncomplete: 0,
     refreshedAt: 4242,
+    // Required since the cycle-9 rm-156 watchdog fields landed (interface
+    // widening on AggregatorSnapshot — the boot bridge passes the loaded
+    // snapshot through unchanged apart from forcing staleBanner, so the
+    // fixture must carry the full persisted shape).
+    refreshDurationMs: null,
+    refreshDegraded: false,
   }
 }
 
@@ -2866,5 +2872,87 @@ describe('review fix P2-1 — last-good snapshot re-filtered against the fresh d
 
     // Warm-empty guard fires exactly once — the scrub itself persisted nothing
     expect(snapshotStore.persist).toHaveBeenCalledTimes(1)
+  })
+})
+
+// rm-156: refresh watchdog — duration recording + degraded marker
+// ---------------------------------------------------------------------------
+
+describe('aggregator — refresh watchdog (rm-156)', () => {
+  it('records refresh duration and marks degraded when the walk exceeds the watchdog ceiling', async () => {
+    const repo = makeRepo({node_id: 'NODE_WD1', owner: 'org', name: 'repo-wd1'})
+    let t = 1_000
+    const deps = makeDeps({
+      now: () => t,
+      watchdogCeilingMs: 50,
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockImplementation(async () => {
+        t += 30
+        return ok(makeMetadataResult({publicRepos: [makePublicRepo({node_id: 'NODE_WD1', owner: 'org', name: 'repo-wd1'})]}))
+      }),
+      graphqlQueryForInstallation: vi.fn().mockImplementation(async () => {
+        t += 40
+        return makeGraphqlResponse()
+      }),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.refreshDurationMs).toBe(70)
+    expect(snap.refreshDegraded).toBe(true)
+  })
+
+  it('under the ceiling → degraded false, duration still recorded', async () => {
+    const repo = makeRepo({node_id: 'NODE_WD2', owner: 'org', name: 'repo-wd2'})
+    let t = 1_000
+    const deps = makeDeps({
+      now: () => t,
+      watchdogCeilingMs: 10_000,
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockImplementation(async () => {
+        t += 30
+        return ok(makeMetadataResult({publicRepos: [makePublicRepo({node_id: 'NODE_WD2', owner: 'org', name: 'repo-wd2'})]}))
+      }),
+      graphqlQueryForInstallation: vi.fn().mockImplementation(async () => {
+        t += 40
+        return makeGraphqlResponse()
+      }),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.refreshDurationMs).toBe(70)
+    expect(snap.refreshDegraded).toBe(false)
+  })
+
+  it('getSnapshot before any refresh reports null duration and not degraded', () => {
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, makeDeps())
+    const snap = agg.getSnapshot()
+    expect(snap.refreshDurationMs).toBeNull()
+    expect(snap.refreshDegraded).toBe(false)
+  })
+
+  it('fail-closed path is also watchdog-stamped (cold start)', async () => {
+    let t = 1_000
+    const deps = makeDeps({
+      now: () => t,
+      watchdogCeilingMs: 50,
+      readMetadata: vi.fn().mockImplementation(async () => {
+        t += 60
+        return err(new MetadataTransportError('transport down'))
+      }),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.staleBanner).toBe(true)
+    expect(snap.refreshDurationMs).toBe(60)
+    expect(snap.refreshDegraded).toBe(true)
   })
 })

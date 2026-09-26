@@ -52,6 +52,11 @@ function isValidSnapshotShape(value: unknown): value is AggregatorSnapshot {
     return false
   }
   if (snapshot.refreshedAt !== null && typeof snapshot.refreshedAt !== 'number') return false
+  // rm-156 fields (merged 2026-09-26): a cache persisted before the watchdog
+  // fields existed fails validation and is ignored (fail-open empty boot —
+  // the next refresh re-persists with the fields).
+  if (snapshot.refreshDurationMs !== null && typeof snapshot.refreshDurationMs !== 'number') return false
+  if (typeof snapshot.refreshDegraded !== 'boolean') return false
   for (const repo of snapshot.repos) {
     if (typeof repo !== 'object' || repo === null) return false
     const row = repo as Record<string, unknown>

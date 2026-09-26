@@ -5,6 +5,10 @@ import {COLD_START_SNAPSHOT} from '../github/aggregator.ts'
 /** Injectable snapshot provider — returns the current aggregator snapshot. */
 export type SnapshotProvider = () => AggregatorSnapshot
 
+// rm-197 (landed on main after this run branched): the standalone
+// EMPTY_SNAPSHOT literal this run extended was removed — both server.ts and
+// this route now import the single bannered COLD_START_SNAPSHOT constant
+// from aggregator.ts (which carries the rm-156 watchdog fields).
 // ---------------------------------------------------------------------------
 // Client DTO — /api/monitoring
 //
@@ -41,6 +45,10 @@ interface MonitoringDto {
   /** Count of installations that failed during the enumeration feeding this snapshot; null = unknown. */
   readonly enumerationIncomplete: number | null
   readonly refreshedAt: number | null
+  /** Wall-clock duration (ms) of the last completed refresh attempt (rm-156 watchdog signal) */
+  readonly refreshDurationMs: number | null
+  /** True when the last refresh attempt exceeded the watchdog ceiling (rm-156 watchdog signal) */
+  readonly refreshDegraded: boolean
 }
 
 function toMonitoringRepoDto(repo: DashboardRepo): MonitoringRepoDto {
@@ -66,6 +74,8 @@ function toMonitoringDto(snapshot: AggregatorSnapshot): MonitoringDto {
     driftCount: snapshot.driftCount,
     enumerationIncomplete: snapshot.enumerationIncomplete,
     refreshedAt: snapshot.refreshedAt,
+    refreshDurationMs: snapshot.refreshDurationMs,
+    refreshDegraded: snapshot.refreshDegraded,
   }
 }
 

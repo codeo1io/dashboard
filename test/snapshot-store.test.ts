@@ -44,6 +44,12 @@ function makeSnapshot(): AggregatorSnapshot {
     driftCount: 2,
     enumerationIncomplete: 0,
     refreshedAt: 4242,
+    // Required since the cycle-9 rm-156 watchdog fields landed (interface
+    // widening on AggregatorSnapshot — and isValidSnapshotShape rejects a
+    // persisted snapshot without refreshDegraded, so the persist→load
+    // round-trip below needs the fields present).
+    refreshDurationMs: null,
+    refreshDegraded: false,
   }
 }
 
