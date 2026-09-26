@@ -3,6 +3,7 @@ import {
   fetchListenerMessages,
   ackListenerMessage,
   ackAllListenerMessages,
+  type FetchListenerResult,
   type ListenerMessagesResponse,
   type ListenerMessage,
 } from '../api/listener.ts'
@@ -13,12 +14,16 @@ type ViewState =
   | { state: 'empty' }
   | { state: 'ready'; data: ListenerMessagesResponse }
 
-const POLL_INTERVAL_MS = 30000
+export const POLL_INTERVAL_MS = 30000
+/** rm-155: hard ceiling on a single poll — releases the latch even if the transport never settles. */
+export const LISTENER_FETCH_TIMEOUT_MS = 15000
 
 export function ListenerChannel() {
   const [viewState, setViewState] = useState<ViewState>({ state: 'loading' })
   const [ackingId, setAckingId] = useState<string | 'all' | null>(null)
   const isFetchingRef = useRef(false)
+  /** rm-155: the in-flight request's controller, aborted on unmount. */
+  const activeAbortRef = useRef<AbortController | null>(null)
 
   const loadData = useCallback(async (isInitial = false) => {
     if (isFetchingRef.current) return
@@ -29,26 +34,50 @@ export function ListenerChannel() {
     }
 
     const abortController = new AbortController()
-    const result = await fetchListenerMessages({ limit: 100, abortSignal: abortController.signal })
-    isFetchingRef.current = false
+    activeAbortRef.current = abortController
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    try {
+      // rm-155: race the fetch against a wall-clock timeout AND abort the
+      // controller when it fires. The race alone guarantees the latch is
+      // released even against a transport that never settles (and even one
+      // that ignores the abort signal); the abort additionally cancels the
+      // underlying request when the signal IS honored.
+      const result = await Promise.race([
+        fetchListenerMessages({ limit: 100, abortSignal: abortController.signal }),
+        new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(() => {
+            abortController.abort()
+            reject(new Error('listener fetch timed out'))
+          }, LISTENER_FETCH_TIMEOUT_MS)
+        }),
+      ]).catch((): FetchListenerResult => ({ ok: false, reason: 'timeout' }))
 
-    if (!result.ok) {
-      setViewState(prev => (prev.state === 'ready' ? prev : { state: 'error', reason: result.reason }))
-      return
-    }
+      if (!result.ok) {
+        setViewState(prev => (prev.state === 'ready' ? prev : { state: 'error', reason: result.reason }))
+        return
+      }
 
-    if (result.data.messages.length === 0 && result.data.droppedCount === 0 && result.data.prunedCount === 0) {
-      setViewState({ state: 'empty' })
-    } else {
-      // Still 'ready' when the parsed list is empty but drift/retention
-      // notices exist (rm-243/rm-244): those signals must render, not be
-      // swallowed by the Inbox Zero state.
-      setViewState({ state: 'ready', data: result.data })
+      if (result.data.messages.length === 0 && result.data.droppedCount === 0 && result.data.prunedCount === 0) {
+        setViewState({ state: 'empty' })
+      } else {
+        // Still 'ready' when the parsed list is empty but drift/retention
+        // notices exist (rm-243/rm-244): those signals must render, not be
+        // swallowed by the Inbox Zero state.
+        setViewState({ state: 'ready', data: result.data })
+      }
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId)
+      activeAbortRef.current = null
+      isFetchingRef.current = false
     }
   }, [])
 
   useEffect(() => {
     void loadData(true)
+    // rm-155: cancel the in-flight request when the view unmounts.
+    return () => {
+      activeAbortRef.current?.abort()
+    }
   }, [loadData])
 
   useEffect(() => {

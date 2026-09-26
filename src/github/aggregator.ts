@@ -150,6 +150,10 @@ export interface AggregatorSnapshot {
   readonly enumerationIncomplete: number | null
   /** When the snapshot was last successfully refreshed (ms since epoch) */
   readonly refreshedAt: number | null
+  /** Wall-clock duration (ms) of the last completed refresh attempt (null before the first attempt finishes) (rm-156) */
+  readonly refreshDurationMs: number | null
+  /** True when the last refresh attempt exceeded the watchdog ceiling — data is being served but the walk is degraded (rm-156) */
+  readonly refreshDegraded: boolean
 }
 
 /**
@@ -183,6 +187,9 @@ export const COLD_START_SNAPSHOT: AggregatorSnapshot = {
   driftCount: 0,
   enumerationIncomplete: null,
   refreshedAt: null,
+  // rm-156: no refresh attempt has ever run — no duration to report
+  refreshDurationMs: null,
+  refreshDegraded: false,
 }
 
 // ---------------------------------------------------------------------------
@@ -388,6 +395,8 @@ export interface AggregatorDeps {
   readonly setIntervalFn?: (fn: () => void, ms: number) => ReturnType<typeof setInterval>
   /** Injectable clearInterval (defaults to global clearInterval) */
   readonly clearIntervalFn?: (id: ReturnType<typeof setInterval>) => void
+  /** Watchdog ceiling (ms) — a refresh attempt running longer than this marks the snapshot degraded (rm-156). Test-injectable. */
+  readonly watchdogCeilingMs?: number
   /**
    * Optional: resolve the installation ID for a repo by owner/name.
    * Used for metadata-only public repos that have no installation_id from the
@@ -453,6 +462,17 @@ interface WorkingSetEntry {
  * sites (safeRepoLogIdentity / safeRepoErrorContext) so the two can never drift.
  */
 const DISCOVERED_CHANNEL = 'discovered'
+
+/**
+ * Refresh watchdog ceiling (rm-156): a refresh attempt that runs longer than
+ * this marks the snapshot `refreshDegraded` so clients can see the walk is
+ * degraded even while last-good data is served. Per-request HTTP calls are
+ * bounded at the transport layer via GITHUB_REQUEST_TIMEOUT_MS
+ * (createBoundedFetch, app-client.ts — the fetch-layer seam rm-156 proved is
+ * the only one this runtime honors); this ceiling bounds the whole walk
+ * (default 90s ≈ three hung per-request timeouts at the landed 30s ceiling).
+ */
+export const REFRESH_WATCHDOG_CEILING_MS = 90_000
 
 /** A repo is known-public only if it came from the metadata public set. */
 function isKnownPublic(discoveryChannel: string): boolean {
@@ -924,6 +944,7 @@ export function createAggregator(
 ) {
   const {graphqlQueryForInstallation} = deps
   const now = deps.now ?? (() => Date.now())
+  const watchdogCeilingMs = deps.watchdogCeilingMs ?? REFRESH_WATCHDOG_CEILING_MS
   const setIntervalFn = deps.setIntervalFn ?? ((fn, ms) => setInterval(fn, ms))
   const clearIntervalFn = deps.clearIntervalFn ?? (id => clearInterval(id))
   const fetchDeadlineMs = deps.fetchDeadlineMs ?? AGGREGATOR_FETCH_DEADLINE_MS
@@ -983,6 +1004,22 @@ export function createAggregator(
   let refreshing = false
 
   /**
+   * rm-156: stamp watchdog fields onto a snapshot write made from within a
+   * refresh cycle — duration is measured from the cycle's wall-clock start
+   * (cycleStartedAt), degraded iff it exceeded watchdogCeilingMs. Writes
+   * made outside any cycle (boot repair, belt-and-braces stale marks) carry
+   * no fresh measurement: a cold-start literal reports null/not-degraded,
+   * and last-good carries preserves its original stamps via spread.
+   */
+  function watchdogStamp<T extends Omit<AggregatorSnapshot, 'refreshDurationMs' | 'refreshDegraded'>>(snapshot: T): AggregatorSnapshot {
+    if (cycleStartedAt === null) {
+      return {...snapshot, refreshDurationMs: null, refreshDegraded: false}
+    }
+    const refreshDurationMs = now() - cycleStartedAt
+    return {...snapshot, refreshDurationMs, refreshDegraded: refreshDurationMs > watchdogCeilingMs}
+  }
+
+  /**
    * Mark the served snapshot stale — used by every fail-visible path
    * (metadata fail-closed, enumeration failure, unexpected refresh throw).
    * Cold start serves an empty bannered snapshot; otherwise the last-good
@@ -991,15 +1028,15 @@ export function createAggregator(
    */
   function markSnapshotStale(): void {
     if (lastGoodSnapshot === null) {
-      setSnapshot({
+      setSnapshot(watchdogStamp({
         repos: [],
         staleBanner: true,
         driftCount: 0,
         enumerationIncomplete: null,
         refreshedAt: null,
-      })
+      }))
     } else {
-      setSnapshot({...lastGoodSnapshot, staleBanner: true})
+      setSnapshot(watchdogStamp({...lastGoodSnapshot, staleBanner: true}))
     }
   }
 
@@ -1061,10 +1098,12 @@ export function createAggregator(
 
       if (lastGoodSnapshot === null) {
         // Cold start with no cache — serve empty with banner
-        setSnapshot({repos: [], staleBanner: true, driftCount: 0, enumerationIncomplete: null, refreshedAt: null})
+        setSnapshot(watchdogStamp({repos: [], staleBanner: true, driftCount: 0, enumerationIncomplete: null, refreshedAt: null}))
       } else {
-        // Serve last-good with staleBanner
-        setSnapshot({...lastGoodSnapshot, staleBanner: true})
+        // Serve last-good with staleBanner (rm-156: watchdog-stamped with
+        // this cycle's elapsed time — the write records how long the walk
+        // ran before failing closed)
+        setSnapshot(watchdogStamp({...lastGoodSnapshot, staleBanner: true}))
       }
       return
     }
@@ -1211,13 +1250,13 @@ export function createAggregator(
         for (const absence of absentEntries) {
           if (!lastGoodNodeIds.has(absence.node_id)) servedRepos.push(absence)
         }
-        setSnapshot({
+        setSnapshot(watchdogStamp({
           repos: sortAttentionFirst(servedRepos),
           staleBanner: true,
           enumerationIncomplete,
           driftCount,
           refreshedAt: lastGoodSnapshot.refreshedAt,
-        })
+        }))
         return
       }
       // Cold or already-empty state — absence entries (if any) are the whole
@@ -1225,13 +1264,13 @@ export function createAggregator(
       // staleBanner=true if enumeration failed OR is incomplete — a partially
       // enumerated empty set must never read as authoritative emptiness
       // (review finding F2).
-      setSnapshot({
+      setSnapshot(watchdogStamp({
         repos: sortAttentionFirst([...absentEntries]),
         staleBanner: enumerationFailed || (enumerationIncomplete ?? 0) > 0,
         enumerationIncomplete,
         driftCount,
         refreshedAt: now(),
-      })
+      }))
       return
     }
 
@@ -1299,7 +1338,7 @@ export function createAggregator(
     // incomplete (install repos missing). We still show metadata publicRepos
     // (they are public and safe), but the operator must know the installation
     // channel data is absent.
-    setSnapshot({repos: sorted, staleBanner: enumerationFailed || (enumerationIncomplete ?? 0) > 0, driftCount, enumerationIncomplete, refreshedAt: now()})
+    setSnapshot(watchdogStamp({repos: sorted, staleBanner: enumerationFailed || (enumerationIncomplete ?? 0) > 0, driftCount, enumerationIncomplete, refreshedAt: now()}))
 
     logger.info('Aggregator refresh complete', {
       repoCount: sorted.length,
@@ -1346,7 +1385,7 @@ export function createAggregator(
    */
   function getSnapshot(): AggregatorSnapshot {
     if (lastGoodSnapshot === null) {
-      return {repos: [], staleBanner: true, driftCount: 0, enumerationIncomplete: null, refreshedAt: null}
+      return {repos: [], staleBanner: true, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}
     }
     // Stall watchdog: while a cycle is in flight longer than staleAfterMs
     // (default 2× the refresh interval), the served snapshot carries the

@@ -56,7 +56,7 @@ async function buildFixtureTestApp(opts: FixtureAppOpts = {}) {
     cookieKey: TEST_KEY,
     oauthClient: makeFakeOAuthClient(),
     fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null}),
+    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
     operatorUiEnabled: opts.operatorUiEnabled ?? false,
     fixtureHarnessEnabled: opts.fixtureHarnessEnabled ?? false,
     fixtureBindHost: opts.bindHost ?? '127.0.0.1',
@@ -317,7 +317,7 @@ describe('fixture flag + non-loopback bind — throws at construction', () => {
         cookieKey: TEST_KEY,
         oauthClient: makeFakeOAuthClient(),
         fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-        getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null}),
+        getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
         fixtureHarnessEnabled: true,
       }),
     ).rejects.toThrow(/fixture.*loopback|loopback.*fixture/i)
