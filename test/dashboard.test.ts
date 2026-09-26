@@ -73,6 +73,8 @@ function makeSnapshot(overrides: Partial<AggregatorSnapshot> = {}): AggregatorSn
     driftCount: 0,
     enumerationIncomplete: null,
     refreshedAt: null,
+    refreshDurationMs: null,
+    refreshDegraded: false,
     ...overrides,
   }
 }

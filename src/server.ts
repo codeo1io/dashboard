@@ -27,7 +27,6 @@ import {serve} from '@hono/node-server'
 import {getConnInfo} from '@hono/node-server/conninfo'
 import {serveStatic} from '@hono/node-server/serve-static'
 import {Octokit} from '@octokit/core'
-import {graphql} from '@octokit/graphql'
 import {Hono, type Context} from 'hono'
 import {getCookie, setCookie} from 'hono/cookie'
 import {secureHeaders} from 'hono/secure-headers'
@@ -43,7 +42,12 @@ import {readFixtureHarnessConfig} from './gateway/operator-fixture-config.ts'
 import {FIXTURE_OPERATOR_PREFIX} from './gateway/operator-fixture-routes.ts'
 import {createOperatorServerFetch} from './gateway/operator-server-fetch.ts'
 import {COLD_START_SNAPSHOT, createAggregator} from './github/aggregator.ts'
-import {createDashboardAppClient, GITHUB_REQUEST_TIMEOUT_MS} from './github/app-client.ts'
+import {
+  createBoundedFetch,
+  createDashboardAppClient,
+  createInstallationGraphqlQueryFn,
+  GITHUB_REQUEST_TIMEOUT_MS,
+} from './github/app-client.ts'
 import {buildInstallationsClient, enumerateRepos, mintReadOnlyToken} from './github/installations.ts'
 import {makeNotFoundError, readRepoMetadata} from './github/metadata.ts'
 import {createFileSnapshotStore} from './github/snapshot-store.ts'
@@ -429,10 +433,11 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
 
   // Resolve snapshot provider — default empty; production wires the real aggregator.
   // rm-197: the no-provider default carries the stale banner — an empty payload
-  // must never read as "authoritatively verified empty".
-  // rm-197: bannered — an empty payload must never read as "authoritatively
-  // verified empty". Single shared constant (review fix F3): the same literal
-  // lived in routes/api.ts until this cycle's banner flip had to edit both.
+  // must never read as "authoritatively verified empty". Single shared
+  // constant (review fix F3): the same literal lived in routes/api.ts until
+  // this cycle's banner flip had to edit both. The rm-156 watchdog fields
+  // (refreshDurationMs/refreshDegraded) ride the shared constant from
+  // aggregator.ts.
   const getSnapshot = opts?.getSnapshot ?? (() => COLD_START_SNAPSHOT)
 
   // Resolve operator UI flag — default OFF (fail-closed).
@@ -1106,7 +1111,15 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
       // rm-197 (review fix): time-bounded like every other GitHub transport —
       // the metadata reader sits on the refresh path and must honor the 30s
       // request contract, not undici's ~300s default.
-      const installOctokit = new Octokit({auth: token, request: {timeout: GITHUB_REQUEST_TIMEOUT_MS}})
+      // rm-156 (merged 2026-09-26): the ceiling is ENFORCED at the fetch
+      // layer (createBoundedFetch) — this runtime's @octokit/request does not
+      // honor the `timeout` option against hung upstreams — while the
+      // `timeout` key stays pinned so the rm-197 transport-contract gate
+      // (test/transport-timeout-contract.test.ts) keeps matching this site.
+      const installOctokit = new Octokit({
+        auth: token,
+        request: {timeout: GITHUB_REQUEST_TIMEOUT_MS, fetch: createBoundedFetch(GITHUB_REQUEST_TIMEOUT_MS)},
+      })
       const response = await installOctokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
         owner: 'codeo1io',
         repo: '.github',
@@ -1125,17 +1138,11 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
   // the given installationId and authenticates the graphql client with it.
   // NO "first installation" logic — each repo uses its own installation's token.
   const graphqlQueryFn =
-    deps.graphqlQueryFn ??
-    (async (installationId: number, query: string, variables: Record<string, unknown>): Promise<unknown> => {
-      const token = await getReadOnlyToken(installationId)
-      // rm-197 (review fix): the per-repo GraphQL client is the dominant
-      // transport of the serial first walk — it carries the same 30s bound.
-      const gql = graphql.defaults({
-        headers: {authorization: `token ${token}`},
-        request: {timeout: GITHUB_REQUEST_TIMEOUT_MS},
-      })
-      return gql(query, variables)
-    })
+    // rm-197: the per-repo GraphQL client is the dominant transport of the
+    // serial first walk — it carries the same 30s bound. rm-156: the
+    // construction now lives in app-client.ts's createInstallationGraphqlQueryFn
+    // (bounded fetch + timeout key — the transport-contract gate pins it there).
+    deps.graphqlQueryFn ?? createInstallationGraphqlQueryFn(getReadOnlyToken)
 
   const aggregator = createAggregator(installationsClient, metadataReader, {
     enumerate: deps.enumerateFn ?? enumerateRepos,

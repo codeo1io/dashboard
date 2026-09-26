@@ -131,6 +131,8 @@ interface AppShellProps {
   onNavigate?: (view: 'operator' | 'listener' | 'monitoring') => void
   /** Global unread count for listener messages */
   listenerUnreadCount?: number
+  /** rm-155: first failure reason of the current unread-poll outage (null when healthy) */
+  listenerUnreadError?: string | null
 }
 
 export function AppShell({
@@ -141,6 +143,7 @@ export function AppShell({
   currentView = 'operator',
   onNavigate,
   listenerUnreadCount = 0,
+  listenerUnreadError = null,
 }: AppShellProps) {
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
   const [loggingOut, setLoggingOut] = useState(false)
@@ -380,6 +383,23 @@ export function AppShell({
                     }}
                   >
                     {listenerUnreadCount > 99 ? '99+' : listenerUnreadCount}
+                  </span>
+                )}
+                {listenerUnreadError !== null && (
+                  <span
+                    data-testid="unread-poll-error"
+                    aria-label="Unread count may be stale"
+                    title={`Unread count may be stale (${listenerUnreadError}) — the inbox poll is failing.`}
+                    style={{
+                      position: 'absolute',
+                      top: '-4px',
+                      left: '-10px',
+                      color: 'var(--color-warning, #e6a700)',
+                      fontSize: '0.65rem',
+                      fontWeight: 'bold'
+                    }}
+                  >
+                    !
                   </span>
                 )}
               </button>
