@@ -275,12 +275,13 @@ describe('OAuth flow', () => {
       const loginRes = await app.request('/auth/login')
       const stateCookieHeader = getSetCookie(loginRes, 'oauth_state') ?? ''
       const stateCookieValue = extractCookieValue(stateCookieHeader)
+      const pkceCookieValue = extractCookieValue(getSetCookie(loginRes, 'oauth_pkce_verifier') ?? '')
       // Extract the state from the redirect URL
       const location = loginRes.headers.get('location') ?? ''
       const stateParam = new URL(location).searchParams.get('state') ?? ''
 
       const res = await app.request(`/auth/callback?code=fake-code&state=${stateParam}`, {
-        headers: {cookie: `oauth_state=${stateCookieValue}`},
+        headers: {cookie: `oauth_state=${stateCookieValue}; oauth_pkce_verifier=${pkceCookieValue}`},
       })
 
       // Should redirect to / with a session cookie
@@ -333,11 +334,12 @@ describe('OAuth flow', () => {
       const loginRes = await app.request('/auth/login')
       const stateCookieHeader = getSetCookie(loginRes, 'oauth_state') ?? ''
       const stateCookieValue = extractCookieValue(stateCookieHeader)
+      const pkceCookieValue = extractCookieValue(getSetCookie(loginRes, 'oauth_pkce_verifier') ?? '')
       const location = loginRes.headers.get('location') ?? ''
       const stateParam = new URL(location).searchParams.get('state') ?? ''
 
       const res = await app.request(`/auth/callback?code=auth-code&state=${stateParam}`, {
-        headers: {cookie: `oauth_state=${stateCookieValue}`},
+        headers: {cookie: `oauth_state=${stateCookieValue}; oauth_pkce_verifier=${pkceCookieValue}`},
       })
 
       expect(res.status).toBe(401)
@@ -991,8 +993,10 @@ describe('/auth/callback — CSRF state compare (timing-safe)', () => {
 
   it('matching state passes the CSRF gate (no false rejection on the happy path)', async () => {
     const app = await buildTestApp({operatorLogin: 'octocat'})
+    // rm-149: the PKCE verifier cookie must also ride along, or the callback
+    // fails closed at the PKCE gate before the CSRF outcome is observable.
     const res = await app.request(`/auth/callback?code=abc&state=${STATE}`, {
-      headers: {cookie: `oauth_state=${STATE}`},
+      headers: {cookie: `oauth_state=${STATE}; oauth_pkce_verifier=test-verifier`},
     })
     // Past the CSRF gate the code exchange runs (fake client) and the operator
     // login matches, so this must NOT be a 403.
