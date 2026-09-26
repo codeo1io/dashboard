@@ -14,11 +14,25 @@ import {describe, expect, it} from 'vitest'
 // source must be a release-trigger surface in both gates. Sibling of
 // test/dockerfile-context.test.ts (rm-132), same parsing style: seconds of
 // Node at PR time, no docker build.
+//
+// rm-248 (cycle-7 batch, landed 2026-09-26 through conflict cases
+// 9f604f39/1b1732ae): the hard-path corpus moved out of inline
+// `filePath === '...'` branches in should-release.ts into the single-source
+// module scripts/release-paths.ts (HARD_RELEASE_FILE_PATHS /
+// HARD_RELEASE_DIR_PREFIXES / the root tsconfig glob), locked bidirectionally
+// by test/should-release.test.ts. The invariant below is unchanged — every
+// Dockerfile build-context source must trigger in BOTH gates — but the
+// guard-side parse now reads the corpus module too (unioned with the legacy
+// inline shape, so either layout satisfies it; a vacuous corpus parse fails
+// the non-vacuity anchors below, never silently passes).
 
 const repoRoot = process.cwd()
 
 // ---------------------------------------------------------------------------
-// Parsers (text-based; no imports from the script — it executes on import)
+// Parsers (text-based; no imports from the script — it executes on import).
+// The corpus module is parsed as text as well, not imported: this guard pins
+// AUTHORED SOURCE, per the header note; the call-site half is pinned by the
+// spawnSync behavioral tests at the bottom of this file.
 // ---------------------------------------------------------------------------
 
 interface CopySource {
@@ -82,6 +96,34 @@ function parseHardPathPrefixes(scriptText: string): string[] {
   return [...scriptText.matchAll(/filePath\.startsWith\('([^']+)'\)/g)].map(m => m[1] ?? '')
 }
 
+/**
+ * Extract a `readonly string[]` export from scripts/release-paths.ts (the
+ * rm-248 corpus module). Text-parsed; returns [] when the export is absent so
+ * a missing/renamed corpus surfaces as a vacuous-parse failure, not a pass.
+ * The opening bracket is sought AFTER the `=`: the `readonly string[]` type
+ * annotation carries its own brackets.
+ */
+function parseCorpusArray(corpusText: string, exportName: string): string[] {
+  const start = corpusText.indexOf(`export const ${exportName}`)
+  if (start === -1) return []
+  const eq = corpusText.indexOf('=', start)
+  const open = eq === -1 ? -1 : corpusText.indexOf('[', eq)
+  const close = open === -1 ? -1 : corpusText.indexOf(']', open)
+  if (eq === -1 || open === -1 || close === -1) return []
+  // Strip line comments first: a commented-out entry must NOT count as a
+  // corpus member (negative-verified at the 68adf406 re-fire — without this,
+  // the text half stays green on a regression only the spawnSync half catches).
+  const body = corpusText.slice(open + 1, close).replaceAll(/\/\/[^\n]*/g, '')
+  return [...body.matchAll(/'([^']+)'/g)].map(m => m[1] ?? '')
+}
+
+/** Extract a single-quoted string export from scripts/release-paths.ts. */
+function parseCorpusString(corpusText: string, exportName: string): string | undefined {
+  const start = corpusText.indexOf(`export const ${exportName}`)
+  if (start === -1) return undefined
+  return /'([^']+)'/.exec(corpusText.slice(start, start + 300))?.[1]
+}
+
 // ---------------------------------------------------------------------------
 // Coverage predicate
 // ---------------------------------------------------------------------------
@@ -128,19 +170,39 @@ describe('Release-trigger completeness (rm-154)', () => {
   const releaseYamlPath = resolve(repoRoot, '.github/workflows/release.yaml')
   const shouldReleasePath = resolve(repoRoot, 'scripts/should-release.ts')
 
+  const corpusPath = resolve(repoRoot, 'scripts/release-paths.ts')
+
   const dockerfileText = readFileSync(dockerfilePath, 'utf8')
   const yamlText = readFileSync(releaseYamlPath, 'utf8')
   const scriptText = readFileSync(shouldReleasePath, 'utf8')
+  // Throws (failing every test in this file) if the corpus module is deleted —
+  // the corpus IS a guard surface since rm-248, not an optional refinement.
+  const corpusText = readFileSync(corpusPath, 'utf8')
 
   const contextSources = collectContextSources(dockerfileText)
   const yamlPaths = parseReleaseYamlPaths(yamlText)
-  const hardLiterals = parseHardPathLiterals(scriptText)
-  const hardPrefixes = parseHardPathPrefixes(scriptText)
+  // Guard-side corpus: inline literals (pre-rm-248 layout, still accepted)
+  // UNION the corpus module exports (rm-248 single source of truth).
+  const corpusGlob = parseCorpusString(corpusText, 'HARD_RELEASE_ROOT_TSCONFIG_GLOB')
+  const hardLiterals = [
+    ...parseHardPathLiterals(scriptText),
+    ...parseCorpusArray(corpusText, 'HARD_RELEASE_FILE_PATHS'),
+    ...(corpusGlob === undefined ? [] : [corpusGlob]),
+  ]
+  // Corpus dir prefixes are stored bare ('src'); normalize to the
+  // slash-terminated form isCovered treats as a directory prefix.
+  const hardPrefixes = [
+    ...parseHardPathPrefixes(scriptText),
+    ...parseCorpusArray(corpusText, 'HARD_RELEASE_DIR_PREFIXES').map(
+      prefix => (prefix.endsWith('/') ? prefix : `${prefix}/`),
+    ),
+  ]
 
-  it('all three surfaces exist and parse non-vacuously', () => {
+  it('all release-trigger surfaces exist and parse non-vacuously', () => {
     expect(existsSync(dockerfilePath)).toBe(true)
     expect(existsSync(releaseYamlPath)).toBe(true)
     expect(existsSync(shouldReleasePath)).toBe(true)
+    expect(existsSync(corpusPath)).toBe(true)
     // Sanity anchors: a zero-hit parse means the parser broke, not a clean repo.
     expect(contextSources.length).toBeGreaterThan(0)
     expect(contextSources.some(s => s.source === 'package.json')).toBe(true)
@@ -150,6 +212,7 @@ describe('Release-trigger completeness (rm-154)', () => {
     expect(yamlPaths).toContain('src/**')
     expect(hardLiterals.length).toBeGreaterThan(0)
     expect(hardLiterals).toContain('Dockerfile')
+    expect(hardLiterals).toContain('pnpm-workspace.yaml')
     expect(hardPrefixes).toContain('src/')
   })
 

@@ -14,6 +14,11 @@
 #   (The original 2026-09 rationale — every PR's checks serializing behind
 #   the fork's single self-hosted runner — became historical when PR #11/#12
 #   moved CI to GitHub-hosted runners on 2026-09-22.)
+# - cooldown.default-days: 1 holds every PR one day after upstream publication
+#   (rm-135's dependabot half; mirrors pnpm-workspace.yaml's minimumReleaseAge:
+#   1440 at :13, which carries the matching minimumReleaseAgeExclude list).
+#   Units differ: dependabot cooldown is DAYS, pnpm minimumReleaseAge is MINUTES.
+#   GitHub does not apply cooldown to security updates — they land without delay.
 # - Weekly cadence, low open-PR cap, to keep the runner queue shallow.
 version: 2
 updates:
@@ -21,6 +26,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 1
     open-pull-requests-limit: 3
     groups:
       actions:
@@ -31,6 +38,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 1
     open-pull-requests-limit: 3
     groups:
       npm-and-workspaces:
@@ -51,6 +60,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 1
     open-pull-requests-limit: 3
     groups:
       docker:

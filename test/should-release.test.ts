@@ -61,8 +61,15 @@ import {mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join, resolve} from 'node:path'
 import process from 'node:process'
-
 import {afterEach, beforeEach, describe, expect, it} from 'vitest'
+import {parse} from 'yaml'
+
+import {
+  HARD_RELEASE_DIR_PREFIXES,
+  HARD_RELEASE_FILE_PATHS,
+  HARD_RELEASE_ROOT_TSCONFIG_GLOB,
+  WORKFLOW_TRIGGER_ONLY_PATHS,
+} from '../scripts/release-paths.ts'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -215,17 +222,59 @@ describe('should-release — public/** changes trigger release', () => {
 
 describe('should-release — workflow path filter parity', () => {
   // GitHub Actions filters on.push.paths BEFORE the guard script runs, so any
-  // directory that the guard treats as a hard-release path must also appear in
-  // the release workflow's paths filter — otherwise the workflow never starts and
-  // the guard never executes. This pins the two in sync to prevent drift.
-  it('release.yaml on.push.paths includes every directory-glob hard-release path', () => {
-    const workflow = readFileSync(
-      resolve(process.cwd(), '.github/workflows/release.yaml'),
-      'utf8',
-    )
-    for (const dir of ['src/**', 'web/**', 'public/**']) {
-      expect(workflow).toContain(`'${dir}'`)
-    }
+  // path the guard treats as hard-release must also appear in the release
+  // workflow's paths filter — otherwise the workflow never starts and the
+  // guard never executes (the rm-248 drift mode: a missed release). The
+  // reverse direction also matters: a workflow-only entry the guard doesn't
+  // know means a triggered run that can only skip — wasted runs and silent
+  // divergence. Both directions are checked dynamically (parsed from the
+  // workflow YAML + imported from the corpus module), so one-sided ADDITIONS
+  // fail here too, not just removals.
+  const workflowPaths = (() => {
+    const workflow = parse(
+      readFileSync(resolve(process.cwd(), '.github/workflows/release.yaml'), 'utf8'),
+    ) as {on?: {push?: {paths?: string[]}}}
+    return workflow.on?.push?.paths ?? []
+  })()
+
+  const knownWorkflowEntries = new Set([
+    ...HARD_RELEASE_FILE_PATHS,
+    ...HARD_RELEASE_DIR_PREFIXES.map(prefix => `${prefix}/**`),
+    HARD_RELEASE_ROOT_TSCONFIG_GLOB,
+    ...WORKFLOW_TRIGGER_ONLY_PATHS,
+  ])
+
+  it('every hard-release corpus entry appears in the workflow paths filter', () => {
+    const missing = [
+      ...HARD_RELEASE_FILE_PATHS,
+      ...HARD_RELEASE_DIR_PREFIXES.map(prefix => `${prefix}/**`),
+      HARD_RELEASE_ROOT_TSCONFIG_GLOB,
+    ].filter(entry => !workflowPaths.includes(entry))
+    expect(
+      missing,
+      'hard-release paths missing from release.yaml on.push.paths — a change to them would never trigger Release (rm-248)',
+    ).toEqual([])
+  })
+
+  it('every workflow paths entry is accounted for by the guard corpus or the conscious trigger-only allowlist', () => {
+    const unaccounted = workflowPaths.filter(entry => !knownWorkflowEntries.has(entry))
+    expect(
+      unaccounted,
+      'release.yaml on.push.paths entries unknown to the guard — pair them in scripts/release-paths.ts (corpus or WORKFLOW_TRIGGER_ONLY_PATHS) or remove them (rm-248)',
+    ).toEqual([])
+  })
+})
+
+describe('should-release — pnpm-workspace.yaml change triggers release', () => {
+  // rm-248: workspace config carries the security overrides + allowBuilds and
+  // is COPYd into both Dockerfile stages — a workspace-config-only change must
+  // not silently skip Release.
+  it('releases when pnpm-workspace.yaml changes alone', () => {
+    const base = writePkg(tmpDir, 'base.json', BASE_PKG)
+    const head = writePkg(tmpDir, 'head.json', BASE_PKG)
+    const {exitCode, stdout} = runGuard('pnpm-workspace.yaml', base, head)
+    expect(exitCode).toBe(0)
+    expect(stdout).toMatch(/^release:/)
   })
 })
 

@@ -122,6 +122,16 @@ and used with `-i` only under `CI=true`.
 **Wrong compose directory** gives `no configuration file provided: not found`, which reads like a
 missing file rather than a wrong path.
 
+**`GATEWAY_OPERATOR_TRUSTED_PROXIES` must list the proxy chain (gateway v0.114.1+).** Since
+fro-bot/agent v0.114.1 the gateway refuses proxied operator sign-ins until this env names the
+proxies it may trust for `X-Forwarded-For`; it rejects malformed or ambiguous forwarding rather
+than guess the client address. Behind the Caddy topology above, a missing or stale list surfaces
+as operator-auth failures at the gateway while everything else looks healthy — inspect the
+gateway service's env (`docker compose config`) before debugging auth itself. The dashboard itself
+never proxies raw HTTP: its server-side operator client carries the operator session cookie, so
+this env gates the Caddy→gateway hop, not the dashboard. Topology background in
+`docs/solutions/security-issues/gateway-operator-oauth-rate-limit-shared-key-behind-caddy-2026-09-21.md`.
+
 **Logs are sensitive.** The CLI prints a warning for a reason — output can carry Discord tokens,
 S3 credentials, and user data. Never paste it into an issue, PR, or commit message. Extract the
 fields you need and delete the capture.
