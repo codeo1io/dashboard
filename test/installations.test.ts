@@ -10,9 +10,11 @@ import type {InstallationRecord, InstallationsClient, RepoRecord} from '../src/g
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {
   CORE_READ_PERMISSIONS,
+  createInstallationRepoListFn,
   enumerateRepos,
   FetchInstallationsError,
   FULL_READ_PERMISSIONS,
+  InstallationTokenCache,
   mintReadOnlyToken,
   OPTIONAL_READ_PERMISSIONS,
 } from '../src/github/installations.ts'
@@ -825,5 +827,226 @@ describe('security — rm-170: transient mint errors never degrade scope', () =>
     if (!isOk(result)) return
     expect(result.data.repos).toHaveLength(0)
     expect(result.data.failedInstallationIds).toEqual([41])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-221 — token cache scoping, eviction, injectable clock
+// ---------------------------------------------------------------------------
+
+describe('rm-221 — InstallationTokenCache (per-instance, injectable clock, eviction)', () => {
+  it('expiry honored via the injected clock (no Date.now() capture)', () => {
+    let now = 1_000
+    const cache = new InstallationTokenCache(() => now)
+    // 50-min expiry − 1-min refresh buffer ⇒ fresh through t0+49min.
+    cache.set(9001, 'ghs_a', new Date(1_000 + 50 * 60_000))
+    expect(cache.get(9001)).toBe('ghs_a')
+
+    now = 1_000 + 48 * 60_000
+    expect(cache.get(9001)).toBe('ghs_a')
+    now = 1_000 + 49 * 60_000 // boundary: now >= expiresAt − 60s ⇒ stale
+    expect(cache.get(9001)).toBeNull()
+    // Expired entry is dropped, not just skipped.
+    expect(cache.get(9001)).toBeNull()
+  })
+
+  it('evict() drops a single installation; evictExcept() drops only unretained ids and reports them', () => {
+    const cache = new InstallationTokenCache(() => 0)
+    cache.set(1, 'ghs_1', null)
+    cache.set(2, 'ghs_2', null)
+    cache.set(3, 'ghs_3', null)
+
+    cache.evict(2)
+    expect(cache.get(2)).toBeNull()
+    expect(cache.get(1)).toBe('ghs_1')
+
+    const evicted = cache.evictExcept([1])
+    expect(evicted).toEqual([3])
+    expect(cache.get(1)).toBe('ghs_1')
+    expect(cache.get(3)).toBeNull()
+  })
+
+  it('enumerateRepos evicts cached tokens for installations the App no longer reports', async () => {
+    // Unique ids: the module-default cache is shared across this test file.
+    const mint = vi.fn(async () => ({token: 'ghs_evict', expiresAt: null}))
+    const clientFor = (ids: number[]): InstallationsClient =>
+      makeClient({
+        listInstallations: vi.fn().mockResolvedValue(ids.map(id => makeInstall(id))),
+        mintInstallationToken: mint,
+        listInstallationRepos: vi.fn().mockResolvedValue([]),
+      })
+
+    await enumerateRepos(clientFor([9001, 9002])) // mints + caches both
+    expect(mint).toHaveBeenCalledTimes(2)
+    await enumerateRepos(clientFor([9001])) // 9002 removed → swept
+    expect(mint).toHaveBeenCalledTimes(2)
+    // 9002 returns: its token was evicted, so it mints again; 9001's cached
+    // token still serves — exactly one new mint.
+    await enumerateRepos(clientFor([9001, 9002]))
+    expect(mint).toHaveBeenCalledTimes(3)
+  })
+
+  it('an empty (successful) installation list evicts every cached token', async () => {
+    const mint = vi.fn(async () => ({token: 'ghs_empty', expiresAt: null}))
+    const clientFor = (ids: number[]): InstallationsClient =>
+      makeClient({
+        listInstallations: vi.fn().mockResolvedValue(ids.map(id => makeInstall(id))),
+        mintInstallationToken: mint,
+        listInstallationRepos: vi.fn().mockResolvedValue([]),
+      })
+
+    await enumerateRepos(clientFor([9003, 9004]))
+    expect(mint).toHaveBeenCalledTimes(2)
+    await enumerateRepos(clientFor([])) // zero installations → sweep everything
+    await enumerateRepos(clientFor([9003]))
+    expect(mint).toHaveBeenCalledTimes(3) // 9003 re-minted; nothing else remains
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-221 + rm-162 — repo-list transport: throttle/retry plugins + If-None-Match
+// ---------------------------------------------------------------------------
+
+const repoPage = (repos: {id: number; node_id: string; owner: string; name: string}[]) => ({
+  total_count: repos.length,
+  repositories: repos.map(r => ({
+    id: r.id,
+    node_id: r.node_id,
+    owner: {login: r.owner},
+    name: r.name,
+    full_name: `${r.owner}/${r.name}`,
+  })),
+})
+
+describe('rm-221 — repo-list transport carries throttle + retry plugins', () => {
+  it('retries a transient 500 through the plugin chain, then succeeds', {timeout: 30_000}, async () => {
+    let calls = 0
+    const fetchMock = vi.fn(async () => {
+      calls += 1
+      if (calls === 1) return new Response('boom', {status: 500})
+      return Response.json(repoPage([{id: 1, node_id: 'NODE_T1', owner: 'org', name: 'retried'}]))
+    })
+    const list = createInstallationRepoListFn({fetch: fetchMock as unknown as typeof fetch})
+
+    const repos = await list('ghs_tok', 1)
+    expect(repos).toHaveLength(1)
+    expect(repos[0]?.node_id).toBe('NODE_T1')
+    // The 500 was retried by @octokit/plugin-retry — the caller saw one
+    // clean result, not the transient failure.
+    expect(calls).toBe(2)
+  })
+
+  it('retries a primary rate limit (403 x-ratelimit-remaining: 0) via the throttling plugin', {timeout: 30_000}, async () => {
+    let calls = 0
+    const fetchMock = vi.fn(async () => {
+      calls += 1
+      if (calls === 1) {
+        return new Response('rate limit', {
+          status: 403,
+          headers: {
+            'x-ratelimit-limit': '100',
+            'x-ratelimit-remaining': '0',
+            'x-ratelimit-reset': '0',
+            'retry-after': '0',
+          },
+        })
+      }
+      return Response.json(repoPage([{id: 2, node_id: 'NODE_T2', owner: 'org', name: 'throttled'}]))
+    })
+    const list = createInstallationRepoListFn({fetch: fetchMock as unknown as typeof fetch})
+
+    const repos = await list('ghs_tok', 1)
+    expect(repos).toHaveLength(1)
+    expect(calls).toBe(2)
+  })
+})
+
+describe('rm-162 — repo-list pagination honors If-None-Match / 304 Not Modified', () => {
+  it('second call sends the stored ETag and reuses cached items on 304', async () => {
+    const seenHeaders: Record<string, string>[] = []
+    let calls = 0
+    const fetchMock = vi.fn(async (_url: unknown, init?: {headers?: Record<string, string>}) => {
+      calls += 1
+      const headers = (init?.headers ?? {})
+      seenHeaders.push(headers)
+      if (calls === 1) {
+        return new Response(JSON.stringify(repoPage([{id: 1, node_id: 'NODE_E1', owner: 'org', name: 'etagged'}])), {
+          status: 200,
+          headers: {'content-type': 'application/json', etag: '"v1"'},
+        })
+      }
+      // Unchanged: GitHub answers 304 with no body — free against the
+      // primary rate limit.
+      return new Response(null, {status: 304, headers: {etag: '"v1"'}})
+    })
+    const list = createInstallationRepoListFn({fetch: fetchMock as unknown as typeof fetch})
+
+    const first = await list('ghs_tok', 1)
+    expect(first).toHaveLength(1)
+
+    const second = await list('ghs_tok', 1)
+    expect(second).toEqual(first)
+    expect(calls).toBe(2)
+    // The conditional header rode the second request (case per undici).
+    const secondHeaders = Object.fromEntries(
+      Object.entries(seenHeaders[1] ?? {}).map(([k, v]) => [k.toLowerCase(), v]),
+    )
+    expect(secondHeaders['if-none-match']).toBe('"v1"')
+  })
+
+  it('a 200 refresh replaces the cached page (etag rotation observed on the wire)', async () => {
+    const etagsOnWire: (string | undefined)[] = []
+    let calls = 0
+    const fetchMock = vi.fn(async (_url: unknown, init?: {headers?: Record<string, string>}) => {
+      calls += 1
+      const headers = (init?.headers ?? {})
+      const flat = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]))
+      etagsOnWire.push(flat['if-none-match'])
+      if (calls === 1) {
+        return new Response(JSON.stringify(repoPage([{id: 1, node_id: 'NODE_R1', owner: 'org', name: 'before'}])), {
+          status: 200,
+          headers: {'content-type': 'application/json', etag: '"a"'},
+        })
+      }
+      if (calls === 2) {
+        return new Response(null, {status: 304, headers: {etag: '"a"'}})
+      }
+      return new Response(JSON.stringify(repoPage([{id: 1, node_id: 'NODE_R2', owner: 'org', name: 'after'}])), {
+        status: 200,
+        headers: {'content-type': 'application/json', etag: '"b"'},
+      })
+    })
+    const list = createInstallationRepoListFn({fetch: fetchMock as unknown as typeof fetch})
+
+    await list('ghs_tok', 1) // 200 "a"
+    await list('ghs_tok', 1) // 304
+    const third = await list('ghs_tok', 1) // 200 "b" — content changed
+    expect(third[0]?.node_id).toBe('NODE_R2')
+    expect(etagsOnWire).toEqual([undefined, '"a"', '"a"'])
+  })
+
+  it('cache is scoped per installation — sibling installations never share pages', async () => {
+    const callsPerToken = new Map<string, {n: number; etags: (string | undefined)[]}>()
+    const fetchMock = vi.fn(async (_url: unknown, init?: {headers?: Record<string, string>} & {headers2?: unknown}) => {
+      const auth = String((init)?.headers?.authorization ?? '')
+      const entry = callsPerToken.get(auth) ?? {n: 0, etags: []}
+      const flat = Object.fromEntries(
+        Object.entries((init?.headers ?? {})).map(([k, v]) => [k.toLowerCase(), v]),
+      )
+      entry.etags.push(flat['if-none-match'])
+      entry.n += 1
+      callsPerToken.set(auth, entry)
+      return new Response(JSON.stringify(repoPage([{id: entry.n, node_id: `NODE_${auth}_${entry.n}`, owner: 'org', name: 'x'}])), {
+        status: 200,
+        headers: {'content-type': 'application/json', etag: `"${auth}-${entry.n}"`},
+      })
+    })
+    const list = createInstallationRepoListFn({fetch: fetchMock as unknown as typeof fetch})
+
+    await list('ghs_A', 10)
+    await list('ghs_B', 20) // different installation: no If-None-Match from A's page
+    const bEtags = callsPerToken.get('token ghs_B')?.etags
+    expect(bEtags).toEqual([undefined])
+    expect(callsPerToken.get('token ghs_B')?.n).toBe(1)
   })
 })

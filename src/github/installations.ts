@@ -16,10 +16,9 @@
 import type {Result} from '../result.ts'
 import type {DashboardAppClient} from './app-client.ts'
 
-import {Octokit} from '@octokit/core'
 import {logger} from '../logger.ts'
 import {err, ok} from '../result.ts'
-import {GITHUB_REQUEST_TIMEOUT_MS, safeErrorMessage} from './app-client.ts'
+import {createInstallationOctokit, safeErrorMessage} from './app-client.ts'
 
 // ---------------------------------------------------------------------------
 // Read-only permissions
@@ -137,43 +136,99 @@ export interface InstallationsClient {
   /**
    * List all repos accessible to the given installation token.
    * Returns records without installation_id — enumerateRepos attaches it.
+   *
+   * `installationId` (rm-162) scopes the If-None-Match page cache to the
+   * installation whose token is presented — omit it only for one-shot calls
+   * that must not consult or populate the cache.
    */
-  readonly listInstallationRepos: (token: string) => Promise<readonly Omit<RepoRecord, 'installation_id'>[]>
+  readonly listInstallationRepos: (
+    token: string,
+    installationId?: number,
+  ) => Promise<readonly Omit<RepoRecord, 'installation_id'>[]>
 }
 
 // ---------------------------------------------------------------------------
 // In-memory token cache
 // ---------------------------------------------------------------------------
 
+/** rm-221: refresh a cached token this long before its true expiry. */
+const TOKEN_EXPIRY_BUFFER_MS = 60_000
+
 interface CachedToken {
   readonly token: string
   readonly expiresAt: number // ms since epoch
 }
 
-const tokenCache = new Map<number, CachedToken>()
+/**
+ * Per-instance installation-token cache (rm-221).
+ *
+ * Previously a module-global `Map` shared by every caller with no eviction
+ * path: tokens for uninstalled installations lingered until process exit,
+ * and expiry checks read `Date.now()` directly (untestable). The class takes
+ * an injectable clock and exposes explicit eviction so the enumeration sweep
+ * can drop entries the App no longer reports.
+ */
+export class InstallationTokenCache {
+  readonly #cache = new Map<number, CachedToken>()
+  readonly #now: () => number
 
-const TOKEN_EXPIRY_BUFFER_MS = 60_000 // refresh 1 min before expiry
+  constructor(now: () => number = () => Date.now()) {
+    this.#now = now
+  }
+
+  get(installationId: number): string | null {
+    const cached = this.#cache.get(installationId)
+    if (cached === undefined) return null
+    if (this.#now() >= cached.expiresAt - TOKEN_EXPIRY_BUFFER_MS) {
+      this.#cache.delete(installationId)
+      return null
+    }
+    return cached.token
+  }
+
+  set(installationId: number, token: string, expiresAt: Date | null): void {
+    // rm-185: honor the API-provided expiry, but CAP it at the historical
+    // 55-min guess — a far-future expiry can never extend a token's cached
+    // life beyond the pre-seam behavior. The cap doubles as the fallback when
+    // the mint boundary could not determine an expiry. Ill-formed dates
+    // (NaN) fall back to the cap too: a NaN expiry would never compare stale.
+    const cappedDefaultMs = this.#now() + 55 * 60 * 1000
+    const rawMs = expiresAt === null ? Number.NaN : expiresAt.getTime()
+    const expiresAtMs = Number.isNaN(rawMs) ? cappedDefaultMs : Math.min(rawMs, cappedDefaultMs)
+    this.#cache.set(installationId, {token, expiresAt: expiresAtMs})
+  }
+
+  /** rm-221: drop a single installation's cached token (installation removed). */
+  evict(installationId: number): void {
+    this.#cache.delete(installationId)
+  }
+
+  /**
+   * rm-221: drop every cached token whose installation id is NOT in
+   * `retain`. Returns the evicted ids so the sweep can log what it dropped.
+   */
+  evictExcept(retain: readonly number[]): readonly number[] {
+    const keep = new Set(retain)
+    const evicted: number[] = []
+    for (const id of this.#cache.keys()) {
+      if (!keep.has(id)) {
+        this.#cache.delete(id)
+        evicted.push(id)
+      }
+    }
+    return evicted
+  }
+}
+
+/** Module-default cache — production wiring; tests construct scoped instances. */
+const tokenCache = new InstallationTokenCache()
 
 function getCachedToken(installationId: number): string | null {
-  const cached = tokenCache.get(installationId)
-  if (cached === undefined) return null
-  if (Date.now() >= cached.expiresAt - TOKEN_EXPIRY_BUFFER_MS) {
-    tokenCache.delete(installationId)
-    return null
-  }
-  return cached.token
+  return tokenCache.get(installationId)
 }
 
 function setCachedToken(installationId: number, token: string, expiresAt: Date | null): void {
-  // rm-185: honor the API-provided expiry, but CAP it at the historical
-  // 55-min guess — a far-future expiry can never extend a token's cached
-  // life beyond the pre-seam behavior. The cap doubles as the fallback when
-  // the mint boundary could not determine an expiry. Ill-formed dates
-  // (NaN) fall back to the cap too: a NaN expiry would never compare stale.
-  const cappedDefaultMs = Date.now() + 55 * 60 * 1000
-  const rawMs = expiresAt === null ? Number.NaN : expiresAt.getTime()
-  const expiresAtMs = Number.isNaN(rawMs) ? cappedDefaultMs : Math.min(rawMs, cappedDefaultMs)
-  tokenCache.set(installationId, {token, expiresAt: expiresAtMs})
+  tokenCache.set(installationId, token, expiresAt)
 }
 
 // ---------------------------------------------------------------------------
@@ -276,7 +331,24 @@ export async function enumerateRepos(
   }
 
   if (installations.length === 0) {
+    // rm-221: an empty (successful) installation list means every cached
+    // token is stale — evict them all rather than letting removed
+    // installations hold tokens until process exit.
+    const evicted = tokenCache.evictExcept([])
+    if (evicted.length > 0) {
+      logger.debug('Evicted cached tokens for removed installations', {count: evicted.length})
+    }
     return ok({repos: [], installations: [], failedInstallationIds: []})
+  }
+
+  // rm-221: sweep tokens for installations the App no longer reports.
+  // `listInstallations` succeeded, so the current set is authoritative.
+  const evicted = tokenCache.evictExcept(installations.map(install => install.id))
+  if (evicted.length > 0) {
+    logger.debug('Evicted cached tokens for removed installations', {
+      count: evicted.length,
+      installationIds: evicted,
+    })
   }
 
   logger.debug('Enumerating repos across installations', {count: installations.length})
@@ -299,7 +371,7 @@ export async function enumerateRepos(
 
     let repos: readonly Omit<RepoRecord, 'installation_id'>[]
     try {
-      repos = await client.listInstallationRepos(token)
+      repos = await client.listInstallationRepos(token, installation.id)
     } catch (repoError) {
       logger.warning('Failed to list repos for installation; counting degraded installation', {
         installationId: installation.id,
@@ -330,44 +402,127 @@ export async function enumerateRepos(
 // Real client factory (uses DashboardAppClient)
 // ---------------------------------------------------------------------------
 
-async function listInstallationReposWithToken(token: string): Promise<readonly Omit<RepoRecord, 'installation_id'>[]> {
-  const installOctokit = new Octokit({
-    auth: token,
-    // rm-197: per-repo installation walks are serial — a stalled request must
-    // not stall the whole refresh indefinitely.
-    request: {timeout: GITHUB_REQUEST_TIMEOUT_MS},
-  })
+/**
+ * rm-162: one page of the installation repo list, cached with its ETag so
+ * the next walk can send `If-None-Match` and treat 304 Not Modified as
+ * "this page is unchanged". 304 responses are free against GitHub's primary
+ * rate limit, so a steady-state cycle pays N cheap requests instead of N
+ * full payload downloads.
+ */
+interface CachedRepoPage {
+  readonly etag: string | null
+  readonly items: readonly Omit<RepoRecord, 'installation_id'>[]
+}
 
-  const repos: Omit<RepoRecord, 'installation_id'>[] = []
-  let page = 1
-  while (true) {
-    const response = await installOctokit.request('GET /installation/repositories', {
-      per_page: 100,
-      page,
-    })
-    const data = response.data as unknown as {
-      total_count: number
-      repositories: {
-        id: number
-        node_id: string
-        owner: {login: string}
-        name: string
-        full_name: string
-      }[]
+interface RepoListOptions {
+  /** Per-request timeout override; defaults to GITHUB_REQUEST_TIMEOUT_MS. */
+  readonly requestTimeoutMs?: number
+  /** Fetch override for tests — forwarded to the Octokit request layer. */
+  readonly fetch?: typeof globalThis.fetch
+}
+
+/**
+ * rm-221 + rm-162: build a per-client-instance repo-list function.
+ *
+ * - Transport: every page request goes through `createInstallationOctokit` —
+ *   the SAME throttle + retry plugin chain as the App client. A bare
+ *   token-authenticated Octokit has no primary/secondary-rate-limit or
+ *   transient-5xx handling (grep target of rm-221: none left in this path).
+ * - Conditional GETs: the per-installation page cache stores each page's
+ *   ETag; unchanged pages resolve as 304 and reuse cached items.
+ *
+ * The cache lives in this closure — scoped to the returned client instance
+ * (rm-221), never module-global — and is keyed by installation id so sibling
+ * installations never read each other's pages.
+ */
+export function createInstallationRepoListFn(options: RepoListOptions = {}) {
+  const pageCaches = new Map<number | 'uncached', Map<number, CachedRepoPage>>()
+
+  async function listInstallationRepos(
+    token: string,
+    installationId?: number,
+  ): Promise<readonly Omit<RepoRecord, 'installation_id'>[]> {
+    // rm-162: skip the conditional layer entirely when the caller opts out.
+    const cacheKey: number | 'uncached' = installationId ?? 'uncached'
+    let pages = pageCaches.get(cacheKey)
+    if (pages === undefined) {
+      pages = new Map<number, CachedRepoPage>()
+      pageCaches.set(cacheKey, pages)
     }
-    for (const repo of data.repositories) {
-      repos.push({
+
+    const installOctokit = createInstallationOctokit({
+      token,
+      requestTimeoutMs: options.requestTimeoutMs,
+      fetch: options.fetch,
+    })
+
+    const repos: Omit<RepoRecord, 'installation_id'>[] = []
+    let page = 1
+    let unchangedPages = 0
+    while (true) {
+      const cached = pages.get(page)
+      let response: Awaited<ReturnType<typeof installOctokit.request<'GET /installation/repositories'>>>
+      try {
+        response = await installOctokit.request('GET /installation/repositories', {
+          per_page: 100,
+          page,
+          ...(cached?.etag === undefined || cached.etag === null
+            ? {}
+            : {headers: {'If-None-Match': cached.etag}}),
+        })
+      } catch (error) {
+        // @octokit/request throws on any non-2xx, including 304 Not Modified —
+        // conditional-request responses surface as RequestError{status: 304}.
+        if ((error as {status?: number}).status === 304 && cached !== undefined) {
+          // Unchanged page: reuse the cached items. 304 responses carry no
+          // body, so termination (short page) comes from the cache.
+          repos.push(...cached.items)
+          unchangedPages++
+          if (cached.items.length < 100) break
+          page++
+          continue
+        }
+        throw error
+      }
+      const data = response.data as unknown as {
+        total_count: number
+        repositories: {
+          id: number
+          node_id: string
+          owner: {login: string}
+          name: string
+          full_name: string
+        }[]
+      }
+      const items = data.repositories.map(repo => ({
         node_id: repo.node_id,
         database_id: repo.id,
         owner: repo.owner.login,
         name: repo.name,
         full_name: repo.full_name,
+      }))
+      pages.set(page, {etag: response.headers.etag ?? null, items})
+      repos.push(...items)
+      if (repos.length >= data.total_count || items.length < 100) {
+        // List shrank: drop cached pages beyond the new tail so a later
+        // regrow cannot serve a stale page as "unchanged".
+        for (const key of pages.keys()) {
+          if (key > page) pages.delete(key)
+        }
+        break
+      }
+      page++
+    }
+    if (unchangedPages > 0 && unchangedPages === page) {
+      logger.debug('Installation repo list fully unchanged (304 Not Modified on every page)', {
+        installationId: installationId ?? null,
+        pages: unchangedPages,
       })
     }
-    if (repos.length >= data.total_count || data.repositories.length < 100) break
-    page++
+    return repos
   }
-  return repos
+
+  return listInstallationRepos
 }
 
 /**
@@ -375,6 +530,7 @@ async function listInstallationReposWithToken(token: string): Promise<readonly O
  * The Octokit instance in the client is JWT-authenticated (App-level).
  */
 export function buildInstallationsClient(appClient: DashboardAppClient): InstallationsClient {
+  const listInstallationRepos = createInstallationRepoListFn()
   async function listInstallations(): Promise<readonly InstallationRecord[]> {
     const installations: InstallationRecord[] = []
     let page = 1
@@ -399,6 +555,6 @@ export function buildInstallationsClient(appClient: DashboardAppClient): Install
   return {
     listInstallations,
     mintInstallationToken: appClient.mintInstallationToken,
-    listInstallationRepos: listInstallationReposWithToken,
+    listInstallationRepos,
   }
 }

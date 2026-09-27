@@ -776,6 +776,72 @@ async function deadlineOr<T>(promise: Promise<T>, deadlineMs: number, label: str
 }
 
 // ---------------------------------------------------------------------------
+// Installation resolver memo (rm-162)
+// ---------------------------------------------------------------------------
+
+/**
+ * rm-162: wrap `resolveInstallationIdForRepo` with a TTL memo so steady-state
+ * refresh cycles make ZERO App-JWT resolver calls for metadata-only repos.
+ *
+ * Previously every refresh re-resolved every metadata-only repo (1+N App-JWT
+ * requests per cycle) — plus the metadata reader's own
+ * `resolveInstallationIdForRepo('codeo1io', '.github')` on every repos.yaml
+ * read — because `GET /repos/{owner}/{repo}/installation` responses are not
+ * cached anywhere.
+ *
+ * Invalidation: TTL expiry re-resolves; a failed resolve evicts any memoized
+ * entry for that repo (so a 404 after a rename never pins a stale id).
+ * Failures are never memoized — the next cycle retries immediately
+ * (fail-visible behavior is unchanged).
+ */
+export const RESOLVER_MEMO_TTL_MS = 30 * 60 * 1000
+
+export interface ResolverMemoStats {
+  readonly hits: number
+  readonly misses: number
+}
+
+export function withResolverMemo(
+  resolve: (owner: string, name: string) => Promise<number>,
+  options: {ttlMs?: number; now?: () => number} = {},
+): {
+  readonly resolve: (owner: string, name: string) => Promise<number>
+  readonly stats: () => ResolverMemoStats
+  readonly evict: (owner: string, name: string) => void
+} {
+  const ttlMs = options.ttlMs ?? RESOLVER_MEMO_TTL_MS
+  const now = options.now ?? (() => Date.now())
+  const memo = new Map<string, {id: number; expiresAt: number}>()
+  const stats = {hits: 0, misses: 0}
+
+  return {
+    async resolve(owner: string, name: string): Promise<number> {
+      const key = `${owner}/${name}`
+      const cached = memo.get(key)
+      if (cached !== undefined && now() < cached.expiresAt) {
+        stats.hits++
+        return cached.id
+      }
+      stats.misses++
+      try {
+        const id = await resolve(owner, name)
+        memo.set(key, {id, expiresAt: now() + ttlMs})
+        return id
+      } catch (error) {
+        // Invalidation path: never leave a stale entry behind a repo that no
+        // longer resolves (404 after rename/transfer/removal).
+        memo.delete(key)
+        throw error
+      }
+    },
+    stats: () => ({hits: stats.hits, misses: stats.misses}),
+    evict: (owner: string, name: string) => {
+      memo.delete(`${owner}/${name}`)
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Aggregator factory
 // ---------------------------------------------------------------------------
 

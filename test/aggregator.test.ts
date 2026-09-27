@@ -15,7 +15,7 @@ import type {MetadataResult} from '../src/github/metadata.ts'
 import type {Result} from '../src/result.ts'
 
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
-import {createAggregator} from '../src/github/aggregator.ts'
+import {createAggregator, withResolverMemo} from '../src/github/aggregator.ts'
 import {FetchInstallationsError} from '../src/github/installations.ts'
 import {MetadataTransportError, MetadataUnavailableError} from '../src/github/metadata.ts'
 import {err, ok} from '../src/result.ts'
@@ -2462,5 +2462,97 @@ describe('rm-141 — bounded-concurrency per-repo refresh', () => {
 
     expect(maxInFlight).toBe(1)
     agg.stop()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-162 — memoized installation resolution (withResolverMemo)
+// ---------------------------------------------------------------------------
+
+describe('rm-162 — withResolverMemo unit semantics', () => {
+  it('memoizes successful resolutions; misses/hits counted; TTL expiry re-resolves', async () => {
+    let t = 1000
+    const underlying = vi.fn(async () => 42)
+    const memo = withResolverMemo(underlying, {ttlMs: 5000, now: () => t})
+
+    await expect(memo.resolve('org', 'repo-a')).resolves.toBe(42)
+    await expect(memo.resolve('org', 'repo-a')).resolves.toBe(42)
+    expect(underlying).toHaveBeenCalledTimes(1)
+    expect(memo.stats()).toEqual({hits: 1, misses: 1})
+
+    // TTL expiry: one ms past expiresAt (expiry is exclusive of the boundary
+    // moment — now() < expiresAt guards the hit).
+    t += 5001
+    await expect(memo.resolve('org', 'repo-a')).resolves.toBe(42)
+    expect(underlying).toHaveBeenCalledTimes(2)
+    expect(memo.stats()).toEqual({misses: 2, hits: 1})
+
+    // Distinct repos never share entries.
+    await expect(memo.resolve('org', 'repo-b')).resolves.toBe(42)
+    expect(underlying).toHaveBeenCalledTimes(3)
+  })
+
+  it('a failed resolve evicts any memoized entry (404 after rename never pins a stale id) and is never memoized itself', async () => {
+    let t = 1000
+    const underlying = vi.fn<(owner: string, name: string) => Promise<number>>()
+      .mockResolvedValueOnce(7)
+      .mockRejectedValueOnce(new Error('404 Not Found'))
+      .mockResolvedValueOnce(9)
+    const memo = withResolverMemo(underlying, {ttlMs: 60_000, now: () => t})
+
+    await expect(memo.resolve('org', 'moved')).resolves.toBe(7)
+    // TTL expiry forces a re-resolve; the repo has stopped resolving — the
+    // failure must evict the memoized entry and rethrow (fail-visible).
+    t += 60_001
+    await expect(memo.resolve('org', 'moved')).rejects.toThrow('404')
+    // Failure was not memoized: the next call hits the underlying resolver.
+    await expect(memo.resolve('org', 'moved')).resolves.toBe(9)
+    expect(underlying).toHaveBeenCalledTimes(3)
+  })
+
+  it('evict() forces re-resolution on the next call', async () => {
+    const underlying = vi.fn(async () => 7)
+    const memo = withResolverMemo(underlying)
+    await memo.resolve('org', 'repo')
+    await memo.resolve('org', 'repo')
+    expect(underlying).toHaveBeenCalledTimes(1)
+    memo.evict('org', 'repo')
+    await memo.resolve('org', 'repo')
+    expect(underlying).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('rm-162 — steady-state refresh cycles make ZERO resolver calls', () => {
+  // Mirrors the production wiring in server.ts buildSnapshotProvider: ONE
+  // withResolverMemo instance wraps the base resolver and is injected as
+  // aggregator deps.resolveInstallationIdForRepo (the metadata reader shares
+  // the same memo upstream).
+  it('two cycles × two metadata-only repos → underlying resolver called once per repo total (cycle 2: 0 calls)', async () => {
+    const underlying = vi.fn(async () => 7)
+    const memo = withResolverMemo(underlying) // real Date.now clock; TTL 30min ≫ test span
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [
+          makePublicRepo({node_id: 'NODE_M1', owner: 'org', name: 'meta-one'}),
+          makePublicRepo({node_id: 'NODE_M2', owner: 'org', name: 'meta-two'}),
+        ],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+      resolveInstallationIdForRepo: memo.resolve,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    expect(underlying).toHaveBeenCalledTimes(2) // 1 per metadata-only repo, cycle 1
+
+    await agg.refresh()
+    // rm-162 acceptance: steady-state cycle makes ZERO resolver calls.
+    expect(underlying).toHaveBeenCalledTimes(2)
+    expect(memo.stats()).toEqual({misses: 2, hits: 2})
+
+    const snap = agg.getSnapshot()
+    expect(snap.repos).toHaveLength(2)
+    expect(snap.repos.every(r => r.status.stale === false)).toBe(true)
   })
 })

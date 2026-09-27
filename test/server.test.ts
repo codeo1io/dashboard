@@ -3,7 +3,13 @@ import {existsSync, readdirSync} from 'node:fs'
 import {join} from 'node:path'
 import process from 'node:process'
 import {beforeAll, describe, expect, it, vi} from 'vitest'
-import {buildDashboardApp, buildSnapshotProvider, readMonitoringRefreshConfig, readServerBindConfig} from '../src/server.ts'
+import {
+  buildDashboardApp,
+  buildSnapshotProvider,
+  createGithubMetadataReader,
+  readMonitoringRefreshConfig,
+  readServerBindConfig,
+} from '../src/server.ts'
 import {SessionManager} from '../src/session.ts'
 
 describe('readServerBindConfig — server bind address (issue #13)', () => {
@@ -655,5 +661,98 @@ describe('readMonitoringRefreshConfig — refresh loop gate (rm-204)', () => {
   it('empty/whitespace-only value keeps the default-on behavior', () => {
     expect(readMonitoringRefreshConfig({DASHBOARD_MONITORING_REFRESH: ''}).enabled).toBe(true)
     expect(readMonitoringRefreshConfig({DASHBOARD_MONITORING_REFRESH: '   '}).enabled).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-162 — real metadata reader: conditional GET on repos.yaml (304 = unchanged)
+// ---------------------------------------------------------------------------
+
+describe('createGithubMetadataReader — If-None-Match / 304 (rm-162)', () => {
+  const b64 = (text: string) => Buffer.from(text, 'utf8').toString('base64').replaceAll(/(.{60})/g, '$1\n')
+  const contentsPayload = (text: string) => ({
+    type: 'file',
+    encoding: 'base64',
+    content: b64(text),
+  })
+
+  it('first read downloads + caches by ETag; a 304 serves the cached contents with no re-download', async () => {
+    const seenHeaders: Record<string, string>[] = []
+    let calls = 0
+    const fetchMock = vi.fn(async (_url: unknown, init?: {headers?: Record<string, string>}) => {
+      calls += 1
+      const flat = Object.fromEntries(
+        Object.entries((init?.headers ?? {})).map(([k, v]) => [k.toLowerCase(), v]),
+      )
+      seenHeaders.push(flat)
+      if (calls === 1) {
+        return new Response(JSON.stringify(contentsPayload('version: 1\nrepos: []\n')), {
+          status: 200,
+          headers: {'content-type': 'application/json', etag: '"repos-v1"'},
+        })
+      }
+      // GitHub's "resource unchanged, no body, free against the rate limit"
+      // answer. @octokit/request turns the 304 Response into a thrown
+      // HttpError{status: 304}, which the reader's catch treats as unchanged.
+      return new Response(null, {status: 304, headers: {etag: '"repos-v1"'}})
+    })
+    const reader = createGithubMetadataReader({
+      resolveInstallationId: vi.fn(async () => 77),
+      mintToken: vi.fn(async () => 'ghs_meta'),
+      fetch: fetchMock as unknown as typeof fetch,
+    })
+
+    await expect(reader('metadata/repos.yaml', 'data')).resolves.toBe('version: 1\nrepos: []\n')
+    await expect(reader('metadata/repos.yaml', 'data')).resolves.toBe('version: 1\nrepos: []\n')
+    expect(calls).toBe(2)
+    expect(seenHeaders[1]?.['if-none-match']).toBe('"repos-v1"')
+    // The resolver + mint tokens were requested once per read (the shared
+    // memo in production wiring is what collapses the resolver to zero —
+    // this unit asserts the reader's own ETag cache).
+  })
+
+  it('a 200 refresh replaces the cached contents and rotates the stored ETag', async () => {
+    let calls = 0
+    const etagsOnWire: (string | undefined)[] = []
+    const fetchMock = vi.fn(async (_url: unknown, init?: {headers?: Record<string, string>}) => {
+      calls += 1
+      const flat = Object.fromEntries(
+        Object.entries((init?.headers ?? {})).map(([k, v]) => [k.toLowerCase(), v]),
+      )
+      etagsOnWire.push(flat['if-none-match'])
+      if (calls === 1) {
+        return new Response(JSON.stringify(contentsPayload('old')), {
+          status: 200,
+          headers: {'content-type': 'application/json', etag: '"a"'},
+        })
+      }
+      if (calls === 2) return new Response(null, {status: 304, headers: {etag: '"a"'}})
+      return new Response(JSON.stringify(contentsPayload('new')), {
+        status: 200,
+        headers: {'content-type': 'application/json', etag: '"b"'},
+      })
+    })
+    const reader = createGithubMetadataReader({
+      resolveInstallationId: vi.fn(async () => 77),
+      mintToken: vi.fn(async () => 'ghs_meta'),
+      fetch: fetchMock as unknown as typeof fetch,
+    })
+
+    await expect(reader('metadata/repos.yaml', 'data')).resolves.toBe('old')
+    await expect(reader('metadata/repos.yaml', 'data')).resolves.toBe('old')
+    await expect(reader('metadata/repos.yaml', 'data')).resolves.toBe('new')
+    expect(etagsOnWire).toEqual([undefined, '"a"', '"a"'])
+  })
+
+  it('non-304 errors propagate (fail-visible redaction contract unchanged)', async () => {
+    const fetchMock = vi.fn(async () => new Response('gone', {status: 404}))
+    const reader = createGithubMetadataReader({
+      resolveInstallationId: vi.fn(async () => 77),
+      mintToken: vi.fn(async () => 'ghs_meta'),
+      fetch: fetchMock,
+    })
+    // @octokit/request raises RequestError{status: 404}; the mock returns a
+    // plain 404 Response which Octokit converts to a thrown HttpError.
+    await expect(reader('metadata/repos.yaml', 'data')).rejects.toThrow()
   })
 })

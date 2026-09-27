@@ -137,3 +137,58 @@ describe('Docker build-context seal (rm-186)', () => {
     ).toEqual([])
   })
 })
+
+// rm-225 (cycle-18 U3): the container has a HEALTHCHECK on /api/healthz.
+// The guard pins the shape the landing note promises: exactly one directive,
+// probed by the node runtime already in the image (node:24-slim has no
+// curl/wget and the runtime stage strips package managers — a curl-based
+// probe would silently rot or reintroduce packages), honoring DASHBOARD_PORT
+// with the server's default 3000, and hitting the public pre-auth endpoint.
+describe('Container HEALTHCHECK (rm-225)', () => {
+  const text = readFileSync(resolve(repoRoot, 'Dockerfile'), 'utf8')
+  // Dockerfile line continuations (`\`) make one logical directive span
+  // multiple physical lines — join them before asserting on the probe body.
+  const healthchecks = (() => {
+    const joined: {text: string; startLine: number}[] = []
+    let current: {text: string; startLine: number} | null = null
+    text.split('\n').forEach((rawLine, i) => {
+      const line = rawLine.trim()
+      if (line.startsWith('HEALTHCHECK')) {
+        current = {text: line, startLine: i + 1}
+      } else if (current !== null) {
+        current.text += ` ${line}`
+      }
+      if (current !== null && !line.endsWith('\\')) {
+        joined.push(current)
+        current = null
+      }
+    })
+    return joined
+  })()
+
+  it('declares exactly one HEALTHCHECK directive', () => {
+    expect(healthchecks.map(entry => entry.startLine)).toHaveLength(1)
+  })
+
+  it('probes via the node runtime — no new packages (curl/wget absent)', () => {
+    const directive = healthchecks[0]?.text ?? ''
+    expect(directive).toMatch(/CMD node -e /)
+    expect(directive).not.toMatch(/\b(curl|wget|busybox|nc)\b/)
+  })
+
+  it('targets the public /api/healthz endpoint on localhost, honoring DASHBOARD_PORT', () => {
+    const directive = healthchecks[0]?.text ?? ''
+    expect(directive).toContain('/api/healthz')
+    expect(directive).toContain('127.0.0.1')
+    expect(directive).toContain('DASHBOARD_PORT')
+    expect(directive).toContain('3000')
+  })
+
+  it('runs as the unprivileged USER — declared after USER node and before CMD', () => {
+    const userLine = text.split('\n').findIndex(line => line.trim() === 'USER node') + 1
+    const cmdLine = text.split('\n').findIndex(line => line.trim().startsWith('CMD ')) + 1
+    const healthLine = healthchecks[0]?.startLine ?? 0
+    expect(healthLine).toBeGreaterThan(userLine)
+    expect(healthLine).toBeLessThan(cmdLine)
+  })
+})

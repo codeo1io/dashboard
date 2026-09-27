@@ -78,4 +78,13 @@ USER node
 
 EXPOSE 3000
 
+# rm-225 (cycle-18 U3): container-native liveness signal. node:24-slim ships
+# no curl/wget and the runtime stage strips package managers, so the probe
+# uses the node runtime itself (zero new packages). Honors DASHBOARD_PORT
+# (server default 3000). /api/healthz is the public pre-auth endpoint
+# (routes/api.ts), so the probe needs no session cookie. Exit 1 on any
+# non-2xx or fetch error; unhealthy after --retries consecutive failures.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e 'const p = process.env.DASHBOARD_PORT || "3000"; fetch(`http://127.0.0.1:${p}/api/healthz`).then((r) => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))'
+
 CMD ["node", "src/server.ts"]

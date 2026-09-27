@@ -26,8 +26,6 @@ import process from 'node:process'
 import {serve} from '@hono/node-server'
 import {getConnInfo} from '@hono/node-server/conninfo'
 import {serveStatic} from '@hono/node-server/serve-static'
-import {Octokit} from '@octokit/core'
-import {graphql} from '@octokit/graphql'
 import {Hono, type Context} from 'hono'
 import {getCookie, setCookie} from 'hono/cookie'
 import {secureHeaders} from 'hono/secure-headers'
@@ -42,8 +40,8 @@ import {
 import {readFixtureHarnessConfig} from './gateway/operator-fixture-config.ts'
 import {FIXTURE_OPERATOR_PREFIX} from './gateway/operator-fixture-routes.ts'
 import {createOperatorServerFetch} from './gateway/operator-server-fetch.ts'
-import {COLD_START_SNAPSHOT, createAggregator} from './github/aggregator.ts'
-import {createDashboardAppClient, GITHUB_REQUEST_TIMEOUT_MS} from './github/app-client.ts'
+import {COLD_START_SNAPSHOT, createAggregator, withResolverMemo} from './github/aggregator.ts'
+import {createDashboardAppClient, createInstallationOctokit} from './github/app-client.ts'
 import {buildInstallationsClient, enumerateRepos, mintReadOnlyToken} from './github/installations.ts'
 import {makeNotFoundError, readRepoMetadata} from './github/metadata.ts'
 import {readListenerDbPath, readListenerIngestKey} from './listener/config.ts'
@@ -1035,6 +1033,65 @@ export interface SnapshotProviderDeps {
 }
 
 /**
+ * rm-162 + rm-221: real Octokit-backed metadata reader factory.
+ *
+ * Fetches metadata/repos.yaml from codeo1io/.github at ref=data via an
+ * INSTALLATION token (not App JWT — App JWT cannot read repo contents).
+ *
+ * - Conditional GET: the last ETag + decoded contents are held in this
+ *   closure and sent back as If-None-Match. A 304 Not Modified response
+ *   serves the cached body with no rate-limit cost, so the every-cycle
+ *   repos.yaml download becomes an every-cycle zero-payload check. The YAML
+ *   parse intentionally re-runs in readRepoMetadata (trivial cost).
+ * - Transport: the shared throttled + retrying installation Octokit
+ *   (rm-197's 30s per-request bound included) — never a bare Octokit.
+ */
+export function createGithubMetadataReader(options: {
+  readonly resolveInstallationId: (owner: string, name: string) => Promise<number>
+  readonly mintToken: (installationId: number) => Promise<string>
+  /** Fetch override for tests — forwarded to the Octokit request layer. */
+  readonly fetch?: typeof globalThis.fetch
+}): MetadataReader {
+  let metadataEtag: string | null = null
+  let metadataContent: string | null = null
+
+  return async (path: string, ref: string): Promise<string> => {
+    const installationId = await options.resolveInstallationId('codeo1io', '.github')
+    const token = await options.mintToken(installationId)
+
+    const installOctokit = createInstallationOctokit({token, fetch: options.fetch})
+    let response: Awaited<ReturnType<typeof installOctokit.request<'GET /repos/{owner}/{repo}/contents/{path}'>>>
+    try {
+      response = await installOctokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
+        owner: 'codeo1io',
+        repo: '.github',
+        path,
+        ref,
+        ...(metadataEtag === null ? {} : {headers: {'If-None-Match': metadataEtag}}),
+      })
+    } catch (error) {
+      // @octokit/request throws on non-2xx — a conditional GET's 304 Not
+      // Modified surfaces as RequestError{status: 304} with no body.
+      if ((error as {status?: number}).status === 304 && metadataContent !== null) {
+        // Unchanged: serve the cached decoded contents. metadataContent is
+        // non-null whenever metadataEtag is (they are set together).
+        return metadataContent
+      }
+      throw error
+    }
+    const data = response.data as unknown as {type: string; encoding: string; content: string}
+    if (data.type !== 'file' || data.encoding !== 'base64') {
+      throw makeNotFoundError(`${path} at ref=${ref} is not a base64-encoded file`)
+    }
+    // base64-decode the content (GitHub wraps at 60 chars with newlines)
+    const content = Buffer.from(data.content.replaceAll('\n', ''), 'base64').toString('utf8')
+    metadataEtag = response.headers.etag ?? null
+    metadataContent = content
+    return content
+  }
+}
+
+/**
  * Build the real aggregator snapshot provider from GitHub App credentials.
  *
  * Extracted from `createDashboardServer` so tests can assert the production
@@ -1067,7 +1124,7 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
    * GET /repos/{owner}/{repo}/installation — the only App-JWT endpoint valid
    * for this purpose (App JWT IS valid here per GitHub docs).
    */
-  const resolveInstallationIdForRepo =
+  const baseResolveInstallationIdForRepo =
     deps.resolveInstallationIdForRepo ??
     (async (owner: string, name: string): Promise<number> => {
       const response = await appClient.octokit.request('GET /repos/{owner}/{repo}/installation', {
@@ -1078,49 +1135,43 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
       return data.id
     })
 
+  // rm-162: ONE memoized resolver instance shared by the metadata reader and
+  // the aggregator (metadata-only repos). Steady-state refresh cycles make
+  // ZERO App-JWT resolver calls: hits are served from the memo, TTL expiry
+  // re-resolves, and a failed resolve evicts the entry (404 after a rename
+  // never pins a stale id).
+  const resolverMemo = withResolverMemo(baseResolveInstallationIdForRepo)
+  const resolveInstallationIdForRepo = resolverMemo.resolve
+
   // Real Octokit-backed metadata reader: fetches metadata/repos.yaml from
   // codeo1io/.github at ref=data via an INSTALLATION token (not App JWT).
-  // The installation is resolved via resolveInstallationIdForRepo('codeo1io', '.github').
+  // The installation is resolved via resolveInstallationIdForRepo('codeo1io', '.github')
+  // — the memoized resolver above, so the every-cycle re-resolution is free.
+  //
+  // rm-162: the read is a CONDITIONAL GET — see createGithubMetadataReader.
   const metadataReader: MetadataReader =
     deps.metadataReader ??
-    (async (path: string, ref: string): Promise<string> => {
-      // Resolve the installation for codeo1io/.github and mint a read-only token.
-      // This uses an installation token (not App JWT) — App JWT cannot read repo contents.
-      const installationId = await resolveInstallationIdForRepo('codeo1io', '.github')
-      const token = await getReadOnlyToken(installationId)
-
-      // rm-197 (review fix): time-bounded like every other GitHub transport —
-      // the metadata reader sits on the refresh path and must honor the 30s
-      // request contract, not undici's ~300s default.
-      const installOctokit = new Octokit({auth: token, request: {timeout: GITHUB_REQUEST_TIMEOUT_MS}})
-      const response = await installOctokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
-        owner: 'codeo1io',
-        repo: '.github',
-        path,
-        ref,
-      })
-      const data = response.data as unknown as {type: string; encoding: string; content: string}
-      if (data.type !== 'file' || data.encoding !== 'base64') {
-        throw makeNotFoundError(`${path} at ref=${ref} is not a base64-encoded file`)
-      }
-      // base64-decode the content (GitHub wraps at 60 chars with newlines)
-      return Buffer.from(data.content.replaceAll('\n', ''), 'base64').toString('utf8')
+    createGithubMetadataReader({
+      resolveInstallationId: resolveInstallationIdForRepo,
+      mintToken: getReadOnlyToken,
     })
 
   // Real per-installation graphql query function: mints a read-only token for
   // the given installationId and authenticates the graphql client with it.
   // NO "first installation" logic — each repo uses its own installation's token.
+  //
+  // rm-221: the former bare per-token GraphQL client (no plugin wiring)
+  // had NO throttling
+  // or retry wiring — per-repo GraphQL was the one refresh-path transport that
+  // bypassed the plugin chain. It now goes through the same throttled +
+  // retrying installation Octokit (`.graphql` flows through the request hook
+  // chain the plugins wrap), keeping the rm-197 30s bound as well.
   const graphqlQueryFn =
     deps.graphqlQueryFn ??
     (async (installationId: number, query: string, variables: Record<string, unknown>): Promise<unknown> => {
       const token = await getReadOnlyToken(installationId)
-      // rm-197 (review fix): the per-repo GraphQL client is the dominant
-      // transport of the serial first walk — it carries the same 30s bound.
-      const gql = graphql.defaults({
-        headers: {authorization: `token ${token}`},
-        request: {timeout: GITHUB_REQUEST_TIMEOUT_MS},
-      })
-      return gql(query, variables)
+      const installOctokit = createInstallationOctokit({token})
+      return installOctokit.graphql(query, variables)
     })
 
   const aggregator = createAggregator(installationsClient, metadataReader, {

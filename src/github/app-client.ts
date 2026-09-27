@@ -74,6 +74,57 @@ export interface DashboardAppClient {
 export const GITHUB_REQUEST_TIMEOUT_MS = 30_000
 
 /**
+ * Shared throttle + retry configuration for every Octokit instance this
+ * process constructs (rm-221). Primary rate limits: retry up to twice with
+ * the server-provided retryAfter. Secondary rate limits: log and back off
+ * via the plugin's automatic handling (never hammer past a 403).
+ *
+ * Keep the two callbacks free of token/PEM material — `opts.url` is the only
+ * request detail surfaced.
+ */
+export function githubThrottleOptions(): {
+  onRateLimit: (retryAfter: number, opts: Record<string, unknown>, octokit: unknown, retryCount: number) => boolean
+  onSecondaryRateLimit: (retryAfter: number, opts: Record<string, unknown>, octokit: unknown) => boolean
+} {
+  return {
+    onRateLimit: (retryAfter: number, opts: Record<string, unknown>, _octokit: unknown, retryCount: number) => {
+      logger.warning('GitHub rate limit hit', {retryAfter, url: opts.url, retryCount})
+      return retryCount < 2
+    },
+    onSecondaryRateLimit: (retryAfter: number, opts: Record<string, unknown>, _octokit: unknown) => {
+      logger.warning('GitHub secondary rate limit hit', {retryAfter, url: opts.url})
+      return false
+    },
+  }
+}
+
+/**
+ * rm-221: construct a throttled + retrying Octokit authenticated with an
+ * installation token. Every per-installation transport in the refresh path
+ * (repo-list pagination, contents reads, GraphQL queries) goes through this
+ * factory — a bare token-authenticated Octokit has no rate-limit or
+ * transient-5xx handling and defeats the rm-197 timeout-only bound.
+ *
+ * Returns the same plugin-wrapped class the App client uses, so `.graphql()`
+ * requests also flow through the throttling/retry hooks.
+ */
+export function createInstallationOctokit(options: {
+  readonly token: string
+  readonly requestTimeoutMs?: number
+  /** Fetch override for tests — forwarded to the Octokit request layer. */
+  readonly fetch?: typeof globalThis.fetch
+}): InstanceType<typeof ThrottledOctokit> {
+  return new ThrottledOctokit({
+    auth: options.token,
+    request: {
+      timeout: options.requestTimeoutMs ?? GITHUB_REQUEST_TIMEOUT_MS,
+      ...(options.fetch === undefined ? {} : {fetch: options.fetch}),
+    },
+    throttle: githubThrottleOptions(),
+  })
+}
+
+/**
  * Create a dashboard App client authenticated as the fro-bot Agent App.
  *
  * The returned `octokit` is JWT-authenticated (App-level) and is suitable for
@@ -86,16 +137,7 @@ export function createDashboardAppClient(options: AppClientOptions): DashboardAp
     authStrategy: createAppAuth,
     auth: {appId, privateKey},
     request: {timeout: options.requestTimeoutMs ?? GITHUB_REQUEST_TIMEOUT_MS},
-    throttle: {
-      onRateLimit: (retryAfter: number, opts: Record<string, unknown>, _octokit: unknown, retryCount: number) => {
-        logger.warning('GitHub rate limit hit', {retryAfter, url: opts.url, retryCount})
-        return retryCount < 2
-      },
-      onSecondaryRateLimit: (retryAfter: number, opts: Record<string, unknown>, _octokit: unknown) => {
-        logger.warning('GitHub secondary rate limit hit', {retryAfter, url: opts.url})
-        return false
-      },
-    },
+    throttle: githubThrottleOptions(),
   })
 
   async function mintInstallationToken(
