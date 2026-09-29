@@ -13,6 +13,7 @@ import type {GitHubOAuthClient} from '../src/auth/oauth.ts'
 import {Buffer} from 'node:buffer'
 import process from 'node:process'
 import {afterEach, describe, expect, it} from 'vitest'
+import {createListenerStore} from '../src/listener/store.ts'
 import {buildDashboardApp} from '../src/server.ts'
 import {SessionManager} from '../src/session.ts'
 
@@ -38,7 +39,7 @@ function makeSessionCookie(login: string = TEST_OPERATOR): string {
   return sm.sign(login)
 }
 
-async function buildTestApp(operatorUiEnabled: boolean) {
+async function buildTestApp(operatorUiEnabled: boolean, listener?: string) {
   return buildDashboardApp({
     operatorLogin: TEST_OPERATOR,
     cookieKey: TEST_KEY,
@@ -46,6 +47,8 @@ async function buildTestApp(operatorUiEnabled: boolean) {
     fetchUserLogin: async (_token: string) => TEST_OPERATOR,
     getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
     operatorUiEnabled,
+    listenerStore: listener === undefined ? undefined : createListenerStore(':memory:'),
+    listenerIngestKey: listener,
   })
 }
 
@@ -856,3 +859,136 @@ describe('security — raw failure reason codes security invariants', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// rm-252 (run c1a9e791 batch B3, 2026-09-29): /assets/* immutable cache policy
+// + build-time precompression negotiated server-side. These run against the
+// REAL pretest-built web/dist (same contract as the fixture-free assertions
+// above): the vite precompress plugin must have written .br/.gz siblings, and
+// the server must negotiate them by Accept-Encoding. The fallback test builds
+// an app over a throwaway dist with NO siblings to pin the identity path.
+// ---------------------------------------------------------------------------
+describe('/assets/* immutable cache + precompressed negotiation (rm-252)', () => {
+  it('serves a hashed asset with a year-long immutable cache-control', async () => {
+    const app = await buildTestApp(false)
+    const asset = await pickHashedAsset('.js')
+    const res = await app.request(`/assets/${asset}`)
+    expect(res.status).toBe(200)
+    const cc = res.headers.get('cache-control') ?? ''
+    expect(cc).toContain('max-age=31536000')
+    expect(cc).toContain('immutable')
+    expect(cc).toContain('public')
+  })
+
+  it('negotiates the brotli sibling for Accept-Encoding: br', async () => {
+    const app = await buildTestApp(false)
+    const asset = await pickHashedAsset('.js')
+    const res = await app.request(`/assets/${asset}`, {
+      headers: {'accept-encoding': 'gzip, deflate, br'},
+    })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-encoding')).toBe('br')
+    expect(res.headers.get('cache-control')).toContain('immutable')
+    expect(res.headers.get('vary')).toBe('Accept-Encoding')
+    const body = Buffer.from(await res.arrayBuffer())
+    const raw = await import('node:fs/promises').then(async fs =>
+      fs.readFile(`web/dist/assets/${asset}`),
+    )
+    // Brotli-11 on a ~280KB JS bundle must be strictly smaller than the raw
+    // file — this is the transfer-win assertion, not a smoke check.
+    expect(body.byteLength).toBeLessThan(raw.byteLength)
+    expect(body.byteLength).toBeGreaterThan(0)
+  })
+
+  it('negotiates the gzip sibling when only gzip is accepted', async () => {
+    const app = await buildTestApp(false)
+    const asset = await pickHashedAsset('.css')
+    const res = await app.request(`/assets/${asset}`, {
+      headers: {'accept-encoding': 'gzip'},
+    })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-encoding')).toBe('gzip')
+    expect(res.headers.get('content-type')).toContain('text/css')
+  })
+
+  it('falls back to identity + immutable when no sibling exists (older dist)', async () => {
+    const os = await import('node:os')
+    const fs = await import('node:fs/promises')
+    const tmpRoot = await fs.mkdtemp(joinTmp(os.tmpdir(), 'rm252-dist-'))
+    await fs.mkdir(`${tmpRoot}/assets`, {recursive: true})
+    await fs.writeFile(`${tmpRoot}/assets/legacy-abc123.js`, 'console.log(1)\n')
+    const app = await buildDashboardApp({
+      operatorLogin: TEST_OPERATOR,
+      cookieKey: TEST_KEY,
+      oauthClient: makeFakeOAuthClient(),
+      fetchUserLogin: async (_token: string) => TEST_OPERATOR,
+      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
+      operatorUiEnabled: false,
+      webDistRoot: tmpRoot,
+    })
+    const res = await app.request('/assets/legacy-abc123.js', {
+      headers: {'accept-encoding': 'gzip, deflate, br'},
+    })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-encoding')).toBeNull()
+    expect(res.headers.get('cache-control')).toContain('immutable')
+    expect(await res.text()).toContain('console.log(1)')
+    await fs.rm(tmpRoot, {recursive: true, force: true})
+  })
+
+  it('never lets the asset compression negotiation leak onto API/ingest routes', async () => {
+    // Scope lock for the rm-252 sibling negotiation: only /assets/* is
+    // negotiated. The batch doc named /api/operator/stream — that route does
+    // not exist in this server (the gateway SSE is fetched client-side by
+    // src/gateway/operator-sse-reader.ts; the only in-repo event-stream
+    // emitter is the dev-only fixture harness), so the lock is pinned on the
+    // surfaces that exist: the HMAC-verified ingest endpoint and a public
+    // API route. A br-capable client must get identity responses on both.
+    const app = await buildTestApp(false, 'k'.repeat(32))
+    const ingest = await app.request('/api/listener/ingest', {
+      method: 'POST',
+      headers: {'accept-encoding': 'gzip, deflate, br'},
+    })
+    expect(ingest.status).toBe(401) // no signature — auth boundary intact
+    expect(ingest.headers.get('content-encoding')).toBeNull()
+    expect(ingest.headers.get('cache-control') ?? '').not.toContain('immutable')
+    const health = await app.request('/api/healthz', {
+      headers: {'accept-encoding': 'gzip, deflate, br'},
+    })
+    expect(health.status).toBe(200)
+    expect(health.headers.get('content-encoding')).toBeNull()
+    expect(health.headers.get('cache-control') ?? '').not.toContain('immutable')
+  })
+
+  it('keeps the service worker on no-store and never lets immutable leak onto the shell', async () => {
+    const app = await buildTestApp(false)
+    // sw.js keeps its explicit no-store (pre-existing posture, pinned here
+    // so the /assets/* policy change can never be widened onto it).
+    const sw = await app.request('/sw.js')
+    expect(sw.headers.get('cache-control')).toContain('no-store')
+    // The SPA shell must not be long-cached: it references hashed assets by
+    // name, and web/dist is rebuilt in place on deploy (old hashed files are
+    // replaced) — a stale cached shell would point at 404ing assets. The
+    // default (non-push) shell currently ships NO cache-control at all; the
+    // rm-252 policy is scoped to /assets/* and must stay that way.
+    const cookie = makeSessionCookie()
+    const shell = await app.request('/', {headers: {cookie: `session=${cookie}`}})
+    const shellCache = shell.headers.get('cache-control') ?? ''
+    expect(shellCache).not.toContain('immutable')
+    expect(shellCache).not.toContain('max-age=31536000')
+  })
+})
+
+/** First hashed file in the pretest-built web/dist/assets matching `ext`. */
+async function pickHashedAsset(ext: string): Promise<string> {
+  const fs = await import('node:fs/promises')
+  const entries = await fs.readdir('web/dist/assets')
+  const match = entries.find(f => f.endsWith(ext) && !f.endsWith('.br') && !f.endsWith('.gz'))
+  if (match === undefined) throw new Error(`no ${ext} asset in web/dist/assets — was pretest run?`)
+  return match
+}
+
+/** join() without importing node:path at module scope (style: local helpers). */
+function joinTmp(dir: string, rest: string): string {
+  return `${dir.replace(/\/$/, '')}/${rest}`
+}
