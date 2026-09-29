@@ -2220,3 +2220,109 @@ describe('fixture SSE scenarios — serializeScenarioToSse output format', () =>
     expect(() => serializeScenarioToSse('not-a-real-scenario', FIXTURE_RUN_ID_FOR_TESTS)).toThrow()
   })
 })
+
+// ---------------------------------------------------------------------------
+// rm-252: contract 1.6.0 → 1.8.0 absorb
+// ---------------------------------------------------------------------------
+
+describe('createOperatorSseReader — supported-version set + contract 1.7.0/1.8.0 fields', () => {
+  const runningStatus = {
+    runId: 'run-001',
+    entityRef: 'fro-bot/agent',
+    surface: 'github',
+    phase: 'EXECUTING',
+    status: 'running',
+    startedAt: '2026-06-18T20:00:00Z',
+    stale: false,
+  }
+
+  async function readStream(sseText: string) {
+    const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
+    const reader = createOperatorSseReader({fetchImpl})
+    const events: RunStreamFrame[] = []
+    const errors: Error[] = []
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: frame => events.push(frame),
+      onError: err => errors.push(err),
+      onClose: () => {},
+    })
+    return {events, errors}
+  }
+
+  it('accepts contract 1.7.0 and 1.8.0 ready frames (deployed fleet span, rm-252)', async () => {
+    for (const version of ['1.7.0', '1.8.0']) {
+      const {events, errors} = await readStream(
+        `event: ready\ndata: {"contractVersion":"${version}"}\n\nevent: status\ndata: ${JSON.stringify(runningStatus)}\n\n`,
+      )
+      expect(errors).toHaveLength(0)
+      expect(events.filter(e => e.type === 'status')).toHaveLength(1)
+    }
+  })
+
+  it('fails closed on a version outside the supported set (1.9.0)', async () => {
+    const {events, errors} = await readStream(
+      `event: ready\ndata: {"contractVersion":"1.9.0"}\n\nevent: status\ndata: ${JSON.stringify(runningStatus)}\n\n`,
+    )
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.message).toContain('contract-drift')
+    expect(events.filter(e => e.type === 'status')).toHaveLength(0)
+  })
+
+  it('parses the contract 1.8.0 failureKind additions (workspace-unavailable, checkout-substituted)', async () => {
+    for (const failureKind of ['workspace-unavailable', 'checkout-substituted'] as const) {
+      const failed = {...runningStatus, phase: 'FAILED', status: 'failed', failureKind}
+      const {events, errors} = await readStream(
+        `event: ready\ndata: {"contractVersion":"1.8.0"}\n\nevent: status\ndata: ${JSON.stringify(failed)}\n\n`,
+      )
+      expect(errors).toHaveLength(0)
+      const statusFrame = events.find(e => e.type === 'status')
+      expect(statusFrame).toBeDefined()
+      if (statusFrame?.type === 'status') {
+        expect(statusFrame.data.failureKind).toBe(failureKind)
+      }
+    }
+  })
+
+  it('passes through checkoutProvenance/checkoutPreparation when well-formed, drops them when malformed', async () => {
+    const provenance = {
+      kind: 'observed',
+      observation: {
+        head: {kind: 'detached', sha: 'a'.repeat(40)},
+        worktree: {kind: 'clean'},
+      },
+      remote: {kind: 'checked', change: 'up-to-date'},
+    }
+    const preparation = {outcome: 'refused', reason: 'layout-refusal'}
+    const withFields = {
+      ...runningStatus,
+      checkoutProvenance: provenance,
+      checkoutPreparation: preparation,
+    }
+    const ok = await readStream(
+      `event: ready\ndata: {"contractVersion":"1.8.0"}\n\nevent: status\ndata: ${JSON.stringify(withFields)}\n\n`,
+    )
+    expect(ok.errors).toHaveLength(0)
+    const okFrame = ok.events.find(e => e.type === 'status')
+    if (okFrame?.type === 'status') {
+      expect(okFrame.data.checkoutProvenance?.kind).toBe('observed')
+      expect(okFrame.data.checkoutPreparation?.outcome).toBe('refused')
+    }
+
+    // Malformed shapes (string instead of object; array) normalize to absent —
+    // never parsed through, never echoed.
+    const malformed = {
+      ...runningStatus,
+      checkoutProvenance: 'not-an-object',
+      checkoutPreparation: [1, 2, 3],
+    }
+    const bad = await readStream(
+      `event: ready\ndata: {"contractVersion":"1.8.0"}\n\nevent: status\ndata: ${JSON.stringify(malformed)}\n\n`,
+    )
+    expect(bad.errors).toHaveLength(0)
+    const badFrame = bad.events.find(e => e.type === 'status')
+    if (badFrame?.type === 'status') {
+      expect(badFrame.data.checkoutProvenance).toBeUndefined()
+      expect(badFrame.data.checkoutPreparation).toBeUndefined()
+    }
+  })
+})

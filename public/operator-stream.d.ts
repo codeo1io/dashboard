@@ -10,6 +10,8 @@
 // ---------------------------------------------------------------------------
 
 export declare const PINNED_CONTRACT_VERSION: string
+/** Contract versions accepted on the ready frame (rm-252). PINNED is the newest supported. */
+export declare const SUPPORTED_CONTRACT_VERSIONS: ReadonlySet<string>
 export declare const RETRY_BASE_MS: number
 export declare const RETRY_FACTOR: number
 export declare const RETRY_MAX_COUNT: number
@@ -226,6 +228,33 @@ export type StreamEvent =
   | CancelActionEvent
 
 // ---------------------------------------------------------------------------
+// Checkout provenance / preparation (contract 1.7.0 / 1.8.0 — rm-252)
+// Mirrors src/gateway/operator-contract/run-status.ts (trimmed vendor of
+// upstream v0.117.0); the DOM consumes only toCheckoutSummary's whitelisted
+// fields, never these raw shapes.
+// ---------------------------------------------------------------------------
+
+export type CheckoutProvenance =
+  | {readonly kind: 'observed'; readonly observation: CheckoutObservation; readonly remote: RemoteFreshness}
+  | {readonly kind: 'unavailable'; readonly remote: RemoteFreshness}
+
+export interface CheckoutObservation {
+  readonly head: {readonly kind: 'attached'; readonly branch: string; readonly sha: string} | {readonly kind: 'detached'; readonly sha: string}
+  readonly worktree: {readonly kind: 'clean'} | {readonly kind: 'dirty'; readonly staged: number; readonly unstaged: number; readonly untracked: number; readonly conflicted: number}
+  readonly operationInProgress: 'none' | 'merge' | 'rebase' | 'am' | 'cherry-pick' | 'revert' | 'bisect'
+  readonly observedAt: string
+}
+
+export type RemoteFreshness =
+  | {readonly kind: 'not-checked'}
+  | {readonly kind: 'checked'; readonly defaultBranch: string; readonly sha: string; readonly checkedAt: string; readonly change: 'unchanged'}
+  | {readonly kind: 'checked'; readonly defaultBranch: string; readonly sha: string; readonly checkedAt: string; readonly change: 'fast-forward'; readonly fromSha: string}
+
+export type CheckoutPreparation =
+  | {readonly outcome: 'refused'; readonly reason: string}
+  | {readonly outcome: 'failed'; readonly reason: string; readonly permanent: boolean}
+
+// ---------------------------------------------------------------------------
 // Safe render model
 // ---------------------------------------------------------------------------
 
@@ -237,6 +266,8 @@ export interface SafeRunView {
   readonly stale: boolean
   /** Pre-resolved dashboard display label for a known failure reason. Never the raw failureKind. */
   readonly reasonLabel?: string
+  /** Pre-resolved, whitelisted checkout summary (rm-252, contract 1.7.0/1.8.0). Raw provenance/preparation objects never reach the DOM. */
+  readonly checkoutSummary?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -256,7 +287,7 @@ export declare function nextStreamState(current: StreamState, event: StreamEvent
 
 /**
  * Map a run status object to the safe render model.
- * Returns ONLY: { runId, status, phase, startedAt, stale, reasonLabel? }
+ * Returns ONLY: { runId, status, phase, startedAt, stale, reasonLabel?, checkoutSummary? }
  */
 export declare function toSafeRunView(runStatus: {
   readonly runId: string
@@ -265,6 +296,8 @@ export declare function toSafeRunView(runStatus: {
   readonly startedAt: string
   readonly stale: boolean
   readonly reasonLabel?: string
+  readonly checkoutProvenance?: CheckoutProvenance
+  readonly checkoutPreparation?: CheckoutPreparation
 }): SafeRunView
 
 /**
