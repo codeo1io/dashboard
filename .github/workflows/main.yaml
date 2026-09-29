@@ -29,8 +29,12 @@ jobs:
     # rm-188 (cycle 13, 2026-09-25): pinned ubuntu-24.04 — ubuntu-26.04 images are
     # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
     # at the rm-139 Node-26 window (2026-10-28).
+    # Lint headroom (2026-09-29 batch, run c1a9e791): any pnpm-lock.yaml change busts
+    # the setup composite's pnpm-store cache key, so dep-touching PRs pay a cold install
+    # plus a cold eslint on 2-core runners — measured >20m, self-cancelling at the old
+    # 20m ceiling on validation PRs 36529380580 and 36533710496. 35m stays under Test's 40m.
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - name: ⤵ Checkout Branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
