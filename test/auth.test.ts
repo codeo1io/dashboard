@@ -477,6 +477,37 @@ describe('OAuth flow', () => {
       expect(res.status).toBe(413)
     })
 
+    it('POST /auth/logout with an unterminated oversized stream → 413 without awaiting EOF (rm-288)', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat'})
+      const sm = new SessionManager(TEST_KEY)
+      const sessionCookie = sm.sign('octocat')
+      // A chunked body whose stream never closes: the cap must cancel the
+      // reader at MAX_LOGOUT_BODY_BYTES instead of buffering to EOF. The
+      // rm-268 buffer-first form parked the handler on the missing terminator
+      // (assess repro 2026-09-30, run 0a6430c9ba13); this is its regression.
+      let cancelled = false
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('x'.repeat(17_000)))
+          // deliberately never close()
+        },
+        cancel() {
+          cancelled = true
+        },
+      })
+      const res = await app.request('/auth/logout', {
+        method: 'POST',
+        headers: {
+          cookie: `session=${sessionCookie}`,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: stream,
+        duplex: 'half',
+      })
+      expect(res.status).toBe(413)
+      expect(cancelled).toBe(true)
+    }, 2_000)
+
     it('POST /auth/logout with a non-urlencoded content type → 415 (rm-268)', async () => {
       const app = await buildTestApp({operatorLogin: 'octocat'})
       const sm = new SessionManager(TEST_KEY)
