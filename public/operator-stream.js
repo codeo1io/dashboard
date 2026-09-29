@@ -182,6 +182,21 @@ function normalizeCrlf(text) {
   return text.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
 }
 
+// rm-265: append one decoded read() chunk to the stream buffer, holding a
+// trailing CR back so it cannot be normalized to LF before the next chunk
+// reveals whether it is half of a CRLF pair. Exported for the twin suite —
+// the server reader (src/gateway/operator-sse-reader.ts) carries the same
+// pending-CR logic inline and both are pinned by chunk-split regressions.
+export function appendStreamChunk(buffer, decoded) {
+  let text = buffer + decoded
+  let held = ''
+  if (text.endsWith('\r')) {
+    held = '\r'
+    text = text.slice(0, -1)
+  }
+  return normalizeCrlf(text) + held
+}
+
 // ---------------------------------------------------------------------------
 // Pure SSE frame parser
 // ---------------------------------------------------------------------------
@@ -2485,10 +2500,12 @@ export function initOperatorStream(opts) {
               }
 
               if (value) {
-                // Normalize CRLF on each appended chunk
-                const chunk = normalizeCrlf(decoder.decode(value, {stream: true}))
-                buffer += chunk
-                bufferBytes += encoder.encode(chunk).length
+                // rm-265: hold a trailing CR back — normalizing it to LF now
+                // would terminate its line early, so the LF opening the next
+                // chunk would forge a phantom record boundary and silently
+                // drop the frame. The held CR normalizes with the next chunk.
+                buffer = appendStreamChunk(buffer, decoder.decode(value, {stream: true}))
+                bufferBytes = encoder.encode(buffer).length
               }
 
               // Hard buffer cap (UTF-8 bytes, rm-114) — abort the reader and fail

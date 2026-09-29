@@ -12,8 +12,10 @@
  */
 
 import type {ApprovalFrameDataOpen, OutputFrameData, RunEntry, StreamState} from '../public/operator-stream.js'
+import fc from 'fast-check'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {
+  appendStreamChunk,
   bootstrapOperatorStreams,
   buildApprovalClient,
   buildCancelClient,
@@ -1273,6 +1275,60 @@ describe('parseSseFrame — CRLF normalization', () => {
     if (result !== null && result.success) {
       expect(result.frame.type).toBe('reset')
     }
+  })
+})
+
+// rm-265: the read() loop appends decoded chunks via appendStreamChunk, which
+// holds a trailing CR back so a CRLF pair split across chunks cannot forge a
+// phantom record boundary (the pre-fix bug dropped such frames silently).
+describe('appendStreamChunk — pending-CR chunk reassembly (rm-265)', () => {
+  it('holds a trailing CR instead of normalizing it to LF', () => {
+    expect(appendStreamChunk('', 'event: status\r')).toBe('event: status\r')
+    expect(appendStreamChunk('event: status\r', '')).toBe('event: status\r')
+  })
+
+  it('pairs a held CR with an LF arriving in the next chunk', () => {
+    expect(appendStreamChunk('event: status\r', '\ndata: {"runId":"run-abc"}\r')).toBe(
+      'event: status\ndata: {"runId":"run-abc"}\r',
+    )
+  })
+
+  it('collapses a CRLF pair that arrives within one chunk', () => {
+    expect(appendStreamChunk('', 'event: status\r\ndata: x\r\n\r\n')).toBe('event: status\ndata: x\n\n')
+  })
+
+  it('still normalizes lone CRs inside a chunk, holding only the final one', () => {
+    // The trailing CR stays pending — if the stream continues with an LF it
+    // collapses; if the stream ends, the done() flush parses buffer + '\n\n'
+    // and the parser's internal normalization resolves the held CR, so the
+    // final record is delivered exactly as before the fix (EOF parity).
+    expect(appendStreamChunk('', 'event: reset\rdata: {"runId":"r"}\r\r')).toBe(
+      'event: reset\ndata: {"runId":"r"}\n\r',
+    )
+    expect(appendStreamChunk('', 'a\rb\r')).toBe('a\nb\r')
+  })
+
+  it('property: any split of any wire text reassembles identically to a single chunk', () => {
+    const frame =
+      `event: status\r\ndata: ${
+        JSON.stringify({
+          runId: 'run-abc',
+          entityRef: 'fro-bot/agent',
+          surface: 'github',
+          phase: 'EXECUTING',
+          status: 'running',
+          startedAt: '2026-06-20T10:00:00Z',
+          stale: false,
+        })
+      }\r\n\r\n`
+    fc.assert(
+      fc.property(fc.constant(frame), fc.nat(frame.length - 1), (text, split) => {
+        const folded = appendStreamChunk(appendStreamChunk('', text.slice(0, split)), text.slice(split))
+        const whole = appendStreamChunk('', text)
+        expect(folded).toBe(whole)
+      }),
+      {numRuns: 300},
+    )
   })
 })
 
