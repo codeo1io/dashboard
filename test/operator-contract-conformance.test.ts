@@ -1,12 +1,12 @@
 /**
  * Operator contract conformance tests.
  *
- * Verifies the vendored operator contract v1.5.0 is correctly pinned and
+ * Verifies the vendored operator contract v1.8.0 is correctly pinned and
  * that parse helpers behave per spec. Also verifies the SSE frame types
  * vendored from fro-bot/agent (including the run-output and approval channels)
  * are structurally correct.
  *
- * Source: fro-bot/agent | Tag: v0.78.0
+ * Source: fro-bot/agent | Tag: v0.117.0
  */
 import type {ApprovalDecisionState, RunStatus} from '../src/gateway/operator-client.ts'
 import type {
@@ -44,6 +44,8 @@ import {
   PHASE_TO_WEB_STATUS,
   RUN_INDEX_CAP,
 } from '../src/gateway/operator-contract/index.ts'
+import {parseOperatorCheckoutPreparation, parseOperatorCheckoutProvenance} from '../src/gateway/operator-contract/provenance.ts'
+import {isKnownOperatorContractVersion, KNOWN_OPERATOR_CONTRACT_VERSIONS} from '../src/gateway/operator-contract-versions.ts'
 
 // ---------------------------------------------------------------------------
 // Type-level assignability: dashboard types ↔ canonical contract types
@@ -75,7 +77,7 @@ export {checkRunStatusBidirectional}
 // Using satisfies/export to avoid unused-variable lint while keeping the type constraint.
 
 // ReadyFrame: must accept a literal with contractVersion string
-const checkReadyFrameLiteral: ReadyFrame = {contractVersion: '1.6.0'}
+const checkReadyFrameLiteral: ReadyFrame = {contractVersion: '1.8.0'}
 export {checkReadyFrameLiteral}
 
 // ResetFrameData: must accept a literal with runId + ResetReason
@@ -141,7 +143,7 @@ const checkApprovalFrameSettle: OperatorApprovalFrame = {
 export {checkApprovalFrameSettle}
 
 // RunStreamFrame discriminated union: each variant must be constructable
-const checkReadyFrame: RunStreamFrame = {type: 'ready', data: {contractVersion: '1.6.0'}}
+const checkReadyFrame: RunStreamFrame = {type: 'ready', data: {contractVersion: '1.8.0'}}
 const checkOutputFrame: RunStreamFrame = {
   type: 'output',
   data: {runId: 'run-001', text: 'partial', final: false, seq: 0},
@@ -178,8 +180,16 @@ export {checkApprovalRunStreamFrame, checkReadyFrame, checkResetFrame, checkStat
 // ---------------------------------------------------------------------------
 
 describe('OPERATOR_CONTRACT_VERSION', () => {
-  it('is pinned to 1.6.0', () => {
-    expect(OPERATOR_CONTRACT_VERSION).toBe('1.6.0')
+  it('is pinned to 1.8.0 (gateway fro-bot/agent v0.115.0..v0.117.0)', () => {
+    expect(OPERATOR_CONTRACT_VERSION).toBe('1.8.0')
+  })
+
+  it('accepts the older 1.6.0 and 1.7.0 versions from an upgrade window', () => {
+    // Known-version acceptance (rm-157): an already-open dashboard keeps
+    // working while the gateway is upgraded ahead of the dashboard pin.
+    const versions: readonly string[] = KNOWN_OPERATOR_CONTRACT_VERSIONS
+    expect(versions).toEqual(['1.6.0', '1.7.0', '1.8.0'])
+    expect(versions.at(-1)).toBe(OPERATOR_CONTRACT_VERSION)
   })
 })
 
@@ -188,7 +198,7 @@ describe('OPERATOR_CONTRACT_VERSION', () => {
 // ---------------------------------------------------------------------------
 
 describe('OperatorFailureKind', () => {
-  it('all six known reason codes are assignable to the union', () => {
+  it('all eight known reason codes are assignable to the union', () => {
     const checkFailureKinds: OperatorFailureKind[] = [
       'inactivity-timeout',
       'max-duration-timeout',
@@ -196,8 +206,10 @@ describe('OperatorFailureKind', () => {
       'workspace-unreachable',
       'session-error',
       'unknown',
+      'workspace-unavailable',
+      'checkout-substituted',
     ]
-    expect(checkFailureKinds).toHaveLength(6)
+    expect(checkFailureKinds).toHaveLength(8)
   })
 
   it('OperatorRunStatus accepts an optional failureKind on a failed status', () => {
@@ -222,6 +234,149 @@ describe('OperatorFailureKind', () => {
     }
     expect(checkStatusWithFailureKind.failureKind).toBe('inactivity-timeout')
     expect(checkStatusWithoutFailureKind.failureKind).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Checkout provenance & preparation (contract 1.7.0+, fro-bot/agent v0.115.0+)
+// ---------------------------------------------------------------------------
+
+describe('parseOperatorCheckoutProvenance', () => {
+  const SHA = '930ffc9f2eaee18d4653542529665104d09473bd'
+  const remoteNotChecked = {kind: 'not-checked'}
+
+  it('accepts an observed provenance with attached head and clean worktree', () => {
+    const input = {
+      kind: 'observed',
+      observation: {
+        head: {kind: 'attached', sha: SHA, branch: 'main'},
+        worktree: {kind: 'clean'},
+        operationInProgress: 'none',
+        observedAt: '2026-09-24T00:00:00.000Z',
+      },
+      remote: remoteNotChecked,
+    }
+    const result = parseOperatorCheckoutProvenance(input)
+    expect(result).toBeDefined()
+    expect(result?.kind).toBe('observed')
+    expect(result?.kind === 'observed' && result.observation.head.kind === 'attached'
+      ? result.observation.head.branch
+      : undefined).toBe('main')
+  })
+
+  it('accepts an observed provenance with detached head and dirty counts', () => {
+    const input = {
+      kind: 'observed',
+      observation: {
+        head: {kind: 'detached', sha: SHA},
+        worktree: {kind: 'dirty', staged: 1, unstaged: 2, untracked: 3, conflicted: 0},
+        operationInProgress: 'rebase',
+        observedAt: '2026-09-24T00:00:00.000Z',
+      },
+      remote: {
+        kind: 'checked',
+        defaultBranch: 'main',
+        sha: SHA,
+        checkedAt: '2026-09-24T00:00:00.000Z',
+        change: 'fast-forward',
+        fromSha: '51b6d3df6b1a7db3069c1b06f224f77b5f0b8ef0',
+      },
+    }
+    expect(parseOperatorCheckoutProvenance(input)).toBeDefined()
+  })
+
+  it('rejects a fast-forward whose fromSha equals sha (invariant violation)', () => {
+    const input = {
+      kind: 'observed',
+      observation: {
+        head: {kind: 'detached', sha: SHA},
+        worktree: {kind: 'clean'},
+        operationInProgress: 'none',
+        observedAt: '2026-09-24T00:00:00.000Z',
+      },
+      remote: {
+        kind: 'checked',
+        defaultBranch: 'main',
+        sha: SHA,
+        checkedAt: '2026-09-24T00:00:00.000Z',
+        change: 'fast-forward',
+        fromSha: SHA,
+      },
+    }
+    expect(parseOperatorCheckoutProvenance(input)).toBeUndefined()
+  })
+
+  it('accepts the unavailable kind (v0.116.0+ workspace-unavailable runs)', () => {
+    expect(parseOperatorCheckoutProvenance({kind: 'unavailable', remote: remoteNotChecked})).toBeDefined()
+  })
+
+  it('rejects a malformed observation (empty sha)', () => {
+    expect(
+      parseOperatorCheckoutProvenance({
+        kind: 'observed',
+        observation: {
+          head: {kind: 'detached', sha: ''},
+          worktree: {kind: 'clean'},
+          operationInProgress: 'none',
+          observedAt: '2026-09-24T00:00:00.000Z',
+        },
+        remote: remoteNotChecked,
+      }),
+    ).toBeUndefined()
+  })
+
+  it('rejects an unknown kind', () => {
+    expect(parseOperatorCheckoutProvenance({kind: 'sideways', remote: remoteNotChecked})).toBeUndefined()
+    expect(parseOperatorCheckoutProvenance(undefined)).toBeUndefined()
+  })
+})
+
+describe('parseOperatorCheckoutPreparation', () => {
+  it('accepts a refused preparation (reason-only variant)', () => {
+    const result = parseOperatorCheckoutPreparation({outcome: 'refused', reason: 'detached'})
+    expect(result).toBeDefined()
+    expect(result?.outcome).toBe('refused')
+  })
+
+  it('accepts a refused preparation with a layout refusal reason', () => {
+    const result = parseOperatorCheckoutPreparation({
+      outcome: 'refused',
+      reason: 'unsupported-layout',
+      layoutReason: 'bare-repository',
+    })
+    expect(result).toBeDefined()
+  })
+
+  it('accepts a failed preparation with an allowlisted update-failure reason', () => {
+    const result = parseOperatorCheckoutPreparation({
+      outcome: 'failed',
+      reason: 'fetch-unreachable',
+      mutationStarted: false,
+      permanent: false,
+    })
+    expect(result).toBeDefined()
+    expect(result?.outcome).toBe('failed')
+  })
+
+  it('rejects a non-allowlisted refusal reason', () => {
+    expect(
+      parseOperatorCheckoutPreparation({outcome: 'refused', reason: 'made-up-reason'}),
+    ).toBeUndefined()
+  })
+
+  it('rejects a failed preparation missing required fields', () => {
+    expect(parseOperatorCheckoutPreparation({outcome: 'failed', reason: 'fetch-unreachable'})).toBeUndefined()
+  })
+})
+
+describe('isKnownOperatorContractVersion', () => {
+  it('accepts every known version and rejects everything else', () => {
+    for (const version of KNOWN_OPERATOR_CONTRACT_VERSIONS) {
+      expect(isKnownOperatorContractVersion(version)).toBe(true)
+    }
+    expect(isKnownOperatorContractVersion('1.5.0')).toBe(false)
+    expect(isKnownOperatorContractVersion('1.9.0')).toBe(false)
+    expect(isKnownOperatorContractVersion('')).toBe(false)
   })
 })
 
@@ -952,6 +1107,8 @@ describe('parseRunSummary', () => {
       'workspace-unreachable',
       'session-error',
       'unknown',
+      'workspace-unavailable',
+      'checkout-substituted',
     ] as const
     for (const failureKind of kinds) {
       const input = {

@@ -4,11 +4,24 @@
  * See docs/contracts/operator-listener-channel.md — retention policy (500 rows
  * / 30 days) and idempotency (dedupeKey upsert) are enforced here.
  */
-import type {IngestMessage, ListenerLink, ListenerMessage, MessagesResponse} from './contract.ts'
+import {parseLinks, type IngestMessage, type ListenerLink, type ListenerMessage, type MessagesResponse} from './contract.ts'
 import {randomUUID} from 'node:crypto'
 import {mkdirSync} from 'node:fs'
 import {dirname} from 'node:path'
 import {DatabaseSync} from 'node:sqlite'
+
+// rm-187: the read-back used to cast `JSON.parse(row.links)` unchecked, so a
+// corrupted or hand-edited row could put arbitrary shapes into the message
+// payload. Revalidate through the same parser the write path uses and fail
+// soft to an empty link list — the message body itself stays servable.
+function parseStoredLinks(raw: string): readonly ListenerLink[] {
+  try {
+    const result = parseLinks(JSON.parse(raw))
+    return result.success ? result.data : []
+  } catch {
+    return []
+  }
+}
 
 export interface ListenerStore {
   insert: (input: IngestMessage) => {id: string; receivedAt: string}
@@ -48,7 +61,7 @@ function rowToMessage(row: MessageRow): ListenerMessage {
     severity: row.severity as ListenerMessage['severity'],
     title: row.title,
     body: row.body,
-    links: JSON.parse(row.links) as readonly ListenerLink[],
+    links: parseStoredLinks(row.links),
     dedupeKey: row.dedupe_key,
     createdAt: row.created_at,
     receivedAt: row.received_at,

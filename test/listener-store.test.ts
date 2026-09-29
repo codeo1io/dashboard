@@ -1,3 +1,6 @@
+import {DatabaseSync} from 'node:sqlite'
+import {rmSync} from 'node:fs'
+import {tmpdir} from 'node:os'
 import type {IngestMessage} from '../src/listener/contract.ts'
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {createListenerStore, type ListenerStore} from '../src/listener/store.ts'
@@ -163,6 +166,41 @@ describe('listener store', () => {
 
     expect(messages.map(m => m.title)).toEqual(['fresh message'])
     expect(prunedCount).toBe(1)
+  })
+
+  it('corrupted links column reads back as empty instead of throwing (rm-187)', () => {
+    const dbPath = `${tmpdir()}/listener-store-corrupt-links-${process.pid}-${Date.now()}.sqlite`
+    const fileStore = createListenerStore(dbPath)
+    fileStore.insert(
+      makeMessage({
+        dedupeKey: 'corrupt-links',
+        title: 'corrupt links message',
+        links: [{label: 'PR', url: 'https://example.com/pr'}],
+      }),
+    )
+    fileStore.insert(
+      makeMessage({
+        dedupeKey: 'wrong-shape-links',
+        title: 'wrong shape links message',
+        links: [{label: 'run', url: 'https://example.com/run'}],
+      }),
+    )
+
+    // Corrupt one row's links past the write-path validation (invalid JSON) and
+    // the other into a valid-JSON-but-wrong shape; the read-back must fail soft.
+    const db = new DatabaseSync(dbPath)
+    db.exec("UPDATE messages SET links = '{\"unterminated' WHERE dedupe_key = 'corrupt-links'")
+    db.exec("UPDATE messages SET links = '{\"href\": 12}' WHERE dedupe_key = 'wrong-shape-links'")
+    db.close()
+
+    const {messages} = fileStore.list({})
+    expect(messages.map(m => m.title).sort()).toEqual([
+      'corrupt links message',
+      'wrong shape links message',
+    ])
+    expect(messages.every(m => m.links.length === 0)).toBe(true)
+    fileStore.close()
+    rmSync(dbPath, {force: true})
   })
 
   it('close does not throw', () => {

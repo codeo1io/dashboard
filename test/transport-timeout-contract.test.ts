@@ -10,7 +10,10 @@ import {describe, expect, it} from 'vitest'
 // in-diff comments asserted every transport was bounded. This gate pins the
 // wiring at the source level: every Octokit/graphql construction site in the
 // server tree must carry an explicit timeout (request.timeout or
-// AbortSignal.timeout) within its construction window.
+// AbortSignal.timeout) within its construction window, and — since the
+// rm-156 finding proved `request.timeout` alone is inert against hung
+// upstreams — an enforced fetch seam (`fetch: createBoundedFetch`) in the
+// same window.
 
 const repoRoot = process.cwd()
 
@@ -23,8 +26,13 @@ const TRANSPORT_FILES = [
 ] as const
 
 const CONSTRUCTION = /new \w*Octokit\(|graphql\.defaults\(/
-const WINDOW_LINES = 8
+const WINDOW_LINES = 12
 const TIMEOUT = /timeout\s*:|AbortSignal\.timeout/
+// rm-221 (2026-09-29): the timeout key alone does not bound hung upstreams —
+// only the fetch seam does. The gate previously accepted a bare `timeout:`
+// and stayed green while installations.ts ran an unbounded enumeration
+// transport; this second assertion closes that blind spot.
+const FETCH_BOUND = /fetch\s*:\s*createBoundedFetch|AbortSignal\.timeout/
 
 interface ConstructionSite {
   file: string
@@ -64,6 +72,16 @@ describe('GitHub transport timeout contract (rm-197 review fix)', () => {
       expect(
         TIMEOUT.test(site.window),
         `transport construction at ${site.file}:${site.line} has no timeout within ${WINDOW_LINES} lines:\n${site.window}`,
+      ).toBe(true)
+    },
+  )
+
+  it.each(sites.map(site => [`${site.file}:${site.line}`, site] as const))(
+    '%s enforces the bound at the fetch layer (rm-221)',
+    (_, site) => {
+      expect(
+        FETCH_BOUND.test(site.window),
+        `transport construction at ${site.file}:${site.line} carries no enforced fetch seam (fetch: createBoundedFetch / AbortSignal.timeout) within ${WINDOW_LINES} lines — a bare request.timeout is inert against hung upstreams (rm-156):\n${site.window}`,
       ).toBe(true)
     },
   )
