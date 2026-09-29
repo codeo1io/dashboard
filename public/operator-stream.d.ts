@@ -14,6 +14,13 @@ export declare const RETRY_BASE_MS: number
 export declare const RETRY_FACTOR: number
 export declare const RETRY_MAX_COUNT: number
 export declare const MAX_SSE_BUFFER_BYTES: number
+
+/**
+ * rm-265: append one decoded read() chunk to the stream buffer, holding a
+ * trailing CR back so a CRLF pair split across chunks cannot forge a phantom
+ * record boundary. The server reader carries the same pending-CR logic inline.
+ */
+export declare function appendStreamChunk(buffer: string, decoded: string): string
 export declare const MAX_OUTPUT_TEXT_CHARS: number
 export declare const MAX_APPROVAL_TOMBSTONES: number
 export declare const MAX_OPEN_APPROVALS: number
