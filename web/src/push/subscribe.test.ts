@@ -92,7 +92,7 @@ describe('buildPushClient', () => {
     expect(retryHeaders['x-csrf-token']).toBe('fresh-token')
   })
 
-  it('subscribePush: CSRF-refresh 401/403 surfaces as {kind:"http",status}, not {kind:"network"}', async () => {
+  it('subscribePush: CSRF-refresh 401 now surfaces as {kind:"unauthenticated"} (rm-276); 403 stays {kind:"http"}, never network', async () => {
     const fetchMock = vi.fn()
     fetchMock.mockResolvedValueOnce(jsonResponse(400, {}))
     fetchMock.mockResolvedValueOnce(new Response(null, {status: 401}))
@@ -103,7 +103,18 @@ describe('buildPushClient', () => {
 
     expect(result.success).toBe(false)
     if (!result.success) {
-      expect(result.error).toEqual({kind: 'http', status: 401})
+      expect(result.error).toEqual({kind: 'unauthenticated', status: 401})
+    }
+
+    const fetchMock403 = vi.fn()
+    fetchMock403.mockResolvedValueOnce(jsonResponse(400, {}))
+    fetchMock403.mockResolvedValueOnce(new Response(null, {status: 403}))
+    vi.stubGlobal('fetch', fetchMock403)
+
+    const result403 = await client.subscribePush({endpoint: 'x'}, 'stale-token', 'idem-key-2')
+    expect(result403.success).toBe(false)
+    if (!result403.success) {
+      expect(result403.error).toEqual({kind: 'http', status: 403})
     }
   })
 
@@ -1218,5 +1229,254 @@ describe('rm-264: abort windows unsubscribe the local subscription', () => {
     expect(outcome).toEqual({kind: 'aborted'})
     expect(newSubscription.unsubscribeMock).toHaveBeenCalledTimes(1)
     expect(pushClient.subscribePush).not.toHaveBeenCalled()
+  })
+})
+
+describe('rm-276: 401 from any /operator/push/* call surfaces as auth expiry, not a generic failure', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('refreshCsrf: 401 -> {kind:"unauthenticated"} (rm-273 parity with listener/monitoring clients)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, {status: 401}))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const client = buildPushClient()
+    const result = await client.refreshCsrf()
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toEqual({kind: 'unauthenticated', status: 401})
+    }
+  })
+
+  it('getVapidKey: 401 -> {kind:"unauthenticated"}, not pushDisabled and not generic http', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, {status: 401}))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const client = buildPushClient()
+    const result = await client.getVapidKey()
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toEqual({kind: 'unauthenticated', status: 401})
+    }
+  })
+
+  it('getPushSubscriptionMetadata: 401 -> {kind:"unauthenticated"}, never "absent"', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, {status: 401}))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const client = buildPushClient()
+    const result = await client.getPushSubscriptionMetadata()
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toEqual({kind: 'unauthenticated', status: 401})
+    }
+  })
+
+  it('subscribePush: non-CSRF-shaped 401 -> {kind:"unauthenticated"} with no refresh/retry burn', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(null, {status: 401}))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const client = buildPushClient()
+    const result = await client.subscribePush({endpoint: 'x'}, 'token', 'idem-key-1')
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toEqual({kind: 'unauthenticated', status: 401})
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('unsubscribePush: non-CSRF-shaped 401 -> {kind:"unauthenticated"} with no refresh/retry burn', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(null, {status: 401}))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const client = buildPushClient()
+    const result = await client.unsubscribePush('https://push.example/abc', 'token', 'idem-key-1')
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toEqual({kind: 'unauthenticated', status: 401})
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('rm-277: GET /subscriptions shape drift surfaces instead of masquerading as "no subscription"', () => {
+  function jsonResponse(status: number, body: unknown): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: {'content-type': 'application/json'},
+    })
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('scalar/array/null 200 body -> {kind:"contract-drift"}, never metadata-absent success', async () => {
+    for (const body of ['oops', 42, ['array'], null]) {
+      const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(200, body))
+      vi.stubGlobal('fetch', fetchMock)
+
+      const client = buildPushClient()
+      const result = await client.getPushSubscriptionMetadata()
+
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error).toEqual({kind: 'contract-drift'})
+      }
+    }
+  })
+
+  it('partially-typed metadata body -> {kind:"contract-drift"} (fields present but shape wrong)', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(200, {endpointHash: 42, keyVersion: 'v1'}))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const client = buildPushClient()
+    const result = await client.getPushSubscriptionMetadata()
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error).toEqual({kind: 'contract-drift'})
+    }
+  })
+
+  it('empty object 200 body stays the documented "no subscription" success', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(200, {}))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const client = buildPushClient()
+    const result = await client.getPushSubscriptionMetadata()
+
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data).toEqual({pushDisabled: false, metadata: undefined})
+    }
+  })
+})
+
+describe('rm-276: auth expiry reaches the outcome layer and the reconcile sweep', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('subscribeOptIn: vapid read 401 -> {kind:"unauthenticated"}, no permission prompt', async () => {
+    const registration = fakeRegistration(fakeSubscription('https://push.example/new'))
+    const requestPermission = vi.fn().mockResolvedValue('granted')
+    const pushClient = fakePushClient({
+      getVapidKey: vi.fn().mockResolvedValue(err({kind: 'unauthenticated', status: 401})),
+    })
+
+    const outcome = await subscribeOptIn({
+      serviceWorkerReady: () => Promise.resolve(registration),
+      getSupport: () => ({supported: true, needsInstall: false}),
+      requestPermission,
+      pushClient,
+    })
+
+    expect(outcome).toEqual({kind: 'unauthenticated'})
+    expect(registration.subscribeMock).not.toHaveBeenCalled()
+  })
+
+  it('subscribeOptIn: Gateway POST 401 -> {kind:"unauthenticated"} after local subscribe', async () => {
+    const registration = fakeRegistration(fakeSubscription('https://push.example/new'))
+    const subscription = fakeSubscription('https://push.example/new')
+    const pushClient = fakePushClient({
+      subscribePush: vi.fn().mockResolvedValue(err({kind: 'unauthenticated', status: 401})),
+    })
+
+    const outcome = await subscribeOptIn({
+      serviceWorkerReady: () => Promise.resolve({...registration, subscribe: vi.fn().mockResolvedValue(subscription)}),
+      getSupport: () => ({supported: true, needsInstall: false}),
+      requestPermission: () => Promise.resolve('granted'),
+      pushClient,
+    })
+
+    expect(outcome).toEqual({kind: 'unauthenticated'})
+  })
+
+  it('resubscribeStaleKey: vapid read 401 -> {kind:"unauthenticated"}', async () => {
+    const registration = fakeRegistration(fakeSubscription('https://push.example/old'))
+    const pushClient = fakePushClient({
+      getVapidKey: vi.fn().mockResolvedValue(err({kind: 'unauthenticated', status: 401})),
+    })
+
+    const outcome = await resubscribeStaleKey({
+      serviceWorkerReady: () => Promise.resolve(registration),
+      requestPermission: () => Promise.resolve('granted'),
+      pushClient,
+    })
+
+    expect(outcome).toEqual({kind: 'unauthenticated'})
+  })
+
+  it('runReconcileSweep: metadata 401 -> skipped with readFailure:"unauthenticated", no destructive action', async () => {
+    const subscription = fakeSubscription('https://push.example/live')
+    const pushClient = fakePushClient({
+      getPushSubscriptionMetadata: vi.fn().mockResolvedValue(err({kind: 'unauthenticated', status: 401})),
+    })
+
+    const result = await runReconcileSweep(
+      {
+        getLocalSubscription: () => Promise.resolve(subscription),
+        getPermission: () => 'granted',
+        pushClient,
+        getCurrentKeyVersion: () => 'v1',
+        now: () => 1,
+      },
+      INITIAL_RECONCILE_SWEEP_CACHE,
+    )
+
+    expect(result.skipped).toBe(true)
+    expect(result.action).toBeUndefined()
+    expect(result.readFailure).toBe('unauthenticated')
+    expect(subscription.unsubscribeMock).not.toHaveBeenCalled()
+  })
+
+  it('runReconcileSweep: metadata shape drift -> skipped with readFailure:"contract-drift" (rm-277)', async () => {
+    const subscription = fakeSubscription('https://push.example/live')
+    const pushClient = fakePushClient({
+      getPushSubscriptionMetadata: vi.fn().mockResolvedValue(err({kind: 'contract-drift'})),
+    })
+
+    const result = await runReconcileSweep(
+      {
+        getLocalSubscription: () => Promise.resolve(subscription),
+        getPermission: () => 'granted',
+        pushClient,
+        getCurrentKeyVersion: () => 'v1',
+        now: () => 1,
+      },
+      INITIAL_RECONCILE_SWEEP_CACHE,
+    )
+
+    expect(result.skipped).toBe(true)
+    expect(result.readFailure).toBe('contract-drift')
+    expect(subscription.unsubscribeMock).not.toHaveBeenCalled()
+  })
+
+  it('runReconcileSweep: unrelated transport error stays readFailure:undefined (no false auth signal)', async () => {
+    const subscription = fakeSubscription('https://push.example/live')
+    const pushClient = fakePushClient({
+      getPushSubscriptionMetadata: vi.fn().mockResolvedValue(err({kind: 'network'})),
+    })
+
+    const result = await runReconcileSweep(
+      {
+        getLocalSubscription: () => Promise.resolve(subscription),
+        getPermission: () => 'granted',
+        pushClient,
+        getCurrentKeyVersion: () => 'v1',
+        now: () => 1,
+      },
+      INITIAL_RECONCILE_SWEEP_CACHE,
+    )
+
+    expect(result.skipped).toBe(true)
+    expect(result.readFailure).toBeUndefined()
   })
 })

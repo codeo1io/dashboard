@@ -331,6 +331,30 @@ describe('Notifications Component', () => {
     expect(screen.getByTestId('notifications-cta')).toHaveTextContent('Try again')
   })
 
+  it('rm-276: a 401 subscribeOptIn outcome renders the Session Expired state whose CTA navigates to /auth/login', async () => {
+    addMetaTag()
+    vi.mocked(subscribeOptIn).mockResolvedValue({kind: 'unauthenticated'})
+
+    await act(async () => {
+      render(<Notifications />)
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('notifications-cta'))
+    })
+
+    // Copy state: the auth-expired headline, not the generic setup failure.
+    expect(screen.getByText('Session Expired')).toBeInTheDocument()
+
+    // CTA is re-auth, not a retry: clicking navigates server-side.
+    const assignMock = vi.fn()
+    const windowWithLocation = window as unknown as {location: {assign: typeof assignMock}}
+    windowWithLocation.location = {assign: assignMock}
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('notifications-cta'))
+    })
+    expect(assignMock).toHaveBeenCalledWith('/auth/login')
+  })
+
   it('handles transitioning to subscribe-failed on registration failure', async () => {
     addMetaTag()
     vi.mocked(subscribeOptIn).mockResolvedValue({kind: 'subscribe-failed'})
