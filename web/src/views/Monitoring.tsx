@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useRef, useState} from 'react'
-import {fetchMonitoring, type MonitoringData, type MonitoringRepo} from '../api/monitoring.ts'
+import {fetchMonitoring, type FetchMonitoringResult, type MonitoringData, type MonitoringRepo} from '../api/monitoring.ts'
 
 type ViewState =
   | {state: 'loading'}
@@ -7,6 +7,8 @@ type ViewState =
   | {state: 'ready'; data: MonitoringData}
 
 const POLL_INTERVAL_MS = 60000
+/** rm-251: hard ceiling on a single poll — releases the latch even if the transport never settles. */
+export const MONITORING_FETCH_TIMEOUT_MS = 15000
 
 /**
  * Red-repo drill-down view (rm-192): renders the repos whose default branch
@@ -17,6 +19,8 @@ const POLL_INTERVAL_MS = 60000
 export function Monitoring() {
   const [viewState, setViewState] = useState<ViewState>({state: 'loading'})
   const isFetchingRef = useRef(false)
+  /** rm-251: the in-flight request's controller, aborted on unmount. */
+  const activeAbortRef = useRef<AbortController | null>(null)
 
   const loadData = useCallback(async (isInitial: boolean) => {
     if (isFetchingRef.current) return
@@ -27,18 +31,42 @@ export function Monitoring() {
     }
 
     const abortController = new AbortController()
-    const result = await fetchMonitoring({abortSignal: abortController.signal})
-    isFetchingRef.current = false
+    activeAbortRef.current = abortController
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    try {
+      // rm-251: race the fetch against a wall-clock timeout AND abort the
+      // controller when it fires (the rm-155 Listener pattern). The race alone
+      // guarantees the latch is released even against a transport that never
+      // settles (and even one that ignores the abort signal); the abort
+      // additionally cancels the underlying request when the signal IS honored.
+      const result = await Promise.race([
+        fetchMonitoring({abortSignal: abortController.signal}),
+        new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(() => {
+            abortController.abort()
+            reject(new Error('monitoring fetch timed out'))
+          }, MONITORING_FETCH_TIMEOUT_MS)
+        }),
+      ]).catch((): FetchMonitoringResult => ({ok: false, reason: 'timeout'}))
 
-    if (!result.ok) {
-      setViewState(prev => (prev.state === 'ready' ? prev : {state: 'error', reason: result.reason}))
-      return
+      if (!result.ok) {
+        setViewState(prev => (prev.state === 'ready' ? prev : {state: 'error', reason: result.reason}))
+        return
+      }
+      setViewState({state: 'ready', data: result.data})
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId)
+      activeAbortRef.current = null
+      isFetchingRef.current = false
     }
-    setViewState({state: 'ready', data: result.data})
   }, [])
 
   useEffect(() => {
     void loadData(true)
+    // rm-251: cancel the in-flight request when the view unmounts.
+    return () => {
+      activeAbortRef.current?.abort()
+    }
   }, [loadData])
 
   useEffect(() => {
