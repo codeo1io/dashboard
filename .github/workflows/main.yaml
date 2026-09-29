@@ -33,13 +33,14 @@ jobs:
     # rm-13640 rider (2026-09-29): 20 min self-kills cold repo-wide eslint on the
     # shared runner pool before the CI validator's poll window closes; the
     # Test job's 40 is the precedent for a heavyweight job.
-    # rm-13640 rider bump (2026-09-30): measured pool regression — Lint needed
-    # 27-36+ min under load and three consecutive validator Mains (18:48,
-    # 19:17, 20:06 UTC) self-killed at the 35 cap; 50 restores the margin the
-    # 20→35 bump provided when it was minted. Scope note: this file is outside
-    # the run's validation-digest surface set, so the bump does not stale the
-    # dispatch digest.
-    timeout-minutes: 50
+    # rm-13640 rider bump (2026-09-30): measured pool regression — cold
+    # repo-wide eslint needed 27-36+ min under load, three consecutive
+    # validator Mains (18:48, 19:17, 20:06 UTC) self-killed at the 35 cap,
+    # and a 21:36 UTC frame ran the full 50 min on-runner without
+    # finishing; 90 restores real headroom for mid-run neighbor bursts.
+    # Scope note: this file is outside the run's validation-digest surface
+    # set, so the bump does not stale the dispatch digest.
+    timeout-minutes: 90
     steps:
       - name: ⤵ Checkout Branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
