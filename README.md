@@ -129,7 +129,7 @@ missing `_FILE` path silently falls back to the environment variable).
 | `DASHBOARD_PORT` | `src/server.ts` | `3000` | Bind port; anything but an integer in 1–65535 throws at startup (fail loud). |
 | `DASHBOARD_SNAPSHOT_CACHE` | `src/server.ts` | unset (off) | Optional file path enabling the boot-time snapshot bridge (rm-198): the last good snapshot is persisted here and reloaded at restart to bridge the cold-start window (forced stale, original `refreshedAt` preserved); unset/blank keeps in-memory-only behavior, and a missing/corrupt/oversize file fails open to an empty boot. |
 | `DASHBOARD_WEB_DIST` | `src/server.ts` | `./web/dist` | Client bundle root served at `/`. |
-| `RATE_LIMIT_MAX_PUBLIC` | `src/server.ts` | `60` | Requests per 60s window per client, pre-auth public class (SPA root, `/auth/*`, `/api/healthz`). |
+| `RATE_LIMIT_MAX_PUBLIC` | `src/server.ts` | `60` | Requests per 60s window per client, pre-auth public class (`/`, `/auth/login`, `/auth/callback`, `/api/healthz` — the exact sensitive-path gate in `src/server.ts`; other `/auth/*` paths such as logout sit outside the limiter by design, rm-270). |
 | `RATE_LIMIT_MAX_OPERATOR` | `src/server.ts` | `60` | Same budget, operator class (remaining `/api/*` and `/operator/*`). |
 | `RATE_LIMIT_MAX_INGEST` | `src/server.ts` | `60` | Same budget, ingest class (`/api/listener/ingest`; HMAC-gated by the route itself). |
 | `RATE_LIMIT_TRUSTED_PROXY` | `src/server.ts` | off | `1`/`true`/`yes` (case-insensitive) opts in to X-Forwarded-For-based client resolution for rate-limit keying behind a trusted reverse proxy. Off (the default) keys budgets on the remote address, so an untrusted direct client cannot spoof its way to multiple budgets. |

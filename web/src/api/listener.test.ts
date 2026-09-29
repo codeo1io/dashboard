@@ -129,6 +129,12 @@ describe('listener API', () => {
       const res = await fetchListenerMessages()
       expect(res).toEqual({ ok: false, reason: 'network' })
     })
+
+    it('rm-268: 401 maps to unauthenticated, not network (session expiry is not a transport failure)', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(new Response('unauthorized', { status: 401 }))
+      const res = await fetchListenerMessages()
+      expect(res).toEqual({ ok: false, reason: 'unauthenticated' })
+    })
   })
 
   describe('ackListenerMessage', () => {
