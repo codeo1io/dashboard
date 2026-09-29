@@ -43,6 +43,7 @@ import {
   parseRunSummaryList,
   PHASE_TO_WEB_STATUS,
   RUN_INDEX_CAP,
+  SUPPORTED_OPERATOR_CONTRACT_VERSIONS,
 } from '../src/gateway/operator-contract/index.ts'
 
 // ---------------------------------------------------------------------------
@@ -178,8 +179,13 @@ export {checkApprovalRunStreamFrame, checkReadyFrame, checkResetFrame, checkStat
 // ---------------------------------------------------------------------------
 
 describe('OPERATOR_CONTRACT_VERSION', () => {
-  it('is pinned to 1.6.0', () => {
-    expect(OPERATOR_CONTRACT_VERSION).toBe('1.6.0')
+  it('is pinned to 1.8.0', () => {
+    expect(OPERATOR_CONTRACT_VERSION).toBe('1.8.0')
+  })
+
+  it('the supported set spans the deployed gateway fleet (1.6.0–1.8.0, rm-252)', () => {
+    expect([...SUPPORTED_OPERATOR_CONTRACT_VERSIONS].sort()).toEqual(['1.6.0', '1.7.0', '1.8.0'])
+    expect(SUPPORTED_OPERATOR_CONTRACT_VERSIONS.has(OPERATOR_CONTRACT_VERSION)).toBe(true)
   })
 })
 
@@ -194,10 +200,12 @@ describe('OperatorFailureKind', () => {
       'max-duration-timeout',
       'stream-ended',
       'workspace-unreachable',
+      'workspace-unavailable',
+      'checkout-substituted',
       'session-error',
       'unknown',
     ]
-    expect(checkFailureKinds).toHaveLength(6)
+    expect(checkFailureKinds).toHaveLength(8)
   })
 
   it('OperatorRunStatus accepts an optional failureKind on a failed status', () => {

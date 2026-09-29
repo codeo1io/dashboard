@@ -169,3 +169,35 @@ describe('listener store', () => {
     expect(() => store.close()).not.toThrow()
   })
 })
+
+describe('listener store — corrupt links cell tolerance (rm-187)', () => {
+  it('a malformed links JSON cell degrades to an empty link list, not a thrown 500', async () => {
+    const {DatabaseSync} = await import('node:sqlite')
+    const fs = await import('node:fs')
+    const os = await import('node:os')
+    const path = await import('node:path')
+
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rm187-'))
+    const dbPath = path.join(tmp, 'listener.db')
+
+    const fileStore = createListenerStore(dbPath)
+    fileStore.insert(makeMessage({dedupeKey: 'victim', title: 'victim row'}))
+    fileStore.close()
+
+    // Corrupt the links cell the way storage damage or an older writer would.
+    const db = new DatabaseSync(dbPath)
+    db.exec("UPDATE messages SET links = '{not-json' WHERE dedupe_key = 'victim'")
+    db.close()
+
+    const reopened = createListenerStore(dbPath)
+    const rows = reopened.list({limit: 10})
+    const victim = rows.messages.find(m => m.title === 'victim row')
+
+    // The message stays readable; its links degrade to []. A thrown JSON.parse
+    // here would 500 the whole listing endpoint (rm-187).
+    expect(victim).toBeDefined()
+    expect(victim?.links).toEqual([])
+    reopened.close()
+    fs.rmSync(tmp, {recursive: true, force: true})
+  })
+})

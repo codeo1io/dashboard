@@ -136,6 +136,24 @@ this env gates the Caddy→gateway hop, not the dashboard. Topology background i
 S3 credentials, and user data. Never paste it into an issue, PR, or commit message. Extract the
 fields you need and delete the capture.
 
+**Gateway v0.116.0+ upgrades as a coupled pair with the workspace image** (rm-254, verified
+2026-09-29 against the `fro-bot/agent` release notes). Two behavior changes matter for this
+dashboard:
+
+- The gateway now requires its bearer token on every control route except `/healthz` and
+  `/readyz`. A gateway past v0.116.0 without the workspace bearer provisioned answers operator
+decision/cancel traffic with 401s that the dashboard (contract 1.8.0, rm-252) renders as the
+  operator-actionable `workspace-unavailable` state — a runbook pointer, not a session-expiry
+  reload. If every operator action on `/operator/*` shows that state at once, check the gateway
+  service's bearer env (`docker compose config`) before touching sessions.
+- The gateway and workspace images must move together. Upgrading one side alone produces exactly
+  the same 401-shaped unavailability from the control plane. Upgrade both, then re-check
+  `/operator/*` decision and cancel affordances.
+
+This dashboard pins the workflow's `fro-bot/agent` action by commit sha (`fro-bot.yaml`, rm-252
+holds it at v0.117.0 / operator contract 1.8.0); the dashboard's parsers accept contract versions
+1.6.0–1.8.0 and fail closed outside that set.
+
 ---
 
 ## Reading logs effectively

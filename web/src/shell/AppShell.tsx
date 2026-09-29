@@ -153,6 +153,10 @@ export function AppShell({
 }: AppShellProps) {
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
   const [loggingOut, setLoggingOut] = useState(false)
+  // rm-276: surfaced when the gateway CSRF probe fails with anything other
+  // than 404 — the operator stays signed in with a retryable error instead of
+  // a silent Arctic downgrade that cannot clear the session.
+  const [logoutFailed, setLogoutFailed] = useState(false)
   const logoutInFlight = useRef(false)
 
   useEffect(() => {
@@ -174,6 +178,7 @@ export function AppShell({
     if (logoutInFlight.current) return
     logoutInFlight.current = true
     setLoggingOut(true)
+    setLogoutFailed(false)
 
     // Purge operator runtime caches before navigating away so a
     // logged-out user cannot see cached operator data offline.
@@ -186,12 +191,24 @@ export function AppShell({
 
     try {
       const csrfRes = await fetch('/operator/session/csrf', {credentials: 'same-origin'})
-      if (!csrfRes.ok) {
+      if (csrfRes.status === 404) {
         // Arctic (default) auth mode: the gateway operator session surface is
         // not mounted here, so this fetch 404s. Complete the logout through
         // the Arctic contract so the server-side session cookie is actually
         // cleared; arcticLogout fails closed to the login page on any error.
         await arcticLogout()
+        return
+      }
+      if (!csrfRes.ok) {
+        // rm-276: any non-404 failure (5xx, 403, bad gateway …) means the
+        // gateway is reachable but erroring — NOT Arctic mode. Falling back to
+        // arcticLogout here would silently no-op the logout in gateway-auth
+        // mode (/auth/logout-csrf is unmounted) and leave the server-side
+        // session live. Fail loudly instead: keep the operator signed in and
+        // surface a retryable error banner.
+        setLoggingOut(false)
+        logoutInFlight.current = false
+        setLogoutFailed(true)
         return
       }
 
@@ -493,6 +510,16 @@ export function AppShell({
                   <line x1="13" y1="8" x2="6" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                 </svg>
               </button>
+
+              {logoutFailed && (
+                <span
+                  role="alert"
+                  data-testid="logout-error"
+                  className="text-xs text-error"
+                >
+                  Sign-out is unavailable — the gateway session check failed. You are still signed in; try again.
+                </span>
+              )}
             </div>
           </nav>
         </div>
