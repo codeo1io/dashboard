@@ -20,6 +20,8 @@ import {Octokit} from '@octokit/core'
 import {logger} from '../logger.ts'
 import {err, ok} from '../result.ts'
 import {GITHUB_REQUEST_TIMEOUT_MS, safeErrorMessage} from './app-client.ts'
+import type {EtagCacheRef} from './conditional-request.ts'
+import {isNotModifiedResponse, NotModifiedError, readWithEtagCache} from './conditional-request.ts'
 
 // ---------------------------------------------------------------------------
 // Read-only permissions
@@ -138,7 +140,10 @@ export interface InstallationsClient {
    * List all repos accessible to the given installation token.
    * Returns records without installation_id — enumerateRepos attaches it.
    */
-  readonly listInstallationRepos: (token: string) => Promise<readonly Omit<RepoRecord, 'installation_id'>[]>
+  readonly listInstallationRepos: (
+    installationId: number,
+    token: string,
+  ) => Promise<readonly Omit<RepoRecord, 'installation_id'>[]>
 }
 
 // ---------------------------------------------------------------------------
@@ -299,7 +304,7 @@ export async function enumerateRepos(
 
     let repos: readonly Omit<RepoRecord, 'installation_id'>[]
     try {
-      repos = await client.listInstallationRepos(token)
+      repos = await client.listInstallationRepos(installation.id, token)
     } catch (repoError) {
       logger.warning('Failed to list repos for installation; counting degraded installation', {
         installationId: installation.id,
@@ -330,7 +335,33 @@ export async function enumerateRepos(
 // Real client factory (uses DashboardAppClient)
 // ---------------------------------------------------------------------------
 
-async function listInstallationReposWithToken(token: string): Promise<readonly Omit<RepoRecord, 'installation_id'>[]> {
+/**
+ * rm-162: per-installation, per-page ETag cache for GET /installation/repositories.
+ * Module-level so entries survive across refresh cycles; the footprint is
+ * bounded by (installations × pages) — entries are replaced in place, never
+ * accumulated per cycle. A 304 serves the cached page body for free (304s do
+ * not count against the primary rate limit).
+ */
+const repoPageEtagCache = new Map<number, Map<number, EtagCacheRef>>()
+
+function pageCacheRefFor(installationId: number, page: number): EtagCacheRef {
+  let pages = repoPageEtagCache.get(installationId)
+  if (pages === undefined) {
+    pages = new Map<number, EtagCacheRef>()
+    repoPageEtagCache.set(installationId, pages)
+  }
+  let ref = pages.get(page)
+  if (ref === undefined) {
+    ref = {current: undefined}
+    pages.set(page, ref)
+  }
+  return ref
+}
+
+async function listInstallationReposWithToken(
+  installationId: number,
+  token: string,
+): Promise<readonly Omit<RepoRecord, 'installation_id'>[]> {
   const installOctokit = new Octokit({
     auth: token,
     // rm-197: per-repo installation walks are serial — a stalled request must
@@ -341,11 +372,25 @@ async function listInstallationReposWithToken(token: string): Promise<readonly O
   const repos: Omit<RepoRecord, 'installation_id'>[] = []
   let page = 1
   while (true) {
-    const response = await installOctokit.request('GET /installation/repositories', {
-      per_page: 100,
-      page,
-    })
-    const data = response.data as unknown as {
+    const raw = await readWithEtagCache(async ifNoneMatch => {
+      let response: Awaited<ReturnType<typeof installOctokit.request>>
+      try {
+        response = await installOctokit.request('GET /installation/repositories', {
+          per_page: 100,
+          page,
+          headers: ifNoneMatch === undefined ? {} : {'If-None-Match': ifNoneMatch},
+        })
+      } catch (error) {
+        // Octokit throws RequestError(status=304) for a conditional hit.
+        if (isNotModifiedResponse(error)) {
+          logger.debug('installation repo page not modified (304)', {installationId, page})
+          throw new NotModifiedError()
+        }
+        throw error
+      }
+      return {etag: response.headers.etag, body: JSON.stringify(response.data ?? {})}
+    }, pageCacheRefFor(installationId, page))
+    const data = JSON.parse(raw) as unknown as {
       total_count: number
       repositories: {
         id: number

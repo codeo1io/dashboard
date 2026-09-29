@@ -114,6 +114,7 @@ missing `_FILE` path silently falls back to the environment variable).
 | `DASHBOARD_FIXTURE_HARNESS_ENABLED` | `src/gateway/operator-fixture-config.ts` | off | Operator fixture-harness flag; only the exact value `true` enables (fail-closed). |
 | `DASHBOARD_GATEWAY_OPERATOR_ORIGIN` | `src/gateway/operator-config.ts` | `https://dashboard.fro.bot` | Pinned trusted origin for the `/operator/*` proxy target — never derived from the request Host header. Must be an absolute http(s) origin with no path/query/fragment. |
 | `DASHBOARD_GATEWAY_OPERATOR_SESSION_ENABLED` | `src/gateway/operator-config.ts` | off | Gateway-backed operator session forwarding; only the exact value `true` enables (fail-closed). |
+| `GATEWAY_ALLOWED_OPERATOR_LOGINS` | `src/server.ts` | off | Comma-separated allowlist of GitHub logins permitted to use the gateway-backed `/operator/*` proxy surface. Fail-closed: unset, empty, or not matching keeps the operator surface unavailable (no session forwarded) rather than allowing everyone. |
 | `DASHBOARD_GITHUB_APP_ID` | `src/server.ts` | unset | GitHub App id; together with the key below — when either is unset the GitHub data layer is disabled and an empty snapshot is served with a warning. |
 | `DASHBOARD_GITHUB_APP_KEY` | `src/server.ts` | unset | GitHub App private key (multiline PEM). |
 | `DASHBOARD_HOST` | `src/server.ts` | `0.0.0.0` | Bind host; must be loopback for `DASHBOARD_DEV_AUTOLOGIN` to be honored. |
@@ -129,6 +130,7 @@ missing `_FILE` path silently falls back to the environment variable).
 | `DASHBOARD_PORT` | `src/server.ts` | `3000` | Bind port; anything but an integer in 1–65535 throws at startup (fail loud). |
 | `DASHBOARD_SNAPSHOT_CACHE` | `src/server.ts` | unset (off) | Optional file path enabling the boot-time snapshot bridge (rm-198): the last good snapshot is persisted here and reloaded at restart to bridge the cold-start window (forced stale, original `refreshedAt` preserved); unset/blank keeps in-memory-only behavior, and a missing/corrupt/oversize file fails open to an empty boot. |
 | `DASHBOARD_WEB_DIST` | `src/server.ts` | `./web/dist` | Client bundle root served at `/`. |
+| `RATE_LIMIT_MAX_KEYS` | `src/server.ts` | `10000` | Hard cap on distinct client keys held in the in-memory rate-limit store (rm-251). At capacity a new client first triggers a stale-window sweep; if the store is still full the request fails closed (429). Existing keys are never evicted by cap pressure — the bound exists so a flood of unique (spoofed XFF or real) addresses cannot grow the store unboundedly between sweep windows. |
 | `RATE_LIMIT_MAX_PUBLIC` | `src/server.ts` | `60` | Requests per 60s window per client, pre-auth public class (SPA root, `/auth/*`, `/api/healthz`). |
 | `RATE_LIMIT_MAX_OPERATOR` | `src/server.ts` | `60` | Same budget, operator class (remaining `/api/*` and `/operator/*`). |
 | `RATE_LIMIT_MAX_INGEST` | `src/server.ts` | `60` | Same budget, ingest class (`/api/listener/ingest`; HMAC-gated by the route itself). |
