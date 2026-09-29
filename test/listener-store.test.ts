@@ -169,3 +169,64 @@ describe('listener store', () => {
     expect(() => store.close()).not.toThrow()
   })
 })
+
+describe('rm-278: replay preserves the original received_at', () => {
+  it('redelivered message keeps its first receipt timestamp — not re-pinned at the feed head', () => {
+    const store = createListenerStore(':memory:')
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-09-28T10:00:00Z'))
+      const first = store.insert(makeMessage({dedupeKey: 'run-42', createdAt: '2026-09-28T10:00:00Z'}))
+
+      vi.setSystemTime(new Date('2026-09-29T10:00:00Z'))
+      store.insert(makeMessage({title: 'later message', dedupeKey: null, createdAt: '2026-09-29T10:00:00Z'}))
+
+      // Replay arrives much later with the same dedupe key.
+      vi.setSystemTime(new Date('2026-09-29T12:00:00Z'))
+      const replayed = store.insert(makeMessage({dedupeKey: 'run-42', createdAt: '2026-09-29T12:00:00Z'}))
+
+      expect(replayed.id).toBe(first.id)
+      expect(replayed.receivedAt).toBe(first.receivedAt)
+
+      // Feed order still reflects the ORIGINAL receipt: the replay must not
+      // leapfrog the later message.
+      const {messages} = store.list({})
+      expect(messages[0]?.title).toBe('later message')
+      expect(messages[1]?.title).toBe('Autoheal restarted gateway')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a looping source cannot keep its message alive: retention ages on the ORIGINAL received_at', () => {
+    const store = createListenerStore(':memory:')
+    vi.useFakeTimers()
+    try {
+      // Original receipt at T0; a redelivery 19 days later must NOT move the
+      // 30-day retention clock (pre-fix the replay refreshed received_at and
+      // the message would survive until T0+19+30).
+      vi.setSystemTime(new Date('2026-09-01T00:00:00Z'))
+      const first = store.insert(makeMessage({dedupeKey: 'loop-1', createdAt: '2026-09-01T00:00:00Z'}))
+
+      vi.setSystemTime(new Date('2026-09-20T00:00:00Z'))
+      const replayed = store.insert(makeMessage({dedupeKey: 'loop-1', createdAt: '2026-09-20T00:00:00Z'}))
+      expect(replayed.receivedAt).toBe(first.receivedAt)
+
+      // 28 days after the ORIGINAL receipt: still retained (age-based
+      // eviction runs on insert's prune, so drive it with an unrelated row).
+      vi.setSystemTime(new Date('2026-09-29T00:00:00Z'))
+      store.insert(makeMessage({title: 'unrelated', dedupeKey: null, createdAt: '2026-09-29T00:00:00Z'}))
+      let snapshot = store.list({})
+      expect(snapshot.messages.some((m) => m.id === first.id)).toBe(true)
+
+      // 31 days after the ORIGINAL receipt (only 11 after the replay): aged
+      // out — the looping source could not keep it alive.
+      vi.setSystemTime(new Date('2026-10-02T00:00:00Z'))
+      store.insert(makeMessage({title: 'unrelated 2', dedupeKey: null, createdAt: '2026-10-02T00:00:00Z'}))
+      snapshot = store.list({})
+      expect(snapshot.messages.some((m) => m.id === first.id)).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

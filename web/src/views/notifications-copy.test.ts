@@ -19,6 +19,8 @@ const ALL_STATES: NotificationUiState[] = [
   'sw-not-ready',
   'sw-unavailable',
   'subscribe-failed',
+  'unauthenticated',
+  'contract-drift',
 ]
 
 describe('getNotificationCopy completeness', () => {
@@ -82,4 +84,18 @@ describe('copy security checks', () => {
       }
     }
   }
+})
+
+describe('rm-276/rm-277: auth-expiry and contract-drift states', () => {
+  it('unauthenticated carries a re-auth CTA (signs in again), not a blind retry', () => {
+    const copy = getNotificationCopy('unauthenticated')
+    expect(copy.ctaText).toBe('Sign In Again')
+    expect(copy.headline.length).toBeGreaterThan(0)
+  })
+
+  it('contract-drift has no CTA — a server-side mismatch cannot be retried away', () => {
+    const copy = getNotificationCopy('contract-drift')
+    expect(copy.ctaText).toBeNull()
+    expect(copy.recoveryHint.length).toBeGreaterThan(0)
+  })
 })

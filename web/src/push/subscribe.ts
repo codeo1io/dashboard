@@ -24,7 +24,8 @@ import {urlB64ToUint8Array} from './vapid-key.ts'
 // ---------------------------------------------------------------------------
 
 export interface PushClientError {
-  readonly kind: 'http' | 'network' | 'protocol' | 'validation'
+  /** rm-276: 'unauthenticated' = HTTP 401 from any /operator/push/* call — auth expiry, not a subscription failure. rm-277: 'contract-drift' = a 200 body that violates the documented Gateway shape. */
+  readonly kind: 'http' | 'network' | 'protocol' | 'validation' | 'unauthenticated' | 'contract-drift'
   readonly status?: number
 }
 
@@ -109,6 +110,9 @@ export function buildPushClient(opts?: BuildPushClientOptions): PushClient {
         const res = await browserFetch(withFixtureSessionId(`${operatorBase}/session/csrf`), {
           headers: {'content-type': 'application/json'},
         })
+        // rm-276: auth expiry must not read as a generic subscribe failure —
+        // classify it so callers can offer the sign-in affordance (rm-273 parity).
+        if (res.status === 401) return err({kind: 'unauthenticated', status: res.status})
         if (!res.ok) return err({kind: 'http', status: res.status})
         const data = (await res.json()) as unknown
         if (data === null || typeof data !== 'object' || typeof (data as {csrfToken?: unknown}).csrfToken !== 'string') {
@@ -126,6 +130,8 @@ export function buildPushClient(opts?: BuildPushClientOptions): PushClient {
           headers: {'content-type': 'application/json'},
         })
         if (res.status === 404) return ok({pushDisabled: true, vapidKey: undefined})
+        // rm-276: 401 = auth expiry, not push-disabled and not a generic failure.
+        if (res.status === 401) return err({kind: 'unauthenticated', status: res.status})
         if (!res.ok) return err({kind: 'http', status: res.status})
         const data = (await res.json()) as unknown
         if (
@@ -148,14 +154,27 @@ export function buildPushClient(opts?: BuildPushClientOptions): PushClient {
           headers: {'content-type': 'application/json'},
         })
         if (res.status === 404) return ok({pushDisabled: true, metadata: undefined})
+        // rm-276: 401 = auth expiry, not push-disabled and not a generic failure.
+        if (res.status === 401) return err({kind: 'unauthenticated', status: res.status})
         if (!res.ok) return err({kind: 'http', status: res.status})
         const data = (await res.json()) as unknown
-        if (data === null || typeof data !== 'object') {
-          return ok({pushDisabled: false, metadata: undefined})
+        if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+          // rm-277: the 200 contract is an empty object (no subscription) or the
+          // full metadata shape — a null/scalar/array body can never mean
+          // "absent". Surface the drift instead of silently reading it as
+          // no-subscription, which would drive re-subscribe churn against a
+          // changed Gateway (parity with the listener/monitoring contract-drift
+          // reason strings).
+          return err({kind: 'contract-drift'})
         }
         // Gateway returns either an empty object (no subscription) or the metadata shape.
         if (hasValidSubscriptionMetadataShape(data) === false) {
-          return ok({pushDisabled: false, metadata: undefined})
+          if (Object.keys(data).length === 0) {
+            return ok({pushDisabled: false, metadata: undefined})
+          }
+          // rm-277: some metadata fields present but the shape is wrong —
+          // contract drift, not absence.
+          return err({kind: 'contract-drift'})
         }
         return ok({pushDisabled: false, metadata: data})
       } catch {
@@ -183,6 +202,7 @@ export function buildPushClient(opts?: BuildPushClientOptions): PushClient {
         const res = await post(csrfToken)
         if (res.ok) return ok(undefined)
 
+        if (res.status === 401) return err({kind: 'unauthenticated', status: res.status})
         if (res.status !== 400) return err({kind: 'http', status: res.status})
 
         // 400 → refresh CSRF once and retry ONCE reusing the SAME idempotency key.
@@ -193,6 +213,7 @@ export function buildPushClient(opts?: BuildPushClientOptions): PushClient {
 
         const retryRes = await post(retryCsrfResult.data)
         if (retryRes.ok) return ok(undefined)
+        if (retryRes.status === 401) return err({kind: 'unauthenticated', status: retryRes.status})
         return err({kind: 'http', status: retryRes.status})
       } catch {
         return err({kind: 'network'})
@@ -218,6 +239,7 @@ export function buildPushClient(opts?: BuildPushClientOptions): PushClient {
         const res = await post(csrfToken)
         if (res.ok) return ok(undefined)
 
+        if (res.status === 401) return err({kind: 'unauthenticated', status: res.status})
         if (res.status !== 400) return err({kind: 'http', status: res.status})
 
         // 400 → refresh CSRF once and retry ONCE reusing the SAME idempotency key.
@@ -226,6 +248,7 @@ export function buildPushClient(opts?: BuildPushClientOptions): PushClient {
 
         const retryRes = await post(retryCsrfResult.data)
         if (retryRes.ok) return ok(undefined)
+        if (retryRes.status === 401) return err({kind: 'unauthenticated', status: retryRes.status})
         return err({kind: 'http', status: retryRes.status})
       } catch {
         return err({kind: 'network'})
@@ -273,8 +296,17 @@ export type SubscribeOutcome =
   | {readonly kind: 'unsupported'}
   | {readonly kind: 'dismissed'}
   | {readonly kind: 'denied'}
+  /** rm-276: HTTP 401 from any /operator/push/* call — auth expiry, surfaced with the same sign-in affordance as the other operator surfaces (rm-273 parity). */
+  | {readonly kind: 'unauthenticated'}
   | {readonly kind: 'subscribe-failed'}
   | {readonly kind: 'aborted'}
+
+/** rm-276: an auth-expired session (401 from any /operator/push/* call) must
+ * not collapse into the generic subscribe failure — map it to the explicit
+ * outcome so the UI can offer the sign-in affordance (rm-273 parity). */
+function subscribeFailureFromClientError(error: PushClientError): SubscribeOutcome {
+  return error.kind === 'unauthenticated' ? {kind: 'unauthenticated'} : {kind: 'subscribe-failed'}
+}
 
 export interface SubscribeDeps {
   /** Resolves once the SW is ready — normally `navigator.serviceWorker.ready`. */
@@ -394,7 +426,7 @@ export async function subscribeOptIn(deps: SubscribeDeps): Promise<SubscribeOutc
   if (deps.signal?.aborted) return {kind: 'aborted'}
 
   const vapidResult = await deps.pushClient.getVapidKey()
-  if (!vapidResult.success) return {kind: 'subscribe-failed'}
+  if (!vapidResult.success) return subscribeFailureFromClientError(vapidResult.error)
   if (vapidResult.data.pushDisabled) return {kind: 'unsupported'}
   const vapidKey = vapidResult.data.vapidKey
   if (vapidKey === undefined) return {kind: 'subscribe-failed'}
@@ -422,7 +454,7 @@ export async function subscribeOptIn(deps: SubscribeDeps): Promise<SubscribeOutc
   const csrfResult = await deps.pushClient.refreshCsrf()
   if (!csrfResult.success) {
     await subscription.unsubscribe().catch(() => false)
-    return {kind: 'subscribe-failed'}
+    return subscribeFailureFromClientError(csrfResult.error)
   }
 
   if (deps.signal?.aborted) {
@@ -444,7 +476,7 @@ export async function subscribeOptIn(deps: SubscribeDeps): Promise<SubscribeOutc
     // falls through to 'subscribed' even if the signal aborted afterwards:
     // the gateway recorded it, so dropping the local copy would desync.
     await subscription.unsubscribe().catch(() => false)
-    return deps.signal?.aborted ? {kind: 'aborted'} : {kind: 'subscribe-failed'}
+    return deps.signal?.aborted ? {kind: 'aborted'} : subscribeFailureFromClientError(postResult.error)
   }
 
   return {kind: 'subscribed'}
@@ -481,7 +513,7 @@ export async function resubscribeStaleKey(deps: SubscribeDeps): Promise<Subscrib
   if (deps.signal?.aborted) return {kind: 'aborted'}
 
   const vapidResult = await deps.pushClient.getVapidKey()
-  if (!vapidResult.success) return {kind: 'subscribe-failed'}
+  if (!vapidResult.success) return subscribeFailureFromClientError(vapidResult.error)
   if (vapidResult.data.pushDisabled) return {kind: 'unsupported'}
   const vapidKey = vapidResult.data.vapidKey
   if (vapidKey === undefined) return {kind: 'subscribe-failed'}
@@ -520,7 +552,7 @@ export async function resubscribeStaleKey(deps: SubscribeDeps): Promise<Subscrib
   const csrfResult = await deps.pushClient.refreshCsrf()
   if (!csrfResult.success) {
     await subscription.unsubscribe().catch(() => false)
-    return {kind: 'subscribe-failed'}
+    return subscribeFailureFromClientError(csrfResult.error)
   }
 
   if (deps.signal?.aborted) {
@@ -546,7 +578,7 @@ export async function resubscribeStaleKey(deps: SubscribeDeps): Promise<Subscrib
       const retryCsrfResult = await deps.pushClient.refreshCsrf()
       if (!retryCsrfResult.success) {
         await subscription.unsubscribe().catch(() => false)
-        return {kind: 'subscribe-failed'}
+        return subscribeFailureFromClientError(retryCsrfResult.error)
       }
       retryCsrfToken = retryCsrfResult.data
     }
@@ -572,7 +604,7 @@ export async function resubscribeStaleKey(deps: SubscribeDeps): Promise<Subscrib
     // Retry failed: gateway uninformed — drop the local subscription (this
     // also covers the abort-after-retry race, rm-264).
     await subscription.unsubscribe().catch(() => false)
-    return deps.signal?.aborted ? {kind: 'aborted'} : {kind: 'subscribe-failed'}
+    return deps.signal?.aborted ? {kind: 'aborted'} : subscribeFailureFromClientError(retryPostResult.error)
   }
 
   return {kind: 'subscribed'}
@@ -664,6 +696,12 @@ export interface ReconcileSweepResult {
   readonly action: import('./reconcile.ts').ReconcileAction | undefined
   readonly uiState: import('./reconcile.ts').ReconcileUiState | undefined
   readonly nextCache: ReconcileSweepCache
+  /**
+   * rm-276/rm-277: failure class of a skipped Gateway metadata read, so the UI
+   * can surface auth expiry and contract drift instead of looking idle.
+   * Undefined = transient (network/protocol) or not a metadata-read skip.
+   */
+  readonly readFailure?: 'unauthenticated' | 'contract-drift'
 }
 
 const DEFAULT_MIN_INTERVAL_MS = 30_000
@@ -720,7 +758,16 @@ export async function runReconcileSweep(
   const metadataResult = await deps.pushClient.getPushSubscriptionMetadata()
   if (!metadataResult.success) {
     // Transport/protocol error — do not mutate state on an inconclusive read.
-    return {skipped: true, action: undefined, uiState: undefined, nextCache: cache}
+    // rm-276/rm-277: still skip (never re-subscribe or tear down on an
+    // inconclusive read), but carry the failure class out so the UI can
+    // surface auth expiry and contract drift.
+    const readFailure =
+      metadataResult.error.kind === 'unauthenticated'
+        ? ('unauthenticated' as const)
+        : metadataResult.error.kind === 'contract-drift'
+          ? ('contract-drift' as const)
+          : undefined
+    return {skipped: true, action: undefined, uiState: undefined, nextCache: cache, readFailure}
   }
 
   // A thrown/rejected hash computation (e.g. a transient crypto.subtle

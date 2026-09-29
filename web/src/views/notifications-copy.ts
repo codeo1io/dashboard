@@ -1,7 +1,7 @@
 /**
  * Fixed copy for the operator push notifications consent/settings surface.
  *
- * Maps each of the 9 permission/support states to human-readable, safe copy.
+ * Maps each of the 11 permission/support states to human-readable, safe copy.
  *
  * Security invariants:
  * - NO raw endpoints, tokens, cookies, CSRF values, or HTTP status/error codes.
@@ -19,6 +19,8 @@ export type NotificationUiState =
   | 'sw-not-ready'
   | 'sw-unavailable'
   | 'subscribe-failed'
+  | 'unauthenticated'
+  | 'contract-drift'
 
 export interface NotificationStateCopy {
   readonly headline: string
@@ -97,6 +99,26 @@ const COPY: Record<NotificationUiState, NotificationStateCopy> = {
     privacyPolicyLinkText: 'How we handle notification data',
     ctaText: 'Retry Registration',
     recoveryHint: 'Verify your session and network connection, then try again.',
+  },
+  unauthenticated: {
+    // rm-276: 401 from any /operator/push/* call — auth expiry, not a
+    // registration failure. Copy mirrors the listener/monitoring surfaces'
+    // session-expired affordance (rm-273 parity); the CTA re-authenticates
+    // server-side at /auth/login (fail-closed), never a blind retry.
+    headline: 'Session Expired',
+    detail: 'Your sign-in session has expired, so this device cannot be registered for alerts.',
+    privacyPolicyLinkText: 'How we handle notification data',
+    ctaText: 'Sign In Again',
+    recoveryHint: 'Signing in again resumes alert delivery to this device.',
+  },
+  'contract-drift': {
+    // rm-277: the gateway answered with a body that violates its documented
+    // shape — a server-side mismatch, never a device or permission problem.
+    headline: 'Alert Service Changed',
+    detail: 'The alerts service answered in an unexpected format, so this device cannot be registered right now.',
+    privacyPolicyLinkText: 'How we handle notification data',
+    ctaText: null,
+    recoveryHint: 'This is a server-side mismatch. It clears automatically once the dashboard and gateway agree again.',
   },
 }
 

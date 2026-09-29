@@ -1055,3 +1055,43 @@ describe('/auth/callback — CSRF state compare (timing-safe)', () => {
     expect(res.status).not.toBe(500)
   })
 })
+
+describe('/auth/logout — Clear-Site-Data on sign-out (rm-280)', () => {
+  it('POST with valid CSRF token also emits Clear-Site-Data: "cache"', async () => {
+    const app = await buildTestApp({operatorLogin: 'octocat'})
+    const sm = new SessionManager(TEST_KEY)
+    const sessionCookie = sm.sign('octocat')
+    const csrfToken = deriveLogoutCsrfToken(TEST_KEY, 'octocat')
+
+    const body = new URLSearchParams({csrf_token: csrfToken})
+    const res = await app.request('/auth/logout', {
+      method: 'POST',
+      headers: {
+        cookie: `session=${sessionCookie}`,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: body.toString(),
+    })
+
+    expect([302, 303]).toContain(res.status)
+    expect(res.headers.get('clear-site-data')).toBe('"cache"')
+  })
+
+  it('a rejected logout (bad CSRF) must NOT emit Clear-Site-Data', async () => {
+    const app = await buildTestApp({operatorLogin: 'octocat'})
+    const sm = new SessionManager(TEST_KEY)
+    const sessionCookie = sm.sign('octocat')
+
+    const res = await app.request('/auth/logout', {
+      method: 'POST',
+      headers: {
+        cookie: `session=${sessionCookie}`,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({csrf_token: 'wrongtoken12345678901234567890ab'}).toString(),
+    })
+
+    expect(res.status).toBe(403)
+    expect(res.headers.get('clear-site-data')).toBeNull()
+  })
+})

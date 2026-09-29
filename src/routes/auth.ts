@@ -239,6 +239,14 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
     }
 
     deleteCookie(c, SESSION_COOKIE_NAME, {path: '/'})
+    // rm-280: belt-and-braces purge of HTTP-cached bytes when the operator
+    // signs out on a shared machine (the identity-reflecting SPA shell is
+    // already no-store via rm-172 — this covers anything else the browser may
+    // still hold). Deliberately scoped to "cache" only: "cookies" would also
+    // wipe the gateway's /operator cookie set through this same origin
+    // (topology pending the rm-252 live-gateway probe), and "storage" would
+    // drop the device's local notification preferences.
+    c.header('Clear-Site-Data', '"cache"')
     return c.redirect('/auth/login', 302)
   })
 

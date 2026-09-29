@@ -118,6 +118,9 @@ export function Notifications({
           })
           if (outcome.kind === 'subscribed') {
             setCurrentUiState('subscribed')
+          } else if (outcome.kind === 'unauthenticated') {
+            // rm-276: auth expired — surface the sign-in affordance (rm-273 parity).
+            setCurrentUiState('unauthenticated')
           } else if (outcome.kind === 'subscribe-failed') {
             setCurrentUiState('subscribe-failed')
           } else if (outcome.kind === 'sw-not-ready') {
@@ -137,6 +140,9 @@ export function Notifications({
           })
           if (outcome.kind === 'subscribed') {
             setCurrentUiState('subscribed')
+          } else if (outcome.kind === 'unauthenticated') {
+            // rm-276: auth expired — surface the sign-in affordance (rm-273 parity).
+            setCurrentUiState('unauthenticated')
           } else if (outcome.kind === 'subscribe-failed') {
             setCurrentUiState('subscribe-failed')
           } else if (outcome.kind === 'sw-not-ready') {
@@ -174,6 +180,12 @@ export function Notifications({
       } catch {
         setCurrentUiState('subscribe-failed')
       }
+    } else if (result.readFailure !== undefined) {
+      // rm-276/rm-277: the Gateway metadata read itself failed with a known
+      // class — surface it instead of looking idle. No action ran (the sweep
+      // skipped on the inconclusive read), and a later successful sweep
+      // naturally clears this via its own derived uiState.
+      setCurrentUiState(result.readFailure)
     } else if (result.uiState) {
       if (result.uiState === 'subscribed') {
         setCurrentUiState('subscribed')
@@ -284,6 +296,13 @@ export function Notifications({
 
   const copy = getNotificationCopy(currentUiState)
 
+  // rm-276: the auth-expired CTA is re-auth, not a retry — mirror the shell's
+  // listener affordance and go through the fail-closed server-side reauth at
+  // /auth/login.
+  const handleSignIn = () => {
+    window.location.assign('/auth/login')
+  }
+
   const handleEnable = async () => {
     if (enableInFlightRef.current) return
     enableInFlightRef.current = true
@@ -298,6 +317,9 @@ export function Notifications({
 
       if (outcome.kind === 'subscribed') {
         setCurrentUiState('subscribed')
+      } else if (outcome.kind === 'unauthenticated') {
+        // rm-276: auth expired — surface the sign-in affordance (rm-273 parity).
+        setCurrentUiState('unauthenticated')
       } else if (outcome.kind === 'subscribe-failed') {
         setCurrentUiState('subscribe-failed')
       } else if (outcome.kind === 'sw-not-ready') {
@@ -344,7 +366,10 @@ export function Notifications({
   const containerBorderClass =
     currentUiState === 'subscribed'
       ? 'border-success'
-      : currentUiState === 'denied' || currentUiState === 'subscribe-failed'
+      : currentUiState === 'denied' ||
+          currentUiState === 'subscribe-failed' ||
+          currentUiState === 'unauthenticated' ||
+          currentUiState === 'contract-drift'
         ? 'border-error'
         : 'border-border'
 
@@ -411,7 +436,13 @@ export function Notifications({
               ref={ctaRef}
               disabled={inFlight}
               data-testid="notifications-cta"
-              onClick={currentUiState === 'subscribed' ? handleDisable : handleEnable}
+              onClick={
+                currentUiState === 'subscribed'
+                  ? handleDisable
+                  : currentUiState === 'unauthenticated'
+                    ? handleSignIn
+                    : handleEnable
+              }
               className={`px-4 py-2 rounded-md font-semibold text-body-sm whitespace-nowrap cursor-pointer transition-all duration-fast focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50 disabled:cursor-not-allowed ${
                 currentUiState === 'subscribed'
                   ? 'border border-border bg-transparent text-text hover:border-cta hover:text-cta shadow-glow-magenta'
