@@ -994,11 +994,12 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
 
   // ── Operator UI skeleton route ────────────────────────────────────────────────
   // Only mounted when operatorUiEnabled is true (default: false).
+  // rm-264: the dead compatibility router that used to mount at /operator
+  // (src/routes/operator.ts) is deleted — the unconditional redirects at
+  // app.get('/operator') and app.get('/operator/') above always won, and
+  // every other sub-path 404'd; only the /static/* catch-all below is live.
   if (operatorUiEnabled) {
-    const {buildOperatorRouter} = await import('./routes/operator.ts')
-    app.route('/operator', buildOperatorRouter(gatewayOperatorSessionEnabled))
-
-    // Serves public/ at /static/* — flag-gated alongside the operator route.
+    // Serves public/ at /static/* — flag-gated alongside the operator UI flag.
     // /static/ is in isPublicPath so unauthenticated browsers can load assets.
     // Note: operator-stream.js and operator-launch.js are already mounted above;
     // this catch-all additionally serves operator.css and any other static assets.

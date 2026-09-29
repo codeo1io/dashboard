@@ -462,6 +462,36 @@ describe('OAuth flow', () => {
       expect(res.status).toBe(403)
     })
 
+    it('POST /auth/logout with an oversized body → 413 before parse (rm-262)', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat'})
+      const sm = new SessionManager(TEST_KEY)
+      const sessionCookie = sm.sign('octocat')
+      const res = await app.request('/auth/logout', {
+        method: 'POST',
+        headers: {
+          cookie: `session=${sessionCookie}`,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: 'x'.repeat(17_000),
+      })
+      expect(res.status).toBe(413)
+    })
+
+    it('POST /auth/logout with a non-urlencoded content type → 415 (rm-262)', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat'})
+      const sm = new SessionManager(TEST_KEY)
+      const sessionCookie = sm.sign('octocat')
+      const res = await app.request('/auth/logout', {
+        method: 'POST',
+        headers: {
+          cookie: `session=${sessionCookie}`,
+          'content-type': 'multipart/form-data; boundary=x',
+        },
+        body: '--x\r\nContent-Disposition: form-data; name="csrf_token"\r\n\r\nnope\r\n--x--\r\n',
+      })
+      expect(res.status).toBe(415)
+    })
+
     it('GET /auth/logout is not a registered route (no GET handler)', async () => {
       // /auth/logout is POST-only; GET should return 404 or 405
       const app = await buildTestApp({operatorLogin: 'octocat'})
@@ -899,6 +929,31 @@ describe('rate limiter — /auth/login is in sensitiveRoutes (FIX 3)', () => {
     const app = await buildTestApp({operatorLogin: 'octocat'})
     const res = await app.request('/operator/runs')
     expect(res.status).toBe(429)
+  })
+})
+
+describe('rm-263 — static assets consume no rate-limit budget (docstring truth pin)', () => {
+  it('an exhausted IP still gets non-429 on /assets/*, /static/*, /privacy, /sw.js', async () => {
+    const {checkRateLimit} = await import('../src/server.ts')
+    const ip = `test-ip-${Date.now()}-static-not-limited`
+    const now = Date.now()
+    for (let i = 0; i < 60; i++) {
+      // bare checkRateLimit counts against every class budget
+      checkRateLimit(ip, now)
+    }
+    const app = await buildTestApp({operatorLogin: 'octocat'})
+
+    const sensitive = await app.request('/api/repos')
+    expect(sensitive.status).toBe(429) // /api/* stays budget-gated
+
+    // static / never-sensitive paths are outside the middleware's budget set
+    for (const path of ['/assets/app.js', '/static/operator-stream.js', '/privacy', '/sw.js']) {
+      const res = await app.request(path)
+      expect(
+        res.status !== 429,
+        `${path} should not consume a rate-limit budget (got 429)`,
+      ).toBe(true)
+    }
   })
 })
 
