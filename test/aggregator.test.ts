@@ -14,6 +14,8 @@ import type {EnumerateReposResult} from '../src/github/installations.ts'
 import type {MetadataResult} from '../src/github/metadata.ts'
 import type {Result} from '../src/result.ts'
 
+import {Buffer} from 'node:buffer'
+
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {createAggregator} from '../src/github/aggregator.ts'
 import {FetchInstallationsError} from '../src/github/installations.ts'
@@ -643,6 +645,40 @@ describe('aggregator — edge cases', () => {
     const snap = agg.getSnapshot()
 
     expect(snap.repos[0]?.discovery_channel).toBe('collab')
+  })
+
+  it('rm-255: auth-context join falls back to database_id when node_ids skew across formats', async () => {
+    // Same repository seen through two node_id formats: the installation
+    // channel reports the new `R_` shape (database_id 4242), while metadata
+    // still carries the legacy base64 shape that decodes to the same
+    // databaseId. The node_id join misses; the database_id index resolves the
+    // installation context locally (no per-refresh App-JWT resolver call).
+    const legacyNodeId = Buffer.from('010:Repository4242', 'ascii').toString('base64')
+    const repo = makeRepo({node_id: 'R_kgDOSKEW', database_id: 4242, owner: 'org', name: 'skew-repo', installation_id: 77})
+    const queryMock = vi.fn().mockResolvedValue(makeGraphqlResponse())
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      graphqlQueryForInstallation: queryMock,
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: legacyNodeId, owner: 'org', name: 'skew-repo'})],
+      }))),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos).toHaveLength(2) // metadata entry + install-only twin — the documented skew drift
+    const metadataEntry = snap.repos.find(repo => repo.node_id === legacyNodeId)
+    expect(metadataEntry?.owner).toBe('org')
+    expect(metadataEntry?.name).toBe('skew-repo')
+    expect(metadataEntry?.discovery_channel).toBe('collab')
+    // Pre-join the entry had installation_id null → marked stale and never
+    // queried (aggregator.ts:816-818). The local database_id join resolves the
+    // auth context, so the repo is live and the per-repo query ran under the
+    // installation token — no per-refresh App-JWT resolver round-trip.
+    expect(metadataEntry?.status.stale).toBe(false)
+    expect(queryMock.mock.calls.some(call => call[0] === 77)).toBe(true)
   })
 
   it('security alerts null when vulnerabilityAlerts is absent from response', async () => {
