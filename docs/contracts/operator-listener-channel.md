@@ -159,9 +159,15 @@ Response:
       "read": false
     }
   ],
-  "unreadCount": 3
+  "unreadCount": 3,
+  "prunedCount": 2
 }
 ```
+
+`prunedCount` (rm-244, doc-truthed rm-270): messages evicted by the retention
+policy (500 rows / 30 days) since the store was created — cumulative for the
+process lifetime, count only, no content. The `messages` list above is a
+truncated view; `prunedCount` is the operator's signal that it is.
 
 ## Ack — `POST /api/listener/messages/:id/ack` and `POST /api/listener/ack-all`
 

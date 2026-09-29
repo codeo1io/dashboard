@@ -101,11 +101,23 @@ function emit(
     context === undefined
       ? message
       : `${message} ${JSON.stringify(redactSensitiveFields(context))}`
-  // Route through console.warn/error so stdout stays clean for structured output.
+  // rm-260 decision (2026-09-29, cycle-19 batch run 5e7cb89f): truth-the-routing.
+  // stderr is reserved for `warning`/`error` (the listener/ingest error
+  // surfaces keep their channel and all redaction suites keep observing
+  // them); `info`/`debug` go to stdout via `console.info`. There is NO
+  // structured stdout consumer in this app today — the old comment claimed
+  // "stdout stays clean for structured output", which was a promise about a
+  // sink that does not exist — so stdout carries the informational lines
+  // verbatim. When a structured sink lands, route here once.
   if (level === 'error') {
     console.error(`[${level}] ${line}`)
-  } else {
+  } else if (level === 'warning') {
     console.warn(`[${level}] ${line}`)
+  } else {
+    // rm-260: informational lines go to stdout by decision (see the comment
+    // above); warn/error stay on stderr.
+    // eslint-disable-next-line no-console
+    console.info(`[${level}] ${line}`)
   }
 }
 
