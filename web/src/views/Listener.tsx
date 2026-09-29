@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useState } from 'react'
 import {
   fetchListenerMessages,
   ackListenerMessage,
@@ -7,6 +7,7 @@ import {
   type ListenerMessagesResponse,
   type ListenerMessage,
 } from '../api/listener.ts'
+import {useBoundedPoll} from '../hooks/useBoundedPoll.ts'
 
 type ViewState =
   | { state: 'loading' }
@@ -21,37 +22,19 @@ export const LISTENER_FETCH_TIMEOUT_MS = 15000
 export function ListenerChannel() {
   const [viewState, setViewState] = useState<ViewState>({ state: 'loading' })
   const [ackingId, setAckingId] = useState<string | 'all' | null>(null)
-  const isFetchingRef = useRef(false)
-  /** rm-155: the in-flight request's controller, aborted on unmount. */
-  const activeAbortRef = useRef<AbortController | null>(null)
 
-  const loadData = useCallback(async (isInitial = false) => {
-    if (isFetchingRef.current) return
-    isFetchingRef.current = true
-
-    if (isInitial) {
+  // rm-251: the rm-155 lifecycle now lives in the shared useBoundedPoll hook
+  // (extracted when Monitoring.tsx was fixed); this view keeps only its own
+  // result semantics (Inbox Zero vs ready, integrity notices).
+  const { poll } = useBoundedPoll<FetchListenerResult>({
+    fetcher: abortSignal => fetchListenerMessages({ limit: 100, abortSignal }),
+    timeoutMs: LISTENER_FETCH_TIMEOUT_MS,
+    intervalMs: POLL_INTERVAL_MS,
+    timeoutResult: { ok: false, reason: 'timeout' },
+    onInitialStart: () => {
       setViewState({ state: 'loading' })
-    }
-
-    const abortController = new AbortController()
-    activeAbortRef.current = abortController
-    let timeoutId: ReturnType<typeof setTimeout> | undefined
-    try {
-      // rm-155: race the fetch against a wall-clock timeout AND abort the
-      // controller when it fires. The race alone guarantees the latch is
-      // released even against a transport that never settles (and even one
-      // that ignores the abort signal); the abort additionally cancels the
-      // underlying request when the signal IS honored.
-      const result = await Promise.race([
-        fetchListenerMessages({ limit: 100, abortSignal: abortController.signal }),
-        new Promise<never>((_, reject) => {
-          timeoutId = setTimeout(() => {
-            abortController.abort()
-            reject(new Error('listener fetch timed out'))
-          }, LISTENER_FETCH_TIMEOUT_MS)
-        }),
-      ]).catch((): FetchListenerResult => ({ ok: false, reason: 'timeout' }))
-
+    },
+    onResult: result => {
       if (!result.ok) {
         setViewState(prev => (prev.state === 'ready' ? prev : { state: 'error', reason: result.reason }))
         return
@@ -65,44 +48,10 @@ export function ListenerChannel() {
         // swallowed by the Inbox Zero state.
         setViewState({ state: 'ready', data: result.data })
       }
-    } finally {
-      if (timeoutId !== undefined) clearTimeout(timeoutId)
-      activeAbortRef.current = null
-      isFetchingRef.current = false
-    }
-  }, [])
-
-  useEffect(() => {
-    void loadData(true)
-    // rm-155: cancel the in-flight request when the view unmounts.
-    return () => {
-      activeAbortRef.current?.abort()
-    }
-  }, [loadData])
-
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        void loadData(false)
-      }
-    }
-    const handleFocus = () => {
-      void loadData(false)
-    }
-
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-    window.addEventListener('focus', handleFocus)
-
-    const intervalId = setInterval(() => {
-      void loadData(false)
-    }, POLL_INTERVAL_MS)
-
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange)
-      window.removeEventListener('focus', handleFocus)
-      clearInterval(intervalId)
-    }
-  }, [loadData])
+    },
+    refetchOnFocus: true,
+    refetchOnVisibility: true,
+  })
 
   const handleAck = async (id: string) => {
     if (ackingId) return
@@ -110,7 +59,7 @@ export function ListenerChannel() {
     const success = await ackListenerMessage(id)
     setAckingId(null)
     if (success) {
-      void loadData(false)
+      void poll(false)
     }
   }
 
@@ -120,7 +69,7 @@ export function ListenerChannel() {
     const success = await ackAllListenerMessages()
     setAckingId(null)
     if (success) {
-      void loadData(false)
+      void poll(false)
     }
   }
 

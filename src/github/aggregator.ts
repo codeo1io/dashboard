@@ -566,7 +566,20 @@ function buildWorkingSet(
     }
 
     // Look up the install repo to get the installation_id (auth context).
-    const installRepo = installByNodeId.get(pub.node_id)
+    // rm-255: node_id is primary; when it misses — the realistic skew is a
+    // metadata node_id recorded in the legacy base64 format against an
+    // installation enumeration reporting the new `R_` format for the SAME
+    // repo (the databaseId is stable across node_id format changes) — fall
+    // back to the database_id index using the databaseId derived for the
+    // denylist check two lines above. This resolves the auth context locally
+    // instead of leaving installation_id null for the uncached per-refresh
+    // App-JWT resolver round-trip. Conservative: only legacy-format
+    // publicRepo node_ids derive (new-format returns null), and a redacted
+    // databaseId already `continue`d above, so the fallback can never join a
+    // denylisted repo.
+    const installRepo =
+      installByNodeId.get(pub.node_id) ??
+      (derivedDatabaseId === null ? undefined : installByDatabaseId.get(derivedDatabaseId))
     const installationId = installRepo?.installation_id ?? null
 
     unionByNodeId.set(pub.node_id, {
