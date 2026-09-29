@@ -9,7 +9,18 @@
 // Constants
 // ---------------------------------------------------------------------------
 
+/**
+ * Contract version this dashboard build is deployed against ('1.8.0').
+ * Any version not in KNOWN_CONTRACT_VERSIONS drifts (fail-closed).
+ */
 export declare const PINNED_CONTRACT_VERSION: string
+/**
+ * Contract versions the client can parse (older-to-newer). The deployed pin
+ * is the LAST entry; older accepted versions keep already-open dashboards
+ * working across a gateway upgrade window. Any other version drifts (fail-closed).
+ * Mirrors src/gateway/operator-contract-versions.ts.
+ */
+export declare const KNOWN_CONTRACT_VERSIONS: readonly string[]
 export declare const RETRY_BASE_MS: number
 export declare const RETRY_FACTOR: number
 export declare const RETRY_MAX_COUNT: number
@@ -31,6 +42,8 @@ export type FailureKind =
   | 'max-duration-timeout'
   | 'stream-ended'
   | 'workspace-unreachable'
+  | 'workspace-unavailable'
+  | 'checkout-substituted'
   | 'session-error'
   | 'unknown'
 
@@ -59,6 +72,10 @@ export interface StatusFrameData {
   readonly stale: boolean
   /** Operator-safe failure-reason code. Optional; failed statuses only. */
   readonly failureKind?: FailureKind
+  /** Contract 1.7.0+: observed checkout provenance (run start point). Optional; additive. */
+  readonly checkoutProvenance?: unknown
+  /** Contract 1.7.0+: outcome of pre-start workspace preparation. Optional; additive. */
+  readonly checkoutPreparation?: unknown
 }
 
 export interface ResetFrameData {
@@ -145,6 +162,11 @@ export interface RunEntry {
    * raw failureKind wire value.
    */
   readonly reasonLabel?: string
+  /**
+   * Pre-resolved label for the run's checkout start point (contract 1.7.0+).
+   * Sticky across later frames for the same run; never the raw wire object.
+   */
+  readonly provenanceLabel?: string
   /**
    * Null-prototype map of open (non-tombstoned) approval prompts, keyed by requestID.
    * Absent until the first approval frame is received for this run.
@@ -237,6 +259,8 @@ export interface SafeRunView {
   readonly stale: boolean
   /** Pre-resolved dashboard display label for a known failure reason. Never the raw failureKind. */
   readonly reasonLabel?: string
+  /** Contract 1.7.0+: pre-resolved label for the run's checkout start point. */
+  readonly provenanceLabel?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -256,7 +280,7 @@ export declare function nextStreamState(current: StreamState, event: StreamEvent
 
 /**
  * Map a run status object to the safe render model.
- * Returns ONLY: { runId, status, phase, startedAt, stale, reasonLabel? }
+ * Returns ONLY: { runId, status, phase, startedAt, stale, reasonLabel?, provenanceLabel? }
  */
 export declare function toSafeRunView(runStatus: {
   readonly runId: string
@@ -265,6 +289,7 @@ export declare function toSafeRunView(runStatus: {
   readonly startedAt: string
   readonly stale: boolean
   readonly reasonLabel?: string
+  readonly provenanceLabel?: string
 }): SafeRunView
 
 /**
@@ -327,6 +352,8 @@ export interface InitOptions {
   readonly fixtureSessionId?: string
   /** Secondary status metadata element (data-role="run-reason"). */
   readonly reasonEl?: Element | null
+  /** Optional checkout-provenance label element (data-role="run-provenance"). */
+  readonly provenanceEl?: Element | null
   /** Cancel control container element (data-role="run-cancel"). */
   readonly cancelEl?: (HTMLElement & {hidden: boolean}) | null
   /** Injectable cancel client for testing. If absent, buildCancelClient() is used. */

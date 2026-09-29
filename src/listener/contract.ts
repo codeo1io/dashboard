@@ -63,7 +63,7 @@ function utf8ByteLength(value: string): number {
   return Buffer.byteLength(value, 'utf8')
 }
 
-function parseLinks(raw: unknown): Result<ListenerLink[], Error> {
+export function parseLinks(raw: unknown): Result<ListenerLink[], Error> {
   if (raw === undefined) return ok([])
   if (!Array.isArray(raw)) return err(new Error('invalid links'))
   if (raw.length > MAX_LINKS) return err(new Error('too many links'))

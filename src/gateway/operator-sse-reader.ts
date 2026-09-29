@@ -24,8 +24,8 @@
 import type {Logger} from '../logger.ts'
 import type {OperatorApprovalFrame} from './operator-contract/approval-frame.ts'
 import type {ResetReason, RunStreamFrame} from './operator-contract/sse-frames.ts'
+import {isKnownOperatorContractVersion} from './operator-contract-versions.ts'
 import {isOperatorFailureKind} from './operator-contract/run-status.ts'
-import {OPERATOR_CONTRACT_VERSION} from './operator-contract/version.ts'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -377,8 +377,11 @@ export interface OperatorSseReaderOptions {
  * 5. Reads the body as a ReadableStream, feeds an incremental SSE parser with
  *    CRLF normalization and a hard buffer cap (MAX_SSE_BUFFER_BYTES).
  * 6. Enforces the contract-version gate via handleFrame(): the first frame must
- *    be 'ready' with contractVersion === OPERATOR_CONTRACT_VERSION. A mismatch
- *    triggers a fail-closed drift error and stops all further frame dispatch.
+ *    be 'ready' with contractVersion in KNOWN_OPERATOR_CONTRACT_VERSIONS (the
+ *    mirror pin plus older versions this dashboard still parses — see
+ *    ./operator-contract-versions.ts). Any other version (absent, older than
+ *    the floor, or newer than the mirror) triggers
+ *    a fail-closed drift error and stops all further frame dispatch.
  *    Both the streaming path and the EOF flush path go through handleFrame().
  * 7. On stream end, calls onClose.
  *
@@ -491,7 +494,7 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
           onClose()
           return false // stop
         }
-        if (frame.data.contractVersion !== OPERATOR_CONTRACT_VERSION) {
+        if (!isKnownOperatorContractVersion(frame.data.contractVersion)) {
           logger?.error('sse-reader: contract version mismatch', {route: ROUTE_TEMPLATE})
           drifted = true
           onError(new Error('contract-drift: server contract version does not match client'))
