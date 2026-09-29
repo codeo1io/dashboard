@@ -19,7 +19,7 @@ import type {DashboardAppClient} from './app-client.ts'
 import {Octokit} from '@octokit/core'
 import {logger} from '../logger.ts'
 import {err, ok} from '../result.ts'
-import {GITHUB_REQUEST_TIMEOUT_MS, safeErrorMessage} from './app-client.ts'
+import {createBoundedFetch, GITHUB_REQUEST_TIMEOUT_MS, safeErrorMessage} from './app-client.ts'
 
 // ---------------------------------------------------------------------------
 // Read-only permissions
@@ -333,9 +333,13 @@ export async function enumerateRepos(
 async function listInstallationReposWithToken(token: string): Promise<readonly Omit<RepoRecord, 'installation_id'>[]> {
   const installOctokit = new Octokit({
     auth: token,
-    // rm-197: per-repo installation walks are serial — a stalled request must
-    // not stall the whole refresh indefinitely.
-    request: {timeout: GITHUB_REQUEST_TIMEOUT_MS},
+    // rm-197: serial per-repo walk must not stall the refresh. rm-261: the
+    // bare `timeout` key is INERT on hung upstreams (rm-156) — ride
+    // createBoundedFetch like the app-client siblings (transport contract).
+    request: {
+      timeout: GITHUB_REQUEST_TIMEOUT_MS,
+      fetch: createBoundedFetch(GITHUB_REQUEST_TIMEOUT_MS),
+    },
   })
 
   const repos: Omit<RepoRecord, 'installation_id'>[] = []
