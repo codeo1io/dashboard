@@ -28,8 +28,23 @@
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Contract version this client expects on the ready frame. */
-export const PINNED_CONTRACT_VERSION = '1.6.0'
+/**
+ * Contract version this client is pinned to (the newest version it can parse).
+ * Must equal OPERATOR_CONTRACT_VERSION in src/gateway/operator-contract/version.ts
+ * and the last entry of KNOWN_CONTRACT_VERSIONS — locked by
+ * test/operator-contract-version-lock.test.ts.
+ */
+export const PINNED_CONTRACT_VERSION = '1.8.0'
+
+/**
+ * Contract versions this client accepts on the ready frame: the pin plus older
+ * versions whose wire shapes it still parses (deployed gateways roll through
+ * them). Mirrors KNOWN_OPERATOR_CONTRACT_VERSIONS in
+ * src/gateway/operator-contract-versions.ts — locked by the same test. Any other
+ * version (absent, older than the floor, newer than the pin) fails closed to the
+ * drift state, exactly like the previous single-pin check.
+ */
+export const KNOWN_CONTRACT_VERSIONS = ['1.6.0', '1.7.0', '1.8.0']
 
 /** Base delay in milliseconds for exponential backoff. */
 export const RETRY_BASE_MS = 1000
@@ -151,6 +166,8 @@ const VALID_FAILURE_KINDS = new Set([
   'stream-ended',
   'workspace-unreachable',
   'session-error',
+  'checkout-substituted',
+  'workspace-unavailable',
   'unknown',
 ])
 
@@ -166,6 +183,8 @@ export const FAILURE_REASON_LABELS = {
   'stream-ended': 'Stream ended early',
   'workspace-unreachable': 'Workspace unavailable',
   'session-error': 'Session error',
+  'checkout-substituted': 'Checkout mismatch',
+  'workspace-unavailable': 'Workspace unavailable',
   unknown: 'Unknown failure',
 }
 
@@ -382,6 +401,57 @@ export function parseSseFrame(record) {
 }
 
 // ---------------------------------------------------------------------------
+// Checkout-provenance display copy (contract 1.7.0/1.8.0)
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive a safe one-line description of what a run started from, from the
+ * optional `checkoutProvenance` wire field (contract 1.7.0+). Defensive field
+ * walks with optional chaining — an older gateway omits the field and an
+ * unrecognized shape simply yields no label. Never renders raw wire strings
+ * beyond short sha/branch values that are already operator-safe.
+ */
+function deriveProvenanceLabel(checkoutProvenance) {
+  if (typeof checkoutProvenance !== 'object' || checkoutProvenance === null) return undefined
+  if (checkoutProvenance.kind === 'unavailable') return 'Checkout state unavailable'
+  if (checkoutProvenance.kind !== 'observed') return undefined
+  const observation = checkoutProvenance.observation
+  if (typeof observation !== 'object' || observation === null) return undefined
+  const head = observation.head
+  if (typeof head !== 'object' || head === null || typeof head.sha !== 'string' || head.sha.length === 0) {
+    return undefined
+  }
+  const sha = head.sha.length > 7 ? head.sha.slice(0, 7) : head.sha
+  const at =
+    head.kind === 'attached' && typeof head.branch === 'string' && head.branch.length > 0
+      ? `${head.branch} @ ${sha}`
+      : sha
+  const worktree = observation.worktree
+  const worktreePart =
+    typeof worktree === 'object' && worktree !== null
+      ? worktree.kind === 'clean'
+        ? ' (clean)'
+        : worktree.kind === 'dirty'
+          ? ' (dirty)'
+          : ''
+      : ''
+  return `Started at ${at}${worktreePart}`
+}
+
+/**
+ * Derive a safe label for a run that never reached EXECUTING, from the optional
+ * `checkoutPreparation` wire field (contract 1.7.0+). Uses only the `outcome`
+ * discriminator — the detailed reason stays off the operator surface (it is
+ * diagnostics-grade, not display copy).
+ */
+function derivePreparationLabel(checkoutPreparation) {
+  if (typeof checkoutPreparation !== 'object' || checkoutPreparation === null) return undefined
+  if (checkoutPreparation.outcome === 'refused') return 'Start refused — checkout not ready'
+  if (checkoutPreparation.outcome === 'failed') return 'Start failed during checkout preparation'
+  return undefined
+}
+
+// ---------------------------------------------------------------------------
 // Lifecycle state machine
 // ---------------------------------------------------------------------------
 
@@ -414,7 +484,7 @@ export function nextStreamState(current, event) {
       if (current.connection === 'drift') {
         return current
       }
-      if (event.data.contractVersion !== PINNED_CONTRACT_VERSION) {
+      if (!KNOWN_CONTRACT_VERSIONS.includes(event.data.contractVersion)) {
         // Contract version mismatch — fail closed, clear all run state
         return {
           connection: 'drift',
@@ -435,7 +505,7 @@ export function nextStreamState(current, event) {
       if (current.connection !== 'live') {
         return current
       }
-      const {runId, status, phase, startedAt, stale, failureKind} = event.data
+      const {runId, status, phase, startedAt, stale, failureKind, checkoutProvenance, checkoutPreparation} = event.data
       const isTerminal = TERMINAL_STATUSES.has(status)
       // Use a null-prototype object to guard against __proto__ key pollution.
       // Spread the prior entry so accumulated output fields (outputText/outputSeq/
@@ -449,6 +519,12 @@ export function nextStreamState(current, event) {
       const derivedReasonLabel =
         status === 'failed' && failureKind !== undefined ? FAILURE_REASON_LABELS[failureKind] : undefined
       const reasonLabel = derivedReasonLabel ?? prevStatusEntry?.reasonLabel
+      // Provenance label (contract 1.7.0/1.8.0): a dashboard-owned, pre-resolved
+      // description of what the run started from (observed head/worktree) or why
+      // preparation never started — never raw wire fields. Sticky like reasonLabel.
+      const derivedProvenanceLabel =
+        deriveProvenanceLabel(checkoutProvenance) ?? derivePreparationLabel(checkoutPreparation)
+      const provenanceLabel = derivedProvenanceLabel ?? prevStatusEntry?.provenanceLabel
       // On terminal status, clear all open approval prompts for this run.
       // Terminal is absorbing for approvals: once terminal, no open prompt can reappear.
       // Tombstones are preserved so that any late open frames are still ignored.
@@ -475,6 +551,7 @@ export function nextStreamState(current, event) {
           // A non-terminal frame preserves whatever the prior entry carried (spread above).
           ...(isTerminal ? {cancelInFlight: false} : {}),
           ...(reasonLabel === undefined ? {} : {reasonLabel}),
+          ...(provenanceLabel === undefined ? {} : {provenanceLabel}),
         },
       })
       // If all observed runs are terminal, close the stream
@@ -915,7 +992,7 @@ export function nextStreamState(current, event) {
 /**
  * Map a run status object to the safe render model.
  *
- * Returns ONLY: { runId, status, phase, startedAt, stale, reasonLabel? }
+ * Returns ONLY: { runId, status, phase, startedAt, stale, reasonLabel?, provenanceLabel? }
  *
  * Explicitly excluded: entityRef, surface, output, tool, path, repoName,
  * failureKind, and any other field not in the safe set. This is a whitelist,
@@ -923,6 +1000,8 @@ export function nextStreamState(current, event) {
  * never the raw failureKind wire value — and is present only when the run
  * entry carries one (set by nextStreamState on a failed status with a known
  * failureKind, and sticky across later frames for the same run).
+ * provenanceLabel is likewise pre-resolved (dashboard-owned copy derived from
+ * contract 1.7.0+ checkout provenance / preparation frames) and sticky.
  */
 export function toSafeRunView(runStatus) {
   return {
@@ -932,6 +1011,7 @@ export function toSafeRunView(runStatus) {
     startedAt: runStatus.startedAt,
     stale: runStatus.stale,
     ...(runStatus.reasonLabel === undefined ? {} : {reasonLabel: runStatus.reasonLabel}),
+    ...(runStatus.provenanceLabel === undefined ? {} : {provenanceLabel: runStatus.provenanceLabel}),
   }
 }
 
@@ -1990,6 +2070,10 @@ export function renderCancelControl(runId, cancelClient, onCancelDispatch) {
  *   noticeEl    — element to show stream connection state notices
  *   approvalsEl — element with [data-role="run-approvals"] to render approval prompts
  *   badgeEl     — element with [data-role="approval-badge"] for the approval count badge
+ *   reasonEl    — optional element with [data-role="run-reason"] to render the
+ *                 pre-resolved failure-reason label on terminal runs
+ *   provenanceEl — optional element with [data-role="run-provenance"] to render
+ *                 the pre-resolved checkout-provenance label (contract 1.7.0+)
  *   approvalClient — optional pre-built approval client (for testing); if absent,
  *                    buildApprovalClient() is called when the flag is on
  *
@@ -2002,7 +2086,7 @@ export function renderCancelControl(runId, cancelClient, onCancelDispatch) {
  * - Read-only: GET only for stream; approval decisions are operator-forwarded writes.
  */
 export function initOperatorStream(opts) {
-  const {runId, statusEl, noticeEl, outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, cancelEl, approvalClient: injectedApprovalClient, cancelClient: injectedCancelClient, endpointBase, fixtureSessionId} = opts
+  const {runId, statusEl, noticeEl, outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, provenanceEl, cancelEl, approvalClient: injectedApprovalClient, cancelClient: injectedCancelClient, endpointBase, fixtureSessionId} = opts
 
   // Build the approval client lazily (only if approvalsEl is present).
   // Pass endpointBase and fixtureSessionId so fixture mode uses the fixture approval routes
@@ -2171,6 +2255,34 @@ export function initOperatorStream(opts) {
         ) {
           reasonEl.textContent = ''
           if (reasonEl.dataset) delete reasonEl.dataset.reasonState
+        }
+      }
+    }
+
+    // Checkout provenance label (contract 1.7.0+): same safe render contract as
+    // reasonEl — pre-resolved dashboard copy via toSafeRunView, textContent only.
+    // Rendered only when the mount supplies the optional provenance slot.
+    if (provenanceEl) {
+      const runEntry = state.runs[runId]
+      const runIsTerminal = runEntry !== undefined && runEntry.terminal === true
+      if (runEntry && (state.connection === 'live' || runIsTerminal)) {
+        const view = toSafeRunView(runEntry)
+        if (view.provenanceLabel !== undefined) {
+          provenanceEl.textContent = view.provenanceLabel
+          if (provenanceEl.dataset) provenanceEl.dataset.provenanceState = 'present'
+        }
+      } else if (!aborted) {
+        const conn = state.connection
+        if (
+          !runIsTerminal &&
+          (conn === 'drift' ||
+            conn === 'not-found' ||
+            conn === 'failed' ||
+            conn === 'submitted-unobservable' ||
+            conn === 'closed')
+        ) {
+          provenanceEl.textContent = ''
+          if (provenanceEl.dataset) delete provenanceEl.dataset.provenanceState
         }
       }
     }
@@ -2632,7 +2744,9 @@ export function bootstrapOperatorStreams(opts) {
     // Discover the approval region and badge elements
     const approvalsEl = card.querySelector('[data-role="run-approvals"]')
     const badgeEl = card.querySelector('[data-role="approval-badge"]')
-    handles.push(initOperatorStream({runId, statusEl, noticeEl, outputEl, coalescedEl, approvalsEl, badgeEl, endpointBase, fixtureSessionId}))
+    const reasonEl = card.querySelector('[data-role="run-reason"]')
+    const provenanceEl = card.querySelector('[data-role="run-provenance"]')
+    handles.push(initOperatorStream({runId, statusEl, noticeEl, outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, provenanceEl, endpointBase, fixtureSessionId}))
   }
 
   _bootstrapHandles = handles
