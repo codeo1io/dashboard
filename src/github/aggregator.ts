@@ -381,7 +381,10 @@ function toAbsenceEntry(entry: WorkingSetEntry, status: RepoCiStatus): Dashboard
 
 export interface AggregatorDeps {
   /** Enumerate repos from all installations */
-  readonly enumerate: (client: InstallationsClient) => Promise<Result<EnumerateReposResult, unknown>>
+  readonly enumerate: (
+    client: InstallationsClient,
+    options?: {readonly signal?: AbortSignal},
+  ) => Promise<Result<EnumerateReposResult, unknown>>
   /** Read repo metadata + denylist */
   readonly readMetadata: (reader: MetadataReader) => Promise<Result<MetadataResult, MetadataError>>
   /**
@@ -927,6 +930,46 @@ async function deadlineOr<T>(promise: Promise<T>, deadlineMs: number, label: str
   }
 }
 
+/**
+ * rm-221: deadline race that also ABORTS the loser.
+ *
+ * `deadlineOr` returns at the deadline but leaves the underlying request
+ * running until its own per-request ceiling (up to 30s — the inversion the
+ * 2026-09-29 assessment pinned: a 15s call-site budget racing a 30s transport
+ * ceiling). Here the caller hands a `makePromise(signal)` factory instead of a
+ * ready promise, the signal aborts at the deadline, and every transport built
+ * on `createBoundedFetch` (which composes `init.signal` via
+ * `AbortSignal.any`) tears the socket down at the budget boundary.
+ */
+export async function deadlineOrWithAbort<T>(
+  makePromise: (signal: AbortSignal) => Promise<T>,
+  deadlineMs: number,
+  label: string,
+): Promise<T | DeadlineExceededError> {
+  const controller = new AbortController()
+  const deadline = deadlineOr(makePromise(controller.signal), deadlineMs, label)
+  deadline.catch(() => {
+    // The deadline value (not this rejection) is what the caller consumes;
+    // swallow the unhandled-rejection path for the racing timer promise.
+  })
+  const onDeadline = setTimeout(() => controller.abort(), deadlineMs)
+  try {
+    const result = await deadline
+    if (result instanceof DeadlineExceededError && !controller.signal.aborted) {
+      // deadlineOr resolves (never rejects) with the DeadlineExceededError
+      // value, so the abort timer can lose the settle race against
+      // deadlineOr's own timer and get cleared before it ever fires. Abort
+      // here as well so the losing transport is torn down no matter which
+      // timer lands first — but only on the deadline path; a work value must
+      // never observe an abort.
+      controller.abort()
+    }
+    return result
+  } finally {
+    clearTimeout(onDeadline)
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Aggregator factory
 // ---------------------------------------------------------------------------
@@ -1121,7 +1164,11 @@ export function createAggregator(
     scrubLastGoodAgainstDenylist(metadata)
 
     // 2. Enumerate installation repos (deadline-bounded, rm-203)
-    const enumerateResult = await deadlineOr(deps.enumerate(installationsClient), fetchDeadlineMs, 'installation enumeration')
+    const enumerateResult = await deadlineOrWithAbort(
+      async signal => deps.enumerate(installationsClient, {signal}),
+      fetchDeadlineMs,
+      'installation enumeration',
+    )
 
     let installRepos: readonly {node_id: string; database_id: number; owner: string; name: string; full_name: string; installation_id: number}[] = []
     let enumerationFailed = false

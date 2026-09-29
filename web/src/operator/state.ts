@@ -11,7 +11,12 @@
  * - Denied/malformed/unknown signals map to neutral `unavailable` — never
  *   reveal resource existence by treating the same status differently per path.
  * - Auth expiry (401/403) always maps to `auth-required` regardless of source
- *   (bootstrap, fetch, stream, or mutation).
+ *   (bootstrap, fetch, stream, or mutation). Decision (2026-09-29, rm-157): a
+ *   v0.116.0+ gateway may answer 401 with an operator-actionable
+ *   workspace-unavailable body, but a non-2xx response to the *dashboard's*
+ *   unauthenticated fetch carries no such body — the run-level outcome arrives
+ *   as a failed status frame with failureKind `workspace-unavailable`, which
+ *   the run view renders via its own label. Session 401 stays auth-required.
  */
 
 export type OperatorSignal =
