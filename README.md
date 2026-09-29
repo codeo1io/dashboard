@@ -58,6 +58,8 @@ client changes). The test suite rebuilds the client automatically via `pretest`.
 - `POST /api/listener/messages/:id/ack` · `POST /api/listener/ack-all` — digest acknowledgements (authenticated).
 - `GET /privacy` — public privacy policy for the push/listener surfaces.
 - `GET /auth/login` · `GET /auth/callback` · `POST /auth/logout` — GitHub OAuth session flow.
+- `GET /auth/csrf` · `POST /auth/logout-csrf` — Arctic-mode token routes for the logout POST (`Cache-Control: no-store` so a token can never be re-served from cache; rm-277: these were live since the Arctic logout contract landed but absent from this inventory).
+- `GET /operator/session/csrf` · `POST /operator/auth/logout` — gateway-mode logout pair (gateway-auth deployments; the Arctic routes above are unmounted in that mode).
 - `/manifest.webmanifest`, `/sw.js` — PWA manifest and service worker.
 
 ## Configuration
