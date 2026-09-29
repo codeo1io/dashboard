@@ -12,4 +12,18 @@
 // Security constraint: the version is BUILD-TIME pinned and is never supplied or
 // negotiated over the wire. Any endpoint reading a version header must reject
 // unrecognized versions fail-closed.
-export const OPERATOR_CONTRACT_VERSION = '1.6.0'
+//
+// rm-252 (2026-09-30): the gate now accepts the SUPPORTED set below instead of
+// strict equality against OPERATOR_CONTRACT_VERSION. The deployed gateway fleet
+// spans v0.114.1 (1.6.0) through v0.117.0 (1.8.0); 1.7.0 and 1.8.0 are strictly
+// additive supersets of 1.6.0 on this fork's consumed surface (optional
+// run-status fields + two new failureKind values), so accepting all three is
+// safe while still rejecting any unrecognized version fail-closed.
+export const OPERATOR_CONTRACT_VERSION = '1.8.0'
+
+/** Versions the contract gate accepts; anything else fails closed. */
+export const SUPPORTED_OPERATOR_CONTRACT_VERSIONS: ReadonlySet<string> = new Set([
+  '1.6.0',
+  '1.7.0',
+  '1.8.0',
+])

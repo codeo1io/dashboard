@@ -28,8 +28,16 @@
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Contract version this client expects on the ready frame. */
-export const PINNED_CONTRACT_VERSION = '1.6.0'
+/**
+ * Contract versions this client accepts on the ready frame (rm-252): the
+ * deployed gateway fleet spans v0.114.1 (1.6.0) through v0.117.0 (1.8.0), and
+ * 1.7.0/1.8.0 are additive supersets on this client's consumed surface, so
+ * the gate accepts the SUPPORTED set and still fails closed on any other
+ * version. PINNED_CONTRACT_VERSION stays exported as the newest supported
+ * version (tests pin against it).
+ */
+export const PINNED_CONTRACT_VERSION = '1.8.0'
+export const SUPPORTED_CONTRACT_VERSIONS = new Set(['1.6.0', '1.7.0', '1.8.0'])
 
 /** Base delay in milliseconds for exponential backoff. */
 export const RETRY_BASE_MS = 1000
@@ -150,6 +158,8 @@ const VALID_FAILURE_KINDS = new Set([
   'max-duration-timeout',
   'stream-ended',
   'workspace-unreachable',
+  'workspace-unavailable',
+  'checkout-substituted',
   'session-error',
   'unknown',
 ])
@@ -164,7 +174,13 @@ export const FAILURE_REASON_LABELS = {
   'inactivity-timeout': 'No recent activity',
   'max-duration-timeout': 'Run timed out',
   'stream-ended': 'Stream ended early',
-  'workspace-unreachable': 'Workspace unavailable',
+  // rm-252: 'unreachable' is the transient reachability failure; 'unavailable'
+  // is the non-retriable, operator-actionable state (v0.116.0+ semantics). The
+  // old label rendered 'unreachable' as "Workspace unavailable" — relabeled so
+  // the two kinds no longer collide at the display boundary.
+  'workspace-unreachable': 'Workspace unreachable',
+  'workspace-unavailable': 'Workspace unavailable',
+  'checkout-substituted': 'Checkout substituted',
   'session-error': 'Session error',
   unknown: 'Unknown failure',
 }
@@ -180,6 +196,17 @@ export const FAILURE_REASON_LABELS = {
 function normalizeCrlf(text) {
   // Replace \r\n first (order matters — avoids double-replacing the \r)
   return text.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
+}
+
+/**
+ * Shallow-validate an optional contract field: returns the value only when it is
+ * a plain object (not an array); anything else — including null — normalizes to
+ * undefined. Used for the contract 1.7.0/1.8.0 additive fields so a malformed
+ * payload can never be parsed through or echoed raw (rm-252).
+ */
+function toOptionalRecord(value) {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  return value
 }
 
 // ---------------------------------------------------------------------------
@@ -275,6 +302,10 @@ export function parseSseFrame(record) {
     // failureKind is optional and allowlist-gated; an unrecognized or absent
     // value normalizes to omitted — it never fails validity of the status frame.
     const failureKind = VALID_FAILURE_KINDS.has(parsed.failureKind) ? parsed.failureKind : undefined
+    // Contract 1.7.0/1.8.0 additive fields (rm-252): optional, shallow-validated
+    // — malformed or absent values normalize to omitted, never echoed raw.
+    const checkoutProvenance = toOptionalRecord(parsed.checkoutProvenance)
+    const checkoutPreparation = toOptionalRecord(parsed.checkoutPreparation)
     return {
       success: true,
       frame: {
@@ -288,6 +319,8 @@ export function parseSseFrame(record) {
           startedAt: parsed.startedAt,
           stale: parsed.stale,
           ...(failureKind === undefined ? {} : {failureKind}),
+          ...(checkoutProvenance === undefined ? {} : {checkoutProvenance}),
+          ...(checkoutPreparation === undefined ? {} : {checkoutPreparation}),
         },
       },
     }
@@ -414,7 +447,7 @@ export function nextStreamState(current, event) {
       if (current.connection === 'drift') {
         return current
       }
-      if (event.data.contractVersion !== PINNED_CONTRACT_VERSION) {
+      if (!SUPPORTED_CONTRACT_VERSIONS.has(event.data.contractVersion)) {
         // Contract version mismatch — fail closed, clear all run state
         return {
           connection: 'drift',
@@ -435,7 +468,7 @@ export function nextStreamState(current, event) {
       if (current.connection !== 'live') {
         return current
       }
-      const {runId, status, phase, startedAt, stale, failureKind} = event.data
+      const {runId, status, phase, startedAt, stale, failureKind, checkoutProvenance, checkoutPreparation} = event.data
       const isTerminal = TERMINAL_STATUSES.has(status)
       // Use a null-prototype object to guard against __proto__ key pollution.
       // Spread the prior entry so accumulated output fields (outputText/outputSeq/
@@ -475,6 +508,8 @@ export function nextStreamState(current, event) {
           // A non-terminal frame preserves whatever the prior entry carried (spread above).
           ...(isTerminal ? {cancelInFlight: false} : {}),
           ...(reasonLabel === undefined ? {} : {reasonLabel}),
+          ...(checkoutProvenance === undefined ? {} : {checkoutProvenance}),
+          ...(checkoutPreparation === undefined ? {} : {checkoutPreparation}),
         },
       })
       // If all observed runs are terminal, close the stream
@@ -915,7 +950,8 @@ export function nextStreamState(current, event) {
 /**
  * Map a run status object to the safe render model.
  *
- * Returns ONLY: { runId, status, phase, startedAt, stale, reasonLabel? }
+ * Returns ONLY: { runId, status, phase, startedAt, stale, reasonLabel?,
+ * checkoutSummary? }
  *
  * Explicitly excluded: entityRef, surface, output, tool, path, repoName,
  * failureKind, and any other field not in the safe set. This is a whitelist,
@@ -923,8 +959,13 @@ export function nextStreamState(current, event) {
  * never the raw failureKind wire value — and is present only when the run
  * entry carries one (set by nextStreamState on a failed status with a known
  * failureKind, and sticky across later frames for the same run).
+ * checkoutSummary (rm-252, contract 1.7.0/1.8.0) is a pre-resolved, whitelisted
+ * summary of the run's checkout provenance/preparation — only the display-safe
+ * fields summarized in toCheckoutSummary ever reach the DOM, never the raw
+ * objects.
  */
 export function toSafeRunView(runStatus) {
+  const checkoutSummary = toCheckoutSummary(runStatus.checkoutProvenance, runStatus.checkoutPreparation)
   return {
     runId: runStatus.runId,
     status: runStatus.status,
@@ -932,7 +973,49 @@ export function toSafeRunView(runStatus) {
     startedAt: runStatus.startedAt,
     stale: runStatus.stale,
     ...(runStatus.reasonLabel === undefined ? {} : {reasonLabel: runStatus.reasonLabel}),
+    ...(checkoutSummary === undefined ? {} : {checkoutSummary}),
   }
+}
+
+/**
+ * Summarize checkout provenance/preparation into a display-safe single line.
+ * Whitelisted fields only: preparation outcome/reason (strings), provenance
+ * kind, head branch (string) and sha (40-hex, truncated to 7), worktree kind,
+ * remote change. Everything else in the wire objects is dropped — a malicious
+ * or future field can never reach the DOM through this seam. Returns
+ * undefined when neither field is present or nothing valid can be summarized.
+ */
+function toCheckoutSummary(provenance, preparation) {
+  if (provenance === undefined && preparation === undefined) return undefined
+  const parts = []
+  if (preparation !== undefined) {
+    const reason = typeof preparation.reason === 'string' && preparation.reason.length > 0 ? preparation.reason : 'unknown'
+    parts.push(`preparation ${preparation.outcome === 'failed' ? 'failed' : 'refused'} (${reason})`)
+  }
+  if (provenance !== undefined) {
+    if (provenance.kind === 'unavailable') {
+      parts.push('checkout observation unavailable')
+    } else {
+      const obs = provenance.observation
+      if (typeof obs === 'object' && obs !== null) {
+        const head = obs.head
+        if (typeof head === 'object' && head !== null) {
+          const branch = head.kind === 'attached' && typeof head.branch === 'string' ? head.branch : 'detached'
+          const sha = typeof head.sha === 'string' && /^[0-9a-f]{40}$/.test(head.sha) ? head.sha.slice(0, 7) : 'unknown'
+          parts.push(`${branch} @ ${sha}`)
+        }
+        const worktree = obs.worktree
+        if (typeof worktree === 'object' && worktree !== null) {
+          parts.push(worktree.kind === 'dirty' ? 'dirty worktree' : 'clean worktree')
+        }
+      }
+      const remote = provenance.remote
+      if (typeof remote === 'object' && remote !== null && remote.kind === 'checked') {
+        parts.push(remote.change === 'fast-forward' ? 'updated from remote' : 'up to date with remote')
+      }
+    }
+  }
+  return parts.length > 0 ? parts.join(' · ') : undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -1480,7 +1563,7 @@ export function renderApprovalPrompt(prompt, runId, approvalClient, _onSettle) {
   alwaysConfirmEl.append(alwaysConfirmBtnsEl)
 
   // Interaction state machine
-  let promptState = 'open' // 'open' | 'always-confirm' | 'in-flight' | 'cant-approve' | 'session-expired' | 'transport-failure' | 'already-settled'
+  let promptState = 'open' // 'open' | 'always-confirm' | 'in-flight' | 'cant-approve' | 'session-expired' | 'workspace-unavailable' | 'transport-failure' | 'already-settled'
 
   function updateStateAttr() {
     el.dataset.state = promptState
@@ -1532,6 +1615,18 @@ export function renderApprovalPrompt(prompt, runId, approvalClient, _onSettle) {
     alwaysConfirmEl.hidden = true
   }
 
+  // rm-252: a 401 from a gateway at v0.116.0+ is operator-actionable workspace
+  // unavailability (gateway/workspace deployment or bearer coupling), NOT a
+  // session problem — a reload affordance here would loop forever without
+  // fixing anything. Keep the copy actionable and point at the runbook.
+  function setWorkspaceUnavailable() {
+    promptState = 'workspace-unavailable'
+    updateStateAttr()
+    statusEl.textContent = 'The gateway reports the workspace as unavailable for this decision \u2014 check the gateway/workspace deployment (see docs/runbooks/gateway-access.md), then try again.'
+    controlsEl.textContent = ''
+    alwaysConfirmEl.hidden = true
+  }
+
   async function handleDecision(decision) {
     if (promptState === 'in-flight') return
     setInFlight()
@@ -1566,7 +1661,11 @@ export function renderApprovalPrompt(prompt, runId, approvalClient, _onSettle) {
       const {error} = result
       if (error.kind === 'http' && error.status === 404) {
         setCantApprove()
-      } else if (error.kind === 'http' && (error.status === 400 || error.status === 401 || error.status === 403)) {
+      } else if (error.kind === 'http' && error.status === 401) {
+        // rm-252: v0.116.0+ reclassifies 401 as operator-actionable workspace
+        // unavailability — distinct from the 400/403 session failures below.
+        setWorkspaceUnavailable()
+      } else if (error.kind === 'http' && (error.status === 400 || error.status === 403)) {
         setSessionFailure()
       } else {
         setTransportFailure()
@@ -1701,6 +1800,8 @@ export function renderCancelControl(runId, cancelClient, onCancelDispatch) {
   controlsEl.className = 'run-cancel-controls'
   el.append(controlsEl)
 
+  // controlState: 'idle' | 'armed' | 'pending' | 'retrying' | 'cancelled' |
+  // 'unavailable' | 'session-expired' | 'workspace-unavailable' | 'transport-failure' (rm-252 added workspace-unavailable)
   let controlState = 'idle'
   let canceling = false
   let retryAttempt = 0
@@ -1831,6 +1932,16 @@ export function renderCancelControl(runId, cancelClient, onCancelDispatch) {
     controlsEl.textContent = ''
   }
 
+  // rm-252: a 401 from a gateway at v0.116.0+ is operator-actionable workspace
+  // unavailability (deployment/bearer coupling), not a session problem — no
+  // reload affordance, runbook pointer instead.
+  function setWorkspaceUnavailable() {
+    controlState = 'workspace-unavailable'
+    updateStateAttr()
+    statusEl.textContent = 'The gateway reports the workspace as unavailable \u2014 check the gateway/workspace deployment (see docs/runbooks/gateway-access.md), then try again.'
+    controlsEl.textContent = ''
+  }
+
   function setTransportFailure() {
     controlState = 'transport-failure'
     updateStateAttr()
@@ -1931,7 +2042,11 @@ export function renderCancelControl(runId, cancelClient, onCancelDispatch) {
 
     if (error.kind === 'http' && error.status === 404) {
       setUnavailable()
-    } else if (error.kind === 'http' && (error.status === 400 || error.status === 401 || error.status === 403)) {
+    } else if (error.kind === 'http' && error.status === 401) {
+      // rm-252: v0.116.0+ reclassifies 401 as operator-actionable workspace
+      // unavailability — distinct from the 400/403 session expiry below.
+      setWorkspaceUnavailable()
+    } else if (error.kind === 'http' && (error.status === 400 || error.status === 403)) {
       setSessionExpired()
     } else if (error.kind === 'network') {
       setTransportFailure()
@@ -2155,8 +2270,14 @@ export function initOperatorStream(opts) {
       const runIsTerminal = runEntry !== undefined && runEntry.terminal === true
       if (runEntry && (state.connection === 'live' || runIsTerminal)) {
         const view = toSafeRunView(runEntry)
-        if (view.reasonLabel !== undefined) {
-          reasonEl.textContent = view.reasonLabel
+        // rm-252: render the checkout-advance provenance summary alongside the
+        // failure label — each part is independently optional.
+        const line =
+          view.reasonLabel !== undefined && view.checkoutSummary !== undefined
+            ? `${view.reasonLabel} — ${view.checkoutSummary}`
+            : view.reasonLabel ?? view.checkoutSummary
+        if (line !== undefined) {
+          reasonEl.textContent = line
           if (reasonEl.dataset) reasonEl.dataset.reasonState = 'present'
         }
       } else if (!aborted) {

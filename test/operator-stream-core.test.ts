@@ -31,6 +31,7 @@ import {
   parseSseFrame,
   PHASE_TO_WEB_STATUS,
   PINNED_CONTRACT_VERSION,
+  SUPPORTED_CONTRACT_VERSIONS,
   renderApprovalPrompt,
   renderCancelControl,
   resetBootstrapState,
@@ -1225,14 +1226,86 @@ describe('backoff constants', () => {
     expect(Number.isInteger(RETRY_MAX_COUNT)).toBe(true)
   })
 
-  it('PINNED_CONTRACT_VERSION is 1.6.0', () => {
-    expect(PINNED_CONTRACT_VERSION).toBe('1.6.0')
+  it('PINNED_CONTRACT_VERSION is 1.8.0 (rm-252 absorb)', () => {
+    expect(PINNED_CONTRACT_VERSION).toBe('1.8.0')
   })
 })
 
 describe('contract pin lockstep parity', () => {
   it('browser PINNED_CONTRACT_VERSION equals vendored TypeScript OPERATOR_CONTRACT_VERSION', () => {
     expect(PINNED_CONTRACT_VERSION).toBe(OPERATOR_CONTRACT_VERSION)
+  })
+
+  it('browser supported-version set matches the deployed fleet span 1.6.0–1.8.0 (rm-252)', () => {
+    expect([...SUPPORTED_CONTRACT_VERSIONS].sort()).toEqual(['1.6.0', '1.7.0', '1.8.0'])
+  })
+})
+
+describe('toSafeRunView — checkoutSummary (rm-252, contract 1.7.0/1.8.0)', () => {
+  it('summarizes provenance with a detached head, clean worktree, checked remote', () => {
+    const view = toSafeRunView({
+      ...ACTIVE_STATUS,
+      checkoutProvenance: {
+        kind: 'observed',
+        observation: {
+          head: {kind: 'detached', sha: 'a1b2c3d4'.padEnd(40, '0')},
+          worktree: {kind: 'clean'},
+          operationInProgress: 'none',
+          observedAt: '2026-09-30T00:00:00Z',
+        },
+        remote: {kind: 'checked', defaultBranch: 'main', sha: 'c'.repeat(40), checkedAt: '2026-09-30T00:00:00Z', change: 'unchanged'},
+      },
+    })
+    expect(view.checkoutSummary).toBe('detached @ a1b2c3d · clean worktree · up to date with remote')
+  })
+
+  it('renders an attached branch and a fast-forwarded remote as updated, and prefixes a preparation failure', () => {
+    const view = toSafeRunView({
+      ...ACTIVE_STATUS,
+      checkoutProvenance: {
+        kind: 'observed',
+        observation: {
+          head: {kind: 'attached', branch: 'main', sha: 'f'.repeat(40)},
+          worktree: {kind: 'dirty', staged: 0, unstaged: 1, untracked: 2, conflicted: 0},
+          operationInProgress: 'none',
+          observedAt: '2026-09-30T00:00:00Z',
+        },
+        remote: {kind: 'checked', defaultBranch: 'main', sha: 'e'.repeat(40), checkedAt: '2026-09-30T00:00:00Z', change: 'fast-forward', fromSha: 'd'.repeat(40)},
+      },
+      checkoutPreparation: {outcome: 'failed', reason: 'update-failed', permanent: false},
+    })
+    expect(view.checkoutSummary).toBe(
+      'preparation failed (update-failed) · main @ fffffff · dirty worktree · updated from remote',
+    )
+  })
+
+  it('unavailable provenance summarizes without leaking observation fields', () => {
+    const view = toSafeRunView({
+      ...ACTIVE_STATUS,
+      checkoutProvenance: {kind: 'unavailable', remote: {kind: 'not-checked'}},
+    })
+    expect(view.checkoutSummary).toBe('checkout observation unavailable')
+  })
+
+  it('no provenance/preparation → no checkoutSummary key at all', () => {
+    const view = toSafeRunView(ACTIVE_STATUS)
+    expect('checkoutSummary' in view).toBe(false)
+  })
+
+  it('raw provenance objects never reach the safe view', () => {
+    const view = toSafeRunView({
+      ...ACTIVE_STATUS,
+      checkoutProvenance: {
+        kind: 'observed',
+        observation: {
+          head: {kind: 'detached', sha: 'b'.repeat(40)},
+          secretPath: '/workspace/secret-repo',
+        },
+        remote: {kind: 'not-checked'},
+      },
+    } as unknown as Parameters<typeof toSafeRunView>[0])
+    expect(JSON.stringify(view)).not.toContain('secret-repo')
+    expect(JSON.stringify(view)).not.toContain('observation')
   })
 })
 
@@ -2941,7 +3014,7 @@ describe('renderApprovalPrompt — DOM-level failure states', () => {
     expect(buttons).toHaveLength(0)
   })
 
-  it('HTTP 401 from CSRF-refresh-expiry → session-failure copy shown, controls cleared', async () => {
+  it('HTTP 401 → operator-actionable workspace-unavailable copy, no reload affordance (rm-252)', async () => {
     stubRenderEnv()
     vi.stubGlobal('crypto', {randomUUID: () => 'test-uuid-1234'})
     const prompt: ApprovalFrameDataOpen = {
@@ -2956,8 +3029,11 @@ describe('renderApprovalPrompt — DOM-level failure states', () => {
     onceBtn?.dispatchEvent({type: 'click'})
     await new Promise(resolve => setTimeout(resolve, 10))
 
+    // rm-252: a gateway at v0.116.0+ reclassifies 401 as operator-actionable
+    // workspace unavailability — pointed at the runbook, never a reload loop.
     const statusEl = findStatusElement(el)
-    expect(statusEl?.textContent).toMatch(/session.*expired|reload.*page/i)
+    expect(statusEl?.textContent).toMatch(/workspace.*unavailable/i)
+    expect(statusEl?.textContent).not.toMatch(/reload/i)
     const buttons = findVisibleButtons(el)
     expect(buttons).toHaveLength(0)
   })
@@ -6525,9 +6601,9 @@ describe('live failure reason updates and announcements', () => {
     await new Promise(resolve => setTimeout(resolve, 30))
 
     expect(statusEl.textContent).toBe('Failed')
-    expect(reasonEl.textContent).toBe('Workspace unavailable')
+    expect(reasonEl.textContent).toBe('Workspace unreachable')
     // noticeEl must contain the live polite announcement
-    expect(noticeEl.textContent).toBe('Run failed: Workspace unavailable')
+    expect(noticeEl.textContent).toBe('Run failed: Workspace unreachable')
     expect(noticeEl.hidden).toBe(false)
 
     handle.close()
@@ -6988,10 +7064,10 @@ describe('renderCancelControl — two-step confirm interaction', () => {
     vi.useRealTimers()
   })
 
-  it('error: persistent 400/401/403 renders session-expired, not a retry loop', async () => {
+  it('error: persistent 400/403 renders session-expired, not a retry loop', async () => {
     stubCancelRenderEnv()
     const {client, cancelCalls} = makeFakeCancelClient({
-      cancelResult: {success: false, error: {kind: 'http', status: 401}},
+      cancelResult: {success: false, error: {kind: 'http', status: 403}},
     })
     const {el} = renderCancelControl('run-001', client, () => {}) as unknown as {el: FakeElement}
     findVisibleButtons(el).find(b => b.textContent === 'Cancel run')?.dispatchEvent({type: 'click'})
@@ -7001,6 +7077,24 @@ describe('renderCancelControl — two-step confirm interaction', () => {
     expect(cancelCalls).toHaveLength(1) // no loop
     const statusEl = findStatusElement(el)
     expect(statusEl?.textContent).toMatch(/session.*expired|reload/i)
+  })
+
+  it('error: 401 renders the operator-actionable workspace-unavailable state, not session-expired (rm-252)', async () => {
+    stubCancelRenderEnv()
+    const {client, cancelCalls} = makeFakeCancelClient({
+      cancelResult: {success: false, error: {kind: 'http', status: 401}},
+    })
+    const {el} = renderCancelControl('run-001', client, () => {}) as unknown as {el: FakeElement}
+    findVisibleButtons(el).find(b => b.textContent === 'Cancel run')?.dispatchEvent({type: 'click'})
+    findVisibleButtons(el).find(b => b.textContent === 'Confirm cancel')?.dispatchEvent({type: 'click'})
+    await new Promise(resolve => setTimeout(resolve, 10))
+    // rm-252: a gateway at v0.116.0+ reclassifies 401 as operator-actionable
+    // workspace unavailability — no session-expired reload affordance.
+    expect(el.dataset.state).toBe('workspace-unavailable')
+    expect(cancelCalls).toHaveLength(1) // no loop
+    const statusEl = findStatusElement(el)
+    expect(statusEl?.textContent).toMatch(/workspace.*unavailable/i)
+    expect(statusEl?.textContent).not.toMatch(/reload/i)
   })
 
   it('error: network failure renders retryable transport-failure', async () => {
@@ -7280,7 +7374,7 @@ describe('CSS selector ↔ cancel-control state emitter agreement', () => {
       expect(cssContent).toContain(token)
     }
 
-    const requiredStateTokens = ['idle', 'armed', 'pending', 'retrying', 'cancelled', 'unavailable', 'session-expired', 'transport-failure']
+    const requiredStateTokens = ['idle', 'armed', 'pending', 'retrying', 'cancelled', 'unavailable', 'session-expired', 'workspace-unavailable', 'transport-failure']
     for (const state of requiredStateTokens) {
       expect(cssContent).toContain(`[data-state="${state}"]`)
     }

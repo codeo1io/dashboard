@@ -751,7 +751,9 @@
 [data-role="run-cancel"][data-state="unavailable"] .run-cancel-status,
 .run-cancel-control[data-state="unavailable"] .run-cancel-status,
 [data-role="run-cancel"][data-state="session-expired"] .run-cancel-status,
-.run-cancel-control[data-state="session-expired"] .run-cancel-status {
+.run-cancel-control[data-state="session-expired"] .run-cancel-status,
+[data-role="run-cancel"][data-state="workspace-unavailable"] .run-cancel-status,
+.run-cancel-control[data-state="workspace-unavailable"] .run-cancel-status {
   color: var(--color-error);
 }
 
