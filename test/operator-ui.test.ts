@@ -754,10 +754,11 @@ describe('operator UI — fixture-absence: GET /operator/runs returns 404 (no-pr
 // /operator (exact) → 302 to / (unconditional redirect, pinned above).
 // /operator/ (trailing slash) → 302 to / (unconditional redirect, flag-independent).
 //
-// Both are handled directly in server.ts. The sub-router (buildOperatorRouter)
-// does NOT handle /operator/ — Hono's app.route('/operator', router) does not
-// strip the trailing slash, so router.get('/') never fires for /operator/.
-// The /operator/ redirect is therefore mounted unconditionally in server.ts.
+// Both are handled directly in server.ts. The inert sub-router that used to
+// mount here (buildOperatorRouter from the deleted src/routes/operator.ts —
+// rm-264) registered no other reachable route — Hono's app.route('/operator',
+// router) does not strip the trailing slash, so its router.get('/') never
+// fired for /operator/, and no other sub-path was registered at all.
 //
 // Invariants pinned here:
 // - /operator/ is a 302 redirect to / (not 200, not 404, not data surface)
