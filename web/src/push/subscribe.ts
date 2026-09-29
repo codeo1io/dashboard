@@ -267,6 +267,8 @@ export interface MinimalServiceWorkerRegistration {
 export type SubscribeOutcome =
   | {readonly kind: 'subscribed'}
   | {readonly kind: 'sw-not-ready'}
+  /** rm-272: no service-worker registration exists, so the ready wait can never settle — permanent, retrying cannot help. */
+  | {readonly kind: 'sw-unavailable'}
   | {readonly kind: 'ios-not-installed'}
   | {readonly kind: 'unsupported'}
   | {readonly kind: 'dismissed'}
@@ -277,6 +279,12 @@ export type SubscribeOutcome =
 export interface SubscribeDeps {
   /** Resolves once the SW is ready — normally `navigator.serviceWorker.ready`. */
   readonly serviceWorkerReady: () => Promise<MinimalServiceWorkerRegistration>
+  /**
+   * rm-272: reads whether any service-worker registration exists, so a timed-out
+   * ready wait can be classified permanent ('sw-unavailable') instead of transient
+   * ('sw-not-ready'). Defaults to navigator.serviceWorker.getRegistration().
+   */
+  readonly getSwRegistration?: () => Promise<MinimalServiceWorkerRegistration | undefined>
   readonly getSupport?: () => {readonly supported: boolean; readonly needsInstall: boolean}
   readonly getPermission?: () => NotificationPermission | 'unsupported'
   readonly requestPermission: () => Promise<NotificationPermission>
@@ -287,6 +295,49 @@ export interface SubscribeDeps {
 }
 
 const DEFAULT_SW_READY_TIMEOUT_MS = 5000
+
+/** rm-272: bound for the sweep/cleanup local-subscription read (serviceWorker.ready + getSubscription). */
+const DEFAULT_LOCAL_READ_TIMEOUT_MS = 5000
+
+/** Default registration probe: an absent serviceWorker container reads as "no registration". */
+function getDefaultSwRegistration(): Promise<MinimalServiceWorkerRegistration | undefined> {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+    return Promise.resolve(undefined)
+  }
+  try {
+    // House boundary cast: the module reads only `pushManager` (structural
+    // subset), which the DOM registration provides; the full DOM interfaces
+    // carry members whose minimal twins differ (BufferSource vs Uint8Array),
+    // so the structural assignment itself does not typecheck.
+    return navigator.serviceWorker
+      .getRegistration()
+      .then((reg) => reg as unknown as MinimalServiceWorkerRegistration | undefined)
+      .catch(() => undefined)
+  } catch {
+    return Promise.resolve(undefined)
+  }
+}
+
+/**
+ * rm-272: classify a timed-out `serviceWorker.ready` wait. With no registration
+ * the wait can never settle — retrying cannot help — so the caller must surface
+ * the PERMANENT 'sw-unavailable' outcome; a registration that merely has not
+ * finished activating is the transient 'sw-not-ready' one. A hung or failing
+ * getRegistration() also reads as "no registration": it is only consulted after
+ * the ready wait already timed out.
+ */
+async function classifySwReadiness(
+  deps: Pick<SubscribeDeps, 'getSwRegistration' | 'swReadyTimeoutMs'>,
+): Promise<{readonly kind: 'sw-not-ready'} | {readonly kind: 'sw-unavailable'}> {
+  const getSwRegistration = deps.getSwRegistration ?? getDefaultSwRegistration
+  const registration = await withTimeout(
+    getSwRegistration(),
+    deps.swReadyTimeoutMs ?? DEFAULT_SW_READY_TIMEOUT_MS,
+  )
+  return registration === 'timeout' || registration === undefined
+    ? {kind: 'sw-unavailable'}
+    : {kind: 'sw-not-ready'}
+}
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | 'timeout'> {
   return new Promise(resolve => {
@@ -323,7 +374,7 @@ export async function subscribeOptIn(deps: SubscribeDeps): Promise<SubscribeOutc
   if (support.supported === false) return {kind: 'unsupported'}
 
   const readyResult = await withTimeout(deps.serviceWorkerReady(), deps.swReadyTimeoutMs ?? DEFAULT_SW_READY_TIMEOUT_MS)
-  if (readyResult === 'timeout') return {kind: 'sw-not-ready'}
+  if (readyResult === 'timeout') return classifySwReadiness(deps)
   const registration = readyResult
 
   if (deps.signal?.aborted) return {kind: 'aborted'}
@@ -424,7 +475,7 @@ export async function resubscribeStaleKey(deps: SubscribeDeps): Promise<Subscrib
   const mintKey = deps.mintIdempotencyKey ?? mintIdempotencyKey
 
   const readyResult = await withTimeout(deps.serviceWorkerReady(), deps.swReadyTimeoutMs ?? DEFAULT_SW_READY_TIMEOUT_MS)
-  if (readyResult === 'timeout') return {kind: 'sw-not-ready'}
+  if (readyResult === 'timeout') return classifySwReadiness(deps)
   const registration = readyResult
 
   if (deps.signal?.aborted) return {kind: 'aborted'}
@@ -529,6 +580,8 @@ export async function resubscribeStaleKey(deps: SubscribeDeps): Promise<Subscrib
 
 export interface UnsubscribeDeps {
   readonly getLocalSubscription: () => Promise<MinimalPushSubscription | null>
+  /** rm-272: bound on the local read — serviceWorker.ready never settles with no registration, and logout cleanup must not hang on it. */
+  readonly localReadTimeoutMs?: number
   readonly pushClient: PushClient
   readonly mintIdempotencyKey?: () => string
 }
@@ -543,7 +596,15 @@ export interface UnsubscribeDeps {
  */
 export async function unsubscribeOptOut(deps: UnsubscribeDeps): Promise<{readonly gatewayUnsubscribeCalled: boolean}> {
   const mintKey = deps.mintIdempotencyKey ?? mintIdempotencyKey
-  const subscription = await deps.getLocalSubscription().catch(() => null)
+  // rm-272: bound the local read — `navigator.serviceWorker.ready` never settles
+  // when no registration exists, and logout cleanup must not hang on it. A
+  // timeout (or rejection, which withTimeout collapses to 'timeout') reads as
+  // "no local subscription": the Gateway call is skipped per the contract above.
+  const localRead = await withTimeout(
+    deps.getLocalSubscription(),
+    deps.localReadTimeoutMs ?? DEFAULT_LOCAL_READ_TIMEOUT_MS,
+  )
+  const subscription = localRead === 'timeout' ? null : localRead
 
   if (subscription === null) {
     // Endpointless case — nothing to unsubscribe locally or remotely.
@@ -590,6 +651,12 @@ export interface ReconcileSweepDeps {
   readonly getCurrentKeyVersion?: () => string | undefined
   readonly now?: () => number
   readonly minIntervalMs?: number
+  /**
+   * rm-272: bound on the local read. In production this read rides
+   * `navigator.serviceWorker.ready`, which NEVER settles when no registration
+   * exists — the unbounded await that used to hang the sweep here.
+   */
+  readonly localReadTimeoutMs?: number
 }
 
 export interface ReconcileSweepResult {
@@ -621,7 +688,21 @@ export async function runReconcileSweep(
   const minIntervalMs = deps.minIntervalMs ?? DEFAULT_MIN_INTERVAL_MS
 
   const permission = getPermission()
-  const localSubscription = await deps.getLocalSubscription().catch(() => null)
+  // rm-272: bound the local read. It rides `navigator.serviceWorker.ready` in
+  // production, which NEVER settles when no registration exists — this was the
+  // file's only unbounded serviceWorkerReady await (the subscribe/resubscribe
+  // siblings wrap theirs in withTimeout). It also runs BEFORE the
+  // unchanged/min-interval guards below, so an unbounded read hung EVERY
+  // focus/visibility sweep, not just the first. A timeout (or rejection,
+  // collapsed into 'timeout') reads as "no local subscription": the handoff
+  // derivation stays conservative — no local hash => 'not_subscribed',
+  // notSubscribedConfirmed false => no destructive action — so a slow or stuck
+  // service worker can never license a teardown.
+  const localRead = await withTimeout(
+    deps.getLocalSubscription(),
+    deps.localReadTimeoutMs ?? DEFAULT_LOCAL_READ_TIMEOUT_MS,
+  )
+  const localSubscription = localRead === 'timeout' ? null : localRead
   const subscriptionPresent = localSubscription !== null
 
   // cache.handoffState === undefined means no sweep has run yet — always run the

@@ -174,6 +174,10 @@ const defaultRateLimitTrustedProxy = (): boolean =>
  * README's three-class table is recorded, not accidental — pinned twice
  * more by test/rate-limit-class.test.ts 'rm-269' at the classifier level
  * and test/auth.test.ts 'rm-269' at the middleware level.)
+ * (rider 2026-09-29, integrate case 33e48330: that divergence is now
+ * resolved in the doc, not only pinned — rm-275 trued README's
+ * RATE_LIMIT_MAX_PUBLIC row to name this exact sensitive-path gate, so
+ * README, this docstring, and the two 'rm-269' pins now agree.)
  * - ingest: the machine-write listener route (HMAC-gated by the route itself).
  */
 export function classifyRateLimitPath(path: string): RateLimitClass {

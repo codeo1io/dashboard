@@ -30,7 +30,7 @@ export interface ListenerMessagesResponse {
 
 export type FetchListenerResult =
   | { ok: true; data: ListenerMessagesResponse }
-  | { ok: false; reason: 'timeout' | 'network' | 'contract-drift' }
+  | { ok: false; reason: 'timeout' | 'network' | 'unauthenticated' | 'contract-drift' }
 
 function isPlainObject(val: unknown): val is Record<string, unknown> {
   return typeof val === 'object' && val !== null && !Array.isArray(val)
@@ -97,6 +97,12 @@ export async function fetchListenerMessages(opts: {
     })
 
     if (!res.ok) {
+      // rm-273: 401 is session expiry, not a transport failure — classify it
+      // so the UI can offer a sign-in affordance instead of blaming the
+      // network (the operator's session expired, the dashboard did not break).
+      if (res.status === 401) {
+        return { ok: false, reason: 'unauthenticated' }
+      }
       return { ok: false, reason: 'network' }
     }
 

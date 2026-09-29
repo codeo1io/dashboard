@@ -89,6 +89,24 @@ describe('ListenerChannel', () => {
     expect(screen.getByText(/Failed to load messages/)).toBeInTheDocument()
   })
 
+  it('rm-273: renders the auth-expired affordance on 401 instead of the network error', async () => {
+    vi.mocked(listenerApi.fetchListenerMessages).mockResolvedValueOnce({
+      ok: false,
+      reason: 'unauthenticated'
+    })
+
+    render(<ListenerChannel />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.getByTestId('listener-auth-expired')).toBeInTheDocument()
+    expect(screen.getByText(/Session expired/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/auth/login')
+    // The network-error retry copy must NOT be shown for session expiry.
+    expect(screen.queryByTestId('listener-error')).not.toBeInTheDocument()
+  })
+
   it('calls ack API when "Mark read" is clicked', async () => {
     const mockMessages = {
       ok: true,

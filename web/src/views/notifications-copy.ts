@@ -1,7 +1,7 @@
 /**
  * Fixed copy for the operator push notifications consent/settings surface.
  *
- * Maps each of the 8 permission/support states to human-readable, safe copy.
+ * Maps each of the 9 permission/support states to human-readable, safe copy.
  *
  * Security invariants:
  * - NO raw endpoints, tokens, cookies, CSRF values, or HTTP status/error codes.
@@ -17,6 +17,7 @@ export type NotificationUiState =
   | 'unsupported'
   | 'ios-not-installed'
   | 'sw-not-ready'
+  | 'sw-unavailable'
   | 'subscribe-failed'
 
 export interface NotificationStateCopy {
@@ -71,11 +72,24 @@ const COPY: Record<NotificationUiState, NotificationStateCopy> = {
     recoveryHint: 'Open the share menu and select "Add to Home Screen" to install.',
   },
   'sw-not-ready': {
+    // rm-272: this state is now reached ONLY when a registration exists but
+    // is not ready yet — the permanent no-registration case has its own
+    // 'sw-unavailable' state, so this copy may claim transience truthfully.
     headline: 'Initializing background sync',
-    detail: 'The background service worker is initializing or temporarily unavailable.',
+    detail: 'The background service worker is still initializing; this normally settles in a few seconds.',
     privacyPolicyLinkText: 'How we handle notification data',
     ctaText: 'Retry',
     recoveryHint: 'Wait a moment, or click Retry to check status again.',
+  },
+  'sw-unavailable': {
+    // rm-272: no service-worker registration exists (nothing in the shipped
+    // SPA creates one), so the ready wait can never settle. Permanent — say
+    // so instead of presenting it as the temporary initializing state.
+    headline: 'Background Sync Unavailable',
+    detail: 'This installation has no background service worker, so push alerts cannot run here. That will not change on its own.',
+    privacyPolicyLinkText: 'How we handle notification data',
+    ctaText: null,
+    recoveryHint: 'Updating or reinstalling the app, or switching to a supported browser profile, may restore it.',
   },
   'subscribe-failed': {
     headline: 'Setup Failed',

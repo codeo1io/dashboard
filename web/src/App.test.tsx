@@ -172,6 +172,54 @@ describe('App', () => {
       await waitFor(() => expect(screen.queryByTestId('unread-poll-error')).not.toBeInTheDocument())
     })
 
+    it('rm-208: a 401 renders the sign-in affordance, clears the platform badge, and STOPS the poll loop', async () => {
+      const {clearAppBadge} = stubBadgeApis()
+      const listenerApi = await import('./api/listener.ts')
+      const spy = vi.mocked(listenerApi.fetchListenerMessages)
+      spy.mockResolvedValue({ok: false, reason: 'unauthenticated'})
+
+      render(<App />)
+      await waitFor(() => expect(screen.getByTestId('unread-auth-expired')).toBeInTheDocument())
+      // Session expiry clears the platform badge (a count nobody is refreshing
+      // must not linger on the dock).
+      expect(clearAppBadge).toHaveBeenCalled()
+
+      // The loop is torn down: neither focus events nor the interval may fire
+      // further polls (they could only ever 401 again).
+      spy.mockClear()
+      act(() => { window.dispatchEvent(new Event('focus')) })
+      document.dispatchEvent(new Event('visibilitychange'))
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)) })
+      expect(spy.mock.calls.length).toBe(0)
+      // The network-stale indicator is NOT the story here — sign-in is.
+      expect(screen.queryByTestId('unread-poll-error')).not.toBeInTheDocument()
+    })
+
+    it('rm-208: a two-failure streak marks the rendered badge stale (aria + title with the last-good timestamp)', async () => {
+      stubBadgeApis()
+      const listenerApi = await import('./api/listener.ts')
+      const spy = vi.mocked(listenerApi.fetchListenerMessages)
+      spy.mockResolvedValueOnce({ok: true, data: {messages: [], unreadCount: 5, prunedCount: 0, droppedCount: 0}})
+
+      render(<App />)
+      await waitFor(() => expect(screen.getByTestId('unread-badge')).toHaveTextContent('5'))
+
+      spy.mockResolvedValue({ok: false, reason: 'network'})
+      // Failure 1: outage indicator only, badge not yet marked stale.
+      act(() => { window.dispatchEvent(new Event('focus')) })
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)) })
+      expect(screen.getByTestId('unread-badge').getAttribute('title')).toBeNull()
+
+      // Failure 2 (>= UNREAD_POLL_FAILURES_BEFORE_BADGE_CLEAR): the rendered
+      // count is now suspect — mark it stale with the last-good timestamp.
+      act(() => { window.dispatchEvent(new Event('focus')) })
+      await waitFor(() => {
+        const badge = screen.getByTestId('unread-badge')
+        expect(badge.getAttribute('title')).toMatch(/stale/i)
+        expect(badge.getAttribute('aria-label')).toMatch(/stale/i)
+      })
+    })
+
     it('skips polling while the tab is hidden and resumes on visibilitychange', async () => {
       stubBadgeApis()
       stubHidden(true)

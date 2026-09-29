@@ -59,6 +59,12 @@ export default function App() {
   const [unreadCount, setUnreadCount] = useState(0)
   /** rm-155: first failure reason of the current outage — surfaced once, cleared on recovery. */
   const [unreadPollError, setUnreadPollError] = useState<string | null>(null)
+  /** rm-208: epoch ms of the last successful poll — drives the stale-badge marking (aria + title). */
+  const [lastGoodAt, setLastGoodAt] = useState<number | null>(null)
+  /** rm-208: true once a poll returned 401 — stops the poll loop, clears the badge, drives the sign-in affordance. */
+  const [authExpired, setAuthExpired] = useState(false)
+  /** rm-208: a ≥2-failure streak — the rendered unread count may be stale. */
+  const [badgeStale, setBadgeStale] = useState(false)
   /** rm-155: in-flight guard — never overlap polls. */
   const unreadPollInFlightRef = useRef(false)
   /** rm-158: consecutive poll failures (reset on success). */
@@ -113,13 +119,27 @@ export default function App() {
         consecutiveFailuresRef.current = 0
         setUnreadCount(res.data.unreadCount)
         setUnreadPollError(null) // silent recovery
+        setLastGoodAt(Date.now())
+        setBadgeStale(false)
         syncAppBadge(res.data.unreadCount)
       } else {
+        // rm-273/rm-208: 401 is session expiry, not transport — stop the loop
+        // (the wiring effect below tears down the interval and listeners when
+        // authExpired flips), clear the platform badge, and let the shell
+        // render the sign-in affordance instead of blaming the network.
+        if (res.reason === 'unauthenticated') {
+          setAuthExpired(true)
+          clearAppBadgeBestEffort()
+          return
+        }
         consecutiveFailuresRef.current += 1
         // Surface the first failure of an outage once; keep it until recovery.
         setUnreadPollError(prev => prev ?? res.reason)
         if (consecutiveFailuresRef.current >= UNREAD_POLL_FAILURES_BEFORE_BADGE_CLEAR) {
           clearAppBadgeBestEffort()
+          // rm-208: mark the rendered badge stale too (aria + title with the
+          // last-good timestamp) instead of freezing the count silently.
+          setBadgeStale(true)
         }
       }
     } finally {
@@ -129,6 +149,12 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    // rm-208: a 401 means the session is gone — polling can only ever return
+    // 401 again, so stop the loop entirely (cleanup below clears the interval
+    // and the focus/visibility listeners). Recovery is a fresh sign-in, which
+    // is a full-page navigation that remounts the app.
+    if (authExpired) return
+
     void pollUnreadCount()
     const intervalId = setInterval(() => void pollUnreadCount(), UNREAD_POLL_INTERVAL_MS)
 
@@ -146,7 +172,7 @@ export default function App() {
       window.removeEventListener('focus', handleFocus)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
-  }, [pollUnreadCount])
+  }, [pollUnreadCount, authExpired])
 
   return (
     <AppShell
@@ -157,6 +183,8 @@ export default function App() {
       onNavigate={setCurrentView}
       listenerUnreadCount={unreadCount}
       listenerUnreadError={unreadPollError}
+      listenerUnreadStaleSince={badgeStale ? lastGoodAt : null}
+      listenerUnreadAuthExpired={authExpired}
     >
       <div style={{ display: currentView === 'operator' ? 'block' : 'none' }}>
         <Operator

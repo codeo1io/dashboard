@@ -122,6 +122,9 @@ export function Notifications({
             setCurrentUiState('subscribe-failed')
           } else if (outcome.kind === 'sw-not-ready') {
             setCurrentUiState('sw-not-ready')
+          } else if (outcome.kind === 'sw-unavailable') {
+            // rm-272: permanent — no registration exists, retrying cannot help.
+            setCurrentUiState('sw-unavailable')
           } else if (outcome.kind === 'dismissed') {
             setCurrentUiState('dismissed')
           }
@@ -138,6 +141,9 @@ export function Notifications({
             setCurrentUiState('subscribe-failed')
           } else if (outcome.kind === 'sw-not-ready') {
             setCurrentUiState('sw-not-ready')
+          } else if (outcome.kind === 'sw-unavailable') {
+            // rm-272: permanent — no registration exists, retrying cannot help.
+            setCurrentUiState('sw-unavailable')
           }
         } else if (result.action === 'cleanup') {
           // Must notify the Gateway with the endpoint — captured by
@@ -177,7 +183,15 @@ export function Notifications({
         setCurrentUiState('unsupported')
       } else if (result.uiState === 'not-requested') {
         setCurrentUiState((prev) => {
-          if (prev === 'dismissed' || prev === 'subscribe-failed' || prev === 'sw-not-ready') {
+          // rm-272: 'sw-unavailable' is permanent — a later sweep deriving
+          // not-requested must not overwrite it with an enable CTA that
+          // can never succeed (mirrors the sw-not-ready preservation below).
+          if (
+            prev === 'dismissed' ||
+            prev === 'subscribe-failed' ||
+            prev === 'sw-not-ready' ||
+            prev === 'sw-unavailable'
+          ) {
             return prev
           }
           return 'not-requested'
@@ -288,6 +302,9 @@ export function Notifications({
         setCurrentUiState('subscribe-failed')
       } else if (outcome.kind === 'sw-not-ready') {
         setCurrentUiState('sw-not-ready')
+      } else if (outcome.kind === 'sw-unavailable') {
+        // rm-272: permanent — no registration exists, retrying cannot help.
+        setCurrentUiState('sw-unavailable')
       } else if (outcome.kind === 'dismissed') {
         setCurrentUiState('dismissed')
       } else if (outcome.kind === 'denied') {
