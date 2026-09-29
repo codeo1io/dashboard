@@ -23,6 +23,7 @@ import {
   getOpenApprovals,
   hasOpenApprovals,
   initOperatorStream,
+  KNOWN_CONTRACT_VERSIONS,
   MAX_APPROVAL_TOMBSTONES,
   MAX_OPEN_APPROVALS,
   MAX_OUTPUT_TEXT_CHARS,
@@ -1225,8 +1226,13 @@ describe('backoff constants', () => {
     expect(Number.isInteger(RETRY_MAX_COUNT)).toBe(true)
   })
 
-  it('PINNED_CONTRACT_VERSION is 1.6.0', () => {
-    expect(PINNED_CONTRACT_VERSION).toBe('1.6.0')
+  it('PINNED_CONTRACT_VERSION is 1.8.0', () => {
+    expect(PINNED_CONTRACT_VERSION).toBe('1.8.0')
+    // The known-set (multi-version) acceptance lives in the ready-gate tests above;
+    // this pins the newest parseable version. Locked cross-surface by
+    // test/operator-contract-version-lock.test.ts.
+    expect(KNOWN_CONTRACT_VERSIONS).toEqual(['1.6.0', '1.7.0', '1.8.0'])
+    expect(KNOWN_CONTRACT_VERSIONS.at(-1)).toBe(PINNED_CONTRACT_VERSION)
   })
 })
 

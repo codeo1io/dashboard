@@ -1,17 +1,24 @@
-Source: fro-bot/agent  | Tag: v0.78.0
+Source: fro-bot/agent  | Tag: v0.117.0
 Path: packages/gateway/src/operator-contract/ (contract barrel) + packages/gateway/src/web/sse/ (SSE surface)
-Contract: OPERATOR_CONTRACT_VERSION = 1.5.0
+Contract: OPERATOR_CONTRACT_VERSION = 1.8.0
 Vendored copy — do not hand-edit behavior. Refresh by re-copying upstream and
 re-applying the documented import rewrites (@fro-bot/runtime → ../../result.ts;
 inlined boundary types for RunPhase/Surface/RunState).
 
+Per-file vendoring tags (files refresh independently as upstream changes reach the
+surfaces this dashboard consumes):
+
+- `provenance.ts`, `version.ts`, `run-status.ts` (types), `index.ts` — refreshed at
+  v0.117.0 on 2026-09-29 (contract 1.6.0 → 1.8.0; rm-157 absorb).
+- Other files unchanged since their own last refresh; see each file's header.
+
 ## Files and their upstream sources
 
 - `run-status.ts`, `approval.ts`, `identity.ts`, `parse.ts`, `redaction.ts`,
-  `responses.ts`, `version.ts` — vendored from the operator-contract barrel
-  (packages/gateway/src/operator-contract/) at v0.78.0.
+  `responses.ts`, `version.ts`, `provenance.ts` — vendored from the operator-contract
+  barrel (packages/gateway/src/operator-contract/).
 - `sse-frames.ts` — vendored from the gateway's web/sse/ surface
-  (packages/gateway/src/web/sse/) at v0.78.0. This is a parallel surface to
+  (packages/gateway/src/web/sse/). This is a parallel surface to
   the contract barrel; it is NOT part of the upstream operator-contract barrel
   export. The SSE frame types (ReadyFrame, StatusFrameData, ResetFrameData,
   RunStreamFrame, ResetReason) are re-exported from the dashboard's contract

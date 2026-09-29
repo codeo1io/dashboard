@@ -19,7 +19,7 @@ import type {DashboardAppClient} from './app-client.ts'
 import {Octokit} from '@octokit/core'
 import {logger} from '../logger.ts'
 import {err, ok} from '../result.ts'
-import {GITHUB_REQUEST_TIMEOUT_MS, safeErrorMessage} from './app-client.ts'
+import {createBoundedFetch, GITHUB_REQUEST_TIMEOUT_MS, safeErrorMessage} from './app-client.ts'
 
 // ---------------------------------------------------------------------------
 // Read-only permissions
@@ -138,7 +138,10 @@ export interface InstallationsClient {
    * List all repos accessible to the given installation token.
    * Returns records without installation_id — enumerateRepos attaches it.
    */
-  readonly listInstallationRepos: (token: string) => Promise<readonly Omit<RepoRecord, 'installation_id'>[]>
+  readonly listInstallationRepos: (
+    token: string,
+    options?: {readonly signal?: AbortSignal},
+  ) => Promise<readonly Omit<RepoRecord, 'installation_id'>[]>
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +268,11 @@ export async function mintReadOnlyToken(
  */
 export async function enumerateRepos(
   client: InstallationsClient,
+  options?: {readonly signal?: AbortSignal},
 ): Promise<Result<EnumerateReposResult, FetchInstallationsError>> {
+  // `options.signal` is the aggregator's per-cycle deadline (rm-221): when the
+  // caller's budget is exhausted mid-walk, every in-flight page is aborted at
+  // the transport layer instead of lingering until the per-request ceiling.
   let installations: readonly InstallationRecord[]
   try {
     installations = await client.listInstallations()
@@ -299,7 +306,7 @@ export async function enumerateRepos(
 
     let repos: readonly Omit<RepoRecord, 'installation_id'>[]
     try {
-      repos = await client.listInstallationRepos(token)
+      repos = await client.listInstallationRepos(token, {signal: options?.signal})
     } catch (repoError) {
       logger.warning('Failed to list repos for installation; counting degraded installation', {
         installationId: installation.id,
@@ -330,12 +337,24 @@ export async function enumerateRepos(
 // Real client factory (uses DashboardAppClient)
 // ---------------------------------------------------------------------------
 
-async function listInstallationReposWithToken(token: string): Promise<readonly Omit<RepoRecord, 'installation_id'>[]> {
+async function listInstallationReposWithToken(
+  token: string,
+  options?: {readonly signal?: AbortSignal},
+): Promise<readonly Omit<RepoRecord, 'installation_id'>[]> {
   const installOctokit = new Octokit({
     auth: token,
     // rm-197: per-repo installation walks are serial — a stalled request must
     // not stall the whole refresh indefinitely.
-    request: {timeout: GITHUB_REQUEST_TIMEOUT_MS},
+    // rm-221 (2026-09-29): the ceiling is ENFORCED at the transport layer via
+    // createBoundedFetch — this runtime does not honor `request.timeout`
+    // against hung upstreams (see the rm-156 solution doc), and the
+    // per-construction `signal` lets the aggregator's cycle deadline abort
+    // an in-flight page even earlier than the ceiling.
+    request: {
+      timeout: GITHUB_REQUEST_TIMEOUT_MS,
+      fetch: createBoundedFetch(GITHUB_REQUEST_TIMEOUT_MS),
+      signal: options?.signal,
+    },
   })
 
   const repos: Omit<RepoRecord, 'installation_id'>[] = []
