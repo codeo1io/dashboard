@@ -180,6 +180,24 @@ describe('Monitoring (rm-192 red-repo drill-down)', () => {
     expect(screen.getByText(/contract-drift/)).toBeInTheDocument()
   })
 
+  it('rm-268: renders the auth-expired affordance on 401 instead of the network error', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: false,
+      reason: 'unauthenticated'
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.getByTestId('monitoring-auth-expired')).toBeInTheDocument()
+    expect(screen.getByText(/Session expired/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/auth/login')
+    // The network-error retry copy must NOT be shown for session expiry.
+    expect(screen.queryByTestId('monitoring-error')).not.toBeInTheDocument()
+  })
+
   // rm-251 regressions: the pre-hook inline poll wedged permanently on one
   // hung response (no timeout race, no abort, latch released only on the
   // settled path). The shared useBoundedPoll hook restores the rm-155 shape.

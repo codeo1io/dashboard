@@ -264,12 +264,16 @@ describe('subscribeOptIn', () => {
     expect(requestPermission).not.toHaveBeenCalled()
   })
 
-  it('serviceWorker.ready exceeding 5s -> sw-not-ready', async () => {
+  it('serviceWorker.ready exceeding 5s -> sw-not-ready (a registration exists; rm-267 classifies it transient)', async () => {
     vi.useFakeTimers()
     try {
       const neverResolves = new Promise<MinimalServiceWorkerRegistration>(() => {})
       const promise = subscribeOptIn({
         serviceWorkerReady: () => neverResolves,
+        // rm-267: the timeout now probes for a registration to separate the
+        // transient slow-activation case (this test) from the permanent
+        // no-registration one (below). A present registration => transient.
+        getSwRegistration: () => Promise.resolve(fakeRegistration(fakeSubscription())),
         getSupport: () => ({supported: true, needsInstall: false}),
         getPermission: () => 'default',
         requestPermission: vi.fn().mockResolvedValue('granted'),
@@ -282,6 +286,125 @@ describe('subscribeOptIn', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  describe('rm-267: bounded local reads + permanent sw-unavailable classification', () => {
+    it('ready timeout with NO registration -> permanent sw-unavailable, not the temporary state', async () => {
+      vi.useFakeTimers()
+      try {
+        const neverResolves = new Promise<MinimalServiceWorkerRegistration>(() => {})
+        const promise = subscribeOptIn({
+          serviceWorkerReady: () => neverResolves,
+          getSwRegistration: () => Promise.resolve(undefined),
+          getSupport: () => ({supported: true, needsInstall: false}),
+          getPermission: () => 'default',
+          requestPermission: vi.fn().mockResolvedValue('granted'),
+          pushClient: fakePushClient(),
+          swReadyTimeoutMs: 5000,
+        })
+        await vi.advanceTimersByTimeAsync(5001)
+        const outcome = await promise
+        // Nothing in the shipped SPA creates a registration, so the ready wait
+        // can NEVER settle here — retrying cannot help. Presenting this as the
+        // temporary initializing state was the rm-267 bug.
+        expect(outcome).toEqual({kind: 'sw-unavailable'})
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('ready timeout with a rejecting registration probe also reads as no registration -> sw-unavailable', async () => {
+      vi.useFakeTimers()
+      try {
+        const neverResolves = new Promise<MinimalServiceWorkerRegistration>(() => {})
+        const promise = subscribeOptIn({
+          serviceWorkerReady: () => neverResolves,
+          // A failing getRegistration() must not surface as a thrown error —
+          // withTimeout collapses the rejection into the same timeout path.
+          getSwRegistration: () => Promise.reject(new Error('sw container gone')),
+          getSupport: () => ({supported: true, needsInstall: false}),
+          getPermission: () => 'default',
+          requestPermission: vi.fn().mockResolvedValue('granted'),
+          pushClient: fakePushClient(),
+          swReadyTimeoutMs: 5000,
+        })
+        await vi.advanceTimersByTimeAsync(10_002)
+        const outcome = await promise
+        expect(outcome).toEqual({kind: 'sw-unavailable'})
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('rm-267 (acceptance): a sweep whose local read never settles completes bounded, derives conservatively, and takes no action', async () => {
+      // subscribe.ts:624 used to await `deps.getLocalSubscription()` (which
+      // rides `navigator.serviceWorker.ready` in production) with NO bound —
+      // the file's only unbounded one — so a focus/visibility sweep hung
+      // forever on every event after the first. The bound must make the sweep
+      // settle AND read as "no local subscription": no local hash =>
+      // 'not_subscribed', notSubscribedConfirmed=false => no destructive
+      // action can be licensed.
+      vi.useFakeTimers()
+      try {
+        const pushClient = fakePushClient()
+        const never = new Promise<MinimalPushSubscription | null>(() => {})
+        const neverEndingDeps = {
+          getLocalSubscription: () => never,
+          // Permission changes between the two sweeps below so the second one
+          // is NOT collapsed by the unchanged-state debounce guard — both
+          // sweeps must run the full bounded path (read -> Gateway GET ->
+          // derive), not just the first.
+          getPermission: (() => {
+            let calls = 0
+            return () => (calls++ === 0 ? 'default' : 'granted') as NotificationPermission
+          })(),
+          pushClient,
+          now: () => 1,
+          localReadTimeoutMs: 5000,
+        }
+
+        const promise = runReconcileSweep(neverEndingDeps, INITIAL_RECONCILE_SWEEP_CACHE)
+        await vi.advanceTimersByTimeAsync(5001)
+        const result = await promise
+        expect(result.skipped).toBe(false)
+        expect(result.action).toBe('none')
+        expect(result.uiState).toBe('not-requested')
+        expect(pushClient.unsubscribePush).not.toHaveBeenCalled()
+
+        // Bounded PER focus event, not just once: after the min-interval
+        // debounce elapses, a second sweep with the same never-settling read
+        // also settles inside the bound (no per-event pending-promise leak).
+        const second = runReconcileSweep(
+          {...neverEndingDeps, now: () => 1 + 31_000},
+          result.nextCache,
+        )
+        await vi.advanceTimersByTimeAsync(5001)
+        const secondResult = await second
+        expect(secondResult.skipped).toBe(false)
+        expect(secondResult.action).toBe('none')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('rm-267: unsubscribeOptOut with a never-settling local read resolves without calling the Gateway', async () => {
+      vi.useFakeTimers()
+      try {
+        const pushClient = fakePushClient()
+        const never = new Promise<MinimalPushSubscription | null>(() => {})
+        const promise = unsubscribeOptOut({
+          getLocalSubscription: () => never,
+          pushClient,
+          localReadTimeoutMs: 5000,
+        })
+        await vi.advanceTimersByTimeAsync(5001)
+        const outcome = await promise
+        expect(outcome).toEqual({gatewayUnsubscribeCalled: false})
+        expect(pushClient.unsubscribePush).not.toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
   })
 
   it('dismissed (default) is distinct from denied', async () => {

@@ -17,6 +17,7 @@ const ALL_STATES: NotificationUiState[] = [
   'unsupported',
   'ios-not-installed',
   'sw-not-ready',
+  'sw-unavailable',
   'subscribe-failed',
 ]
 
