@@ -6,9 +6,9 @@
  * closed on every error path.
  *
  * Security invariants:
- * - Contract-version gate: the first frame must be 'ready' with a matching
- *   contractVersion. A mismatch triggers a fail-closed drift error and stops
- *   all further frame dispatch.
+ * - Contract-version gate: the first frame must be 'ready' with a contract
+ *   version in the supported set (1.6.0/1.7.0/1.8.0). Any other version
+ *   triggers a fail-closed drift error and stops all further frame dispatch.
  * - No runId or dynamic path segment is ever logged — only the route template.
  * - No response body text is included in errors (no-oracle).
  * - 404 → typed not-found error; body is never parsed for cause.
@@ -24,8 +24,8 @@
 import type {Logger} from '../logger.ts'
 import type {OperatorApprovalFrame} from './operator-contract/approval-frame.ts'
 import type {ResetReason, RunStreamFrame} from './operator-contract/sse-frames.ts'
-import {isOperatorFailureKind} from './operator-contract/run-status.ts'
-import {OPERATOR_CONTRACT_VERSION} from './operator-contract/version.ts'
+import {isOperatorFailureKind, parseOperatorCheckoutPreparation, parseOperatorCheckoutProvenance} from './operator-contract/run-status.ts'
+import {SUPPORTED_OPERATOR_CONTRACT_VERSIONS} from './operator-contract/version.ts'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -187,6 +187,11 @@ function parseSseRecord(record: string): SseParseResult | null {
     // for a valid status frame — missing or unrecognized values normalize to
     // absent (never echoed, never surfaced as a raw value).
     const failureKind = isOperatorFailureKind(candidate.failureKind) ? candidate.failureKind : undefined
+    // Contract 1.7.0/1.8.0 additive fields (rm-252): checkoutProvenance and
+    // checkoutPreparation are optional and validated shallowly — malformed or
+    // absent values normalize to absent, never parsed through or echoed raw.
+    const checkoutProvenance = parseOperatorCheckoutProvenance(candidate.checkoutProvenance)
+    const checkoutPreparation = parseOperatorCheckoutPreparation(candidate.checkoutPreparation)
     return {
       success: true,
       frame: {
@@ -200,6 +205,8 @@ function parseSseRecord(record: string): SseParseResult | null {
           startedAt: candidate.startedAt,
           stale: candidate.stale,
           ...(failureKind === undefined ? {} : {failureKind}),
+          ...(checkoutProvenance === undefined ? {} : {checkoutProvenance}),
+          ...(checkoutPreparation === undefined ? {} : {checkoutPreparation}),
         },
       },
     }
@@ -491,7 +498,10 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
           onClose()
           return false // stop
         }
-        if (frame.data.contractVersion !== OPERATOR_CONTRACT_VERSION) {
+        // rm-252: the gate accepts the SUPPORTED set (1.6.0/1.7.0/1.8.0 — the
+        // deployed fleet spans v0.114.1..v0.117.0); anything else still fails
+        // closed as contract drift.
+        if (!SUPPORTED_OPERATOR_CONTRACT_VERSIONS.has(frame.data.contractVersion)) {
           logger?.error('sse-reader: contract version mismatch', {route: ROUTE_TEMPLATE})
           drifted = true
           onError(new Error('contract-drift: server contract version does not match client'))

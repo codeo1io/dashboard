@@ -338,6 +338,33 @@ describe('AppShell', () => {
     expect(findFetchCall(fetchMock, '/operator/auth/logout')).toBeUndefined()
   })
 
+  it('rm-276: a NON-404 gateway CSRF failure stays signed in with a visible error — no silent Arctic downgrade', async () => {
+    spyOnPurgeOperatorCache()
+    const location = stubLocation()
+    location.href = 'https://dashboard.fro.bot/'
+    const fetchMock = mockLogoutFetch({
+      // 502 = gateway reachable but erroring. Must NOT be read as Arctic mode.
+      csrf: () => nonOkResponse(502),
+    })
+
+    render(<AppShell>content</AppShell>)
+    fireEvent.click(screen.getByTestId('logout-button'))
+
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('logout-error')).toBeInTheDocument()
+    })
+
+    // No redirect: the operator keeps their session.
+    expect(location.href).toBe('https://dashboard.fro.bot/')
+    // No Arctic fallback and no gateway logout POST — neither route was hit.
+    expect(findFetchCall(fetchMock, '/auth/logout-csrf')).toBeUndefined()
+    expect(findFetchCall(fetchMock, '/operator/auth/logout')).toBeUndefined()
+    // The button is re-enabled so the operator can retry.
+    await vi.waitFor(() => {
+      expect(screen.getByTestId('logout-button')).toBeEnabled()
+    })
+  })
+
   it('Arctic mode: falls back to /auth logout when the gateway CSRF 404s, clearing the session cookie server-side', async () => {
     spyOnPurgeOperatorCache()
     const location = stubLocation()

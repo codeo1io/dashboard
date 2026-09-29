@@ -40,6 +40,24 @@ const DEFAULT_LIST_LIMIT = 100
 const MIN_LIST_LIMIT = 1
 const MAX_LIST_LIMIT = 200
 
+/**
+ * Parse a row's `links` column without letting one corrupt cell break the
+ * whole listing (rm-187). Rows are written with a JSON array of link objects;
+ * older rows, manual edits, or storage corruption can hold anything. A
+ * malformed or non-array value degrades to an empty link list for THAT row —
+ * the message itself (id/title/body) stays readable — instead of throwing
+ * and 500-ing the entire endpoint.
+ */
+function parseLinksCell(raw: string): readonly ListenerLink[] {
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed as readonly ListenerLink[]
+  } catch {
+    return []
+  }
+}
+
 function rowToMessage(row: MessageRow): ListenerMessage {
   return {
     id: row.id,
@@ -48,7 +66,7 @@ function rowToMessage(row: MessageRow): ListenerMessage {
     severity: row.severity as ListenerMessage['severity'],
     title: row.title,
     body: row.body,
-    links: JSON.parse(row.links) as readonly ListenerLink[],
+    links: parseLinksCell(row.links),
     dedupeKey: row.dedupe_key,
     createdAt: row.created_at,
     receivedAt: row.received_at,

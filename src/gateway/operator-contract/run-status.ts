@@ -1,7 +1,8 @@
 /**
  * Operator-safe run-status projection.
  *
- * Mirrors fro-bot/agent's operator-contract/run-status.ts (v0.83.1). The
+ * Mirrors fro-bot/agent's operator-contract/run-status.ts (v0.117.0, contract
+ * 1.8.0 — grown from the v0.83.1/1.6.0 mirror on 2026-09-30, rm-252). The
  * projection helper (toOperatorRunStatus) and internal error-kind mapping
  * are intentionally omitted — the dashboard only consumes the closed public
  * types below directly from the gateway API.
@@ -60,6 +61,76 @@ export const PHASE_TO_WEB_STATUS: Readonly<Record<RunPhase, OperatorWebStatus>> 
 }
 
 // ---------------------------------------------------------------------------
+// Checkout provenance / preparation (contract 1.7.0 / 1.8.0 — rm-252)
+// ---------------------------------------------------------------------------
+
+/**
+ * Trimmed vendor of upstream v0.117.0 provenance.ts's OperatorCheckoutProvenance
+ * discriminated union. The dashboard renders the checkout-advance summary
+ * (head + worktree cleanliness + remote freshness), so the fork vendors exactly
+ * the operator-safe fields it consumes; upstream's full DTO (obstruction lists,
+ * layout-refusal detail, preparation reasons) stays upstream. Malformed or
+ * absent values normalize to `undefined` at the parser boundary — never parsed
+ * through, never echoed raw.
+ */
+export type OperatorCheckoutProvenance =
+  | {readonly kind: 'observed'; readonly observation: OperatorCheckoutObservation; readonly remote: OperatorRemoteFreshness}
+  | {readonly kind: 'unavailable'; readonly remote: OperatorRemoteFreshness}
+
+/** Head + worktree + operation state observed under the repo lock. */
+export interface OperatorCheckoutObservation {
+  readonly head: {readonly kind: 'attached'; readonly branch: string; readonly sha: string} | {readonly kind: 'detached'; readonly sha: string}
+  readonly worktree: {readonly kind: 'clean'} | {readonly kind: 'dirty'; readonly staged: number; readonly unstaged: number; readonly untracked: number; readonly conflicted: number}
+  readonly operationInProgress: 'none' | 'merge' | 'rebase' | 'am' | 'cherry-pick' | 'revert' | 'bisect'
+  readonly observedAt: string
+}
+
+/** Whether remote freshness was checked — present on every variant, never omitted. 1.8.0 adds `checked`. */
+export type OperatorRemoteFreshness =
+  | {readonly kind: 'not-checked'}
+  | {readonly kind: 'checked'; readonly defaultBranch: string; readonly sha: string; readonly checkedAt: string; readonly change: 'unchanged'}
+  | {readonly kind: 'checked'; readonly defaultBranch: string; readonly sha: string; readonly checkedAt: string; readonly change: 'fast-forward'; readonly fromSha: string}
+
+/**
+ * Trimmed vendor of upstream v0.117.0's OperatorCheckoutPreparation union —
+ * what preparation reported for a run that never reached EXECUTING. The fork
+ * keeps the outcome/reason discriminants it renders; detail payloads
+ * (obstruction lists, disallowed keys) stay upstream.
+ */
+export type OperatorCheckoutPreparation =
+  | {readonly outcome: 'refused'; readonly reason: 'needs-recovery' | 'checkout-substituted' | 'detached' | 'diverged' | 'ahead' | 'maintenance-hold' | 'unsupported-layout' | 'unsupported-config' | 'operation-in-progress' | 'dirty' | 'submodule-initialized' | 'non-default-branch' | 'obstructed'}
+  | {readonly outcome: 'failed'; readonly reason: 'aborted' | 'inspection-failed' | 'fetch-auth-rejected' | 'fetch-not-found' | 'fetch-forbidden' | 'fetch-rate-limited' | 'fetch-unreachable' | 'fetch-timeout' | 'fetch-failed' | 'remote-moved' | 'apply-failed' | 'termination-unconfirmed'; readonly permanent: boolean}
+
+/** Narrow an unknown value to a plain object record. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** Validate a checkoutProvenance payload shallowly against the vendored union. */
+export function parseOperatorCheckoutProvenance(value: unknown): OperatorCheckoutProvenance | undefined {
+  if (!isRecord(value)) return undefined
+  if (value.kind === 'unavailable') {
+    return isRecord(value.remote) ? {kind: 'unavailable', remote: value.remote as unknown as OperatorRemoteFreshness} : undefined
+  }
+  if (value.kind !== 'observed' || !isRecord(value.observation) || !isRecord(value.remote)) return undefined
+  return {kind: 'observed', observation: value.observation as unknown as OperatorCheckoutObservation, remote: value.remote as unknown as OperatorRemoteFreshness}
+}
+
+/** Validate a checkoutPreparation payload shallowly against the vendored union. */
+export function parseOperatorCheckoutPreparation(value: unknown): OperatorCheckoutPreparation | undefined {
+  if (!isRecord(value)) return undefined
+  if (value.outcome === 'failed') {
+    return typeof value.reason === 'string' && typeof value.permanent === 'boolean'
+      ? {outcome: 'failed', reason: value.reason as OperatorCheckoutPreparation extends {outcome: 'failed'; reason: infer R} ? R : never, permanent: value.permanent}
+      : undefined
+  }
+  if (value.outcome === 'refused' && typeof value.reason === 'string') {
+    return {outcome: 'refused', reason: value.reason as OperatorCheckoutPreparation extends {outcome: 'refused'; reason: infer R} ? R : never}
+  }
+  return undefined
+}
+
+// ---------------------------------------------------------------------------
 // OperatorRunStatus
 // ---------------------------------------------------------------------------
 
@@ -79,6 +150,10 @@ export interface OperatorRunStatus {
   readonly startedAt: string
   readonly stale: boolean
   readonly failureKind?: OperatorFailureKind
+  /** Contract 1.7.0+: what the run's checkout looked like when it started (optional, absent on pre-1.7.0 gateways). */
+  readonly checkoutProvenance?: OperatorCheckoutProvenance
+  /** Contract 1.8.0+: what checkout preparation reported for a run that never reached EXECUTING (optional). */
+  readonly checkoutPreparation?: OperatorCheckoutPreparation
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +173,8 @@ export type OperatorFailureKind =
   | 'max-duration-timeout'
   | 'stream-ended'
   | 'workspace-unreachable'
+  | 'workspace-unavailable'
+  | 'checkout-substituted'
   | 'session-error'
   | 'unknown'
 
@@ -111,6 +188,8 @@ export const OPERATOR_FAILURE_KINDS: ReadonlySet<OperatorFailureKind> = new Set(
   'max-duration-timeout',
   'stream-ended',
   'workspace-unreachable',
+  'workspace-unavailable',
+  'checkout-substituted',
   'session-error',
   'unknown',
 ])
