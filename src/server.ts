@@ -21,7 +21,7 @@ import type {ListenerStore} from './listener/store.ts'
 import {Buffer} from 'node:buffer'
 import {existsSync} from 'node:fs'
 import {readFile} from 'node:fs/promises'
-import {join} from 'node:path'
+import {extname, join} from 'node:path'
 import process from 'node:process'
 import {serve} from '@hono/node-server'
 import {getConnInfo} from '@hono/node-server/conninfo'
@@ -69,6 +69,21 @@ import {installShutdownHandlers} from './shutdown.ts'
  * hot path free of per-request synchronous file I/O.
  */
 const SPA_SHELL_CACHE_TTL_MS = 5_000
+
+// rm-252 (run c1a9e791 batch B3): content types for the precompressed
+// /assets/* sibling negotiation below. serveStatic infers these for the raw
+// files; the negotiated branch answers before it runs, so it must set them
+// itself. Keys are the lowercase extensions Vite emits under dist/assets.
+const ASSET_CONTENT_TYPES: Record<string, string> = {
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+}
 
 /** Hono context variables set by auth middleware */
 interface Variables {
@@ -1015,6 +1030,56 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   }
 
   // ── SPA static asset serving ─────────────────────────────────────────────
+  // rm-252 (run c1a9e791 batch B3, 2026-09-29): two postures land here.
+  // (1) Content-hashed /assets/* files are immutable by construction — the
+  //     filename IS the cache key — so they carry a year-long public
+  //     cache-control. Before this, every operator visit revalidated
+  //     ~330KB (281,671B JS + 46,795B CSS measured) on a single-operator
+  //     surface. The SPA shell ('/'), sw.js, and registerSW.js keep their
+  //     no-store/no-cache postures (rm-172/rm-166) — only hashed assets
+  //     are affected. /icon-* is NOT content-hashed (fixed names) and
+  //     deliberately keeps its default revalidation behavior.
+  // (2) Compression is settled at BUILD time (web/vite.config.ts writes
+  //     .br/.gz siblings into dist/assets) and served by sibling
+  //     negotiation here, so the request path stays zero-transform: no
+  //     runtime compression middleware exists for an SSE/ingest route to
+  //     be accidentally caught by. Clients without a matching
+  //     Accept-Encoding — or an older dist without siblings — fall through
+  //     to the original serveStatic below. Vary is set on every /assets/*
+  //     response (negotiated and raw alike) so a shared cache cannot pin
+  //     one encoding for all clients.
+  app.use('/assets/*', async (c, next) => {
+    const relative = c.req.path.replace(/^\/+assets\/+/, '')
+    const acceptEncoding = c.req.header('accept-encoding') ?? ''
+    const encodings = acceptEncoding.includes('br')
+      ? ['br', 'gzip']
+      : acceptEncoding.includes('gzip')
+        ? ['gzip']
+        : []
+    // `..` guard: negotiation must never read outside webDistRoot/assets.
+    if (relative !== '' && !relative.includes('..')) {
+      for (const encoding of encodings) {
+        const sibling = `${relative}.${encoding === 'br' ? 'br' : 'gz'}`
+        try {
+          const body = await readFile(join(webDistRoot, 'assets', sibling))
+          c.res = c.body(body, 200, {
+            'content-encoding': encoding,
+            'content-type': ASSET_CONTENT_TYPES[extname(relative)] ?? 'application/octet-stream',
+            'cache-control': 'public, max-age=31536000, immutable',
+            vary: 'Accept-Encoding',
+          })
+          return
+        } catch {
+          // no precompressed sibling for this file — try the next encoding
+        }
+      }
+    }
+    await next()
+    if (c.res.status === 200) {
+      c.res.headers.set('cache-control', 'public, max-age=31536000, immutable')
+      c.res.headers.set('vary', 'Accept-Encoding')
+    }
+  })
   app.use('/assets/*', serveStatic({root: webDistRoot}))
   app.use('/icon-*', serveStatic({root: webDistRoot}))
 
