@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
-import { Monitoring } from './Monitoring.tsx'
+import { Monitoring, MONITORING_FETCH_TIMEOUT_MS } from './Monitoring.tsx'
 import * as monitoringApi from '../api/monitoring.ts'
 import type { MonitoringData, MonitoringRepo, MonitoringRepoStatus } from '../api/monitoring.ts'
 
@@ -178,5 +178,54 @@ describe('Monitoring (rm-192 red-repo drill-down)', () => {
 
     expect(screen.getByTestId('monitoring-error')).toBeInTheDocument()
     expect(screen.getByText(/contract-drift/)).toBeInTheDocument()
+  })
+
+  // rm-251 regressions: the pre-hook inline poll wedged permanently on one
+  // hung response (no timeout race, no abort, latch released only on the
+  // settled path). The shared useBoundedPoll hook restores the rm-155 shape.
+  describe('rm-251 poll hygiene', () => {
+    it('releases the poll latch when a fetch hangs past the timeout, then polls again', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockImplementation(
+        () => new Promise(() => {}) as ReturnType<typeof monitoringApi.fetchMonitoring>
+      )
+      vi.mocked(monitoringApi.fetchMonitoring).mockClear()
+
+      const { unmount } = render(<Monitoring />)
+
+      // Initial poll starts and hangs.
+      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      expect(vi.mocked(monitoringApi.fetchMonitoring).mock.calls.length).toBe(1)
+
+      // Timeout fires: the race settles with the timeout result, the latch is
+      // released, and the error view appears ("Will retry").
+      await act(async () => { await vi.advanceTimersByTimeAsync(MONITORING_FETCH_TIMEOUT_MS) })
+      expect(screen.getByTestId('monitoring-error')).toBeInTheDocument()
+
+      // No fetch retry before the next interval tick.
+      vi.mocked(monitoringApi.fetchMonitoring).mockClear()
+      expect(vi.mocked(monitoringApi.fetchMonitoring).mock.calls.length).toBe(0)
+
+      // Next 60s interval tick: the latch is free, so the poll fires again.
+      await act(async () => { await vi.advanceTimersByTimeAsync(60000) })
+      expect(vi.mocked(monitoringApi.fetchMonitoring).mock.calls.length).toBe(1)
+
+      unmount()
+    })
+
+    it('aborts the in-flight fetch when the view unmounts', async () => {
+      let capturedSignal: AbortSignal | undefined
+      vi.mocked(monitoringApi.fetchMonitoring).mockImplementation((req) => {
+        capturedSignal = req?.abortSignal
+        return new Promise(() => {}) as ReturnType<typeof monitoringApi.fetchMonitoring>
+      })
+
+      const { unmount } = render(<Monitoring />)
+      await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+      expect(capturedSignal).toBeDefined()
+      expect(capturedSignal!.aborted).toBe(false)
+
+      unmount()
+      expect(capturedSignal!.aborted).toBe(true)
+    })
   })
 })

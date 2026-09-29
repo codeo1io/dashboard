@@ -1,5 +1,6 @@
-import {useCallback, useEffect, useRef, useState} from 'react'
-import {fetchMonitoring, type MonitoringData, type MonitoringRepo} from '../api/monitoring.ts'
+import {useState} from 'react'
+import {fetchMonitoring, type FetchMonitoringResult, type MonitoringData, type MonitoringRepo} from '../api/monitoring.ts'
+import {useBoundedPoll} from '../hooks/useBoundedPoll.ts'
 
 type ViewState =
   | {state: 'loading'}
@@ -7,6 +8,8 @@ type ViewState =
   | {state: 'ready'; data: MonitoringData}
 
 const POLL_INTERVAL_MS = 60000
+/** rm-251: hard ceiling on a single poll — releases the latch even if the transport never settles. */
+export const MONITORING_FETCH_TIMEOUT_MS = 15000
 
 /**
  * Red-repo drill-down view (rm-192): renders the repos whose default branch
@@ -16,44 +19,28 @@ const POLL_INTERVAL_MS = 60000
  */
 export function Monitoring() {
   const [viewState, setViewState] = useState<ViewState>({state: 'loading'})
-  const isFetchingRef = useRef(false)
 
-  const loadData = useCallback(async (isInitial: boolean) => {
-    if (isFetchingRef.current) return
-    isFetchingRef.current = true
-
-    if (isInitial) {
+  // rm-251: the view consumes the shared bounded-poll hook (the rm-155
+  // Listener.tsx lifecycle). The previous inline copy had no timeout race,
+  // never aborted its controller, and released the latch only on the settled
+  // path — one hung response wedged the view until page reload.
+  useBoundedPoll<FetchMonitoringResult>({
+    fetcher: abortSignal => fetchMonitoring({abortSignal}),
+    timeoutMs: MONITORING_FETCH_TIMEOUT_MS,
+    intervalMs: POLL_INTERVAL_MS,
+    timeoutResult: {ok: false, reason: 'timeout'},
+    onInitialStart: () => {
       setViewState({state: 'loading'})
-    }
-
-    const abortController = new AbortController()
-    const result = await fetchMonitoring({abortSignal: abortController.signal})
-    isFetchingRef.current = false
-
-    if (!result.ok) {
-      setViewState(prev => (prev.state === 'ready' ? prev : {state: 'error', reason: result.reason}))
-      return
-    }
-    setViewState({state: 'ready', data: result.data})
-  }, [])
-
-  useEffect(() => {
-    void loadData(true)
-  }, [loadData])
-
-  useEffect(() => {
-    const intervalId = setInterval(() => {
-      void loadData(false)
-    }, POLL_INTERVAL_MS)
-    const handleFocus = () => {
-      void loadData(false)
-    }
-    window.addEventListener('focus', handleFocus)
-    return () => {
-      clearInterval(intervalId)
-      window.removeEventListener('focus', handleFocus)
-    }
-  }, [loadData])
+    },
+    onResult: result => {
+      if (!result.ok) {
+        setViewState(prev => (prev.state === 'ready' ? prev : {state: 'error', reason: result.reason}))
+        return
+      }
+      setViewState({state: 'ready', data: result.data})
+    },
+    refetchOnFocus: true,
+  })
 
   return (
     <div className="operator-panel" data-testid="monitoring-view">
