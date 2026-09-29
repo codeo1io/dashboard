@@ -3006,3 +3006,98 @@ describe('rm-151 — denylist secondary guard accepts bigint-widened database id
     expect(serialized).not.toContain('private-org')
   })
 })
+
+// ---------------------------------------------------------------------------
+// rm-251 (run c1a9e791 batch B2, 2026-09-29): Checks-v2 v1-surface degradation
+// ---------------------------------------------------------------------------
+// GitHub changelog 2026-09-23 (Checks v2 GA): check runs created by Checks v2
+// workflows surface on the v1 GraphQL/REST surfaces as STATUS-ONLY — no
+// conclusion. Our failingChecks contract sums a checkRuns connection that is
+// FILTERED server-side to `status: COMPLETED` plus a conclusion allowlist
+// (FAILURE, TIMED_OUT, CANCELLED, ACTION_REQUIRED, STARTUP_FAILURE). A v2
+// check run that FAILED therefore never enters the filtered set: the v1
+// projection lacks the conclusion, and its count is dropped from failingChecks
+// entirely.
+//
+// DECISION (recorded here, not yet acted on): the undercount is
+// accepted-for-now because (a) statusCheckRollup.state DOES reflect v2
+// failures, so the repo still sorts into the attention set as red; (b) fixing
+// the count means folding the Checks v2 GraphQL surface into
+// REPO_STATUS_QUERY; and (c) the exact v1 projection shape of a v2 run
+// (status value, conclusion presence) is NOT verifiable offline — these tests
+// fake the transport by design, which is exactly how the rm-177 template bug
+// shipped green. The fix is gated on a live-shape probe against a real repo
+// running Checks v2 before any query change lands. These fixtures pin the
+// CURRENT behavior so the eventual fix — or an accidental behavior change —
+// shows up as a red test here with the reasoning one scroll away.
+// ---------------------------------------------------------------------------
+describe('aggregator — rm-251 Checks-v2 v1-surface degradation (current behavior, pinned)', () => {
+  it('a status-only v2 suite drops out of failingChecks while the rollup still reports red', async () => {
+    const repo = makeRepo({node_id: 'NODE_V2MIX', owner: 'org', name: 'repo-v2-mix'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_V2MIX', owner: 'org', name: 'repo-v2-mix'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({
+        rollupState: 'FAILURE',
+        checkSuites: [
+          {
+            // v1 suite with a genuinely failing run — counted normally.
+            checkRuns: {
+              totalCount: 1,
+              nodes: [{name: 'v1-ci', detailsUrl: 'https://github.com/org/repo-v2-mix/runs/1'}],
+            },
+          },
+          {
+            // v2 suite: the FILTERED connection returns zero — the failed v2
+            // run is status-only on this surface and never matches the
+            // conclusion allowlist, so it is invisible to the count.
+            checkRuns: {totalCount: 0, nodes: []},
+          },
+        ],
+      })),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const status = agg.getSnapshot().repos[0]?.status
+
+    // The pinned degradation: the v2 failure contributes 0.
+    expect(status?.failingChecks).toBe(1)
+    expect(status?.rollupState).toBe('red')
+    expect(status?.failingCheckDetails).toEqual([
+      {
+        workflowTitle: null,
+        runAttempt: null,
+        checkName: 'v1-ci',
+        detailsUrl: 'https://github.com/org/repo-v2-mix/runs/1',
+      },
+    ])
+  })
+
+  it('a repo whose ONLY failing suite is v2 reports failingChecks 0 — the degradation signature', async () => {
+    const repo = makeRepo({node_id: 'NODE_V2ONLY', owner: 'org', name: 'repo-v2-only'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_V2ONLY', owner: 'org', name: 'repo-v2-only'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({
+        rollupState: 'FAILURE',
+        checkSuites: [{checkRuns: {totalCount: 0, nodes: []}}],
+      })),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const status = agg.getSnapshot().repos[0]?.status
+
+    // The degradation in its purest form: red rollup, zero failing checks,
+    // no drill-down details. rm-251's live-shape probe is what unblocks
+    // changing this expectation.
+    expect(status?.rollupState).toBe('red')
+    expect(status?.failingChecks).toBe(0)
+    expect(status?.failingCheckDetails).toEqual([])
+  })
+})
