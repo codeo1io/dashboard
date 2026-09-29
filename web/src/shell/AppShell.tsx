@@ -36,6 +36,11 @@ function teardownPushOnLogout(): Promise<unknown> {
   }).catch(() => undefined)
 }
 
+// rm-276: transport bound for every logout-path fetch. These are user-gated
+// mutations: Promise.allSettled absorbs rejections, NOT hangs, so without
+// this bound a silently-accepted connection wedges the logout control.
+const LOGOUT_FETCH_TIMEOUT_MS = 10_000
+
 /**
  * Arctic (default) auth mode logout. The gateway operator surface is not
  * mounted in this mode, so `handleLogout` lands here after the gateway CSRF
@@ -46,7 +51,10 @@ function teardownPushOnLogout(): Promise<unknown> {
  */
 async function arcticLogout(): Promise<void> {
   try {
-    const csrfRes = await fetch('/auth/logout-csrf', {credentials: 'same-origin'})
+    const csrfRes = await fetch('/auth/logout-csrf', {
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(LOGOUT_FETCH_TIMEOUT_MS),
+    })
     if (!csrfRes.ok) {
       redirectToLogin()
       return
@@ -63,11 +71,13 @@ async function arcticLogout(): Promise<void> {
     }
 
     // Same best-effort push teardown discipline as the gateway branch:
-    // bounded by Promise.allSettled so it can never block navigation.
+    // rejections are absorbed by allSettled and hangs by the fetch
+    // timeout (rm-276), so this can never block navigation.
     const [logoutSettled] = await Promise.allSettled([
       fetch('/auth/logout', {
         method: 'POST',
         credentials: 'same-origin',
+        signal: AbortSignal.timeout(LOGOUT_FETCH_TIMEOUT_MS),
         headers: {'content-type': 'application/x-www-form-urlencoded'},
         body: new URLSearchParams({csrf_token: csrfToken}).toString(),
       }),
@@ -185,7 +195,10 @@ export function AppShell({
     triggerLogoutAbort()
 
     try {
-      const csrfRes = await fetch('/operator/session/csrf', {credentials: 'same-origin'})
+      const csrfRes = await fetch('/operator/session/csrf', {
+        credentials: 'same-origin',
+        signal: AbortSignal.timeout(LOGOUT_FETCH_TIMEOUT_MS),
+      })
       if (!csrfRes.ok) {
         // Arctic (default) auth mode: the gateway operator session surface is
         // not mounted here, so this fetch 404s. Complete the logout through
@@ -208,13 +221,15 @@ export function AppShell({
       }
 
       // Best-effort push teardown runs in parallel with the logout POST.
-      // Bounded by Promise.allSettled: neither its failure nor a hang can
-      // block navigation — Gateway session inactivation on logout is the
-      // authoritative revocation path.
+      // Rejections are absorbed by allSettled and hangs by the per-fetch
+      // timeout (rm-276), so this can never block navigation — Gateway
+      // session inactivation on logout is the authoritative revocation
+      // path.
       const [logoutSettled] = await Promise.allSettled([
         fetch('/operator/auth/logout', {
           method: 'POST',
           credentials: 'same-origin',
+          signal: AbortSignal.timeout(LOGOUT_FETCH_TIMEOUT_MS),
           headers: {'x-csrf-token': csrfToken},
         }),
         teardownPushOnLogout(),

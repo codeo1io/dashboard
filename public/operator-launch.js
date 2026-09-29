@@ -225,16 +225,22 @@ export function streamModuleSpecifier() {
  * @param {string} [opts.fixtureSessionId] - Fixture session ID (fixture mode only).
  * @returns {object} A client with refreshCsrf, listRepos, and launchRun methods.
  */
+// Bound on the launch client's submit/CSRF/params fetches (rm-276): a hung fetch
+// (no server response) must not leave the submit latch held forever.
+const LAUNCH_FETCH_TIMEOUT_MS = 10_000
+
 export function buildLaunchClient(opts) {
   const endpointBase = opts?.endpointBase ?? '/operator'
   const getScenario = opts?.getScenario
   const fixtureSessionId = opts?.fixtureSessionId
+  const fetchTimeoutMs = opts?.fetchTimeoutMs ?? LAUNCH_FETCH_TIMEOUT_MS
 
   const browserFetch = (input, init) =>
     globalThis.fetch(input, {
       ...init,
       credentials: 'include',
       redirect: 'error',
+      signal: typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(fetchTimeoutMs) : undefined,
     })
 
   return {

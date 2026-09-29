@@ -1020,9 +1020,15 @@ function backoffDelay(attempt) {
  * @param {string} [opts.fixtureSessionId] - Fixture session ID (fixture mode only).
  * @returns {object} An object with refreshCsrf(), decideRunApproval(), and listRunApprovals() methods.
  */
+// Bound on the approval client's CSRF/decision/list fetches (rm-276): a hung fetch
+// (no server response) must not leave the approval control stuck in-flight with
+// every control disabled — mirrors the cancel client's bound below.
+const APPROVAL_FETCH_TIMEOUT_MS = 10_000
+
 export function buildApprovalClient(opts) {
   const endpointBase = opts?.endpointBase ?? '/operator'
   const fixtureSessionId = opts?.fixtureSessionId
+  const fetchTimeoutMs = opts?.fetchTimeoutMs ?? APPROVAL_FETCH_TIMEOUT_MS
 
   // Append fixtureSessionId as a query param when in fixture mode.
   // Only appended when fixtureSessionId is provided — never in production.
@@ -1036,6 +1042,7 @@ export function buildApprovalClient(opts) {
       ...init,
       credentials: 'include',
       redirect: 'error',
+      signal: typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(fetchTimeoutMs) : undefined,
     })
 
   async function refreshCsrf() {

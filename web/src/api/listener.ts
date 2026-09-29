@@ -143,6 +143,14 @@ export async function fetchListenerMessages(opts: {
 const ACK_CSRF_HEADER = 'x-csrf-token'
 
 /**
+ * rm-276: transport bound for the ack mutations. The read path already has
+ * its poll bound (LISTENER_FETCH_TIMEOUT_MS in the view); the ack
+ * CSRF/POST/ack-all fetches carried none, so a hung connection could wedge
+ * the view's ackingId latch forever. Mirrors the operator-runtime bound.
+ */
+const ACK_FETCH_TIMEOUT_MS = 10_000
+
+/**
  * Fetches the session-scoped ack CSRF token from GET /api/listener/csrf.
  * Returns null on any failure so callers fail closed (no token → no POST).
  */
@@ -151,6 +159,9 @@ async function fetchAckCsrfToken(): Promise<string | null> {
     const res = await fetch('/api/listener/csrf', {
       method: 'GET',
       credentials: 'same-origin',
+      // rm-276: hang-bounded so a silently-accepted connection cannot latch
+      // ackingId in the view and block every ack control until reload.
+      signal: AbortSignal.timeout(ACK_FETCH_TIMEOUT_MS),
     })
     if (!res.ok) return null
     const data: unknown = await res.json()
@@ -171,6 +182,7 @@ export async function ackListenerMessage(id: string): Promise<boolean> {
       method: 'POST',
       credentials: 'same-origin',
       headers: { [ACK_CSRF_HEADER]: csrfToken },
+      signal: AbortSignal.timeout(ACK_FETCH_TIMEOUT_MS),
     })
     return res.status === 202
   } catch {
@@ -186,6 +198,7 @@ export async function ackAllListenerMessages(): Promise<boolean> {
       method: 'POST',
       credentials: 'same-origin',
       headers: { [ACK_CSRF_HEADER]: csrfToken },
+      signal: AbortSignal.timeout(ACK_FETCH_TIMEOUT_MS),
     })
     return res.status === 202
   } catch {

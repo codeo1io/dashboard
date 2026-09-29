@@ -64,20 +64,29 @@ export function ListenerChannel() {
   const handleAck = async (id: string) => {
     if (ackingId) return
     setAckingId(id)
-    const success = await ackListenerMessage(id)
-    setAckingId(null)
-    if (success) {
-      void poll(false)
+    try {
+      const success = await ackListenerMessage(id)
+      if (success) {
+        void poll(false)
+      }
+    } finally {
+      // rm-276: the latch must release even if the ack path ever throws;
+      // a wedged ackingId disables every ack control until reload.
+      setAckingId(null)
     }
   }
 
   const handleAckAll = async () => {
     if (ackingId) return
     setAckingId('all')
-    const success = await ackAllListenerMessages()
-    setAckingId(null)
-    if (success) {
-      void poll(false)
+    try {
+      const success = await ackAllListenerMessages()
+      if (success) {
+        void poll(false)
+      }
+    } finally {
+      // rm-276: see handleAck — the latch releases in finally.
+      setAckingId(null)
     }
   }
 

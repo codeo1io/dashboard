@@ -13,7 +13,8 @@
  * preserves (bare calls count against every class budget).
  */
 import {Buffer} from 'node:buffer'
-import {afterEach, describe, expect, it} from 'vitest'
+import process from 'node:process'
+import {afterEach, describe, expect, it, vi} from 'vitest'
 import {buildDashboardApp, checkRateLimit, classifyRateLimitPath, resetRateLimitForTesting} from '../src/server.ts'
 
 const TEST_KEY = Buffer.from('testkey-ABCDEFGHIJKLMNOPQRSTUV12', 'utf8') // 32 bytes
@@ -86,6 +87,32 @@ describe('rm-262: static/asset paths are deliberately unthrottled', () => {
     // (d) Static paths stay exempt even while the operator budget is
     // exhausted (the (c) flood just drained it).
     expect((await app.request('/static/operator-stream.js')).status).not.toBe(429)
+  })
+})
+
+describe('rm-278: logout endpoints joined the sensitive (counting) surface', () => {
+  it('/auth/logout and /auth/logout-csrf 429 once the public budget is exhausted', async () => {
+    process.env.RATE_LIMIT_MAX_PUBLIC = '2'
+    // Public budgets are env-derived and read at module scope (see
+    // rate-limit-config.test.ts), so the lowered budget is only visible to a
+    // freshly imported server module — reset and re-import, house pattern.
+    try {
+      vi.resetModules()
+      const {buildDashboardApp: buildFreshApp} = await import('../src/server.ts')
+      const app = await buildFreshApp({operatorLogin: 'octocat', cookieKey: TEST_KEY})
+      // Drain this client's public budget through the logout surface itself:
+      // session-less requests may 401/403 — the point is they are counted
+      // (non-429 proves the route was reached and the limiter passed it).
+      expect((await app.request('/auth/logout-csrf')).status).not.toBe(429)
+      expect((await app.request('/auth/logout-csrf')).status).not.toBe(429)
+      // Third hit on the same client + same class → throttled.
+      expect((await app.request('/auth/logout-csrf')).status).toBe(429)
+      // The sibling logout route shares the same budget class (pre-fix this
+      // returned non-429 forever: logout sat outside the sensitive set).
+      expect((await app.request('/auth/logout')).status).toBe(429)
+    } finally {
+      delete process.env.RATE_LIMIT_MAX_PUBLIC
+    }
   })
 })
 
