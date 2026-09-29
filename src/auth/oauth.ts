@@ -29,8 +29,16 @@ const GITHUB_FETCH_TIMEOUT_MS = 10_000
  * Uses function property style (not shorthand method signatures) per lint rules.
  */
 export interface GitHubOAuthClient {
-  readonly createAuthorizationURL: (state: string, scopes: string[]) => URL
-  readonly validateAuthorizationCode: (code: string) => Promise<{accessToken: () => string}>
+  /**
+   * Builds the GitHub authorization URL. The S256 PKCE challenge is REQUIRED
+   * (RFC 7636): the redirect must never ship without a code_challenge.
+   */
+  readonly createAuthorizationURL: (state: string, scopes: string[], codeChallenge: string) => URL
+  /** Exchanges the code, sending the PKCE verifier (mismatch → GitHub rejects). */
+  readonly validateAuthorizationCode: (
+    code: string,
+    codeVerifier: string,
+  ) => Promise<{accessToken: () => string}>
 }
 
 /**
@@ -46,7 +54,7 @@ export function makeGitHubOAuthClient(
   redirectURI: string,
 ): GitHubOAuthClient {
   return {
-    createAuthorizationURL: (state: string, scopes: string[]): URL => {
+    createAuthorizationURL: (state: string, scopes: string[], codeChallenge: string): URL => {
       const url = new URL('https://github.com/login/oauth/authorize')
       url.search = new URLSearchParams({
         client_id: clientId,
@@ -54,10 +62,15 @@ export function makeGitHubOAuthClient(
         state,
         scope: scopes.join(' '),
         response_type: 'code',
+        code_challenge: codeChallenge,
+        code_challenge_method: 'S256',
       }).toString()
       return url
     },
-    validateAuthorizationCode: async (code: string): Promise<{accessToken: () => string}> => {
+    validateAuthorizationCode: async (
+      code: string,
+      codeVerifier: string,
+    ): Promise<{accessToken: () => string}> => {
       let res: Response
       try {
         res = await fetch('https://github.com/login/oauth/access_token', {
@@ -71,6 +84,7 @@ export function makeGitHubOAuthClient(
           body: new URLSearchParams({
             client_id: clientId,
             code,
+            code_verifier: codeVerifier,
             redirect_uri: redirectURI,
             grant_type: 'authorization_code',
           }).toString(),

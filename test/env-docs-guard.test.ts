@@ -5,11 +5,14 @@ import {describe, expect, it} from 'vitest'
 
 /**
  * rm-214: README Configuration must document the complete env-var surface.
+ * rm-255: the token family is prefix-EXHAUSTIVE by construction — every
+ * prefix a `process.env.*` read can carry in src/ must appear here, else reads
+ * under that prefix are invisible to the census in both directions.
  *
- * Fails when a `DASHBOARD_*` / `RATE_LIMIT_*` variable is READ in `src/` but
- * missing from the README Configuration section (undocumented var), or when the
- * README documents one that `src/` no longer reads (stale row). Either direction
- * is drift; the table and the code must agree exactly.
+ * Fails when a `DASHBOARD_*` / `RATE_LIMIT_*` / `GATEWAY_*` variable is READ
+ * in `src/` but missing from the README Configuration section (undocumented
+ * var), or when the README documents one that `src/` no longer reads (stale
+ * row). Either direction is drift; the table and the code must agree exactly.
  *
  * Extraction model — "read in src/" means one of:
  *   1. a direct `process.env.<TOKEN>` access, or
@@ -19,7 +22,7 @@ import {describe, expect, it} from 'vitest'
  * readers, so they are covered by the README's prose convention note, not rows.
  */
 const repoRoot = process.cwd()
-const ENV_TOKEN = '(?:DASHBOARD|RATE_LIMIT)_[A-Z0-9_]+'
+const ENV_TOKEN = '(?:DASHBOARD|RATE_LIMIT|GATEWAY)_[A-Z0-9_]+'
 
 function collectTypeScriptSources(dir: string): string[] {
   const out: string[] = []
@@ -68,6 +71,9 @@ const NON_ENV_CONSTANTS = [
   'RATE_LIMIT_MAX',
   'RATE_LIMIT_MAX_PER_CLASS',
   'RATE_LIMIT_WINDOW_MS',
+  // rm-255: a GATEWAY_-prefixed CODE CONSTANT (not an env var) — listed here so
+  // the census can never mistake it for a read, in either direction.
+  'GATEWAY_LOGIN_REDIRECT',
 ] as const
 
 /** Backticked env tokens inside the README "Configuration" section (table rows + prose). */
@@ -93,7 +99,7 @@ describe('environment-variable documentation coverage (rm-214)', () => {
     }
   })
 
-  it('every DASHBOARD_*/RATE_LIMIT_* var read in src/ is documented in README Configuration, and no stale rows exist', () => {
+  it('every DASHBOARD_*/RATE_LIMIT_*/GATEWAY_* var read in src/ is documented in README Configuration, and no stale rows exist', () => {
     const read = envTokensReadInSrc()
     const documented = envTokensDocumentedInReadme()
     const nonEnv = new Set<string>(NON_ENV_CONSTANTS)
