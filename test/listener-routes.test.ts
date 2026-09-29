@@ -82,6 +82,7 @@ describe('operator listener channel routes', () => {
       headers: {cookie: sessionCookieHeader()},
     })
     expect(getRes.status).toBe(200)
+    expect(getRes.headers.get('cache-control')).toBe('no-store') // rm-253
     const getJson = (await getRes.json()) as {messages: {id: string}[]; unreadCount: number}
     expect(getJson.messages).toHaveLength(1)
     expect(getJson.messages[0]?.id).toBe(ingestJson.id)
@@ -308,6 +309,7 @@ describe('operator listener channel routes', () => {
       headers: {cookie: sessionCookieHeader()},
     })
     expect(authedRes.status).toBe(200)
+    expect(authedRes.headers.get('cache-control')).toBe('no-store') // rm-253
     const json = (await authedRes.json()) as {csrfToken: string}
     expect(typeof json.csrfToken).toBe('string')
     expect(json.csrfToken.length).toBe(32)

@@ -360,7 +360,13 @@ export async function subscribeOptIn(deps: SubscribeDeps): Promise<SubscribeOutc
     return {kind: 'subscribe-failed'}
   }
 
-  if (deps.signal?.aborted) return {kind: 'aborted'}
+  if (deps.signal?.aborted) {
+    // subscribe() already created a local subscription but the gateway has
+    // not been told — drop it so no orphaned subscription lingers until a
+    // reconcile sweep (rm-254).
+    await subscription.unsubscribe().catch(() => false)
+    return {kind: 'aborted'}
+  }
 
   const csrfResult = await deps.pushClient.refreshCsrf()
   if (!csrfResult.success) {
@@ -369,6 +375,8 @@ export async function subscribeOptIn(deps: SubscribeDeps): Promise<SubscribeOutc
   }
 
   if (deps.signal?.aborted) {
+    // Same window as above: local subscription live, gateway uninformed.
+    await subscription.unsubscribe().catch(() => false)
     return {kind: 'aborted'}
   }
 
@@ -379,11 +387,13 @@ export async function subscribeOptIn(deps: SubscribeDeps): Promise<SubscribeOutc
     deps.signal,
   )
 
-  if (deps.signal?.aborted) return {kind: 'aborted'}
-
   if (!postResult.success) {
+    // A failed POST means the gateway never learned about the subscription —
+    // this also covers the abort-during-POST race (rm-254). A successful POST
+    // falls through to 'subscribed' even if the signal aborted afterwards:
+    // the gateway recorded it, so dropping the local copy would desync.
     await subscription.unsubscribe().catch(() => false)
-    return {kind: 'subscribe-failed'}
+    return deps.signal?.aborted ? {kind: 'aborted'} : {kind: 'subscribe-failed'}
   }
 
   return {kind: 'subscribed'}
@@ -450,7 +460,11 @@ export async function resubscribeStaleKey(deps: SubscribeDeps): Promise<Subscrib
     }
   }
 
-  if (deps.signal?.aborted) return {kind: 'aborted'}
+  if (deps.signal?.aborted) {
+    // Fresh local subscription, gateway uninformed — drop it (rm-254).
+    await subscription.unsubscribe().catch(() => false)
+    return {kind: 'aborted'}
+  }
 
   const csrfResult = await deps.pushClient.refreshCsrf()
   if (!csrfResult.success) {
@@ -458,13 +472,22 @@ export async function resubscribeStaleKey(deps: SubscribeDeps): Promise<Subscrib
     return {kind: 'subscribe-failed'}
   }
 
-  if (deps.signal?.aborted) return {kind: 'aborted'}
+  if (deps.signal?.aborted) {
+    // Same window: local subscription live, gateway uninformed (rm-254).
+    await subscription.unsubscribe().catch(() => false)
+    return {kind: 'aborted'}
+  }
 
   const idempotencyKey = mintKey()
   const postResult = await deps.pushClient.subscribePush(subscription.toJSON(), csrfResult.data, idempotencyKey, deps.signal)
 
   if (!postResult.success) {
-    if (deps.signal?.aborted) return {kind: 'aborted'}
+    if (deps.signal?.aborted) {
+      // First POST failed (gateway uninformed) and retrying is pointless —
+      // drop the local subscription (rm-254).
+      await subscription.unsubscribe().catch(() => false)
+      return {kind: 'aborted'}
+    }
 
     const csrfShaped = postResult.error.kind === 'http' && postResult.error.status === 400
     let retryCsrfToken = csrfResult.data
@@ -477,7 +500,12 @@ export async function resubscribeStaleKey(deps: SubscribeDeps): Promise<Subscrib
       retryCsrfToken = retryCsrfResult.data
     }
 
-    if (deps.signal?.aborted) return {kind: 'aborted'}
+    if (deps.signal?.aborted) {
+      // Retry not yet sent: local subscription live, gateway uninformed
+      // (the first POST failed) — drop it (rm-254).
+      await subscription.unsubscribe().catch(() => false)
+      return {kind: 'aborted'}
+    }
 
     const retryPostResult = await deps.pushClient.subscribePush(
       subscription.toJSON(),
@@ -486,14 +514,14 @@ export async function resubscribeStaleKey(deps: SubscribeDeps): Promise<Subscrib
       deps.signal,
     )
 
-    if (deps.signal?.aborted) return {kind: 'aborted'}
-
-    if (!retryPostResult.success) {
-      await subscription.unsubscribe().catch(() => false)
-      return {kind: 'subscribe-failed'}
+    if (retryPostResult.success) {
+      return {kind: 'subscribed'}
     }
 
-    return {kind: 'subscribed'}
+    // Retry failed: gateway uninformed — drop the local subscription (this
+    // also covers the abort-after-retry race, rm-254).
+    await subscription.unsubscribe().catch(() => false)
+    return deps.signal?.aborted ? {kind: 'aborted'} : {kind: 'subscribe-failed'}
   }
 
   return {kind: 'subscribed'}
