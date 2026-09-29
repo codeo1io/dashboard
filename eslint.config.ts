@@ -1,7 +1,8 @@
+import type {Linter} from 'eslint'
 import {defineConfig} from '@bfra.me/eslint-config'
 import tseslint from 'typescript-eslint'
 
-export default defineConfig(
+const config = defineConfig(
   {
     name: '@fro-bot/dashboard',
     // AI-authored planning/solution docs (docs/plans, docs/solutions, docs/brainstorms)
@@ -34,3 +35,10 @@ export default defineConfig(
     },
   },
 )
+
+// Boundary cast: @bfra.me's defineConfig returns a FlatConfigComposer whose
+// inferred type (typescript-eslint 8.70.0 typings) embeds @eslint/core's
+// RulesConfig — not portable for declaration emit under the strip-only server
+// tsconfig (TS2883). The runtime value is unchanged; only the export's type
+// is widened to eslint's flat-config array shape.
+export default config as unknown as Linter.Config[]
