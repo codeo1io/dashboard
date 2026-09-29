@@ -36,6 +36,11 @@ function teardownPushOnLogout(): Promise<unknown> {
   }).catch(() => undefined)
 }
 
+/** Logout mutations carry a deadline (rm-277, cycle 20): a stalled logout
+ * fetch kept `loggingOut` true and the Sign out button disabled until reload.
+ * Same discipline as browserFetch in ../push/subscribe.ts. */
+const LOGOUT_FETCH_TIMEOUT_MS = 15_000
+
 /**
  * Arctic (default) auth mode logout. The gateway operator surface is not
  * mounted in this mode, so `handleLogout` lands here after the gateway CSRF
@@ -46,7 +51,10 @@ function teardownPushOnLogout(): Promise<unknown> {
  */
 async function arcticLogout(): Promise<void> {
   try {
-    const csrfRes = await fetch('/auth/logout-csrf', {credentials: 'same-origin'})
+    const csrfRes = await fetch('/auth/logout-csrf', {
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(LOGOUT_FETCH_TIMEOUT_MS),
+    })
     if (!csrfRes.ok) {
       redirectToLogin()
       return
@@ -70,6 +78,7 @@ async function arcticLogout(): Promise<void> {
         credentials: 'same-origin',
         headers: {'content-type': 'application/x-www-form-urlencoded'},
         body: new URLSearchParams({csrf_token: csrfToken}).toString(),
+        signal: AbortSignal.timeout(LOGOUT_FETCH_TIMEOUT_MS),
       }),
       teardownPushOnLogout(),
     ])
@@ -185,7 +194,10 @@ export function AppShell({
     triggerLogoutAbort()
 
     try {
-      const csrfRes = await fetch('/operator/session/csrf', {credentials: 'same-origin'})
+      const csrfRes = await fetch('/operator/session/csrf', {
+        credentials: 'same-origin',
+        signal: AbortSignal.timeout(LOGOUT_FETCH_TIMEOUT_MS),
+      })
       if (!csrfRes.ok) {
         // Arctic (default) auth mode: the gateway operator session surface is
         // not mounted here, so this fetch 404s. Complete the logout through
@@ -216,6 +228,7 @@ export function AppShell({
           method: 'POST',
           credentials: 'same-origin',
           headers: {'x-csrf-token': csrfToken},
+          signal: AbortSignal.timeout(LOGOUT_FETCH_TIMEOUT_MS),
         }),
         teardownPushOnLogout(),
       ])
@@ -230,6 +243,11 @@ export function AppShell({
     } catch {
       // Network error — fall back to login page.
       redirectToLogin()
+    } finally {
+      // rm-277: release the synchronous latch on every exit path. Each branch
+      // redirects (fail closed), so this only matters if navigation is
+      // blocked — but a stuck `loggingOut` would disable Sign out until reload.
+      logoutInFlight.current = false
     }
   }, [])
 
