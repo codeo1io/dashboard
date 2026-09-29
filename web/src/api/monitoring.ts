@@ -155,3 +155,153 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
     return {ok: false, reason: 'network'}
   }
 }
+
+// rm-107 S1/S2/S3 (cycle-1 batch, run be59a16e): the monitoring composite —
+// the data plane's OWN truth (token budget, listener backlog, refresh
+// health), composed server-side so the reading is monotone under failure by
+// construction. Mirrors the /api/monitor DTO from src/routes/api.ts.
+export type MonitorHealth = 'ok' | 'degraded' | 'stale'
+
+export interface MonitorRateLimit {
+  readonly limit: number | null
+  readonly remaining: number | null
+  readonly resetAt: number | null
+  readonly observedAt: number | null
+  readonly takenEvents: number | null
+  readonly secondaryEvents: number | null
+}
+
+export interface MonitorListener {
+  readonly unread: number
+  readonly retained: number
+  readonly oldestUnreadAgeMs: number | null
+  readonly retentionMaxRows: number
+}
+
+export interface MonitorRefresh {
+  readonly lastOutcome: 'ok' | 'failed' | null
+  readonly failStreak: number
+  readonly lastAttemptAt: number | null
+  readonly lastSuccessAt: number | null
+  readonly durationMs: number | null
+  readonly degraded: boolean
+  readonly staleBanner: boolean
+  readonly refreshedAt: number | null
+}
+
+export interface MonitorData {
+  readonly ok: boolean
+  readonly health: MonitorHealth
+  readonly rateLimit: MonitorRateLimit | null
+  readonly listener: MonitorListener | null
+  readonly refresh: MonitorRefresh
+  readonly generatedAt: number
+}
+
+export type FetchMonitorResult =
+  | { ok: true; data: MonitorData }
+  | { ok: false; reason: 'timeout' | 'network' | 'unauthenticated' | 'contract-drift' }
+
+function parseMonitorRateLimit(val: unknown): MonitorRateLimit | null {
+  if (!isPlainObject(val)) return null
+  const {limit, remaining, resetAt, observedAt, takenEvents, secondaryEvents} = val
+  if (limit !== null && typeof limit !== 'number') return null
+  if (remaining !== null && typeof remaining !== 'number') return null
+  if (resetAt !== null && typeof resetAt !== 'number') return null
+  if (observedAt !== null && typeof observedAt !== 'number') return null
+  if (takenEvents !== null && typeof takenEvents !== 'number') return null
+  if (secondaryEvents !== null && typeof secondaryEvents !== 'number') return null
+  return {limit, remaining, resetAt, observedAt, takenEvents, secondaryEvents}
+}
+
+function parseMonitorListener(val: unknown): MonitorListener | null {
+  if (!isPlainObject(val)) return null
+  const {unread, retained, oldestUnreadAgeMs, retentionMaxRows} = val
+  if (typeof unread !== 'number' || typeof retained !== 'number') return null
+  if (oldestUnreadAgeMs !== null && typeof oldestUnreadAgeMs !== 'number') return null
+  if (typeof retentionMaxRows !== 'number') return null
+  return {unread, retained, oldestUnreadAgeMs, retentionMaxRows}
+}
+
+function parseMonitorRefresh(val: unknown): MonitorRefresh | null {
+  if (!isPlainObject(val)) return null
+  const {
+    lastOutcome,
+    failStreak,
+    lastAttemptAt,
+    lastSuccessAt,
+    durationMs,
+    degraded,
+    staleBanner,
+    refreshedAt,
+  } = val
+  if (lastOutcome !== null && lastOutcome !== 'ok' && lastOutcome !== 'failed') return null
+  if (typeof failStreak !== 'number' || !Number.isFinite(failStreak)) return null
+  if (typeof degraded !== 'boolean' || typeof staleBanner !== 'boolean') return null
+  if (lastAttemptAt !== null && typeof lastAttemptAt !== 'number') return null
+  if (lastSuccessAt !== null && typeof lastSuccessAt !== 'number') return null
+  if (durationMs !== null && typeof durationMs !== 'number') return null
+  if (refreshedAt !== null && typeof refreshedAt !== 'number') return null
+  return {lastOutcome, failStreak, lastAttemptAt, lastSuccessAt, durationMs, degraded, staleBanner, refreshedAt}
+}
+
+export async function fetchMonitor(opts: {abortSignal?: AbortSignal} = {}): Promise<FetchMonitorResult> {
+  try {
+    const res = await fetch('/api/monitor', {
+      method: 'GET',
+      credentials: 'same-origin',
+      signal: opts.abortSignal,
+    })
+
+    if (!res.ok) {
+      // rm-273 convention: 401 is session expiry, not transport failure.
+      if (res.status === 401) {
+        return {ok: false, reason: 'unauthenticated'}
+      }
+      return {ok: false, reason: 'network'}
+    }
+
+    const data = await res.json()
+    if (!isPlainObject(data)) return {ok: false, reason: 'contract-drift'}
+    if (typeof data.ok !== 'boolean' || typeof data.generatedAt !== 'number') {
+      return {ok: false, reason: 'contract-drift'}
+    }
+    if (data.health !== 'ok' && data.health !== 'degraded' && data.health !== 'stale') {
+      return {ok: false, reason: 'contract-drift'}
+    }
+
+    let rateLimit: MonitorRateLimit | null = null
+    if (data.rateLimit !== null) {
+      const parsed = parseMonitorRateLimit(data.rateLimit)
+      if (parsed === null) return {ok: false, reason: 'contract-drift'}
+      rateLimit = parsed
+    }
+
+    let listener: MonitorListener | null = null
+    if (data.listener !== null) {
+      const parsed = parseMonitorListener(data.listener)
+      if (parsed === null) return {ok: false, reason: 'contract-drift'}
+      listener = parsed
+    }
+
+    const refresh = parseMonitorRefresh(data.refresh)
+    if (refresh === null) return {ok: false, reason: 'contract-drift'}
+
+    return {
+      ok: true,
+      data: {
+        ok: data.ok,
+        health: data.health,
+        rateLimit,
+        listener,
+        refresh,
+        generatedAt: data.generatedAt,
+      },
+    }
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      return {ok: false, reason: 'timeout'}
+    }
+    return {ok: false, reason: 'network'}
+  }
+}

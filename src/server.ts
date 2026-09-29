@@ -15,9 +15,11 @@
 import type {ServerType} from '@hono/node-server'
 import type {GitHubOAuthClient} from './auth/oauth.ts'
 import type {OperatorClient, SessionDto} from './gateway/operator-client.ts'
-import type {AggregatorSnapshot, SnapshotStore} from './github/aggregator.ts'
+import type {AggregatorRefreshStats, AggregatorSnapshot, SnapshotStore} from './github/aggregator.ts'
 import type {MetadataReader} from './github/metadata.ts'
+import type {RateLimitBudget} from './github/app-client.ts'
 import type {ListenerStore} from './listener/store.ts'
+import type {MonitorProviders} from './routes/api.ts'
 import {Buffer} from 'node:buffer'
 import {existsSync} from 'node:fs'
 import {readFile} from 'node:fs/promises'
@@ -423,6 +425,14 @@ export interface DashboardAppConfig {
    * the read/ack routes still work if listenerStore is provided.
    */
   listenerIngestKey?: string | null | undefined
+  /**
+   * rm-107 (cycle-1 batch, run be59a16e): providers composing the
+   * monitoring-of-monitoring surface at GET /api/monitor. All optional —
+   * each absent provider degrades its section to `null` (never fabricates);
+   * createDashboardServer wires the real app-client recorder, listener
+   * store stats, and the aggregator's monotone refresh telemetry.
+   */
+  monitorProviders?: MonitorProviders
 }
 
 /**
@@ -911,7 +921,9 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   }
 
   // ── API routes ───────────────────────────────────────────────────────────────
-  app.route('/api', buildApiRouter(getSnapshot))
+  // rm-107: /api/monitor composes the diagnostics surface from the injected
+  // providers (rate-limit budget, listener backlog, monotone refresh stats).
+  app.route('/api', buildApiRouter(getSnapshot, opts?.monitorProviders))
 
   // ── Operator listener channel ───────────────────────────────────────────────
   // Only mounted when a store is injected. /ingest is public-before-session
@@ -1138,6 +1150,10 @@ export interface SnapshotProviderDeps {
  */
 export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
   getSnapshot: () => AggregatorSnapshot
+  /** rm-107 S1: observed GitHub rate-limit budget + event counters. */
+  getRateLimitStats: () => RateLimitBudget
+  /** rm-107 S3: monotone refresh telemetry (failStreak/lastOutcome). */
+  getRefreshStats: () => AggregatorRefreshStats
   start: () => Promise<void>
   stop: () => void
 } {
@@ -1228,6 +1244,8 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
 
   return {
     getSnapshot: aggregator.getSnapshot,
+    getRateLimitStats: appClient.stats,
+    getRefreshStats: aggregator.getRefreshStats,
     start: aggregator.start,
     stop: aggregator.stop,
   }
@@ -1352,7 +1370,19 @@ async function createDashboardServer(): Promise<ServerType> {
     })
   }
 
-  const app = await buildDashboardApp({cookieKey, getSnapshot, listenerStore, listenerIngestKey})
+  // rm-107 (cycle-1 batch): compose the monitoring-of-monitoring providers —
+  // rate-limit budget from the App client recorder, monotone refresh stats
+  // from the aggregator, listener backlog from the store. Each is wired only
+  // when its underlying handle exists, so a dev boot without credentials
+  // degrades those sections to null instead of throwing.
+  const monitorProviders: MonitorProviders = {
+    ...(provider === undefined
+      ? {}
+      : {getRateLimitStats: provider.getRateLimitStats, getRefreshStats: provider.getRefreshStats}),
+    ...(listenerStore === undefined ? {} : {getListenerStats: listenerStore.stats.bind(listenerStore)}),
+  }
+
+  const app = await buildDashboardApp({cookieKey, getSnapshot, listenerStore, listenerIngestKey, monitorProviders})
 
   const {host, port} = readServerBindConfig()
 

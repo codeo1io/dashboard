@@ -1,4 +1,12 @@
-import type {AggregatorSnapshot, DashboardRepo, FailingCheckDetail, RepoCiStatus} from '../github/aggregator.ts'
+import type {
+  AggregatorRefreshStats,
+  AggregatorSnapshot,
+  DashboardRepo,
+  FailingCheckDetail,
+  RepoCiStatus,
+} from '../github/aggregator.ts'
+import type {RateLimitBudget} from '../github/app-client.ts'
+import type {ListenerStats} from '../listener/store.ts'
 import {Hono} from 'hono'
 import {COLD_START_SNAPSHOT} from '../github/aggregator.ts'
 
@@ -52,6 +60,93 @@ interface MonitoringDto {
   readonly refreshDegraded: boolean
 }
 
+// ---------------------------------------------------------------------------
+// Diagnostic composite — /api/monitor (rm-107 cycle-1 batch, run be59a16e)
+//
+// Operator-only diagnostic surface composing the fleet-data plane's own
+// truth: App-client rate-limit budget, listener backlog depth, and the
+// aggregator's monotone refresh telemetry. Everything here is diagnostic —
+// no new GitHub query is issued; each provider reads state the running
+// processes already maintain.
+// ---------------------------------------------------------------------------
+
+/** Rate-limit budget observed from App-client response headers + event counters. */
+export type MonitorRateLimitDto = RateLimitBudget
+
+/** Listener backlog telemetry (depth/age against the retention window). */
+export type MonitorListenerDto = ListenerStats
+
+export interface MonitorRefreshDto {
+  /** Outcome of the last completed attempt; null before the first attempt. */
+  readonly lastOutcome: 'ok' | 'failed' | null
+  /** Consecutive fail-visible attempts; resets only on a clean success (monotone under failure). */
+  readonly failStreak: number
+  /** Epoch ms of the last attempt's start; null before the first attempt. */
+  readonly lastAttemptAt: number | null
+  /** Epoch ms of the last clean success; null before the first success. */
+  readonly lastSuccessAt: number | null
+  /** Watchdog wall-clock duration (ms) of the last completed attempt; null when never stamped. */
+  readonly durationMs: number | null
+  /** True when the watchdog ceiling was exceeded or degraded state is preserved (sticky). */
+  readonly degraded: boolean
+  /** True when the served snapshot is fail-visible (stale banner). */
+  readonly staleBanner: boolean
+  /** Epoch ms of the served snapshot's last successful refresh; null when cold. */
+  readonly refreshedAt: number | null
+}
+
+export interface MonitorDto {
+  /** Data freshness: true while the served snapshot is not fail-visible. */
+  readonly ok: boolean
+  /**
+   * Monotone composite health reading. Precedence stale > degraded > ok:
+   * a fail-closed refresh can never improve the reading — a forced failure
+   * either raises it to 'stale' (banner) or holds 'degraded' (sticky degraded
+   * / failStreak > 0). Only a fully successful refresh may lower it.
+   */
+  readonly health: 'ok' | 'degraded' | 'stale'
+  /** Null when the provider is not wired (observability degrades, never fabricates). */
+  readonly rateLimit: MonitorRateLimitDto | null
+  readonly listener: MonitorListenerDto | null
+  readonly refresh: MonitorRefreshDto
+  readonly generatedAt: number
+}
+
+/** Injectable diagnostic providers for /api/monitor. All optional. */
+export interface MonitorProviders {
+  /** rm-107 S1: App-client rate-limit budget recorder snapshot. */
+  readonly getRateLimitStats?: () => RateLimitBudget
+  /** rm-107 S2: listener backlog stats accessor. */
+  readonly getListenerStats?: () => ListenerStats
+  /** rm-107 S3: aggregator monotone refresh telemetry. */
+  readonly getRefreshStats?: () => AggregatorRefreshStats
+}
+
+function toMonitorDto(
+  snapshot: AggregatorSnapshot,
+  providers: MonitorProviders | undefined,
+): MonitorDto {
+  const refresh: MonitorRefreshDto = {
+    lastOutcome: providers?.getRefreshStats === undefined ? null : providers.getRefreshStats().lastOutcome,
+    failStreak: providers?.getRefreshStats === undefined ? 0 : providers.getRefreshStats().failStreak,
+    lastAttemptAt: providers?.getRefreshStats === undefined ? null : providers.getRefreshStats().lastAttemptAt,
+    lastSuccessAt: providers?.getRefreshStats === undefined ? null : providers.getRefreshStats().lastSuccessAt,
+    durationMs: snapshot.refreshDurationMs,
+    degraded: snapshot.refreshDegraded,
+    staleBanner: snapshot.staleBanner,
+    refreshedAt: snapshot.refreshedAt,
+  }
+  const health = refresh.staleBanner ? 'stale' : refresh.degraded || refresh.failStreak > 0 ? 'degraded' : 'ok'
+  return {
+    ok: !refresh.staleBanner,
+    health,
+    rateLimit: providers?.getRateLimitStats === undefined ? null : providers.getRateLimitStats(),
+    listener: providers?.getListenerStats === undefined ? null : providers.getListenerStats(),
+    refresh,
+    generatedAt: Date.now(),
+  }
+}
+
 function toMonitoringRepoDto(repo: DashboardRepo): MonitoringRepoDto {
   return {
     full_name: repo.full_name,
@@ -87,7 +182,7 @@ function toMonitoringDto(snapshot: AggregatorSnapshot): MonitoringDto {
  *   In production, the real aggregator's `getSnapshot` is injected via server.ts.
  *   Tests inject a fake.
  */
-export function buildApiRouter(getSnapshot?: SnapshotProvider): Hono {
+export function buildApiRouter(getSnapshot?: SnapshotProvider, providers?: MonitorProviders): Hono {
   const api = new Hono()
 
   api.get('/healthz', c => {
@@ -123,6 +218,17 @@ export function buildApiRouter(getSnapshot?: SnapshotProvider): Hono {
     const snapshot = getSnapshot === undefined ? COLD_START_SNAPSHOT : getSnapshot()
     c.header('Cache-Control', 'no-store')
     return c.json(toMonitoringDto(snapshot))
+  })
+
+  /**
+   * Operator diagnostic composite (rm-107 cycle-1 batch): composes the
+   * rate-limit budget, listener backlog, and monotone refresh telemetry into
+   * one reading. Behind auth like every other /api route; never cached.
+   */
+  api.get('/monitor', c => {
+    const snapshot = getSnapshot === undefined ? COLD_START_SNAPSHOT : getSnapshot()
+    c.header('Cache-Control', 'no-store')
+    return c.json(toMonitorDto(snapshot, providers))
   })
 
   return api

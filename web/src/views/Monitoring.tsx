@@ -1,5 +1,13 @@
 import {useState} from 'react'
-import {fetchMonitoring, type FetchMonitoringResult, type MonitoringData, type MonitoringRepo} from '../api/monitoring.ts'
+import {
+  fetchMonitoring,
+  fetchMonitor,
+  type FetchMonitoringResult,
+  type FetchMonitorResult,
+  type MonitorData,
+  type MonitoringData,
+  type MonitoringRepo,
+} from '../api/monitoring.ts'
 import {useBoundedPoll} from '../hooks/useBoundedPoll.ts'
 
 type ViewState =
@@ -20,6 +28,11 @@ export const MONITORING_FETCH_TIMEOUT_MS = 15000
  */
 export function Monitoring() {
   const [viewState, setViewState] = useState<ViewState>({state: 'loading'})
+  // rm-107 (cycle-1 batch): the data-plane composite — the fleet view's OWN
+  // health (token budget, listener backlog, refresh streak). Polled
+  // independently: if /api/monitor fails, the strip simply disappears and the
+  // repository view is untouched (B2: independent failure).
+  const [monitorData, setMonitorData] = useState<MonitorData | null>(null)
 
   // rm-251: the view consumes the shared bounded-poll hook (the rm-155
   // Listener.tsx lifecycle). The previous inline copy had no timeout race,
@@ -46,6 +59,19 @@ export function Monitoring() {
         return
       }
       setViewState({state: 'ready', data: result.data})
+    },
+    refetchOnFocus: true,
+  })
+
+  useBoundedPoll<FetchMonitorResult>({
+    fetcher: abortSignal => fetchMonitor({abortSignal}),
+    timeoutMs: MONITORING_FETCH_TIMEOUT_MS,
+    intervalMs: POLL_INTERVAL_MS,
+    timeoutResult: {ok: false, reason: 'timeout'},
+    onResult: result => {
+      // Fail-open by design: without a verified composite, render nothing
+      // rather than a guessed reading (the strip is additive, never load-bearing).
+      setMonitorData(result.ok ? result.data : null)
     },
     refetchOnFocus: true,
   })
@@ -83,9 +109,68 @@ export function Monitoring() {
         </div>
       )}
 
-      {viewState.state === 'ready' && <MonitoringBoard data={viewState.data} />}
+      {viewState.state === 'ready' && (
+        <div style={{display: 'flex', flexDirection: 'column', gap: 'var(--space-3)'}}>
+          <MonitorHealthStrip monitor={monitorData} />
+          <MonitoringBoard data={viewState.data} />
+        </div>
+      )}
     </div>
   )
+}
+
+/**
+ * rm-107 S1/S2/S3: the data plane's own truth, composed server-side into a
+ * monotone reading — token budget observed at the transport, listener backlog
+ * depth/age, and the refresh fail streak. `stale` (fail-visible) outranks
+ * `degraded` (slow but fresh); a failed refresh can never improve the label.
+ */
+function MonitorHealthStrip({monitor}: {monitor: MonitorData | null}) {
+  if (monitor === null) return null
+  const healthLabel = monitor.health === 'stale' ? 'stale' : monitor.health === 'degraded' ? 'degraded' : 'healthy'
+  return (
+    <div
+      data-testid="monitor-health-strip"
+      className={monitor.health === 'ok' ? 'operator-panel' : 'operator-warning-panel'}
+      style={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: 'var(--space-3)',
+        fontSize: 'var(--text-body-sm)',
+        alignItems: 'center',
+      }}
+      role="status"
+    >
+      <span data-testid="monitor-health">
+        Data plane: {healthLabel}
+        {monitor.refresh.failStreak > 0 &&
+          ` (last ${monitor.refresh.failStreak} refresh${monitor.refresh.failStreak === 1 ? '' : 'es'} failed)`}
+      </span>
+      {monitor.rateLimit !== null && monitor.rateLimit.remaining !== null && (
+        <span data-testid="monitor-rate-limit">
+          Token budget: {monitor.rateLimit.remaining}
+          {monitor.rateLimit.limit !== null ? `/${monitor.rateLimit.limit}` : ''} remaining
+          {monitor.rateLimit.resetAt !== null && ` · resets ${new Date(monitor.rateLimit.resetAt).toLocaleTimeString()}`}
+        </span>
+      )}
+      {monitor.listener !== null && (
+        <span data-testid="monitor-listener">
+          Listener: {monitor.listener.unread} unread
+          {monitor.listener.oldestUnreadAgeMs !== null && ` · oldest ${formatAge(monitor.listener.oldestUnreadAgeMs)} old`}
+        </span>
+      )}
+      {monitor.refresh.durationMs !== null && (
+        <span data-testid="monitor-refresh-duration">Last refresh: {monitor.refresh.durationMs} ms</span>
+      )}
+    </div>
+  )
+}
+
+function formatAge(ms: number): string {
+  const minutes = Math.floor(ms / 60000)
+  if (minutes < 1) return '<1 min'
+  if (minutes < 60) return `${minutes} min`
+  return `${Math.floor(minutes / 60)} h`
 }
 
 function MonitoringBoard({data}: {data: MonitoringData}) {

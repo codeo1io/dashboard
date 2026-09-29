@@ -157,3 +157,21 @@ identified the outage recorded in
 `docs/solutions/security-issues/gateway-operator-oauth-rate-limit-shared-key-behind-caddy-2026-09-21.md`.
 
 Delete the capture when done; it is sensitive.
+
+---
+
+## rm-107: live data-plane telemetry (2026-10-01, run be59a16e)
+
+The dashboard serves `GET /api/monitor` behind the operator session (`no-store`).
+It composes three previously log-only signals into one snapshot: the GitHub App
+client's observed rate-limit budget (`remaining`/`resetAt` plus `takenEvents`/
+`secondaryEvents`), the listener store's depth/age stats (`unread`/`retained`/
+`oldestUnreadAgeMs`/`retentionMaxRows`), and the aggregator's refresh lifecycle
+(`lastOutcome`/`failStreak`/`lastAttemptAt`/`lastSuccessAt`/`durationMs`/
+`degraded`/`staleBanner` — monotone across fail-closed cycles since this landing).
+
+Before assuming a gateway problem, check this endpoint first: `health: 'stale'`
+means the dashboard's own snapshot is fail-closed (metadata branch unreadable —
+the data plane, not the gateway), `health: 'degraded'` means slow or failed
+refresh cycles while data remains. Only a healthy `/api/monitor` plus a failing
+operator surface points at the gateway logs above.
