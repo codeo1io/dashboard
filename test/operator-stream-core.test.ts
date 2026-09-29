@@ -7286,3 +7286,97 @@ describe('CSS selector ↔ cancel-control state emitter agreement', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// Connection lifecycle — no stranded connections (rm-261)
+//
+// Every non-close exit from the read loop (contract drift, first-frame
+// timeout, non-200/http-status responses) must abort the connection's
+// controller so the reader releases and the socket closes. Browsers cap ~6
+// HTTP/1.1 connections per origin, so a stranded stream starves same-origin
+// traffic (polls, CSRF refresh) until GC reaps it.
+// -------------------------------------------------------------------------
+
+function makeLifecycleElements(): {statusEl: FakeElement; noticeEl: FakeElement} {
+  return {statusEl: makeFakeEl('span'), noticeEl: makeFakeEl('div')}
+}
+
+function stubLifecycleDom(): void {
+  vi.stubGlobal('document', {
+    createElement: (tag: string) => makeFakeEl(tag),
+    querySelector: () => null,
+    readyState: 'complete',
+    addEventListener: () => {},
+  })
+  vi.stubGlobal('addEventListener', () => {})
+}
+
+describe('connection lifecycle — stranded connections abort (rm-261)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  it('contract drift stops the read loop and aborts the connection', async () => {
+    const {statusEl, noticeEl} = makeLifecycleElements()
+    stubLifecycleDom()
+    const signals: AbortSignal[] = []
+    const driftReady = `event: ready\ndata: ${JSON.stringify({contractVersion: '0.0.0'})}\n\n`
+    const trailing = `event: status\ndata: ${JSON.stringify(ACTIVE_STATUS)}\n\n`
+    vi.stubGlobal('fetch', async (_url: unknown, init?: {signal?: AbortSignal}) => {
+      if (init?.signal !== undefined) signals.push(init.signal)
+      return makeSseResponse([driftReady, trailing], {keepOpen: true})
+    })
+
+    initOperatorStream({runId: 'run-001', statusEl, noticeEl})
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    expect(noticeEl.dataset.connectionState).toBe('drift')
+    expect(signals.length).toBe(1)
+    expect(signals[0]?.aborted).toBe(true) // reader released, socket closed
+  })
+
+  it('first-frame timeout on a stalled stream aborts the pending connection', async () => {
+    const {statusEl, noticeEl} = makeLifecycleElements()
+    stubLifecycleDom()
+    const signals: AbortSignal[] = []
+    let fetchCount = 0
+    vi.stubGlobal('fetch', async (_url: unknown, init?: {signal?: AbortSignal}) => {
+      fetchCount++
+      if (init?.signal !== undefined) signals.push(init.signal)
+      return makeSseResponse([], {keepOpen: true}) // stalls: never emits a frame
+    })
+
+    vi.useFakeTimers()
+    initOperatorStream({runId: 'run-001', statusEl, noticeEl})
+    await vi.advanceTimersByTimeAsync(FIRST_FRAME_TIMEOUT_MS + 100)
+
+    expect(noticeEl.dataset.connectionState).toBe('submitted-unobservable')
+    expect(signals[0]?.aborted).toBe(true) // the stalled read is released
+    expect(fetchCount).toBe(1) // deliberate stop does not schedule a reconnect
+  })
+
+  it('non-200 response aborts the unread response body instead of stranding it', async () => {
+    const {statusEl, noticeEl} = makeLifecycleElements()
+    stubLifecycleDom()
+    const signals: AbortSignal[] = []
+    let fetchCount = 0
+    vi.stubGlobal('fetch', async (_url: unknown, init?: {signal?: AbortSignal}) => {
+      fetchCount++
+      if (init?.signal !== undefined) signals.push(init.signal)
+      return {
+        ok: false,
+        status: 503,
+        headers: {get: () => 'text/html'},
+        body: makeSseStream(['x'.repeat(1024)], {keepOpen: true}), // never drained
+      } as unknown as Response
+    })
+
+    initOperatorStream({runId: 'run-001', statusEl, noticeEl})
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    expect(signals[0]?.aborted).toBe(true) // response body cancelled, socket released
+    expect(fetchCount).toBe(1) // backoff (1s) has not fired within the tick
+    expect(noticeEl.dataset.connectionState).toBeTruthy()
+  })
+})

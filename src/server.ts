@@ -160,8 +160,15 @@ const defaultRateLimitTrustedProxy = (): boolean =>
  * - '/auth/*' matches by prefix here; isPublicPath lists the exact auth
  *   endpoints (/auth/login, /auth/callback, /auth/logout).
  * - isPublicPath's public static assets (/assets/*, /static/*, /privacy, …)
- * land in the operator budget here — they share the SPA's traffic class
- * rather than the pre-auth one.
+ * fall through to the operator class in this PURE function, but that
+ * classification is latent: the limiter middleware only consults this
+ * classifier on the sensitive surface (sensitiveRoutes + /api/* +
+ * /operator/* — see isSensitive below), so static asset paths are never
+ * rate-limited at this layer and consume no class budget. That is
+ * deliberate (rm-262): bulk-asset abuse control belongs to the edge proxy
+ * (Caddy) in front of this app, and pinning the unthrottled behavior keeps
+ * the middleware honest — rate-limit-class.test.ts 'rm-262' fails this
+ * contract if the gate ever starts classifying static paths.
  * - ingest: the machine-write listener route (HMAC-gated by the route itself).
  */
 export function classifyRateLimitPath(path: string): RateLimitClass {
@@ -653,6 +660,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   // enable that only when the app sits behind a proxy that OVERWRITES XFF.
   // Budgets are per path class (public / operator / ingest — see
   // classifyRateLimitPath) so a flood on one class cannot starve the others.
+  // Static/asset paths (/assets/*, /static/*, /privacy, /registerSW.js, …)
+  // sit OUTSIDE isSensitive by design: they never reach this limiter and
+  // consume no class budget (rm-262) — asset flooding is the edge proxy's
+  // problem, not this middleware's.
   const rateLimitTrustedProxy = opts?.rateLimitTrustedProxy ?? defaultRateLimitTrustedProxy()
   app.use('*', async (c: Context, next) => {
     const path = new URL(c.req.url).pathname

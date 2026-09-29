@@ -44,6 +44,40 @@ describe('classifyRateLimitPath', () => {
   })
 })
 
+describe('rm-262: static/asset paths are deliberately unthrottled', () => {
+  it('static assets never hit the limiter and consume no operator budget', async () => {
+    const app = await buildTestApp()
+    // (a) A bulk of static requests is never limited, whatever the path shape
+    // (these may 404 in the test fixture — the point is they never 429).
+    for (const path of ['/static/operator-stream.js', '/assets/app.css', '/privacy']) {
+      for (let i = 0; i < 12; i++) {
+        const response = await app.request(path)
+        expect(response.status).not.toBe(429)
+      }
+    }
+    // (b) Measure how many operator-class calls (/api/status, session-less →
+    // 401 but limiter-counted) fit in the budget AFTER the static bulk.
+    const measureOperatorBudget = async () => {
+      let calls = 0
+      for (; calls < 120; calls++) {
+        if ((await app.request('/api/status')).status === 429) return calls
+      }
+      throw new Error('operator budget never tripped within 120 calls')
+    }
+    const budgetAfterStaticBulk = await measureOperatorBudget()
+    expect(budgetAfterStaticBulk).toBeGreaterThan(0)
+    // (c) Re-measure on cleared budgets with NO static traffic first: if the
+    // static bulk had consumed any operator budget, (b) would be strictly
+    // smaller than (c).
+    resetRateLimitForTesting()
+    const cleanBudget = await measureOperatorBudget()
+    expect(budgetAfterStaticBulk).toBe(cleanBudget)
+    // (d) Static paths stay exempt even while the operator budget is
+    // exhausted (the (c) flood just drained it).
+    expect((await app.request('/static/operator-stream.js')).status).not.toBe(429)
+  })
+})
+
 describe('rm-129: per-class budget isolation (checkRateLimit unit)', () => {
   it('exhausting one class does not consume another class budget', () => {
     const ip = 'isolate-unit-ip'

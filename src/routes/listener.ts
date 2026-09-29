@@ -188,6 +188,8 @@ export function buildListenerRouter(deps: ListenerRouterDeps): Hono {
       unreadOnly,
       limit: limit !== undefined && Number.isFinite(limit) ? limit : undefined,
     })
+    // Operator-visible message feed: never cacheable (rm-263).
+    c.header('Cache-Control', 'no-store')
     return c.json(response, 200)
   })
 
@@ -195,6 +197,8 @@ export function buildListenerRouter(deps: ListenerRouterDeps): Hono {
     if (deps.ackCsrf === null) {
       return c.json({error: 'csrf unavailable'}, 503)
     }
+    // Token-bearing response: never cacheable (rm-263).
+    c.header('Cache-Control', 'no-store')
     return c.json({csrfToken: deriveAckCsrfToken(deps.ackCsrf)}, 200)
   })
 

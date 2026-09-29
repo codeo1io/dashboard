@@ -637,6 +637,7 @@ describe('/auth/logout-csrf — auth-gate', () => {
     const app = await buildTestApp(makeSnapshot())
     const res = await authedGet(app, '/auth/logout-csrf')
     expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-store') // rm-263
     const body = await res.json() as {csrfToken: string}
     expect(typeof body.csrfToken).toBe('string')
     expect(body.csrfToken).toMatch(/^[0-9a-f]{32}$/)

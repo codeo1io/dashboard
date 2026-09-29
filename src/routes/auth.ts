@@ -173,6 +173,9 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
    */
   router.get('/logout-csrf', c => {
     const token = deriveLogoutCsrfToken(cookieKey, operatorLogin)
+    // Token-bearing response: never cacheable by browsers or intermediaries
+    // (rm-263 — same posture as /api/monitoring).
+    c.header('Cache-Control', 'no-store')
     return c.json({csrfToken: token})
   })
 

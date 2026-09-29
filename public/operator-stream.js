@@ -2398,8 +2398,17 @@ export function initOperatorStream(opts) {
     // and wrongly dispatch first-frame-timeout on a recovering stream.
     clearFirstFrameTimer()
 
+    // Abort any superseded connection before starting a new one (rm-261).
+    // Replacing the controller without aborting the old one strands that
+    // fetch — its reader stays locked and the socket stays held, and browsers
+    // cap ~6 HTTP/1.1 connections per origin, so stranded streams starve all
+    // same-origin traffic until GC.
+    if (abortController !== null) {
+      abortController.abort()
+    }
     abortController = new AbortController()
-    const signal = abortController.signal
+    const controller = abortController
+    const signal = controller.signal
 
     // Arm the first-frame timeout. If no ready/status/reset frame arrives within
     // FIRST_FRAME_TIMEOUT_MS, the run is considered submitted but not yet observable.
@@ -2407,6 +2416,12 @@ export function initOperatorStream(opts) {
     firstFrameTimer = setTimeout(() => {
       firstFrameTimer = null
       dispatch({type: 'first-frame-timeout'})
+      // A stalled stream means the pending read may never settle — abort so the
+      // reader and socket release instead of stranding (rm-261). The read loop's
+      // catch swallows abort-caused rejections, so no phantom close is dispatched.
+      if (state.connection === 'submitted-unobservable') {
+        controller.abort()
+      }
     }, FIRST_FRAME_TIMEOUT_MS)
 
     // Build the stream URL — runId is used only here, never logged.
@@ -2428,16 +2443,21 @@ export function initOperatorStream(opts) {
         if (response.status === 404) {
           clearFirstFrameTimer()
           dispatch({type: 'http-status', code: 404})
+          // The response body is never read on this path — abort so the socket
+          // releases instead of stranding until GC (rm-261).
+          controller.abort()
           return
         }
         if (response.status === 429) {
           clearFirstFrameTimer()
           dispatch({type: 'http-status', code: 429})
+          controller.abort() // unread body — release the socket (rm-261)
           return
         }
         if (response.status !== 200) {
           clearFirstFrameTimer()
           dispatch({type: 'network-error'})
+          controller.abort() // unread body — release the socket (rm-261)
           scheduleReconnect()
           return
         }
@@ -2446,11 +2466,13 @@ export function initOperatorStream(opts) {
         if (!contentType.startsWith('text/event-stream')) {
           clearFirstFrameTimer()
           dispatch({type: 'network-error'})
+          controller.abort() // unread body — release the socket (rm-261)
           return
         }
         if (!response.body) {
           clearFirstFrameTimer()
           dispatch({type: 'network-error'})
+          controller.abort() // release the socket (rm-261)
           scheduleReconnect()
           return
         }
@@ -2529,9 +2551,20 @@ export function initOperatorStream(opts) {
                 state.connection !== 'submitted-unobservable' // stop reading after first-frame timeout
               ) {
                 readChunk()
+              } else {
+                // Stopped reading while this connection may still be open
+                // (terminal in-stream frame, drift, or first-frame timeout):
+                // abort so the reader releases and the socket closes instead
+                // of stranding (rm-261). Aborting an already-ended stream is a
+                // no-op; the read loop's catch swallows abort rejections.
+                controller.abort()
               }
             })
             .catch(() => {
+              // Deliberate abort (stop-reading guard, first-frame timeout,
+              // superseded connection, or close) — the state already reflects
+              // the reason; never dispatch a phantom close over it (rm-261).
+              if (signal.aborted) return
               // Stream read error — fail closed, no logging of error details
               clearFirstFrameTimer()
               dispatch({type: 'unexpected-close'})
@@ -2544,6 +2577,9 @@ export function initOperatorStream(opts) {
         readChunk()
       })
       .catch(() => {
+        // Deliberate abort (superseded connection or close) — never dispatch a
+        // phantom network-error for a fetch we chose to cancel (rm-261).
+        if (signal.aborted) return
         // Network error — fail closed, no logging of error details
         clearFirstFrameTimer()
         dispatch({type: 'network-error'})
