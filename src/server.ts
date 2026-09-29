@@ -169,6 +169,11 @@ const defaultRateLimitTrustedProxy = (): boolean =>
  * (Caddy) in front of this app, and pinning the unthrottled behavior keeps
  * the middleware honest — rate-limit-class.test.ts 'rm-262' fails this
  * contract if the gate ever starts classifying static paths.
+ * (rider 2026-09-29, ex rm-263 of the convergent run-995ad0e1 batch,
+ * superseded as rm-269 at integrate case 709f024e: the divergence from
+ * README's three-class table is recorded, not accidental — pinned twice
+ * more by test/rate-limit-class.test.ts 'rm-269' at the classifier level
+ * and test/auth.test.ts 'rm-269' at the middleware level.)
  * - ingest: the machine-write listener route (HMAC-gated by the route itself).
  */
 export function classifyRateLimitPath(path: string): RateLimitClass {
@@ -1005,11 +1010,12 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
 
   // ── Operator UI skeleton route ────────────────────────────────────────────────
   // Only mounted when operatorUiEnabled is true (default: false).
+  // rm-270: the dead compatibility router that used to mount at /operator
+  // (src/routes/operator.ts) is deleted — the unconditional redirects at
+  // app.get('/operator') and app.get('/operator/') above always won, and
+  // every other sub-path 404'd; only the /static/* catch-all below is live.
   if (operatorUiEnabled) {
-    const {buildOperatorRouter} = await import('./routes/operator.ts')
-    app.route('/operator', buildOperatorRouter(gatewayOperatorSessionEnabled))
-
-    // Serves public/ at /static/* — flag-gated alongside the operator route.
+    // Serves public/ at /static/* — flag-gated alongside the operator UI flag.
     // /static/ is in isPublicPath so unauthenticated browsers can load assets.
     // Note: operator-stream.js and operator-launch.js are already mounted above;
     // this catch-all additionally serves operator.css and any other static assets.

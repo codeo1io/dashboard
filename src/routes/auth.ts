@@ -191,9 +191,29 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
    *
    * Rejects with 403 on missing or mismatched CSRF token.
    */
+  // rm-268: bound the body BEFORE parsing — /auth/logout is a public pre-auth
+  // path, so an oversized POST must not buy unbounded buffering ahead of the
+  // CSRF read. Mirrors the listener ingest cap (readBodyCapped /
+  // MAX_INGEST_BODY_BYTES). The real client (web/src/shell/AppShell.tsx) posts
+  // urlencoded `csrf_token`; other encodings are 415, never parsed.
+  const MAX_LOGOUT_BODY_BYTES = 16384
+
   router.post('/logout', async c => {
-    const formData = await c.req.formData()
-    const submittedToken = formData.get('csrf_token')
+    const declaredLength = Number(c.req.header('content-length') ?? '0')
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_LOGOUT_BODY_BYTES) {
+      logger.warning('Logout rejected: oversized body declared', {declaredLength})
+      return c.text('Payload Too Large', 413)
+    }
+    const rawBody = await c.req.text()
+    if (rawBody.length > MAX_LOGOUT_BODY_BYTES) {
+      logger.warning('Logout rejected: oversized body received', {bytes: rawBody.length})
+      return c.text('Payload Too Large', 413)
+    }
+    const contentType = c.req.header('content-type') ?? ''
+    if (!contentType.toLowerCase().includes('application/x-www-form-urlencoded')) {
+      return c.text('Unsupported Media Type', 415)
+    }
+    const submittedToken = new URLSearchParams(rawBody).get('csrf_token')
 
     if (typeof submittedToken !== 'string' || submittedToken.length === 0) {
       logger.warning('Logout: missing CSRF token')

@@ -31,6 +31,17 @@ afterEach(() => {
 })
 
 describe('classifyRateLimitPath', () => {
+  it('rm-269 divergence pin: static assets classify as operator but the middleware never asks', () => {
+    // classifyRateLimitPath would fold /assets/*, /static/*, /privacy, /sw.js
+    // into the operator class via its fallback — but the server.ts middleware
+    // applies budgets only to its sensitive set, so these paths never reach
+    // this classifier. Pinned here so the divergence is a recorded decision,
+    // not an accident — the truth docstring lives at rm-262 in server.ts
+    // (this pin is the convergent rm-269 survivor riding that item).
+    for (const path of ['/assets/app.js', '/static/operator-stream.js', '/privacy', '/sw.js']) {
+      expect(classifyRateLimitPath(path)).toBe('operator')
+    }
+  })
   it('maps the sensitive surface onto the three budget classes', () => {
     expect(classifyRateLimitPath('/')).toBe('public')
     expect(classifyRateLimitPath('/api/healthz')).toBe('public')

@@ -5,10 +5,11 @@ import {COLD_START_SNAPSHOT} from '../github/aggregator.ts'
 /** Injectable snapshot provider — returns the current aggregator snapshot. */
 export type SnapshotProvider = () => AggregatorSnapshot
 
-// rm-197 (landed on main after this run branched): the standalone
-// EMPTY_SNAPSHOT literal this run extended was removed — both server.ts and
-// this route now import the single bannered COLD_START_SNAPSHOT constant
-// from aggregator.ts (which carries the rm-156 watchdog fields).
+// rm-197: this route and server.ts import the single bannered
+// COLD_START_SNAPSHOT constant from aggregator.ts (which carries the rm-156
+// watchdog fields); the standalone EMPTY_SNAPSHOT literal is gone. (rm-270:
+// reworded — the original note was phrased relative to the authoring run,
+// which reads as noise on main.)
 // ---------------------------------------------------------------------------
 // Client DTO — /api/monitoring
 //

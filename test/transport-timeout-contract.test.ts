@@ -68,3 +68,27 @@ describe('GitHub transport timeout contract (rm-197 review fix)', () => {
     },
   )
 })
+
+describe('rm-267 — bounded fetch at every Octokit construction site', () => {
+  // A bare `request: {timeout}` is INERT on hung upstreams in this runtime
+  // (rm-156 solution): only the injected fetch seam enforces the bound. So
+  // every Octokit construction in the transport surface must wire
+  // createBoundedFetch alongside its timeout — a timeout without the seam
+  // fails this contract. installations.ts:334 regressed exactly this shape
+  // while passing the TIMEOUT-only contract above (green 5/5 with the gap).
+  const FETCH_SEAM = /fetch\s*:\s*createBoundedFetch/
+  const OCTOKIT_CONSTRUCTION = /new \w*Octokit\(/
+
+  it('every Octokit construction window carries the fetch seam', () => {
+    const sites = collectConstructionSites()
+    const octokitSites = sites.filter(({window}) => OCTOKIT_CONSTRUCTION.test(window))
+    // app-client ThrottledOctokit, server installOctokit, installations installOctokit
+    expect(octokitSites.length).toBeGreaterThanOrEqual(3)
+    for (const {file, line, window} of octokitSites) {
+      expect(
+        FETCH_SEAM.test(window),
+        `Octokit construction at ${file}:${line} has no fetch: createBoundedFetch seam within ${WINDOW_LINES} lines:\n${window}`,
+      ).toBe(true)
+    }
+  })
+})
