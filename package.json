@@ -12,7 +12,7 @@
     "build:web": "vite build web",
     "build:web:fixture": "VITE_FIXTURE_MODE=true vite build web",
     "check-types": "tsc --noEmit && tsc --noEmit -p web/tsconfig.json && tsc --noEmit -p .opencode/tsconfig.json",
-    "lint": "eslint",
+    "lint": "eslint --cache --cache-location node_modules/.cache/eslint/",
     "fix": "eslint --fix",
     "pretest": "pnpm build:web",
     "test": "vitest run && vitest run --config web/vitest.config.ts"
