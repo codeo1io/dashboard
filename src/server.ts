@@ -48,6 +48,13 @@ import {
   createInstallationGraphqlQueryFn,
   GITHUB_REQUEST_TIMEOUT_MS,
 } from './github/app-client.ts'
+import type {EtagCacheRef} from './github/conditional-request.ts'
+import {
+  isNotModifiedResponse,
+  NotModifiedError,
+  readWithEtagCache,
+} from './github/conditional-request.ts'
+import {createMemoizedInstallationResolver} from './github/installation-resolver-cache.ts'
 import {buildInstallationsClient, enumerateRepos, mintReadOnlyToken} from './github/installations.ts'
 import {makeNotFoundError, readRepoMetadata} from './github/metadata.ts'
 import {createFileSnapshotStore} from './github/snapshot-store.ts'
@@ -180,6 +187,22 @@ const EVICT_INTERVAL = 500 // sweep every 500 calls
 const EVICT_STALE_AGE = 2 * RATE_LIMIT_WINDOW_MS
 
 /**
+ * rm-251 (port of fro-bot/agent v0.117.0's limiter defense): hard cap on
+ * distinct client keys in the limiter store. Unique first-hop XFF tokens
+ * (spoofable behind an appending proxy) or a flood of real addresses can
+ * otherwise grow the map unboundedly between sweep windows. At capacity a new
+ * key first triggers a stale-window sweep; if the store is STILL full the
+ * request fails closed (429) rather than admitting growth. Override via
+ * RATE_LIMIT_MAX_KEYS (same env family as the per-class budgets).
+ */
+const RATE_LIMIT_MAX_KEYS = envIntOrDefault('RATE_LIMIT_MAX_KEYS', 10_000)
+
+/** Test/observability accessor: current number of distinct limiter keys. */
+export function rateLimitStoreSize(): number {
+  return rateLimitMap.size
+}
+
+/**
  * Reset the rate limiter state. Tests only — prevents bleed between test cases.
  * @internal
  */
@@ -232,6 +255,23 @@ function sweepRateLimitMap(now: number): void {
 }
 
 /**
+ * rm-251 admission control for a NEW limiter key. Below capacity: always
+ * admit. At capacity: sweep stale windows once, then — if the store is still
+ * full — fail closed (do not admit; the caller reports 429). An existing key
+ * never passes through here, so cap pressure never evicts a live client.
+ */
+function admitRateLimitKey(now: number): boolean {
+  if (rateLimitMap.size < RATE_LIMIT_MAX_KEYS) return true
+  sweepRateLimitMap(now)
+  if (rateLimitMap.size < RATE_LIMIT_MAX_KEYS) return true
+  logger.warning('rate limiter key store at capacity; failing closed for new clients', {
+    maxKeys: RATE_LIMIT_MAX_KEYS,
+    distinctKeys: rateLimitMap.size,
+  })
+  return false
+}
+
+/**
  * Check rate limit for the given IP.
  * Accepts an optional `now` for testability (defaults to Date.now()).
  * Returns true if the request is allowed, false if rate-limited.
@@ -245,9 +285,15 @@ export function checkRateLimit(ip: string, now: number = Date.now(), pathClass?:
 
   let entry = rateLimitMap.get(ip)
 
-  if (entry === undefined || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
+  if (entry === undefined) {
+    // rm-251: new-key admission goes through the cap check — at capacity the
+    // store evicts stale windows and then fails closed (429) instead of growing.
+    if (!admitRateLimitKey(now)) return false
     entry = {windowStart: now, counts: {public: 0, operator: 0, ingest: 0}}
     rateLimitMap.set(ip, entry)
+  } else if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
+    // Existing key, expired window: reset in place (store size unchanged).
+    entry = {windowStart: now, counts: {public: 0, operator: 0, ingest: 0}}
   }
   const current = entry
 
@@ -1138,54 +1184,76 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
    * Resolve the installation ID for a repo using the App JWT endpoint
    * GET /repos/{owner}/{repo}/installation — the only App-JWT endpoint valid
    * for this purpose (App JWT IS valid here per GitHub docs).
+   *
+   * rm-162: the mapping is effectively immutable, so the production resolver is
+   * memoized (24h TTL + eviction on any upstream failure) — steady-state cycles
+   * make zero App-JWT resolver calls. Test-injected resolvers are NOT wrapped
+   * so call-count assertions keep their exact meaning.
    */
-  const resolveInstallationIdForRepo =
-    deps.resolveInstallationIdForRepo ??
-    (async (owner: string, name: string): Promise<number> => {
-      const response = await appClient.octokit.request('GET /repos/{owner}/{repo}/installation', {
-        owner,
-        repo: name,
-      })
-      const data = response.data as unknown as {id: number}
-      return data.id
+  const rawResolveInstallationIdForRepo = async (owner: string, name: string): Promise<number> => {
+    const response = await appClient.octokit.request('GET /repos/{owner}/{repo}/installation', {
+      owner,
+      repo: name,
     })
+    const data = response.data as unknown as {id: number}
+    return data.id
+  }
+  const resolveInstallationIdForRepo =
+    deps.resolveInstallationIdForRepo ?? createMemoizedInstallationResolver(rawResolveInstallationIdForRepo)
 
   // Real Octokit-backed metadata reader: fetches metadata/repos.yaml from
   // codeo1io/.github at ref=data via an INSTALLATION token (not App JWT).
   // The installation is resolved via resolveInstallationIdForRepo('codeo1io', '.github').
+  //
+  // rm-162: the read is conditional — the last ETag is sent as If-None-Match
+  // and a 304 Not Modified serves the cached body. 304s are free against the
+  // primary rate limit, so the per-cycle metadata read costs nothing in
+  // steady state. The cache box is owned by this provider build.
+  const metadataEtagCache: EtagCacheRef = {current: undefined}
   const metadataReader: MetadataReader =
     deps.metadataReader ??
-    (async (path: string, ref: string): Promise<string> => {
-      // Resolve the installation for codeo1io/.github and mint a read-only token.
-      // This uses an installation token (not App JWT) — App JWT cannot read repo contents.
-      const installationId = await resolveInstallationIdForRepo('codeo1io', '.github')
-      const token = await getReadOnlyToken(installationId)
+    (async (path: string, ref: string): Promise<string> =>
+      readWithEtagCache(async ifNoneMatch => {
+        // Resolve the installation for codeo1io/.github and mint a read-only token.
+        // This uses an installation token (not App JWT) — App JWT cannot read repo contents.
+        const installationId = await resolveInstallationIdForRepo('codeo1io', '.github')
+        const token = await getReadOnlyToken(installationId)
 
-      // rm-197 (review fix): time-bounded like every other GitHub transport —
-      // the metadata reader sits on the refresh path and must honor the 30s
-      // request contract, not undici's ~300s default.
-      // rm-156 (merged 2026-09-26): the ceiling is ENFORCED at the fetch
-      // layer (createBoundedFetch) — this runtime's @octokit/request does not
-      // honor the `timeout` option against hung upstreams — while the
-      // `timeout` key stays pinned so the rm-197 transport-contract gate
-      // (test/transport-timeout-contract.test.ts) keeps matching this site.
-      const installOctokit = new Octokit({
-        auth: token,
-        request: {timeout: GITHUB_REQUEST_TIMEOUT_MS, fetch: createBoundedFetch(GITHUB_REQUEST_TIMEOUT_MS)},
-      })
-      const response = await installOctokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
-        owner: 'codeo1io',
-        repo: '.github',
-        path,
-        ref,
-      })
-      const data = response.data as unknown as {type: string; encoding: string; content: string}
-      if (data.type !== 'file' || data.encoding !== 'base64') {
-        throw makeNotFoundError(`${path} at ref=${ref} is not a base64-encoded file`)
-      }
-      // base64-decode the content (GitHub wraps at 60 chars with newlines)
-      return Buffer.from(data.content.replaceAll('\n', ''), 'base64').toString('utf8')
-    })
+        // rm-197 (review fix): time-bounded like every other GitHub transport —
+        // the metadata reader sits on the refresh path and must honor the 30s
+        // request contract, not undici's ~300s default.
+        // rm-156 (merged 2026-09-26): the ceiling is ENFORCED at the fetch
+        // layer (createBoundedFetch) — this runtime's @octokit/request does not
+        // honor the `timeout` option against hung upstreams — while the
+        // `timeout` key stays pinned so the rm-197 transport-contract gate
+        // (test/transport-timeout-contract.test.ts) keeps matching this site.
+        const installOctokit = new Octokit({
+          auth: token,
+          request: {timeout: GITHUB_REQUEST_TIMEOUT_MS, fetch: createBoundedFetch(GITHUB_REQUEST_TIMEOUT_MS)},
+        })
+        let response: Awaited<ReturnType<typeof installOctokit.request>>
+        try {
+          response = await installOctokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
+            owner: 'codeo1io',
+            repo: '.github',
+            path,
+            ref,
+            headers: ifNoneMatch === undefined ? {} : {'If-None-Match': ifNoneMatch},
+          })
+        } catch (error) {
+          // Octokit throws RequestError(status=304, 'Not modified') for a
+          // conditional hit — translate to our cache signal.
+          if (isNotModifiedResponse(error)) throw new NotModifiedError()
+          throw error
+        }
+        const data = response.data as unknown as {type: string; encoding: string; content: string}
+        if (data.type !== 'file' || data.encoding !== 'base64') {
+          throw makeNotFoundError(`${path} at ref=${ref} is not a base64-encoded file`)
+        }
+        // base64-decode the content (GitHub wraps at 60 chars with newlines)
+        const body = Buffer.from(data.content.replaceAll('\n', ''), 'base64').toString('utf8')
+        return {etag: response.headers.etag, body}
+      }, metadataEtagCache))
 
   // Real per-installation graphql query function: mints a read-only token for
   // the given installationId and authenticates the graphql client with it.
