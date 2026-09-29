@@ -41,10 +41,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up Node 24 (native TS, no install needed)
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
+      - name: Set up Node 24 + install dependencies
+        # rm-179 repair (2026-09-29, run c1a9e791 batch B1): the canary's
+        # module graph reaches prod deps — scripts/graphql-canary.ts →
+        # src/github/aggregator.ts → src/result.ts re-exports
+        # '@bfra.me/es/result' — so the old "no install needed" premise was
+        # false from birth (first fire 36417620616 died 2026-09-28 on
+        # ERR_MODULE_NOT_FOUND). House composite: pnpm + Node 24 + frozen
+        # install + warm store. Locked by test/canary-workflow-guard.test.ts
+        # (install-before-run + composite non-hollow + import-chain premise).
+        uses: ./.github/actions/setup
 
       - name: Execute every registered query template (rm-225)
         env:
