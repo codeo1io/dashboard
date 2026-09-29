@@ -12,6 +12,7 @@ import {useBoundedPoll} from '../hooks/useBoundedPoll.ts'
 type ViewState =
   | { state: 'loading' }
   | { state: 'error'; reason: string }
+  | { state: 'auth-expired' }
   | { state: 'empty' }
   | { state: 'ready'; data: ListenerMessagesResponse }
 
@@ -36,6 +37,13 @@ export function ListenerChannel() {
     },
     onResult: result => {
       if (!result.ok) {
+        // rm-268: 401 is session expiry, not a network failure — render the
+        // sign-in affordance instead of the retry copy. The poll keeps
+        // running, so a re-login (this tab or another) recovers automatically.
+        if (result.reason === 'unauthenticated') {
+          setViewState({ state: 'auth-expired' })
+          return
+        }
         setViewState(prev => (prev.state === 'ready' ? prev : { state: 'error', reason: result.reason }))
         return
       }
@@ -107,6 +115,13 @@ export function ListenerChannel() {
       {viewState.state === 'error' && (
         <div data-testid="listener-error" className="operator-warning-panel operator-failure-state-unavailable" role="alert">
           Failed to load messages ({viewState.reason}). Will retry.
+        </div>
+      )}
+
+      {viewState.state === 'auth-expired' && (
+        <div data-testid="listener-auth-expired" className="operator-warning-panel" role="alert">
+          Session expired — sign in again to load messages.{' '}
+          <a href="/auth/login">Sign in</a>
         </div>
       )}
 

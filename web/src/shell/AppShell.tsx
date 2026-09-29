@@ -133,6 +133,10 @@ interface AppShellProps {
   listenerUnreadCount?: number
   /** rm-155: first failure reason of the current unread-poll outage (null when healthy) */
   listenerUnreadError?: string | null
+  /** rm-208: epoch ms of the last good poll — non-null marks the badge stale (aria + title with the last-good time) */
+  listenerUnreadStaleSince?: number | null
+  /** rm-208: the unread poll stopped on 401 — render the sign-in affordance instead of poll errors */
+  listenerUnreadAuthExpired?: boolean
 }
 
 export function AppShell({
@@ -144,6 +148,8 @@ export function AppShell({
   onNavigate,
   listenerUnreadCount = 0,
   listenerUnreadError = null,
+  listenerUnreadStaleSince = null,
+  listenerUnreadAuthExpired = false,
 }: AppShellProps) {
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
   const [loggingOut, setLoggingOut] = useState(false)
@@ -368,6 +374,16 @@ export function AppShell({
                 {listenerUnreadCount > 0 && (
                   <span
                     data-testid="unread-badge"
+                    aria-label={
+                      listenerUnreadStaleSince !== null
+                        ? `Unread count may be stale — last good update ${new Date(listenerUnreadStaleSince).toLocaleTimeString()}`
+                        : undefined
+                    }
+                    title={
+                      listenerUnreadStaleSince !== null
+                        ? `Unread count may be stale — last good update ${new Date(listenerUnreadStaleSince).toLocaleTimeString()}`
+                        : undefined
+                    }
                     style={{
                       position: 'absolute',
                       top: '-4px',
@@ -403,6 +419,30 @@ export function AppShell({
                   </span>
                 )}
               </button>
+              {listenerUnreadAuthExpired && (
+                // rm-208: the unread poll stopped on 401 — the session is gone.
+                // Offer the same recovery the logout path uses (redirect to
+                // /auth/login, the fail-closed server-side reauth) instead of
+                // surfacing an endless "stale" indicator.
+                <a
+                  href="/auth/login"
+                  data-testid="unread-auth-expired"
+                  title="Session expired — the inbox poll has stopped. Sign in again."
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    minHeight: '32px',
+                    padding: 'var(--space-1) var(--space-3)',
+                    color: 'var(--color-warning, #e6a700)',
+                    fontSize: 'var(--text-body-sm)',
+                    fontWeight: 600,
+                    textDecoration: 'underline',
+                    textUnderlineOffset: 2
+                  }}
+                >
+                  Sign in
+                </a>
+              )}
             </div>
 
             <div style={{display: 'flex', alignItems: 'center', gap: 'var(--space-2)'}}>
