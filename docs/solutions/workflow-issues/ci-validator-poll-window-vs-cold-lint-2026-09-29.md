@@ -70,3 +70,17 @@ Plus **window discipline** when firing the validator:
 - Treat "every functional check green, one heavyweight check cancelled at a
   constant wall-clock offset" as a window/deadline signature — raise the job
   ceiling and re-window, do not chase phantom regressions in the code.
+
+## Residue leak when the validator dies before cleanup (2026-09-30)
+
+A validator that exits before its close-and-delete epilogue (poll-deadline
+cancel, kill, host loss) leaks both artifacts on origin: the ephemeral PR and
+its `conductor/ci-*` head + `conductor/ci-base-*` base refs. Detect via
+`gh pr list --state open` (draft PRs headed `conductor/ci-*` with a cancelled
+check) and `git ls-remote origin 'refs/heads/conductor/ci-*'`. Disposition
+(proved on PR #233, run 26210bbbb651; recorded at ROADMAP rm-159): prove the
+base marker commit content-free and its ref shared by no other open PR,
+archive any unique unlanded content out of the head ref first, close the PR
+not-planned with an explanatory comment, and only then delete both refs —
+close strictly before delete, so a base ref is never removed from under an
+open PR.
