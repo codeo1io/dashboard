@@ -528,10 +528,22 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
         if (done) break
 
         if (value !== undefined) {
-          // Normalize CRLF on each appended chunk before boundary search
-          const chunk = normalizeCrlf(decoder.decode(value, {stream: true}))
-          buffer += chunk
-          bufferBytes += encoder.encode(chunk).length
+          // rm-265: a chunk ending in CR must not be normalized yet — converting
+          // the lone CR to LF here terminates its line early, so the LF that
+          // opens the NEXT chunk forges a phantom record boundary and the frame
+          // is dropped without even a parse error. Hold a trailing CR back and
+          // let it normalize together with the following chunk.
+          let text = buffer + decoder.decode(value, {stream: true})
+          let held = ''
+          if (text.endsWith('\r')) {
+            held = '\r'
+            text = text.slice(0, -1)
+          }
+          // normalizeCrlf is idempotent on already-normalized text, so
+          // re-normalizing the concatenation is safe; only the junction
+          // between a held CR and a following LF changes.
+          buffer = normalizeCrlf(text) + held
+          bufferBytes = encoder.encode(buffer).length
         }
 
         // Hard buffer cap (UTF-8 bytes, rm-114) — fail closed if exceeded without a boundary
