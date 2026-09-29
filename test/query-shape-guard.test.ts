@@ -39,6 +39,18 @@ const aggregatorSource = readFileSync(
   fileURLToPath(new URL('../src/github/aggregator.ts', import.meta.url)),
   'utf8',
 )
+// rm-225 leaf extraction (2026-09-29, run c670b67f implement 248a73ff): the
+// runtime template constants live in ./repo-status-queries.ts (dependency-free
+// leaf so the canary imports them without an install step). The completeness
+// scan below parses BOTH files: a template constant exported from either the
+// leaf or the aggregator must carry a registry entry wherever it is declared
+// (the aggregator re-exports the leaf's set, and `export {X} from` re-exports
+// do not match the declaration pattern, so there is no double-count).
+const queriesLeafSource = readFileSync(
+  fileURLToPath(new URL('../src/github/repo-status-queries.ts', import.meta.url)),
+  'utf8',
+)
+const templateDeclarationSource = `${queriesLeafSource}\n${aggregatorSource}`
 const canarySource = readFileSync(
   fileURLToPath(new URL('../scripts/graphql-canary.ts', import.meta.url)),
   'utf8',
@@ -85,7 +97,7 @@ describe('GraphQL query-shape guard (rm-177)', () => {
     // canary covered only the primary. Scan the module source for every
     // exported REPO_STATUS_QUERY* template constant and demand the registry
     // name it — a new template fails here until it is registered.
-    const exportedTemplates = [...aggregatorSource.matchAll(/export const (REPO_STATUS_QUERY[A-Z_]*) = `/g)].map(
+    const exportedTemplates = [...templateDeclarationSource.matchAll(/export const (REPO_STATUS_QUERY[A-Z_]*) = `/g)].map(
       m => m[1] ?? '',
     )
     const registered = REPO_STATUS_QUERY_REGISTRY.map(entry => entry.name)

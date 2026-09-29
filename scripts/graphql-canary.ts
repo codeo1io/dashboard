@@ -21,7 +21,7 @@
 import {createHash} from 'node:crypto'
 import process from 'node:process'
 
-import {REPO_STATUS_QUERY_REGISTRY} from '../src/github/aggregator.ts'
+import {REPO_STATUS_QUERY_REGISTRY} from '../src/github/repo-status-queries.ts'
 
 const rawRepository = process.env.GITHUB_REPOSITORY ?? ''
 // In Actions this is always 'owner/repo'; locally it may be unset or junk.
