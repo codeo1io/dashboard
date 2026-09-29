@@ -15,6 +15,7 @@
 import type {ServerType} from '@hono/node-server'
 import type {GitHubOAuthClient} from './auth/oauth.ts'
 import type {OperatorClient, SessionDto} from './gateway/operator-client.ts'
+import type {SessionCache} from './gateway/session-cache.ts'
 import type {AggregatorSnapshot, SnapshotStore} from './github/aggregator.ts'
 import type {MetadataReader} from './github/metadata.ts'
 import type {ListenerStore} from './listener/store.ts'
@@ -41,6 +42,7 @@ import {
 import {readFixtureHarnessConfig} from './gateway/operator-fixture-config.ts'
 import {FIXTURE_OPERATOR_PREFIX} from './gateway/operator-fixture-routes.ts'
 import {createOperatorServerFetch} from './gateway/operator-server-fetch.ts'
+import {createSessionCache} from './gateway/session-cache.ts'
 import {COLD_START_SNAPSHOT, createAggregator} from './github/aggregator.ts'
 import {
   createBoundedFetch,
@@ -335,6 +337,14 @@ export interface DashboardAppConfig {
    * Never constructed when gatewayOperatorSessionEnabled is false.
    */
   operatorClient?: OperatorClient | undefined
+  /**
+   * Injectable gateway upstream-session cache (rm-226 cache half, 2026-09-29
+   * run c670b67f implement 248a73ff). If undefined, a real 15s-TTL,
+   * cookie-keyed, single-flight cache is created (see src/gateway/session-cache.ts).
+   * Tests that need exact per-request upstream call counts inject their own
+   * instance (including a passthrough) here.
+   */
+  sessionCache?: SessionCache | undefined
   /**
    * Trusted gateway operator origin for the /operator/session endpoint.
    * If undefined, reads from DASHBOARD_GATEWAY_OPERATOR_ORIGIN env (default:
@@ -738,6 +748,11 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     // (non-production + loopback bind + flag enabled). Otherwise not in public list.
     (fixtureHarnessActive && path.startsWith(FIXTURE_OPERATOR_PREFIX))
 
+  // rm-226 cache half (2026-09-29, run c670b67f implement 248a73ff): ONE cache
+  // instance for the server's lifetime — created here, before the auth
+  // middleware below closes over it. Injectable for tests via opts.sessionCache.
+  const sessionCache = opts?.sessionCache ?? createSessionCache()
+
   app.use('*', async (c: Context, next) => {
     const path = new URL(c.req.url).pathname
 
@@ -786,7 +801,14 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
 
       // Call the gateway session endpoint. Fail closed on every non-success path.
       // Log only the path — never the cookie value or error detail (may contain identity info).
-      const result = await client.getCurrentSession()
+      // rm-226 cache half (2026-09-29): validate the cookie through the 15s-TTL
+      // upstream-session cache instead of one gateway round-trip per request.
+      // Cached OK results skip the upstream call; failures are never cached
+      // (fail-closed re-attempt); single-flight collapses concurrent bursts.
+      // The post-call defenses below (expiresAt, identity, allowlist) still run
+      // on EVERY request — cached or not — so revocation-by-expiry and the
+      // operator allowlist keep per-request semantics.
+      const result = await sessionCache.get(inboundCookie, async () => client.getCurrentSession())
       if (!isOk(result)) {
         logger.warning('gateway-auth: session validation failed', {path})
         return c.redirect(GATEWAY_LOGIN_REDIRECT, 302)
