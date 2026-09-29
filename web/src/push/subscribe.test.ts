@@ -942,3 +942,158 @@ describe('runReconcileSweep', () => {
     expect(subscribeCallCount).toBe(0)
   })
 })
+
+// ---------------------------------------------------------------------------
+// rm-254 — abort windows between browser subscribe() and the Gateway POST
+// must drop the local subscription (the gateway is uninformed), while a
+// SUCCESSFUL POST stays subscribed even if the signal aborts afterwards
+// (dropping the local copy then would desync the gateway).
+// ---------------------------------------------------------------------------
+
+describe('rm-254: abort windows unsubscribe the local subscription', () => {
+  it('abort DURING browser subscribe -> aborted + local unsubscribe, never POSTs', async () => {
+    const controller = new AbortController()
+    const subscription = fakeSubscription()
+    const registration = fakeRegistration(subscription)
+    registration.subscribeMock.mockImplementation(async () => {
+      controller.abort() // subscribe() succeeded, signal fires right after
+      return subscription
+    })
+    const pushClient = fakePushClient()
+
+    const outcome = await subscribeOptIn({
+      serviceWorkerReady: () => Promise.resolve(registration),
+      getSupport: () => ({supported: true, needsInstall: false}),
+      getPermission: () => 'granted',
+      requestPermission: vi.fn(),
+      pushClient,
+      signal: controller.signal,
+    })
+
+    expect(outcome).toEqual({kind: 'aborted'})
+    expect(subscription.unsubscribeMock).toHaveBeenCalledTimes(1)
+    expect(pushClient.subscribePush).not.toHaveBeenCalled()
+  })
+
+  it('abort DURING refreshCsrf -> aborted + local unsubscribe, never POSTs', async () => {
+    const controller = new AbortController()
+    const subscription = fakeSubscription()
+    const registration = fakeRegistration(subscription)
+    const pushClient = fakePushClient({
+      refreshCsrf: vi.fn().mockImplementation(async () => {
+        controller.abort() // csrf ok, signal fires before the POST
+        return ok('csrf-token')
+      }),
+    })
+
+    const outcome = await subscribeOptIn({
+      serviceWorkerReady: () => Promise.resolve(registration),
+      getSupport: () => ({supported: true, needsInstall: false}),
+      getPermission: () => 'granted',
+      requestPermission: vi.fn(),
+      pushClient,
+      signal: controller.signal,
+    })
+
+    expect(outcome).toEqual({kind: 'aborted'})
+    expect(subscription.unsubscribeMock).toHaveBeenCalledTimes(1)
+    expect(pushClient.subscribePush).not.toHaveBeenCalled()
+  })
+
+  it('POST fails as the signal aborts -> aborted + local unsubscribe', async () => {
+    const controller = new AbortController()
+    const subscription = fakeSubscription()
+    const registration = fakeRegistration(subscription)
+    const pushClient = fakePushClient({
+      subscribePush: vi.fn().mockImplementation(async () => {
+        controller.abort() // the POST dies mid-flight
+        return err({kind: 'http', status: 502})
+      }),
+    })
+
+    const outcome = await subscribeOptIn({
+      serviceWorkerReady: () => Promise.resolve(registration),
+      getSupport: () => ({supported: true, needsInstall: false}),
+      getPermission: () => 'granted',
+      requestPermission: vi.fn(),
+      pushClient,
+      signal: controller.signal,
+    })
+
+    expect(outcome).toEqual({kind: 'aborted'})
+    expect(subscription.unsubscribeMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('POST succeeds and the signal aborts afterwards -> subscribed, NO local unsubscribe', async () => {
+    const controller = new AbortController()
+    const subscription = fakeSubscription()
+    const registration = fakeRegistration(subscription)
+    const pushClient = fakePushClient({
+      subscribePush: vi.fn().mockImplementation(async () => {
+        controller.abort() // POST landed, then logout
+        return ok(undefined)
+      }),
+    })
+
+    const outcome = await subscribeOptIn({
+      serviceWorkerReady: () => Promise.resolve(registration),
+      getSupport: () => ({supported: true, needsInstall: false}),
+      getPermission: () => 'granted',
+      requestPermission: vi.fn(),
+      pushClient,
+      signal: controller.signal,
+    })
+
+    // Gateway recorded the subscription — dropping the local copy would
+    // desync it (it would push to a dead endpoint until the next sweep).
+    expect(outcome).toEqual({kind: 'subscribed'})
+    expect(subscription.unsubscribeMock).not.toHaveBeenCalled()
+  })
+
+  it('resubscribeStaleKey: abort DURING browser subscribe -> aborted + local unsubscribe', async () => {
+    const controller = new AbortController()
+    const newSubscription = fakeSubscription('https://push.example/new')
+    const registration = fakeRegistration(newSubscription)
+    registration.pushManager.getSubscription = vi.fn().mockResolvedValue(null)
+    registration.subscribeMock.mockImplementation(async () => {
+      controller.abort()
+      return newSubscription
+    })
+    const pushClient = fakePushClient()
+
+    const outcome = await resubscribeStaleKey({
+      serviceWorkerReady: () => Promise.resolve(registration),
+      requestPermission: vi.fn(),
+      pushClient,
+      signal: controller.signal,
+    })
+
+    expect(outcome).toEqual({kind: 'aborted'})
+    expect(newSubscription.unsubscribeMock).toHaveBeenCalledTimes(1)
+    expect(pushClient.subscribePush).not.toHaveBeenCalled()
+  })
+
+  it('resubscribeStaleKey: abort DURING refreshCsrf -> aborted + local unsubscribe', async () => {
+    const controller = new AbortController()
+    const newSubscription = fakeSubscription('https://push.example/new')
+    const registration = fakeRegistration(newSubscription)
+    registration.pushManager.getSubscription = vi.fn().mockResolvedValue(null)
+    const pushClient = fakePushClient({
+      refreshCsrf: vi.fn().mockImplementation(async () => {
+        controller.abort()
+        return ok('csrf-token')
+      }),
+    })
+
+    const outcome = await resubscribeStaleKey({
+      serviceWorkerReady: () => Promise.resolve(registration),
+      requestPermission: vi.fn(),
+      pushClient,
+      signal: controller.signal,
+    })
+
+    expect(outcome).toEqual({kind: 'aborted'})
+    expect(newSubscription.unsubscribeMock).toHaveBeenCalledTimes(1)
+    expect(pushClient.subscribePush).not.toHaveBeenCalled()
+  })
+})
