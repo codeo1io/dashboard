@@ -33,7 +33,11 @@ jobs:
     # rm-13640 rider (2026-09-29): 20 min self-kills cold repo-wide eslint on the
     # shared runner pool before the CI validator's poll window closes; the
     # Test job's 40 is the precedent for a heavyweight job.
-    timeout-minutes: 35
+    # rm-13640 rider extension (2026-09-30): two consecutive full-suite validation
+    # fires (19:17Z, 20:06Z 2026-09-29) burned the full 35 min ceiling on cold
+    # repo-wide eslint with an idle in-repo run pool — the shared runner pool has
+    # degraded past 35 min; 60 keeps the same cure ahead of the observed burn.
+    timeout-minutes: 60
     steps:
       - name: ⤵ Checkout Branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
