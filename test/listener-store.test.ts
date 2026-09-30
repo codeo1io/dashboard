@@ -1,5 +1,9 @@
 import type {IngestMessage} from '../src/listener/contract.ts'
-import {beforeEach, describe, expect, it, vi} from 'vitest'
+import {mkdtempSync, rmSync} from 'node:fs'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
+import {DatabaseSync} from 'node:sqlite'
+import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {createListenerStore, type ListenerStore} from '../src/listener/store.ts'
 
 function makeMessage(overrides: Partial<IngestMessage> = {}): IngestMessage {
@@ -167,5 +171,122 @@ describe('listener store', () => {
 
   it('close does not throw', () => {
     expect(() => store.close()).not.toThrow()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-187: corrupt `links` cells must degrade, never 500 the operator feed
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds a file-backed store whose single row's `links` cell has been set to
+ * `rawValue` out-of-band (second SQLite connection), standing in for the
+ * real-world corruption vectors: manual cell edits, schema drift, or a
+ * truncated write. The store then re-opens the file — exactly the state a
+ * restarted server would find on disk.
+ */
+function makeCorruptedStore(dir: string, rawValue: string | null): ListenerStore {
+  const dbPath = join(dir, `corrupt-${Math.random().toString(36).slice(2)}.db`)
+  const seed = createListenerStore(dbPath)
+  seed.insert(makeMessage({dedupeKey: 'corrupt-links', title: 'corrupt row'}))
+  seed.close()
+
+  const db = new DatabaseSync(dbPath)
+  db.prepare('UPDATE messages SET links = ? WHERE title = ?').run(rawValue, 'corrupt row')
+  db.close()
+
+  return createListenerStore(dbPath)
+}
+
+describe('rm-187 — corrupt links cells degrade to empty links (row preserved, feed alive)', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'listener-corrupt-'))
+  })
+
+  afterEach(() => {
+    rmSync(dir, {recursive: true, force: true})
+  })
+
+  it.each([
+    ['truncated JSON', 'not-json{'],
+    ['JSON null', 'null'],
+    ['empty string', ''],
+    ['non-array JSON object', '{"oops":true}'],
+  ])('degrades %s to empty links and preserves the row', (_label, rawValue) => {
+    const corrupted = makeCorruptedStore(dir, rawValue)
+    try {
+      // The negative-verified landmine (rm-187): on the pre-fix code this
+      // threw (JSON.parse SyntaxError / null destructure) — one corrupt cell
+      // 500'd the whole operator feed.
+      const {messages, unreadCount} = corrupted.list({})
+
+      expect(messages).toHaveLength(1)
+      expect(messages[0]?.title).toBe('corrupt row')
+      expect(messages[0]?.links).toEqual([])
+      // The healthy parts of the row survive untouched.
+      expect(messages[0]?.source).toBe('infra')
+      expect(messages[0]?.dedupeKey).toBe('corrupt-links')
+      expect(unreadCount).toBe(1)
+    } finally {
+      corrupted.close()
+    }
+  })
+
+  it('degrades a corrupt row without taking healthy sibling rows down (list never throws)', () => {
+    const dbPath = join(dir, 'mixed.db')
+    const seed = createListenerStore(dbPath)
+    seed.insert(makeMessage({dedupeKey: 'healthy', title: 'healthy row', links: [{label: 'run', url: 'https://example.test/run'}]}))
+    seed.insert(makeMessage({dedupeKey: 'corrupt', title: 'corrupt row'}))
+    seed.close()
+
+    const db = new DatabaseSync(dbPath)
+    db.exec("UPDATE messages SET links = 'not-json{' WHERE title = 'corrupt row'")
+    db.close()
+
+    const store = createListenerStore(dbPath)
+    try {
+      const {messages} = store.list({})
+
+      expect(messages).toHaveLength(2)
+      const healthy = messages.find(m => m.title === 'healthy row')
+      const corrupt = messages.find(m => m.title === 'corrupt row')
+      expect(healthy?.links).toEqual([{label: 'run', url: 'https://example.test/run'}])
+      expect(corrupt?.links).toEqual([])
+    } finally {
+      store.close()
+    }
+  })
+
+  it('the NULL write is rejected by the schema itself (links is NOT NULL — the guard is defense-in-depth)', () => {
+    const dbPath = join(dir, 'null-guard.db')
+    const seed = createListenerStore(dbPath)
+    seed.insert(makeMessage({dedupeKey: 'null-guard', title: 'null guard row'}))
+    seed.close()
+
+    const db = new DatabaseSync(dbPath)
+    expect(() => db.exec('UPDATE messages SET links = NULL')).toThrow(/NOT NULL/)
+    db.close()
+  })
+
+  it('the degradation is observable — a warning is logged naming the degraded row', () => {
+    const corrupted = makeCorruptedStore(dir, 'not-json{')
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      corrupted.list({})
+
+      const allOutput = (warnSpy.mock.calls.flat() as unknown[])
+        .concat(errorSpy.mock.calls.flat() as unknown[])
+        .map(String)
+        .join(' ')
+      expect(allOutput).toContain('links')
+      expect(allOutput).toContain('corrupt row')
+    } finally {
+      warnSpy.mockRestore()
+      errorSpy.mockRestore()
+      corrupted.close()
+    }
   })
 })

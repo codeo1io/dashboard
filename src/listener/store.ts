@@ -10,6 +10,8 @@ import {mkdirSync} from 'node:fs'
 import {dirname} from 'node:path'
 import {DatabaseSync} from 'node:sqlite'
 
+import {logger} from '../logger.ts'
+
 export interface ListenerStore {
   insert: (input: IngestMessage) => {id: string; receivedAt: string}
   list: (opts: {unreadOnly?: boolean; limit?: number}) => MessagesResponse
@@ -40,6 +42,47 @@ const DEFAULT_LIST_LIMIT = 100
 const MIN_LIST_LIMIT = 1
 const MAX_LIST_LIMIT = 200
 
+/**
+ * rm-187: the `links` cell is a JSON-encoded array written by insert(), but the
+ * server re-opens whatever is on disk — a corrupt or truncated cell (manual
+ * edit, schema drift, partial write) must degrade to an empty array instead of
+ * throwing out of list() and 500-ing the whole operator feed. The degraded row
+ * itself is preserved; the degradation is observable via a warning log line
+ * naming the row (matching the aggregator's `repository: null` precedent —
+ * degrade + surface, never crash the feed).
+ */
+function parseLinksCell(rawLinks: string | null | undefined, row: MessageRow): readonly ListenerLink[] {
+  if (rawLinks === null || rawLinks === undefined || rawLinks === '') {
+    logger.warning('listener store: empty links cell degraded to empty links', {
+      messageId: row.id,
+      title: row.title,
+    })
+    return []
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(rawLinks)
+  } catch (error) {
+    logger.warning('listener store: corrupt links cell degraded to empty links', {
+      messageId: row.id,
+      title: row.title,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return []
+  }
+
+  if (!Array.isArray(parsed)) {
+    logger.warning('listener store: non-array links cell degraded to empty links', {
+      messageId: row.id,
+      title: row.title,
+    })
+    return []
+  }
+
+  return parsed as readonly ListenerLink[]
+}
+
 function rowToMessage(row: MessageRow): ListenerMessage {
   return {
     id: row.id,
@@ -48,7 +91,7 @@ function rowToMessage(row: MessageRow): ListenerMessage {
     severity: row.severity as ListenerMessage['severity'],
     title: row.title,
     body: row.body,
-    links: JSON.parse(row.links) as readonly ListenerLink[],
+    links: parseLinksCell(row.links, row),
     dedupeKey: row.dedupe_key,
     createdAt: row.created_at,
     receivedAt: row.received_at,

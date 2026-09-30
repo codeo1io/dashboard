@@ -25,7 +25,7 @@
  */
 
 import type {Result} from '../result.ts'
-import type {EnumerateReposResult, InstallationsClient} from './installations.ts'
+import type {EnumerateReposResult, InstallationsClient, RepoTokenScope} from './installations.ts'
 import type {MetadataError, MetadataReader, MetadataResult} from './metadata.ts'
 
 import {logger, sanitizeErrorMessage, type LogContext} from '../logger.ts'
@@ -54,6 +54,13 @@ export type GraphqlQueryForInstallationFn = (
   installationId: number,
   query: string,
   variables: Record<string, unknown>,
+  /**
+   * rm-118: the queried repo's identity for token scoping. Present ⇒ the
+   * token is minted scoped to exactly this repo (repository_ids); absent ⇒
+   * the call rides the installation-wide token. Existing 3-arg fakes remain
+   * assignable (fewer-parameters rule).
+   */
+  repo?: RepoTokenScope,
 ) => Promise<unknown>
 
 // ---------------------------------------------------------------------------
@@ -451,6 +458,14 @@ interface WorkingSetEntry {
    * null means no installation was found; the repo will be skipped or marked stale.
    */
   readonly installation_id: number | null
+  /**
+   * rm-118: the repo's numeric database id — the repository_ids scoping key
+   * for the per-repo status-query token. INTERNAL ONLY, never exposed.
+   * null = id unknown (unmatched metadata entry); the status query then
+   * rides the installation-wide token — scope never widens beyond the
+   * read-only permission subset.
+   */
+  readonly database_id: number | null
 }
 
 /**
@@ -589,6 +604,9 @@ function buildWorkingSet(
       full_name: `${pub.owner}/${pub.name}`,
       discovery_channel: pub.discovery_channel,
       installation_id: installationId,
+      // rm-118: the matched install repo's id is authoritative; otherwise the
+      // databaseId derived for the denylist check (legacy node_id format), else null.
+      database_id: installRepo?.database_id ?? derivedDatabaseId ?? null,
     })
   }
 
@@ -618,6 +636,8 @@ function buildWorkingSet(
         full_name: repo.full_name,
         discovery_channel: DISCOVERED_CHANNEL,
         installation_id: repo.installation_id,
+        // rm-118: installation enumeration always carries the database id.
+        database_id: repo.database_id,
       })
       driftCount++
     }
@@ -821,12 +841,16 @@ async function fetchRepoStatus(
 
   const installationId = entry.installation_id
   const vars = {owner: entry.owner, name: entry.name}
+  // rm-118: scope this repo's status-query token to exactly this repo
+  // (repository_ids at the mint endpoint). Unknown database id ⇒ undefined
+  // ⇒ installation-wide token (scope never widens beyond the read-only subset).
+  const repoScope: RepoTokenScope | undefined = entry.database_id === null ? undefined : {databaseId: entry.database_id}
 
   try {
     // Deadline-bounded: a hung GraphQL call degrades to a stale row for
     // this repo (the catch below) instead of stalling the refresh cycle.
     const raw = await withDeadline(
-      graphqlQueryForInstallation(installationId, REPO_STATUS_QUERY, vars),
+      graphqlQueryForInstallation(installationId, REPO_STATUS_QUERY, vars, repoScope),
       fetchDeadlineMs,
       'per-repo graphql (repo identity withheld from deadline labels)',
     )
@@ -842,7 +866,7 @@ async function fetchRepoStatus(
       try {
         // The no-alerts retry is deadline-bounded too.
         const raw = await withDeadline(
-          graphqlQueryForInstallation(installationId, REPO_STATUS_QUERY_NO_ALERTS, vars),
+          graphqlQueryForInstallation(installationId, REPO_STATUS_QUERY_NO_ALERTS, vars, repoScope),
           fetchDeadlineMs,
           'per-repo graphql retry (no-alerts)',
         )

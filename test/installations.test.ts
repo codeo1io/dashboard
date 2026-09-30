@@ -5,9 +5,13 @@
  * Covers: happy path, edge cases, error paths, and security invariants.
  */
 
-import type {InstallationRecord, InstallationsClient, RepoRecord} from '../src/github/installations.ts'
+import type {AddressInfo} from 'node:net'
 
-import {beforeEach, describe, expect, it, vi} from 'vitest'
+import type {InstallationRecord, InstallationsClient, RepoRecord, RepoTokenScope} from '../src/github/installations.ts'
+import {generateKeyPairSync} from 'node:crypto'
+import http from 'node:http'
+import {beforeAll, beforeEach, describe, expect, it, vi} from 'vitest'
+import {createDashboardAppClient, createInstallationGraphqlQueryFn} from '../src/github/app-client.ts'
 import {
   CORE_READ_PERMISSIONS,
   enumerateRepos,
@@ -15,6 +19,7 @@ import {
   FULL_READ_PERMISSIONS,
   mintReadOnlyToken,
   OPTIONAL_READ_PERMISSIONS,
+  resetTokenCache,
 } from '../src/github/installations.ts'
 import {isErr, isOk} from '../src/result.ts'
 
@@ -825,5 +830,211 @@ describe('security — rm-170: transient mint errors never degrade scope', () =>
     if (!isOk(result)) return
     expect(result.data.repos).toHaveLength(0)
     expect(result.data.failedInstallationIds).toEqual([41])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-118 — token-cache re-key (appId, installationId, permissions, repo scope)
+// ---------------------------------------------------------------------------
+
+describe('rm-118 — token-cache re-key (appId, installationId, permissions, repository scope)', () => {
+  beforeEach(() => {
+    resetTokenCache()
+  })
+
+  it('appId partitions: two App identities never share a token for the same installation', async () => {
+    const mintFn = vi
+      .fn()
+      .mockResolvedValueOnce({token: 'token-app-a', expiresAt: null})
+      .mockResolvedValueOnce({token: 'token-app-b', expiresAt: null})
+
+    // Same installation id, two App identities — pre-rm-118 these collided on
+    // one cache entry (assess F6) and the second caller was served the first
+    // App's token.
+    expect(await mintReadOnlyToken(5002, mintFn, {appId: '111'})).toBe('token-app-a')
+    expect(await mintReadOnlyToken(5002, mintFn, {appId: '222'})).toBe('token-app-b')
+    // ...and each identity's entry survives the other's mint (cache hits).
+    expect(await mintReadOnlyToken(5002, mintFn, {appId: '111'})).toBe('token-app-a')
+    expect(await mintReadOnlyToken(5002, mintFn, {appId: '222'})).toBe('token-app-b')
+    expect(mintFn).toHaveBeenCalledTimes(2)
+  })
+
+  it('a CORE-fallback token is never served to a later FULL-expecting caller', async () => {
+    const mintFn = vi
+      .fn()
+      // First caller: FULL mint denied (permission-shaped) → CORE fallback.
+      .mockRejectedValueOnce(permissionError('Resource not accessible by integration'))
+      .mockResolvedValueOnce({token: 'core-degraded-token', expiresAt: null})
+      // Second caller: FULL mint succeeds this time.
+      .mockResolvedValueOnce({token: 'full-token', expiresAt: null})
+
+    expect(await mintReadOnlyToken(5003, mintFn, {appId: 'app-1'})).toBe('core-degraded-token')
+    // Pre-rm-118 the degraded token was cached under installationId alone and
+    // silently served here. The re-key caches it under the CORE key, so a
+    // FULL-expecting caller re-attempts the FULL mint.
+    expect(await mintReadOnlyToken(5003, mintFn, {appId: 'app-1'})).toBe('full-token')
+    expect(mintFn).toHaveBeenCalledTimes(3)
+    const thirdCallPerms = mintFn.mock.calls[2]?.[1] as Record<string, string>
+    expect(thirdCallPerms).toMatchObject(FULL_READ_PERMISSIONS)
+  })
+
+  it('repo-scoped and installation-wide mints hold distinct cache entries', async () => {
+    const mintFn = vi
+      .fn()
+      .mockResolvedValueOnce({token: 'scoped-to-111', expiresAt: null})
+      .mockResolvedValueOnce({token: 'installation-wide', expiresAt: null})
+
+    expect(await mintReadOnlyToken(5004, mintFn, {appId: 'app-1', repositoryIds: [111]})).toBe('scoped-to-111')
+    // A repository-scoped token must NEVER satisfy an installation-wide
+    // request (enumeration would otherwise list only repo 111).
+    expect(await mintReadOnlyToken(5004, mintFn, {appId: 'app-1'})).toBe('installation-wide')
+    // Both entries live side by side — the scoped one still cache-hits.
+    expect(await mintReadOnlyToken(5004, mintFn, {appId: 'app-1', repositoryIds: [111]})).toBe('scoped-to-111')
+    expect(mintFn).toHaveBeenCalledTimes(2)
+  })
+
+  it('repositoryIds are forwarded to the mint seam; unscoped mints keep the 2-arg shape', async () => {
+    const mintFn = vi.fn().mockResolvedValue({token: 'token', expiresAt: null})
+
+    await mintReadOnlyToken(5005, mintFn, {appId: 'app-1', repositoryIds: [111]})
+    await mintReadOnlyToken(5005, mintFn, {appId: 'app-1'})
+
+    expect(mintFn.mock.calls[0]?.[2]).toEqual([111])
+    expect(mintFn.mock.calls[1]?.[2]).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-118 — repository-scoped mint at the client seam (sibling-repo rejection)
+// ---------------------------------------------------------------------------
+
+describe('rm-118 — repository-scoped mint at the client seam (sibling-repo rejection)', () => {
+  let privateKey: string
+
+  beforeAll(() => {
+    // Real RSA key so @octokit/auth-app actually signs its JWT; the fixture
+    // server below ignores the signature — it stands in for GitHub's
+    // transport, enforcing the documented repository_ids semantics.
+    const {privateKey: pem} = generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      privateKeyEncoding: {type: 'pkcs1', format: 'pem'},
+      publicKeyEncoding: {type: 'spki', format: 'pem'},
+    })
+    privateKey = pem
+  })
+
+  it('a token minted for repo 111 queries repo 111, is REJECTED for sibling 222; wide tokens reach both', async () => {
+    const REPO_QUERY = 'query($owner:String!$name:String!){repository(owner:$owner,name:$name){name}}'
+
+    // Fake GitHub universe: database id → owner/name (the ids are the
+    // repository_ids scoping key; owner/name travel in query variables).
+    const universe = new Map<number, {owner: string; name: string}>([
+      [111, {owner: 'fro-bot', name: 'agent'}],
+      [222, {owner: 'fro-bot', name: 'dashboard'}],
+    ])
+    const tokenScopes = new Map<string, Set<number>>() // minted token → its repository_ids ([] = installation-wide)
+    const mintBodies: {repository_ids?: number[]}[] = []
+
+    const server = http.createServer((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://fixture.test')
+      let raw = ''
+      req.on('data', (chunk: string) => {
+        raw += chunk
+      })
+      req.on('end', () => {
+        if (req.method === 'POST' && url.pathname === '/app/installations/1/access_tokens') {
+          const parsed = JSON.parse(raw) as {repository_ids?: number[]}
+          mintBodies.push({repository_ids: parsed.repository_ids})
+          const token = `ghs_fixture_${mintBodies.length}`
+          tokenScopes.set(token, new Set(parsed.repository_ids ?? []))
+          res.writeHead(201, {'content-type': 'application/json'})
+          res.end(
+            JSON.stringify({
+              token,
+              expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+              permissions: {contents: 'read', metadata: 'read'},
+            }),
+          )
+          return
+        }
+        if (req.method === 'POST' && url.pathname === '/graphql') {
+          const token = (req.headers.authorization ?? '').replace(/^token\s+/i, '')
+          const scope = tokenScopes.get(token)
+          const variables = (JSON.parse(raw) as {variables?: {owner?: string; name?: string}}).variables ?? {}
+          if (scope !== undefined && scope.size > 0) {
+            const queriedId = [...universe.entries()].find(
+              ([, repo]) => repo.owner === variables.owner && repo.name === variables.name,
+            )?.[0]
+            // GitHub semantics: a repository-scoped installation token used
+            // against a repo outside its repository_ids is refused.
+            if (queriedId === undefined || !scope.has(queriedId)) {
+              res.writeHead(403, {'content-type': 'application/json'})
+              res.end(JSON.stringify({message: 'Resource not accessible by integration (repository_ids scope)'}))
+              return
+            }
+          }
+          res.writeHead(200, {'content-type': 'application/json'})
+          res.end(JSON.stringify({data: {repository: {name: variables.name ?? null}}}))
+          return
+        }
+        res.writeHead(404, {'content-type': 'application/json'})
+        res.end(JSON.stringify({message: `fixture: no route for ${req.method} ${url.pathname}`}))
+      })
+    })
+
+    await new Promise<void>(resolve => {
+      server.listen(0, '127.0.0.1', resolve)
+    })
+    const {port} = server.address() as AddressInfo
+    const baseUrl = `http://127.0.0.1:${port}`
+
+    try {
+      resetTokenCache()
+      const appClient = createDashboardAppClient({appId: '12345', privateKey, baseUrl})
+      const getToken = async (installationId: number, repo?: RepoTokenScope) =>
+        mintReadOnlyToken(installationId, appClient.mintInstallationToken, {
+          appId: '12345',
+          ...(repo === undefined ? {} : {repositoryIds: [repo.databaseId]}),
+        })
+      const query = createInstallationGraphqlQueryFn(getToken, {baseUrl, timeoutMs: 5000})
+
+      // (a) Aggregator-shaped scoped call: query repo 111 with scope {111}.
+      // @octokit/graphql unwraps single-root-field responses: the result IS
+      // the `repository` object, not `{data: {repository: ...}}`.
+      const ok = (await query(1, REPO_QUERY, {owner: 'fro-bot', name: 'agent'}, {databaseId: 111})) as {
+        repository?: {name?: string}
+      }
+      expect(ok.repository?.name).toBe('agent')
+
+      // (b) The scoping landed ON THE WIRE: the mint request body carried
+      // repository_ids [111] (empty/absent would mean an unscoped token).
+      expect(mintBodies.some(body => JSON.stringify(body.repository_ids) === '[111]')).toBe(true)
+
+      // (c) THE SEAM REJECTION: the token minted for repo 111, presented
+      // against sibling 222, is refused by the API — the scoping is real at
+      // the transport, not just a local annotation. If repository_ids
+      // scoping were broken/absent this call would SUCCEED and the test fail.
+      const scoped111 = await getToken(1, {databaseId: 111})
+      const queryAs111 = createInstallationGraphqlQueryFn(async () => scoped111, {baseUrl, timeoutMs: 5000})
+      // Rejected by the token's repository scope: same transport, same
+      // installation, same query shape as (a) — only the target repo differs.
+      // @octokit/graphql surfaces transport refusals as '<token>: <status>'.
+      await expect(queryAs111(1, REPO_QUERY, {owner: 'fro-bot', name: 'dashboard'})).rejects.toThrow(/403|forbidden|not accessible/i)
+
+      // (d) Control: the installation-wide token (enumeration class) reaches
+      // BOTH repos — proving (c) was rejected by the scoping, not by a broken
+      // fixture, and that enumeration keeps its wide token.
+      const wide = await getToken(1)
+      expect(wide).not.toBe(scoped111)
+      const queryAsWide = createInstallationGraphqlQueryFn(async () => wide, {baseUrl, timeoutMs: 5000})
+      await expect(queryAsWide(1, REPO_QUERY, {owner: 'fro-bot', name: 'agent'})).resolves.toBeTruthy()
+      await expect(queryAsWide(1, REPO_QUERY, {owner: 'fro-bot', name: 'dashboard'})).resolves.toBeTruthy()
+
+      // (e) The wide mint carried NO repository_ids.
+      expect(mintBodies.some(body => body.repository_ids === undefined)).toBe(true)
+    } finally {
+      resetTokenCache()
+      server.close()
+    }
   })
 })

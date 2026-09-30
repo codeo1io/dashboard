@@ -4,7 +4,11 @@
 import type {ListenerStore} from '../src/listener/store.ts'
 import {Buffer} from 'node:buffer'
 import {createHmac} from 'node:crypto'
+import {mkdtempSync, rmSync} from 'node:fs'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
 import process from 'node:process'
+import {DatabaseSync} from 'node:sqlite'
 import {beforeEach, describe, expect, it} from 'vitest'
 import {createListenerStore} from '../src/listener/store.ts'
 import {deriveAckCsrfToken} from '../src/routes/listener.ts'
@@ -437,5 +441,64 @@ describe('operator listener channel routes', () => {
       headers: {cookie: sessionCookieHeader()},
     })
     expect(res.status).toBe(404)
+  })
+  it('rm-187: a corrupt links cell cannot 500 the operator feed — GET /messages stays 200 with the healthy rows', async () => {
+    // File-backed store so the corruption can be introduced out-of-band
+    // (second SQLite connection), the way it would appear after schema drift,
+    // a manual cell edit, or a truncated write on a real deployment.
+    const dir = mkdtempSync(join(tmpdir(), 'listener-routes-corrupt-'))
+    const dbPath = join(dir, 'corrupt.db')
+
+    const seed = createListenerStore(dbPath)
+    seed.insert({
+      source: 'infra',
+      kind: 'deploy-health',
+      severity: 'warning',
+      title: 'healthy row',
+      body: 'fine',
+      links: [{label: 'run', url: 'https://example.test/run'}],
+      dedupeKey: 'healthy',
+      createdAt: '2026-07-11T12:00:00Z',
+    })
+    seed.insert({
+      source: 'infra',
+      kind: 'deploy-health',
+      severity: 'warning',
+      title: 'corrupt row',
+      body: 'also fine',
+      links: [],
+      dedupeKey: 'corrupt',
+      createdAt: '2026-07-11T12:01:00Z',
+    })
+    seed.close()
+
+    const db = new DatabaseSync(dbPath)
+    db.exec("UPDATE messages SET links = 'not-json{' WHERE title = 'corrupt row'")
+    db.close()
+
+    const app = await buildTestApp({listenerStore: createListenerStore(dbPath)})
+
+    try {
+      // Negative-verified at the store layer on the pre-fix code (rm-187):
+      // rowToMessage's unguarded JSON.parse threw, so this endpoint 500'd and
+      // took the entire operator feed down over ONE corrupt cell.
+      const res = await app.request('/api/listener/messages', {
+        headers: {cookie: sessionCookieHeader()},
+      })
+
+      expect(res.status).toBe(200)
+      const json = (await res.json()) as {messages: {title: string; links: unknown}[]; unreadCount: number}
+      expect(json.messages).toHaveLength(2)
+
+      const corrupt = json.messages.find(m => m.title === 'corrupt row')
+      const healthy = json.messages.find(m => m.title === 'healthy row')
+      // Degraded, not dropped: the corrupt row stays in the feed with its
+      // links degraded to []; the healthy row is untouched.
+      expect(corrupt?.links).toEqual([])
+      expect(healthy?.links).toEqual([{label: 'run', url: 'https://example.test/run'}])
+      expect(json.unreadCount).toBe(2)
+    } finally {
+      rmSync(dir, {recursive: true, force: true})
+    }
   })
 })

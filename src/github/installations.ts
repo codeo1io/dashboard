@@ -121,6 +121,39 @@ export interface MintedToken {
   readonly expiresAt: Date | null
 }
 
+/**
+ * Repo identity sufficient to mint a repository-scoped installation token
+ * (rm-118). GitHub's mint endpoint accepts numeric `repository_ids`, so the
+ * database id — not owner/name — is the scoping key; owner/name keep traveling
+ * in the query variables.
+ */
+export interface RepoTokenScope {
+  readonly databaseId: number
+}
+
+/**
+ * rm-118: capabilities a mint request can bound beyond the permission subset.
+ */
+export interface MintScope {
+  /**
+   * GitHub App id the mintFn authenticates as. Partitions the token cache so
+   * two App identities (or two permission sets) can never be served each
+   * other's tokens (rm-118).
+   */
+  readonly appId?: string
+  /**
+   * Numeric repository database ids (GitHub `repository_ids` at the mint
+   * endpoint). When set, the minted token can only access those repositories —
+   * per-repo status queries pass exactly one id, so a leaked token opens
+   * exactly the repo it was minted for. Undefined = installation-wide
+   * (enumeration / metadata-read class keeps this).
+   */
+  readonly repositoryIds?: readonly number[]
+}
+
+/** Cache namespace for callers that do not know their App identity (rm-118). */
+export const UNSPECIFIED_APP_NAMESPACE = 'app-unspecified'
+
 export interface InstallationsClient {
   /**
    * List all App installations (App-JWT-level call).
@@ -133,7 +166,13 @@ export interface InstallationsClient {
   readonly mintInstallationToken: (
     installationId: number,
     permissions: Record<string, 'read'>,
+    repositoryIds?: readonly number[],
   ) => Promise<MintedToken>
+  /**
+   * App identity used to partition the shared token cache (rm-118). Optional
+   * so hand-rolled test fakes keep typechecking; production clients set it.
+   */
+  readonly appId?: string
   /**
    * List all repos accessible to the given installation token.
    * Returns records without installation_id — enumerateRepos attaches it.
@@ -150,21 +189,49 @@ interface CachedToken {
   readonly expiresAt: number // ms since epoch
 }
 
-const tokenCache = new Map<number, CachedToken>()
-
 const TOKEN_EXPIRY_BUFFER_MS = 60_000 // refresh 1 min before expiry
 
-function getCachedToken(installationId: number): string | null {
-  const cached = tokenCache.get(installationId)
+const tokenCache = new Map<string, CachedToken>()
+
+/**
+ * rm-118: the cache key is the FULL mint identity — (appId, installationId,
+ * permission subset, repository scope) — never installationId alone. The old
+ * installationId-only key let two App identities or two permission sets
+ * collide on one entry (a CORE-degraded token silently served to a caller
+ * that asked for FULL), and would have let a repo-scoped token masquerade as
+ * an installation-wide one. Mint-ceiling note: GitHub allows 5000
+ * installation-token mints per hour per installation; the capped cache keeps
+ * steady-state volume at roughly one mint per DISTINCT cache key per hour per
+ * installation (enumeration + metadata read + one key per status-queried
+ * repo) — orders of magnitude under the ceiling.
+ */
+function tokenCacheKey(
+  appId: string,
+  installationId: number,
+  permissions: Record<string, 'read'>,
+  repositoryIds: readonly number[] | undefined,
+): string {
+  const perms = Object.keys(permissions).sort().join(',')
+  const repos = repositoryIds === undefined ? 'all' : [...repositoryIds].sort((a, b) => a - b).join(',')
+  return `app=${appId}|installation=${installationId}|permissions=${perms}|repositories=${repos}`
+}
+
+/** rm-118: deterministic-cache hook for tests (the cache is module-global). */
+export function resetTokenCache(): void {
+  tokenCache.clear()
+}
+
+function getCachedToken(cacheKey: string): string | null {
+  const cached = tokenCache.get(cacheKey)
   if (cached === undefined) return null
   if (Date.now() >= cached.expiresAt - TOKEN_EXPIRY_BUFFER_MS) {
-    tokenCache.delete(installationId)
+    tokenCache.delete(cacheKey)
     return null
   }
   return cached.token
 }
 
-function setCachedToken(installationId: number, token: string, expiresAt: Date | null): void {
+function setCachedToken(cacheKey: string, token: string, expiresAt: Date | null): void {
   // rm-185: honor the API-provided expiry, but CAP it at the historical
   // 55-min guess — a far-future expiry can never extend a token's cached
   // life beyond the pre-seam behavior. The cap doubles as the fallback when
@@ -173,7 +240,7 @@ function setCachedToken(installationId: number, token: string, expiresAt: Date |
   const cappedDefaultMs = Date.now() + 55 * 60 * 1000
   const rawMs = expiresAt === null ? Number.NaN : expiresAt.getTime()
   const expiresAtMs = Number.isNaN(rawMs) ? cappedDefaultMs : Math.min(rawMs, cappedDefaultMs)
-  tokenCache.set(installationId, {token, expiresAt: expiresAtMs})
+  tokenCache.set(cacheKey, {token, expiresAt: expiresAtMs})
 }
 
 // ---------------------------------------------------------------------------
@@ -214,20 +281,42 @@ function isPermissionShapedMintError(error: unknown): boolean {
  * CORE_READ_PERMISSIONS. Any other error rethrows — never cached, never
  * silently degraded — so the caller reports the failure.
  * If the core-only mint also fails, throws.
+ *
+ * rm-118: `scope` bounds the mint. `repositoryIds` requests a
+ * repository-scoped token via the mint endpoint's `repository_ids` array —
+ * per-repo status queries pass exactly one id. `appId` partitions the cache.
+ * The permission-subset downgrade (rm-170) and the expiry cap (rm-185) are
+ * unchanged; a CORE-fallback token is cached under its own key so it is
+ * never served to a later FULL-expecting caller.
  */
 export async function mintReadOnlyToken(
   installationId: number,
-  mintFn: (installationId: number, permissions: Record<string, 'read'>) => Promise<MintedToken>,
+  mintFn: (
+    installationId: number,
+    permissions: Record<string, 'read'>,
+    repositoryIds?: readonly number[],
+  ) => Promise<MintedToken>,
+  scope: MintScope = {},
 ): Promise<string> {
-  // Check cache first
-  const cached = getCachedToken(installationId)
+  const appId = scope.appId ?? UNSPECIFIED_APP_NAMESPACE
+  const {repositoryIds} = scope
+  // Only thread repositoryIds through when set, so unscoped mints keep the
+  // exact 2-arg call shape existing fakes/tests assert on.
+  const callMint = async (permissions: Record<string, 'read'>) =>
+    repositoryIds === undefined
+      ? mintFn(installationId, permissions)
+      : mintFn(installationId, permissions, repositoryIds)
+
+  // Check cache first (rm-118: keyed by the full mint identity)
+  const fullKey = tokenCacheKey(appId, installationId, FULL_READ_PERMISSIONS, repositoryIds)
+  const cached = getCachedToken(fullKey)
   if (cached !== null) return cached
 
   // Try full permissions first
   try {
-    const minted = await mintFn(installationId, FULL_READ_PERMISSIONS)
+    const minted = await callMint(FULL_READ_PERMISSIONS)
     // rm-185: cache against the API-provided expiry (capped in setCachedToken)
-    setCachedToken(installationId, minted.token, minted.expiresAt)
+    setCachedToken(fullKey, minted.token, minted.expiresAt)
     return minted.token
   } catch (fullError) {
     if (!isPermissionShapedMintError(fullError)) {
@@ -238,19 +327,22 @@ export async function mintReadOnlyToken(
       // reduced-scope token for the cache TTL.
       logger.error('Installation token mint failed (non-permission error; no scope fallback)', {
         installationId,
+        repositoryIds: repositoryIds ?? 'all',
         error: safeErrorMessage(fullError),
       })
       throw fullError
     }
     logger.warning('Failed to mint token with optional scopes (permission-shaped); retrying with core scopes only', {
       installationId,
+      repositoryIds: repositoryIds ?? 'all',
       error: safeErrorMessage(fullError),
     })
   }
 
-  // Retry with core-only permissions
-  const minted = await mintFn(installationId, CORE_READ_PERMISSIONS)
-  setCachedToken(installationId, minted.token, minted.expiresAt)
+  // Retry with core-only permissions. Cached under its OWN key (rm-118) so a
+  // CORE-degraded token can never be served to a later FULL-expecting caller.
+  const minted = await callMint(CORE_READ_PERMISSIONS)
+  setCachedToken(tokenCacheKey(appId, installationId, CORE_READ_PERMISSIONS, repositoryIds), minted.token, minted.expiresAt)
   return minted.token
 }
 
@@ -287,7 +379,11 @@ export async function enumerateRepos(
   for (const installation of installations) {
     let token: string
     try {
-      token = await mintReadOnlyToken(installation.id, client.mintInstallationToken)
+      // rm-118: enumeration is the WIDE-mint class — it must list every repo
+      // the installation can see — so it keeps the installation-wide token;
+      // the appId namespace keeps this cache entry distinct from the
+      // repo-scoped keys minted for status queries.
+      token = await mintReadOnlyToken(installation.id, client.mintInstallationToken, {appId: client.appId})
     } catch (mintError) {
       logger.warning('Failed to mint installation token; counting degraded installation', {
         installationId: installation.id,
@@ -401,8 +497,10 @@ export function buildInstallationsClient(appClient: DashboardAppClient): Install
   }
 
   return {
+    appId: appClient.appId,
     listInstallations,
-    mintInstallationToken: appClient.mintInstallationToken,
+    mintInstallationToken: async (installationId, permissions, repositoryIds) =>
+      appClient.mintInstallationToken(installationId, permissions, repositoryIds),
     listInstallationRepos: listInstallationReposWithToken,
   }
 }
