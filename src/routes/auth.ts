@@ -19,6 +19,7 @@ import {createHmac, randomBytes, timingSafeEqual} from 'node:crypto'
 import {Hono} from 'hono'
 import {deleteCookie, getCookie, setCookie} from 'hono/cookie'
 import {logger, sanitizeErrorMessage} from '../logger.ts'
+import {MAX_REQUEST_BODY_BYTES, readBodyCapped} from '../read-body.ts'
 
 /** State cookie TTL: 10 minutes */
 const STATE_COOKIE_MAX_AGE = 10 * 60
@@ -191,22 +192,19 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
    *
    * Rejects with 403 on missing or mismatched CSRF token.
    */
-  // rm-268: bound the body BEFORE parsing — /auth/logout is a public pre-auth
-  // path, so an oversized POST must not buy unbounded buffering ahead of the
-  // CSRF read. Mirrors the listener ingest cap (readBodyCapped /
-  // MAX_INGEST_BODY_BYTES). The real client (web/src/shell/AppShell.tsx) posts
-  // urlencoded `csrf_token`; other encodings are 415, never parsed.
-  const MAX_LOGOUT_BODY_BYTES = 16384
-
+  // rm-280: the read itself is bounded — readBodyCapped counts WIRE BYTES
+  // incrementally and cancels the stream at the cap, so chunked,
+  // length-less, and lying-header requests can never buffer unbounded bytes
+  // on this public pre-auth path. One shared bound and code path with the
+  // listener ingest route (src/read-body.ts, MAX_REQUEST_BODY_BYTES). Escalates
+  // rm-268, whose cap fired only after `await c.req.text()` had buffered the
+  // whole stream, and whose `.length` check counted UTF-16 code units, not
+  // bytes. The real client (web/src/shell/AppShell.tsx) posts urlencoded
+  // `csrf_token`; other encodings are 415, never parsed.
   router.post('/logout', async c => {
-    const declaredLength = Number(c.req.header('content-length') ?? '0')
-    if (Number.isFinite(declaredLength) && declaredLength > MAX_LOGOUT_BODY_BYTES) {
-      logger.warning('Logout rejected: oversized body declared', {declaredLength})
-      return c.text('Payload Too Large', 413)
-    }
-    const rawBody = await c.req.text()
-    if (rawBody.length > MAX_LOGOUT_BODY_BYTES) {
-      logger.warning('Logout rejected: oversized body received', {bytes: rawBody.length})
+    const rawBody = await readBodyCapped(c.req.raw, MAX_REQUEST_BODY_BYTES)
+    if (rawBody === null) {
+      logger.warning('Logout rejected: body exceeded the shared cap', {maxBytes: MAX_REQUEST_BODY_BYTES})
       return c.text('Payload Too Large', 413)
     }
     const contentType = c.req.header('content-type') ?? ''
