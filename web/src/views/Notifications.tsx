@@ -3,12 +3,17 @@ import {getPushSupport} from '../push/capability.ts'
 import {getLogoutAbortSignal} from '../push/logout-abort.ts'
 import {
   INITIAL_RECONCILE_SWEEP_CACHE,
+  createCurrentKeyVersionSource,
   resubscribeStaleKey,
   runReconcileSweep,
   subscribeOptIn,
   unsubscribeOptOut,
 } from '../push/subscribe.ts'
-import type {MinimalServiceWorkerRegistration, ReconcileSweepCache} from '../push/subscribe.ts'
+import type {
+  CurrentKeyVersionSource,
+  MinimalServiceWorkerRegistration,
+  ReconcileSweepCache,
+} from '../push/subscribe.ts'
 import {buildPushClient} from '../push/subscribe.ts'
 import {getNotificationCopy} from './notifications-copy.ts'
 import type {NotificationUiState} from './notifications-copy.ts'
@@ -64,18 +69,24 @@ export function Notifications({
   const pushClientRef = useRef<{
     key: string
     client: ReturnType<typeof buildPushClient>
+    keyVersionSource: CurrentKeyVersionSource
   } | null>(null)
   if (pushClientRef.current === null || pushClientRef.current.key !== pushClientKey) {
+    const client = buildPushClient(
+      pushEndpointBase !== undefined || pushFixtureSessionId !== undefined
+        ? {endpointBase: pushEndpointBase, fixtureSessionId: pushFixtureSessionId}
+        : undefined,
+    )
     pushClientRef.current = {
       key: pushClientKey,
-      client: buildPushClient(
-        pushEndpointBase !== undefined || pushFixtureSessionId !== undefined
-          ? {endpointBase: pushEndpointBase, fixtureSessionId: pushFixtureSessionId}
-          : undefined,
-      ),
+      client,
+      // rm-308: the key-version cache is rebuilt with the client so a
+      // fixture-base switch can never serve a version fetched from the
+      // wrong endpoint.
+      keyVersionSource: createCurrentKeyVersionSource(client),
     }
   }
-  const pushClient = pushClientRef.current.client
+  const {client: pushClient, keyVersionSource} = pushClientRef.current
 
   const enableInFlightRef = useRef(false)
   const disableInFlightRef = useRef(false)
@@ -94,11 +105,18 @@ export function Notifications({
       return
     }
 
+    // rm-308: warm the key-version cache BEFORE the sweep - the sweep's
+    // unchanged-guard would otherwise pin the first (key-blind) handoff
+    // state and never re-derive it, leaving a rotated Gateway key
+    // undetectable. Bounded to one GET per TTL window, failure-safe.
+    await keyVersionSource.refresh()
+
     const result = await runReconcileSweep(
       {
         getLocalSubscription: () =>
           navigator.serviceWorker.ready.then((r) => r.pushManager.getSubscription()),
         pushClient,
+        getCurrentKeyVersion: keyVersionSource.get,
       },
       cacheRef.current,
     )
