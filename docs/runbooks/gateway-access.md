@@ -103,6 +103,31 @@ client address (`X-Forwarded-For`) instead of the proxy's own address.
 
 ---
 
+## Gateway failure semantics (v0.116/v0.117)
+
+The Fro Bot workflow pin at `fro-bot/agent v0.117.0` adopts two operator-visible behavior
+changes; know them before reading a dead gateway as a crash:
+
+- **A failed gateway start is a generic stderr line and exit 1** (v0.117.0, #1677). Startup
+  failures no longer log exception details, so a bare exit-1 with no stack in the container logs
+  is the *expected* failure signature, not evidence of a corrupted install. Debug through the
+  journal and provenance records below, not through a stack trace you no longer have.
+- **`401` from the workspace control API is operator-actionable** (v0.116.0, #1661/#1665). Every
+  control route except `/healthz` and `/readyz` requires the gateway's bearer token; requests
+  without it are rejected before their bodies are read, and the gateway treats the `401` as a
+  workspace-unavailable condition — not a credentials bug to chase in the dashboard.
+- **Checkouts auto-advance before each session** (v0.117.0, #1675). The gateway brings each
+  repository checkout up to the remote default branch before starting a run. A checkout that
+  cannot be safely advanced stops the run **without discarding its contents** and reports why;
+  prior checkouts remain available as capped backups, update and recovery operations are
+  journaled, and provenance records whether the checkout advanced — read those records before
+  replacing anything.
+
+The v0.116.0 workspace-user split also means gateway and workspace images must be upgraded or
+rolled back **together**; a mixed pair fails at startup with exactly the generic signature above.
+
+---
+
 ## Traps
 
 **Wrong remote user.** `ssh "$GATEWAY_HOST"` uses your local username. With several keys in your
