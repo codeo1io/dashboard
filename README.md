@@ -129,6 +129,7 @@ missing `_FILE` path silently falls back to the environment variable).
 | `DASHBOARD_PORT` | `src/server.ts` | `3000` | Bind port; anything but an integer in 1–65535 throws at startup (fail loud). |
 | `DASHBOARD_SNAPSHOT_CACHE` | `src/server.ts` | unset (off) | Optional file path enabling the boot-time snapshot bridge (rm-198): the last good snapshot is persisted here and reloaded at restart to bridge the cold-start window (forced stale, original `refreshedAt` preserved); unset/blank keeps in-memory-only behavior, and a missing/corrupt/oversize file fails open to an empty boot. |
 | `DASHBOARD_WEB_DIST` | `src/server.ts` | `./web/dist` | Client bundle root served at `/`. |
+| `LOG_FORMAT` | `src/logger.ts` | `human` | `ndjson` emits one JSON object per line (`{level, message, context}`) on stdout with the same sensitive-field redaction as the default mode; any other value keeps human mode, where everything except errors goes to stderr (`console.warn`) and errors go to `console.error`. |
 | `RATE_LIMIT_MAX_PUBLIC` | `src/server.ts` | `60` | Requests per 60s window per client, pre-auth public class (SPA root, `/auth/*`, `/api/healthz`). |
 | `RATE_LIMIT_MAX_OPERATOR` | `src/server.ts` | `60` | Same budget, operator class (remaining `/api/*` and `/operator/*`). |
 | `RATE_LIMIT_MAX_INGEST` | `src/server.ts` | `60` | Same budget, ingest class (`/api/listener/ingest`; HMAC-gated by the route itself). |

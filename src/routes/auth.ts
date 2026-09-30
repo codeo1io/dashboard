@@ -4,6 +4,10 @@
  * Security invariants:
  * - State cookie is HttpOnly, Secure, SameSite=Lax, short-TTL (~10 min), path=/auth.
  * - State mismatch → 403 (CSRF protection).
+ * - PKCE (rm-149): every authorization carries an S256 code_challenge; the
+ *   verifier rides an HttpOnly /auth-scoped cookie and is REQUIRED at the
+ *   callback (missing/mismatch → 403, no token exchange). A stolen authorization
+ *   code is therefore unusable without the cookie-bound verifier.
  * - Non-allowlisted login → 403, no session issued.
  * - Session cookie is HttpOnly, Secure, SameSite=Lax, 24h TTL.
  * - Operator login check is case-sensitive exact match.
@@ -15,7 +19,7 @@
 import type {GitHubOAuthClient} from '../auth/oauth.ts'
 import type {SessionManager} from '../session.ts'
 import {Buffer} from 'node:buffer'
-import {createHmac, randomBytes, timingSafeEqual} from 'node:crypto'
+import {createHash, createHmac, randomBytes, timingSafeEqual} from 'node:crypto'
 import {Hono} from 'hono'
 import {deleteCookie, getCookie, setCookie} from 'hono/cookie'
 import {logger, sanitizeErrorMessage} from '../logger.ts'
@@ -25,6 +29,9 @@ const STATE_COOKIE_MAX_AGE = 10 * 60
 
 /** Name of the OAuth state cookie */
 const STATE_COOKIE_NAME = 'oauth_state'
+
+/** Name of the PKCE code-verifier cookie (rm-149). Same shape/scope/TTL as state. */
+const PKCE_COOKIE_NAME = 'oauth_pkce_verifier'
 
 /** Name of the session cookie */
 const SESSION_COOKIE_NAME = 'session'
@@ -44,6 +51,17 @@ export interface AuthRouteConfig {
 
 /** CSRF token validity window (ms). A leaked logout token expires after at most 2 windows. */
 const CSRF_WINDOW_MS = 60 * 60 * 1000
+
+/**
+ * Generates a PKCE pair (rm-149): verifier = 43-char base64url of 32 random
+ * bytes (RFC 7636 §4.1 compliant length + unreserved charset), challenge =
+ * base64url(SHA-256(verifier)) — the S256 method GitHub documents.
+ */
+export function generatePkcePair(): {codeVerifier: string; codeChallenge: string} {
+  const codeVerifier = randomBytes(32).toString('base64url')
+  const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url')
+  return {codeVerifier, codeChallenge}
+}
 
 /**
  * Derives the logout CSRF token for a given login, bound to a coarse time window.
@@ -70,6 +88,7 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
    */
   router.get('/login', c => {
     const state = randomBytes(16).toString('hex')
+    const {codeVerifier, codeChallenge} = generatePkcePair()
 
     // Store state in a short-TTL HttpOnly cookie scoped to /auth (only read on /auth/callback).
     // CSRF check compares query param state vs cookie state (exact match).
@@ -81,7 +100,21 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
       path: '/auth',
     })
 
-    const authURL = oauthClient.createAuthorizationURL(state, ['read:user'])
+    // rm-149: the verifier rides a sibling HttpOnly /auth-scoped cookie; the
+    // challenge goes into the authorize URL. Verifier and challenge are
+    // one-time and pair-bound — a replay with a different state fails first.
+    setCookie(c, PKCE_COOKIE_NAME, codeVerifier, {
+      httpOnly: true,
+      secure: c.req.url.startsWith('https://') || c.req.header('x-forwarded-proto') === 'https',
+      sameSite: 'Lax',
+      maxAge: STATE_COOKIE_MAX_AGE,
+      path: '/auth',
+    })
+
+    const authURL = oauthClient.createAuthorizationURL(state, ['read:user'], {
+      codeChallenge,
+      codeChallengeMethod: 'S256',
+    })
     return c.redirect(authURL.toString(), 302)
   })
 
@@ -119,13 +152,23 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
       return c.text('Forbidden: state mismatch', 403)
     }
 
-    // Clear the state cookie immediately (one-time use)
-    deleteCookie(c, STATE_COOKIE_NAME, {path: '/auth'})
+    // rm-149: PKCE is mandatory — the code_verifier cookie must be present and
+    // non-empty. Fail closed BEFORE the token exchange so an attacker who
+    // obtained only the authorization code (no cookie) can never spend it.
+    const pkceCookie = getCookie(c, PKCE_COOKIE_NAME)
+    if (typeof pkceCookie !== 'string' || pkceCookie.length === 0) {
+      logger.warning('OAuth callback: missing PKCE verifier cookie')
+      return c.text('Forbidden: missing PKCE verifier', 403)
+    }
 
-    // Exchange code for access token
+    // Clear the state + verifier cookies immediately (one-time use)
+    deleteCookie(c, STATE_COOKIE_NAME, {path: '/auth'})
+    deleteCookie(c, PKCE_COOKIE_NAME, {path: '/auth'})
+
+    // Exchange code for access token (with the PKCE verifier)
     let accessToken: string
     try {
-      const tokens = await oauthClient.validateAuthorizationCode(code)
+      const tokens = await oauthClient.validateAuthorizationCode(code, {codeVerifier: pkceCookie})
       accessToken = tokens.accessToken()
     } catch (error) {
       logger.error('OAuth callback: token exchange failed', {error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error))})
