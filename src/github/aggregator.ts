@@ -566,7 +566,15 @@ function buildWorkingSet(
     }
 
     // Look up the install repo to get the installation_id (auth context).
-    const installRepo = installByNodeId.get(pub.node_id)
+    // rm-253: primary lookup is node_id, but the two channels can disagree on
+    // node_id FORMAT for the same repo (legacy base64 vs new-format R_... across
+    // API versions). deriveDatabaseId is format-independent, so fall back to the
+    // database_id index before giving up — otherwise database_id-skewed repos
+    // degrade to installation_id=null and the UNCACHED per-refresh App-JWT
+    // resolver (server.ts resolveInstallationIdForRepo) fires on every refresh.
+    const installRepo =
+      installByNodeId.get(pub.node_id) ??
+      (derivedDatabaseId === null ? undefined : installByDatabaseId.get(derivedDatabaseId))
     const installationId = installRepo?.installation_id ?? null
 
     unionByNodeId.set(pub.node_id, {
