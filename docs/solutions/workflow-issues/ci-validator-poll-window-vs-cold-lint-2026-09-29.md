@@ -78,9 +78,9 @@ cancel, kill, host loss) leaks both artifacts on origin: the ephemeral PR and
 its `conductor/ci-*` head + `conductor/ci-base-*` base refs. Detect via
 `gh pr list --state open` (draft PRs headed `conductor/ci-*` with a cancelled
 check) and `git ls-remote origin 'refs/heads/conductor/ci-*'`. Disposition
-(proved on PR #233, run 26210bbbb651; recorded at ROADMAP rm-159): prove the
+(adjudicated on PR #233, run 26210bbbb651, execution riding the run's pr/push gates — re-verify live state at execution; recorded at ROADMAP rm-159): prove the
 base marker commit content-free and its ref shared by no other open PR,
-archive any unique unlanded content out of the head ref first, close the PR
+archive any unique unlanded content out of the head ref first — durably, in-repo (docs/archive/, sha256-pinned; a delegate spool is transient and must never be the sole copy), close the PR
 not-planned with an explanatory comment, and only then delete both refs —
 close strictly before delete, so a base ref is never removed from under an
 open PR.
