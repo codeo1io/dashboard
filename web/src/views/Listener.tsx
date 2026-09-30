@@ -64,8 +64,14 @@ export function ListenerChannel() {
   const handleAck = async (id: string) => {
     if (ackingId) return
     setAckingId(id)
-    const success = await ackListenerMessage(id)
-    setAckingId(null)
+    let success = false
+    try {
+      success = await ackListenerMessage(id)
+    } finally {
+      // rm-277: release the latch even when the mutation rejects — a wedged
+      // ackingId froze every ack control until reload.
+      setAckingId(null)
+    }
     if (success) {
       void poll(false)
     }
@@ -74,8 +80,13 @@ export function ListenerChannel() {
   const handleAckAll = async () => {
     if (ackingId) return
     setAckingId('all')
-    const success = await ackAllListenerMessages()
-    setAckingId(null)
+    let success = false
+    try {
+      success = await ackAllListenerMessages()
+    } finally {
+      // rm-277: same latch-release-on-rejection discipline as handleAck.
+      setAckingId(null)
+    }
     if (success) {
       void poll(false)
     }
