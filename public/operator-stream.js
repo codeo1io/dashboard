@@ -29,7 +29,37 @@
 // ---------------------------------------------------------------------------
 
 /** Contract version this client expects on the ready frame. */
-export const PINNED_CONTRACT_VERSION = '1.6.0'
+export const PINNED_CONTRACT_VERSION = '1.8.0'
+export const MIN_SUPPORTED_CONTRACT_VERSION = '1.7.0'
+
+/**
+ * Lexicographic compare of two [major, minor, patch] numeric tuples.
+ */
+function compareContractVersions(a, b) {
+  for (let i = 0; i < 3; i += 1) {
+    if (a[i] !== b[i]) return a[i] - b[i]
+  }
+  return 0
+}
+
+/**
+ * Contract-version range guard for frames received from the gateway:
+ * accepts [MIN_SUPPORTED_CONTRACT_VERSION, PINNED_CONTRACT_VERSION]
+ * inclusive; anything older, newer, malformed, or non-string is drift.
+ */
+export function isSupportedContractVersion(value) {
+  if (typeof value !== 'string') return false
+  const parts = value.split('.')
+  if (parts.length !== 3) return false
+  const tuple = []
+  for (const part of parts) {
+    if (!/^\d+$/.test(part)) return false
+    tuple.push(Number(part))
+  }
+  const floor = MIN_SUPPORTED_CONTRACT_VERSION.split('.').map(Number)
+  const pinned = PINNED_CONTRACT_VERSION.split('.').map(Number)
+  return compareContractVersions(tuple, floor) >= 0 && compareContractVersions(tuple, pinned) <= 0
+}
 
 /** Base delay in milliseconds for exponential backoff. */
 export const RETRY_BASE_MS = 1000
@@ -166,6 +196,8 @@ export const FAILURE_REASON_LABELS = {
   'stream-ended': 'Stream ended early',
   'workspace-unreachable': 'Workspace unavailable',
   'session-error': 'Session error',
+  'checkout-substituted': 'Checkout substituted by gateway',
+  'workspace-unavailable': 'Workspace unavailable',
   unknown: 'Unknown failure',
 }
 
@@ -414,7 +446,7 @@ export function nextStreamState(current, event) {
       if (current.connection === 'drift') {
         return current
       }
-      if (event.data.contractVersion !== PINNED_CONTRACT_VERSION) {
+      if (!isSupportedContractVersion(event.data.contractVersion)) {
         // Contract version mismatch — fail closed, clear all run state
         return {
           connection: 'drift',

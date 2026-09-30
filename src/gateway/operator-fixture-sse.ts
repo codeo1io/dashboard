@@ -21,7 +21,7 @@ export const FIXTURE_SCENARIO_NAMES = {
   success: 'success',
   /** Terminal failure after visible output, no reason: ready → running → output → terminal failed. */
   terminal_failure: 'terminal_failure',
-  /** Terminal failure with a known Gateway 1.6.0 reason code, output preserved. */
+  /** Terminal failure with a known Gateway 1.8.0 reason code, output preserved. */
   terminal_failure_known_reason: 'terminal_failure_known_reason',
   /** Terminal failure with a visibly synthetic, unrecognized reason code — must degrade to generic Failed. */
   terminal_failure_unknown_reason: 'terminal_failure_unknown_reason',

@@ -2,7 +2,7 @@
  * Single public import authority for the operator API contract (vendored copy).
  *
  * Vendored from fro-bot/agent packages/gateway/src/operator-contract/index.ts
- * at tag v0.71.0 (PR #952, commit 92b621e1).
+ * at tag v0.117.0 (contract 1.8.0).
  *
  * Omissions vs upstream barrel:
  * - toOperatorDecisionState: omitted — requires DecisionOutcome (upstream-only registry type)
@@ -29,6 +29,21 @@ export {
   parseOperatorOk,
   parseOperatorSessionInfo,
 } from './parse.ts'
+export type {
+  OperatorCheckoutHead,
+  OperatorCheckoutObservation,
+  OperatorCheckoutOperation,
+  OperatorCheckoutPreparation,
+  OperatorCheckoutPreparationFailed,
+  OperatorCheckoutPreparationRefused,
+  OperatorCheckoutProvenance,
+  OperatorLayoutRefusalReason,
+  OperatorObstructionKind,
+  OperatorRemoteFreshness,
+  OperatorUpdateFailureReason,
+  OperatorWorktreeState,
+} from './provenance.ts'
+export {parseOperatorCheckoutPreparation, parseOperatorCheckoutProvenance} from './provenance.ts'
 export type {PushHandoffState, PushSubscriptionMetadata, VapidKeyResponse} from './push.ts'
 export {parsePushHandoffState, parsePushSubscriptionMetadata, parseVapidKeyResponse} from './push.ts'
 export {assertRedactionApplied, AUTHORIZATION_OBLIGATION, REDACTION_OBLIGATION} from './redaction.ts'

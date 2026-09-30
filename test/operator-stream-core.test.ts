@@ -23,10 +23,12 @@ import {
   getOpenApprovals,
   hasOpenApprovals,
   initOperatorStream,
+  isSupportedContractVersion,
   MAX_APPROVAL_TOMBSTONES,
   MAX_OPEN_APPROVALS,
   MAX_OUTPUT_TEXT_CHARS,
   MAX_SSE_BUFFER_BYTES,
+  MIN_SUPPORTED_CONTRACT_VERSION,
   nextStreamState,
   parseSseFrame,
   PHASE_TO_WEB_STATUS,
@@ -1225,8 +1227,8 @@ describe('backoff constants', () => {
     expect(Number.isInteger(RETRY_MAX_COUNT)).toBe(true)
   })
 
-  it('PINNED_CONTRACT_VERSION is 1.6.0', () => {
-    expect(PINNED_CONTRACT_VERSION).toBe('1.6.0')
+  it('PINNED_CONTRACT_VERSION is 1.8.0', () => {
+    expect(PINNED_CONTRACT_VERSION).toBe('1.8.0')
   })
 })
 
@@ -6027,7 +6029,7 @@ describe('initOperatorStream — late-frame guard: closed stream does not mutate
     const badgeEl = {textContent: '', hidden: true}
 
     const encoder = new TextEncoder()
-    const readyFrame = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+    const readyFrame = 'event: ready\ndata: {"contractVersion":"1.8.0"}\n\n'
     const outputFrame = `event: output\ndata: ${JSON.stringify({runId: 'run-late-frame', text: 'late output', final: false, seq: 0})}\n\n`
     const approvalFrame = `event: approval\ndata: ${JSON.stringify({runId: 'run-late-frame', requestID: 'req-late', permission: 'shell', settled: false})}\n\n`
 
@@ -6113,7 +6115,7 @@ describe('initOperatorStream — terminal run: immediate close preserves termina
     const noticeEl = {textContent: '', hidden: false, dataset: {connectionState: ''}}
 
     const encoder = new TextEncoder()
-    const readyFrame = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+    const readyFrame = 'event: ready\ndata: {"contractVersion":"1.8.0"}\n\n'
     const terminalFrame = `event: status\ndata: ${JSON.stringify({
       runId: 'run-terminal-001',
       entityRef: 'fro-bot/agent',
@@ -7378,5 +7380,27 @@ describe('connection lifecycle — stranded connections abort (rm-261)', () => {
     expect(signals[0]?.aborted).toBe(true) // response body cancelled, socket released
     expect(fetchCount).toBe(1) // backoff (1s) has not fired within the tick
     expect(noticeEl.dataset.connectionState).toBeTruthy()
+  })
+})
+
+describe('operator-stream contract version range gate', () => {
+  it('pins the ceiling to the vendored contract version', () => {
+    expect(PINNED_CONTRACT_VERSION).toBe('1.8.0')
+    expect(MIN_SUPPORTED_CONTRACT_VERSION).toBe('1.7.0')
+  })
+  it('accepts the supported range and rejects outside it', () => {
+    expect(isSupportedContractVersion('1.7.0')).toBe(true)
+    expect(isSupportedContractVersion('1.8.0')).toBe(true)
+    expect(isSupportedContractVersion('1.7.5')).toBe(true)
+    expect(isSupportedContractVersion('1.6.0')).toBe(false)
+    expect(isSupportedContractVersion('1.6.9')).toBe(false)
+    expect(isSupportedContractVersion('1.8.1')).toBe(false)
+    expect(isSupportedContractVersion('1.9.0')).toBe(false)
+    expect(isSupportedContractVersion('2.0.0')).toBe(false)
+    expect(isSupportedContractVersion('garbage')).toBe(false)
+    expect(isSupportedContractVersion('1.7')).toBe(false)
+    expect(isSupportedContractVersion(7)).toBe(false)
+    expect(isSupportedContractVersion(null)).toBe(false)
+    expect(isSupportedContractVersion(undefined)).toBe(false)
   })
 })

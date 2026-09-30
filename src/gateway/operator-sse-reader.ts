@@ -27,6 +27,42 @@ import type {ResetReason, RunStreamFrame} from './operator-contract/sse-frames.t
 import {isOperatorFailureKind} from './operator-contract/run-status.ts'
 import {OPERATOR_CONTRACT_VERSION} from './operator-contract/version.ts'
 
+/**
+ * Oldest gateway contract version this reader accepts (inclusive). The
+ * 1.8.0 additions are optional fields plus additive failure kinds, so
+ * frames declared 1.7.0 still parse against the 1.8.0 mirror.
+ */
+const MIN_SUPPORTED_CONTRACT_VERSION = '1.7.0'
+
+function compareContractVersions(a: readonly number[], b: readonly number[]): number {
+  for (let i = 0; i < 3; i += 1) {
+    const left = a[i]
+    const right = b[i]
+    if (left === undefined || right === undefined) break
+    if (left !== right) return left - right
+  }
+  return 0
+}
+
+/**
+ * Contract-version range guard: accepts
+ * [MIN_SUPPORTED_CONTRACT_VERSION, OPERATOR_CONTRACT_VERSION] inclusive.
+ * Anything older, newer, malformed, or non-string is contract drift.
+ */
+function isSupportedContractVersion(value: unknown): boolean {
+  if (typeof value !== 'string') return false
+  const parts = value.split('.')
+  if (parts.length !== 3) return false
+  const tuple: number[] = []
+  for (const part of parts) {
+    if (!/^\d+$/.test(part)) return false
+    tuple.push(Number(part))
+  }
+  const floor = MIN_SUPPORTED_CONTRACT_VERSION.split('.').map(Number)
+  const ceiling = OPERATOR_CONTRACT_VERSION.split('.').map(Number)
+  return compareContractVersions(tuple, floor) >= 0 && compareContractVersions(tuple, ceiling) <= 0
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -491,10 +527,10 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
           onClose()
           return false // stop
         }
-        if (frame.data.contractVersion !== OPERATOR_CONTRACT_VERSION) {
-          logger?.error('sse-reader: contract version mismatch', {route: ROUTE_TEMPLATE})
+        if (!isSupportedContractVersion(frame.data.contractVersion)) {
+          logger?.error('sse-reader: contract version unsupported', {route: ROUTE_TEMPLATE})
           drifted = true
-          onError(new Error('contract-drift: server contract version does not match client'))
+          onError(new Error('contract-drift: server contract version is outside the supported range'))
           onClose()
           return false // stop
         }

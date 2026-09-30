@@ -60,6 +60,8 @@ export const FAILURE_REASON_LABELS = {
   'stream-ended': 'Stream ended early',
   'workspace-unreachable': 'Workspace unavailable',
   'session-error': 'Session error',
+  'checkout-substituted': 'Checkout substituted by gateway',
+  'workspace-unavailable': 'Workspace unavailable',
   unknown: 'Unknown failure',
 }
 
