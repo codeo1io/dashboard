@@ -477,6 +477,105 @@ describe('OAuth flow', () => {
       expect(res.status).toBe(413)
     })
 
+    it('POST /auth/logout with a chunked body over the cap and NO Content-Length → 413 after bounded reads, never drained (rm-309)', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat'})
+      const sm = new SessionManager(TEST_KEY)
+      const sessionCookie = sm.sign('octocat')
+
+      // 8 × 8 KiB chunks (64 KiB) against the 16 KiB cap, with no declared
+      // length at all: the pre-rm-309 declared-length precheck saw nothing
+      // here and `await c.req.text()` buffered the entire stream before the
+      // post-read check — the read itself must be bounded instead.
+      let pulledChunks = 0
+      const chunkedBody = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulledChunks += 1
+          controller.enqueue(new Uint8Array(8 * 1024).fill(65))
+          if (pulledChunks >= 8) controller.close()
+        },
+      })
+      const req = new Request('http://localhost/auth/logout', {
+        method: 'POST',
+        headers: {
+          cookie: `session=${sessionCookie}`,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: chunkedBody,
+        duplex: 'half',
+      })
+      // Shape guard: a stream body carries no declared length.
+      expect(req.headers.get('content-length')).toBeNull()
+
+      const res = await app.request(req)
+      expect(res.status).toBe(413)
+      // The cap cancels the reader at the third chunk (24 KiB > 16 KiB), it
+      // never drains all eight.
+      expect(pulledChunks).toBe(3)
+    })
+
+    it('POST /auth/logout with an understated Content-Length → 413 after bounded reads (rm-309)', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat'})
+      const sm = new SessionManager(TEST_KEY)
+      const sessionCookie = sm.sign('octocat')
+
+      // Declared 16 bytes, actually 64 KiB: the declared-length fast path is
+      // lied to, so only the streaming bound can stop the read.
+      let pulledChunks = 0
+      const chunkedBody = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulledChunks += 1
+          controller.enqueue(new Uint8Array(8 * 1024).fill(65))
+          if (pulledChunks >= 8) controller.close()
+        },
+      })
+      const req = new Request('http://localhost/auth/logout', {
+        method: 'POST',
+        headers: {
+          cookie: `session=${sessionCookie}`,
+          'content-type': 'application/x-www-form-urlencoded',
+          'content-length': '16',
+        },
+        body: chunkedBody,
+        duplex: 'half',
+      })
+      expect(req.headers.get('content-length')).toBe('16')
+
+      const res = await app.request(req)
+      expect(res.status).toBe(413)
+      expect(pulledChunks).toBe(3)
+    })
+
+    it('POST /auth/logout with a never-terminating chunked body → bounded 413 without waiting for end of stream (rm-309)', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat'})
+      const sm = new SessionManager(TEST_KEY)
+      const sessionCookie = sm.sign('octocat')
+
+      // The stream enqueues forever and never closes: a read that waited for
+      // end-of-body would hang the handler — the cap must decide on its own
+      // byte count and cancel (Hono's request adapter itself probes at most
+      // one 8 KiB chunk regardless of the handler).
+      let pulledChunks = 0
+      const endlessBody = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulledChunks += 1
+          controller.enqueue(new Uint8Array(8 * 1024).fill(65))
+        },
+      })
+      const req = new Request('http://localhost/auth/logout', {
+        method: 'POST',
+        headers: {
+          cookie: `session=${sessionCookie}`,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: endlessBody,
+        duplex: 'half',
+      })
+
+      const res = await app.request(req)
+      expect(res.status).toBe(413)
+      expect(pulledChunks).toBeLessThanOrEqual(4)
+    })
+
     it('POST /auth/logout with a non-urlencoded content type → 415 (rm-268)', async () => {
       const app = await buildTestApp({operatorLogin: 'octocat'})
       const sm = new SessionManager(TEST_KEY)
