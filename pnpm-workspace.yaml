@@ -22,14 +22,29 @@ minimumReleaseAgeExclude:
   - vite@8.3.1
 
 overrides:
-  brace-expansion@2: '>=2.1.2 <3.0.0'
-  brace-expansion@5: '>=5.0.7 <6.0.0'
-  fast-uri@3: '>=3.1.5 <4.0.0'
+  # rm-291 (cycle 2, 2026-10-01): floors raised to the patched lines so
+  # `pnpm audit --recursive` reads zero. GHSA ids + patched lines re-derived
+  # live at implement time (gh api '/advisories?affects=…', 2026-10-01) — the
+  # 2026-09-28/29 advisory wave is recent; re-probe before moving these again.
+  # brace-expansion 2.1.7 binds GHSA-q2hr-2g5m-vwhr (moderate); the
+  # GHSA-qhr7-859c-m2p7 / GHSA-6j4f-fj2g-mc7p highs patch at 2.1.6/2.1.5.
+  brace-expansion@2: '>=2.1.7 <3.0.0'
+  # brace-expansion 5.0.12 binds GHSA-q2hr-2g5m-vwhr (qhr7 patches at 5.0.11).
+  brace-expansion@5: '>=5.0.12 <6.0.0'
+  # fast-uri 3.1.8 is the terminal 3.x patch: GHSA-hrr3-gc8f-f4qj patches at
+  # 3.1.8; GHSA-58mr-gqgx-xq4g / GHSA-qw65-cvwx-89v3 (live Dependabot alerts
+  # #29/#30) patch at 3.1.7. Dependabot cannot raise a transitive floor
+  # itself (update run 36745179690: security_update_not_possible), so this
+  # floor is the cure for those alerts.
+  fast-uri@3: '>=3.1.8 <4.0.0'
   # GHSA-82x6-q7mm-w9cf — toml is dev-transitive via
   # @opencode-ai/plugin>effect; >=4.2.0 is the patched line
   # (rescued by content from run b4aac9ba / PR #82 via cycle-13;
   # the batch's internal rm-171 numbering collided with landed ids).
   toml: '>=4.2.0'
-  undici@7: '>=7.29.0 <8.0.0'
+  # undici 7.29.1: the 2026-09-28/29 wave's 7.x ranges all end < 7.29.1
+  # (e.g. GHSA-w293-vg96-wgc3, GHSA-rfgv-xxqx-mfg5); the 7.x line resolves
+  # 7.30.0 (dist-tag seven).
+  undici@7: '>=7.29.1 <8.0.0'
 
 shamefullyHoist: true

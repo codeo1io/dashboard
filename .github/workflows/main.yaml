@@ -115,6 +115,14 @@ jobs:
       - name: 📦 Setup
         uses: ./.github/actions/setup
 
+      - name: 🛡 Audit Dependencies
+        # rm-293 (cycle 2): the 2026-09-30 advisory drift (19 dev-scope
+        # findings) proved CI had no dependency-advisory truth. Post-install
+        # step against the frozen lockfile, same pnpm as the tests; fails on
+        # any finding. Opened in the same batch as the rm-291 floor raise so
+        # main never reddens from pre-existing debt.
+        run: pnpm audit --recursive
+
       # No explicit "Build web" step: the pretest hook (package.json) builds the
       # client before vitest runs, so a separate step would build it twice.
       - name: 🧪 Run Tests
