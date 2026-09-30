@@ -30,6 +30,11 @@ export interface OperatorApprovalFrameOpen {
   readonly runId: string
   readonly requestID: string
   readonly permission: string
+  /**
+   * Gateway-side identifier of the approval itself (contract 1.7.0 — approval
+   * views over runs). Optional and additive; a 1.6.0 stream omits it.
+   */
+  readonly approvalId?: string
   readonly command?: string
   readonly filepath?: string
   readonly settled: false
