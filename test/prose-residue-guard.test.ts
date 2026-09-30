@@ -37,6 +37,12 @@ const EXCLUDED_DIRS = new Set([
 const EXCLUDED_FILES = new Set([
   'pnpm-lock.yaml', // generated lockfile
   'ROADMAP.md', // living ledger; items carry dated historical signals
+  // rm-337 (run f9854748fa28, 2026-10-01): the ROADMAP monolith split moved
+  // the ledger's dated provenance/signals lines here verbatim (fenced
+  // sections, byte-preserved); same class of dated historical signal as
+  // ROADMAP.md itself — see the annex header for the mapping and the
+  // byte-preservation verification recipe.
+  'docs/plans/2026-10-01-001-chore-roadmap-ledger-annex-plan.md',
   'test/fork-exclusion-guard.test.ts', // guard machinery names its own terms
   'test/prose-residue-guard.test.ts', // this file
 ])

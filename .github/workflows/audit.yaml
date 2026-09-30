@@ -1,0 +1,67 @@
+# Weekly dependency-advisory gate over the pnpm lockfile — the scheduled
+# red/green that keeps the pnpm-workspace.yaml floors (rm-338, run
+# f9854748fa28, 2026-10-01) honest.
+#
+# `pnpm audit --recursive` is lockfile-driven: NO `pnpm install` step, by
+# design. The job is cold-start-proof the way the GraphQL canary was not —
+# the canary's 'Set up Node 24 (native TS, no install needed)' step died at
+# startup because src/ re-exports @bfra.me/es runtime deps the workflow
+# never installs; audit needs only pnpm itself plus network to the advisory
+# DB. A red run here means one of exactly two things: a floor regression in
+# the lockfile, or a newly indexed advisory against a resolved version —
+# both cured by raising the pnpm-workspace.yaml overrides floor and
+# re-resolving with `pnpm install`.
+#
+# Read-only credentials: contents: read only. Issues are disabled on this
+# repository (verified live 2026-10-01: has_issues=false), so there is no
+# issue-filing path and no issues: write grant — the red run is the advisory
+# signal, the same discipline base-drift.yaml records.
+name: Audit
+
+on:
+  schedule:
+    - cron: '41 5 * * 1' # Mondays 05:41 UTC — after the 05:23 canary, before the 06:27 scorecard
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Audit dependencies
+    # rm-188 lineage: pinned ubuntu-24.04 per the hosted-runner CI policy —
+    # re-evaluate at the rm-139 Node-26 window (2026-10-28).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # pnpm via pnpm/action-setup (repo convention, see visual.yaml). No
+      # setup-node store cache on purpose: this job installs nothing, so
+      # there is nothing in the store worth caching.
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - name: Audit dependencies
+        run: pnpm audit --recursive
+
+      - name: Advisory report (issues-disabled fallback)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY" --jq '.has_issues')" = 'true' ]; then
+            echo '::warning::advisories found — issues are enabled on this repository, so this workflow wants an issues: write grant plus a filing step (it deliberately carries none; rm-338, 2026-10-01)'
+          else
+            echo '::warning::advisories found — issues are disabled on this repository, so this red run is the advisory signal: raise the pnpm-workspace.yaml overrides floor for the affected package and re-resolve with pnpm install'
+          fi

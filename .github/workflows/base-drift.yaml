@@ -35,8 +35,12 @@ on:
   workflow_dispatch: {}
 
 permissions:
+  # rm-339 (run f9854748fa28, 2026-10-01): the `issues: write` grant is
+  # dropped — issues are disabled on this repository (has_issues=false,
+  # verified live), so the grant was dead weight. The drift-issue path below
+  # keeps its disabled-repo fallback; if issues are ever enabled, restore
+  # the grant alongside that path.
   contents: read
-  issues: write
 
 jobs:
   drift:
@@ -50,6 +54,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # rm-339 (2026-10-01): no push surface exists in this workflow —
+        # do not persist the checkout credential to the runner's git config.
+        with:
+          persist-credentials: false
 
       - name: Compare Dockerfile pins to live node:24-slim digest
         env:
@@ -158,6 +166,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # rm-339 (2026-10-01): report-only job — no push surface, no
+        # credential persistence.
+        with:
+          persist-credentials: false
 
       - name: Report packageManager pin vs upstream fro-bot/dashboard
         run: |
