@@ -29,7 +29,7 @@ export interface PushClientError {
 }
 
 export interface PushClient {
-  refreshCsrf(): Promise<Result<string, PushClientError>>
+  refreshCsrf(signal?: AbortSignal): Promise<Result<string, PushClientError>>
   /**
    * `pushDisabled: true` is set only when the Gateway route returned HTTP
    * 404 — the synthetic push_disabled signal driven by status alone, never
@@ -43,7 +43,7 @@ export interface PushClient {
    * 404 — the synthetic push_disabled signal driven by status alone, never
    * response-body shape. A non-404 error stays a normal `PushClientError`.
    */
-  getPushSubscriptionMetadata(): Promise<
+  getPushSubscriptionMetadata(signal?: AbortSignal): Promise<
     Result<{readonly pushDisabled: boolean; readonly metadata: PushSubscriptionMetadata | undefined}, PushClientError>
   >
   subscribePush(
@@ -52,7 +52,12 @@ export interface PushClient {
     idempotencyKey: string,
     signal?: AbortSignal,
   ): Promise<Result<void, PushClientError>>
-  unsubscribePush(endpoint: string, csrfToken: string, idempotencyKey: string): Promise<Result<void, PushClientError>>
+  unsubscribePush(
+    endpoint: string,
+    csrfToken: string,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<Result<void, PushClientError>>
 }
 
 export interface BuildPushClientOptions {
@@ -104,10 +109,11 @@ export function buildPushClient(opts?: BuildPushClientOptions): PushClient {
   }
 
   return {
-    async refreshCsrf() {
+    async refreshCsrf(signal?: AbortSignal) {
       try {
         const res = await browserFetch(withFixtureSessionId(`${operatorBase}/session/csrf`), {
           headers: {'content-type': 'application/json'},
+          signal,
         })
         if (!res.ok) return err({kind: 'http', status: res.status})
         const data = (await res.json()) as unknown
@@ -142,10 +148,11 @@ export function buildPushClient(opts?: BuildPushClientOptions): PushClient {
       }
     },
 
-    async getPushSubscriptionMetadata() {
+    async getPushSubscriptionMetadata(signal?: AbortSignal) {
       try {
         const res = await browserFetch(withFixtureSessionId(`${endpointBase}/subscriptions`), {
           headers: {'content-type': 'application/json'},
+          signal,
         })
         if (res.status === 404) return ok({pushDisabled: true, metadata: undefined})
         if (!res.ok) return err({kind: 'http', status: res.status})
@@ -186,7 +193,7 @@ export function buildPushClient(opts?: BuildPushClientOptions): PushClient {
         if (res.status !== 400) return err({kind: 'http', status: res.status})
 
         // 400 → refresh CSRF once and retry ONCE reusing the SAME idempotency key.
-        const retryCsrfResult = await this.refreshCsrf()
+        const retryCsrfResult = await this.refreshCsrf(signal)
         if (!retryCsrfResult.success) return retryCsrfResult
 
         if (signal?.aborted === true) return err({kind: 'network'})
@@ -199,13 +206,14 @@ export function buildPushClient(opts?: BuildPushClientOptions): PushClient {
       }
     },
 
-    async unsubscribePush(endpoint, csrfToken, idempotencyKey) {
+    async unsubscribePush(endpoint, csrfToken, idempotencyKey, signal?: AbortSignal) {
       if (csrfToken.trim() === '') return err({kind: 'validation'})
       if (idempotencyKey.trim() === '') return err({kind: 'validation'})
 
       const post = (token: string): Promise<Response> =>
         browserFetch(withFixtureSessionId(`${endpointBase}/subscriptions/unsubscribe`), {
           method: 'POST',
+          signal,
           headers: {
             'content-type': 'application/json',
             'x-csrf-token': token,
@@ -221,7 +229,7 @@ export function buildPushClient(opts?: BuildPushClientOptions): PushClient {
         if (res.status !== 400) return err({kind: 'http', status: res.status})
 
         // 400 → refresh CSRF once and retry ONCE reusing the SAME idempotency key.
-        const retryCsrfResult = await this.refreshCsrf()
+        const retryCsrfResult = await this.refreshCsrf(signal)
         if (!retryCsrfResult.success) return retryCsrfResult
 
         const retryRes = await post(retryCsrfResult.data)
@@ -579,6 +587,8 @@ export async function resubscribeStaleKey(deps: SubscribeDeps): Promise<Subscrib
 }
 
 export interface UnsubscribeDeps {
+  /** rm-134: abort the cleanup fetches; a pre-aborted signal means no Gateway POST at all. */
+  readonly signal?: AbortSignal
   readonly getLocalSubscription: () => Promise<MinimalPushSubscription | null>
   /** rm-272: bound on the local read — serviceWorker.ready never settles with no registration, and logout cleanup must not hang on it. */
   readonly localReadTimeoutMs?: number
@@ -595,6 +605,9 @@ export interface UnsubscribeDeps {
  * endpoint is NEVER persisted solely to work around this.
  */
 export async function unsubscribeOptOut(deps: UnsubscribeDeps): Promise<{readonly gatewayUnsubscribeCalled: boolean}> {
+  // rm-134: an already-aborted signal means the operator session is gone —
+  // never issue a dangling Gateway POST (or a pointless local read).
+  if (deps.signal?.aborted) return {gatewayUnsubscribeCalled: false}
   const mintKey = deps.mintIdempotencyKey ?? mintIdempotencyKey
   // rm-272: bound the local read — `navigator.serviceWorker.ready` never settles
   // when no registration exists, and logout cleanup must not hang on it. A
@@ -615,10 +628,10 @@ export async function unsubscribeOptOut(deps: UnsubscribeDeps): Promise<{readonl
   await subscription.unsubscribe().catch(() => false)
 
   try {
-    const csrfResult = await deps.pushClient.refreshCsrf()
+    const csrfResult = await deps.pushClient.refreshCsrf(deps.signal)
     if (!csrfResult.success) return {gatewayUnsubscribeCalled: false}
 
-    await deps.pushClient.unsubscribePush(endpoint, csrfResult.data, mintKey())
+    await deps.pushClient.unsubscribePush(endpoint, csrfResult.data, mintKey(), deps.signal)
     return {gatewayUnsubscribeCalled: true}
   } catch {
     return {gatewayUnsubscribeCalled: false}
@@ -644,6 +657,8 @@ export const INITIAL_RECONCILE_SWEEP_CACHE: ReconcileSweepCache = {
 }
 
 export interface ReconcileSweepDeps {
+  /** rm-134: abort the sweep (logout) — no reads, no metadata GET, no action after abort. */
+  readonly signal?: AbortSignal
   readonly getLocalSubscription: () => Promise<MinimalPushSubscription | null>
   readonly getPermission?: () => NotificationPermission | 'unsupported'
   readonly pushClient: PushClient
@@ -683,6 +698,10 @@ export async function runReconcileSweep(
   deps: ReconcileSweepDeps,
   cache: ReconcileSweepCache,
 ): Promise<ReconcileSweepResult> {
+  // rm-134: a sweep that fires after logout must not touch the Gateway.
+  if (deps.signal?.aborted) {
+    return {skipped: true, action: undefined, uiState: undefined, nextCache: cache}
+  }
   const getPermission = deps.getPermission ?? getNotificationPermission
   const now = deps.now ?? Date.now
   const minIntervalMs = deps.minIntervalMs ?? DEFAULT_MIN_INTERVAL_MS
@@ -717,9 +736,14 @@ export async function runReconcileSweep(
     return {skipped: true, action: undefined, uiState: undefined, nextCache: cache}
   }
 
-  const metadataResult = await deps.pushClient.getPushSubscriptionMetadata()
+  const metadataResult = await deps.pushClient.getPushSubscriptionMetadata(deps.signal)
   if (!metadataResult.success) {
     // Transport/protocol error — do not mutate state on an inconclusive read.
+    return {skipped: true, action: undefined, uiState: undefined, nextCache: cache}
+  }
+  // rm-134: aborted mid-read — treat like an inconclusive read: no action,
+  // no cache mutation, and (because the guard below never ran) no POST.
+  if (deps.signal?.aborted) {
     return {skipped: true, action: undefined, uiState: undefined, nextCache: cache}
   }
 
