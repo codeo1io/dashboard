@@ -6,11 +6,14 @@
  * closed on every error path.
  *
  * Security invariants:
- * - Contract-version gate: the first frame must be 'ready' with a matching
- *   contractVersion. A mismatch triggers a fail-closed drift error and stops
- *   all further frame dispatch.
+ * - Contract-version gate: the first frame must be 'ready' with a
+ *   contractVersion in the forward-support set (1.6.0/1.7.0/1.8.0; pin
+ *   src/gateway/operator-contract/version.ts). A mismatch triggers a
+ *   fail-closed drift error and stops all further frame dispatch.
  * - No runId or dynamic path segment is ever logged — only the route template.
  * - No response body text is included in errors (no-oracle).
+ * - 401 → typed workspace-unavailable error (v0.116.0 semantics: the gateway
+ *   workspace is unavailable — distinct from an expired operator session).
  * - 404 → typed not-found error; body is never parsed for cause.
  * - 429 → typed rate-limited error.
  * - Network throw / abort → network-style error, fail closed.
@@ -25,7 +28,7 @@ import type {Logger} from '../logger.ts'
 import type {OperatorApprovalFrame} from './operator-contract/approval-frame.ts'
 import type {ResetReason, RunStreamFrame} from './operator-contract/sse-frames.ts'
 import {isOperatorFailureKind} from './operator-contract/run-status.ts'
-import {OPERATOR_CONTRACT_VERSION} from './operator-contract/version.ts'
+import {OPERATOR_CONTRACT_VERSION, SUPPORTED_OPERATOR_CONTRACT_VERSIONS} from './operator-contract/version.ts'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -187,6 +190,19 @@ function parseSseRecord(record: string): SseParseResult | null {
     // for a valid status frame — missing or unrecognized values normalize to
     // absent (never echoed, never surfaced as a raw value).
     const failureKind = isOperatorFailureKind(candidate.failureKind) ? candidate.failureKind : undefined
+    // Checkout provenance (contract 1.7.0; checkout-advance signal 1.8.0) —
+    // optional object with optional members; missing or malformed members
+    // normalize to absent. Never echoes a raw object.
+    const rawCheckout = candidate.checkout
+    let checkout: {ref?: string; commit?: string; advanced?: boolean} | undefined
+    if (rawCheckout !== undefined && rawCheckout !== null && typeof rawCheckout === 'object') {
+      const provenance = rawCheckout as {ref?: unknown; commit?: unknown; advanced?: unknown}
+      checkout = {
+        ...(typeof provenance.ref === 'string' && provenance.ref.length > 0 ? {ref: provenance.ref} : {}),
+        ...(typeof provenance.commit === 'string' && provenance.commit.length > 0 ? {commit: provenance.commit} : {}),
+        ...(provenance.advanced === true ? {advanced: true} : {}),
+      }
+    }
     return {
       success: true,
       frame: {
@@ -200,6 +216,7 @@ function parseSseRecord(record: string): SseParseResult | null {
           startedAt: candidate.startedAt,
           stale: candidate.stale,
           ...(failureKind === undefined ? {} : {failureKind}),
+          ...(checkout === undefined ? {} : {checkout}),
         },
       },
     }
@@ -280,11 +297,18 @@ function parseSseRecord(record: string): SseParseResult | null {
       if (candidate.filepath !== undefined && typeof candidate.filepath !== 'string') {
         return {success: false, error: new Error('approval frame missing required fields')}
       }
+      // approvalId (contract 1.7.0 — approval views over runs): optional
+      // non-empty string on the open variant; anything else normalizes to absent.
+      const approvalId =
+        typeof candidate.approvalId === 'string' && candidate.approvalId.length > 0
+          ? candidate.approvalId
+          : undefined
       const data: OperatorApprovalFrame = {
         runId: candidate.runId,
         requestID: candidate.requestID,
         permission: candidate.permission,
         settled: false,
+        ...(approvalId === undefined ? {} : {approvalId}),
         ...(candidate.command === undefined ? {} : {command: candidate.command}),
         ...(candidate.filepath === undefined ? {} : {filepath: candidate.filepath}),
       }
@@ -371,15 +395,18 @@ export interface OperatorSseReaderOptions {
  * 1. Validates the path is a relative /operator/runs/ path (no absolute URLs).
  * 2. Fetches the given path with credentials:'include', redirect:'error', and
  *    Accept: text/event-stream.
- * 3. Branches on HTTP status: 200 → stream; 404 → not-found; 429 → rate-limited;
- *    other → network-style error. All non-200 paths call onError then onClose.
+ * 3. Branches on HTTP status: 200 → stream; 401 → workspace-unavailable
+ *    (v0.116.0 gateway semantics: workspace unavailable, NOT an expired
+ *    session); 404 → not-found; 429 → rate-limited; other → network-style
+ *    error. All non-200 paths call onError then onClose.
  * 4. On 200, verifies Content-Type is text/event-stream; otherwise fail closed.
  * 5. Reads the body as a ReadableStream, feeds an incremental SSE parser with
  *    CRLF normalization and a hard buffer cap (MAX_SSE_BUFFER_BYTES).
  * 6. Enforces the contract-version gate via handleFrame(): the first frame must
- *    be 'ready' with contractVersion === OPERATOR_CONTRACT_VERSION. A mismatch
- *    triggers a fail-closed drift error and stops all further frame dispatch.
- *    Both the streaming path and the EOF flush path go through handleFrame().
+ *    be 'ready' with contractVersion in SUPPORTED_OPERATOR_CONTRACT_VERSIONS
+ *    (1.6.0/1.7.0/1.8.0). A mismatch triggers a fail-closed drift error and
+ *    stops all further frame dispatch. Both the streaming path and the EOF
+ *    flush path go through handleFrame().
  * 7. On stream end, calls onClose.
  *
  * Security: never logs the dynamic runId or path — only the route template.
@@ -424,6 +451,17 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
     }
 
     // Branch on HTTP status
+    if (response.status === 401) {
+      // Contract 1.8.0 forward-support (v0.116.0 gateway semantics): 401 from
+      // the run-stream endpoint means the gateway WORKSPACE is unavailable —
+      // distinct from an expired operator session. Operator-actionable: the
+      // gateway access runbook, not a re-login.
+      logger?.error('sse-reader: workspace unavailable', {route: ROUTE_TEMPLATE, status: 401})
+      onError(new Error('workspace-unavailable: stream endpoint returned 401 (see docs/runbooks/gateway-access.md)'))
+      onClose()
+      return
+    }
+
     if (response.status === 404) {
       logger?.error('sse-reader: stream not found', {route: ROUTE_TEMPLATE, status: 404})
       onError(new Error('not-found: stream endpoint returned 404'))
@@ -491,10 +529,16 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
           onClose()
           return false // stop
         }
-        if (frame.data.contractVersion !== OPERATOR_CONTRACT_VERSION) {
+        if (!SUPPORTED_OPERATOR_CONTRACT_VERSIONS.has(frame.data.contractVersion)) {
+          // Forward-support gate (rm-252): accept the additive set
+          // 1.6.0/1.7.0/1.8.0; anything older or newer drifts fail-closed.
           logger?.error('sse-reader: contract version mismatch', {route: ROUTE_TEMPLATE})
           drifted = true
-          onError(new Error('contract-drift: server contract version does not match client'))
+          onError(
+            new Error(
+              `contract-drift: server contract version not in the supported set {${[...SUPPORTED_OPERATOR_CONTRACT_VERSIONS].join(', ')}} (pin ${OPERATOR_CONTRACT_VERSION}) — received value withheld (no echo of server-supplied data)`,
+            ),
+          )
           onClose()
           return false // stop
         }

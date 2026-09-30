@@ -1,6 +1,12 @@
 export type ListenerSource = 'infra' | 'agent'
 export type ListenerSeverity = 'info' | 'warning' | 'critical'
 
+/** Mutation fetches carry a deadline so a stalled ack cannot wedge the caller's
+ * ackingId latch until reload (rm-277, cycle 20) — same discipline as
+ * browserFetch in ../push/subscribe.ts. Polls use LISTENER_FETCH_TIMEOUT_MS in
+ * ../views/Listener.tsx; mutations get their own bound here. */
+export const LISTENER_ACK_TIMEOUT_MS = 15_000
+
 export interface ListenerLink {
   readonly label: string
   readonly url: string
@@ -151,6 +157,7 @@ async function fetchAckCsrfToken(): Promise<string | null> {
     const res = await fetch('/api/listener/csrf', {
       method: 'GET',
       credentials: 'same-origin',
+      signal: AbortSignal.timeout(LISTENER_ACK_TIMEOUT_MS),
     })
     if (!res.ok) return null
     const data: unknown = await res.json()
@@ -171,6 +178,7 @@ export async function ackListenerMessage(id: string): Promise<boolean> {
       method: 'POST',
       credentials: 'same-origin',
       headers: { [ACK_CSRF_HEADER]: csrfToken },
+      signal: AbortSignal.timeout(LISTENER_ACK_TIMEOUT_MS),
     })
     return res.status === 202
   } catch {
@@ -186,6 +194,7 @@ export async function ackAllListenerMessages(): Promise<boolean> {
       method: 'POST',
       credentials: 'same-origin',
       headers: { [ACK_CSRF_HEADER]: csrfToken },
+      signal: AbortSignal.timeout(LISTENER_ACK_TIMEOUT_MS),
     })
     return res.status === 202
   } catch {
