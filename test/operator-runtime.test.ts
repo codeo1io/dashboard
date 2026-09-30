@@ -21,6 +21,7 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {fetchFixtureSession} from '../web/src/operator/fixture-runtime-loader.ts'
 import {
+  createActiveStreamOwner,
   createOperatorRuntime,
   type OperatorRuntimeHandle,
   type OperatorRuntimeOptions,
@@ -803,5 +804,111 @@ describe('createOperatorRuntime — runtime.ts source contains active-stream coo
     const dirName = path.dirname(url.fileURLToPath(import.meta.url))
     const src = await fs.readFile(path.join(dirName, '../web/src/operator/runtime.ts'), 'utf8')
     expect(src).toContain('_closeActiveStream')
+  })
+})
+
+describe('createActiveStreamOwner — instance-scoped stream ownership (rm-283)', () => {
+  beforeEach(() => {
+    // The root vitest jsdom env does not expose the browser's CSS global (the
+    // web workspace env does — web/src/operator/runtime.test.ts exercises
+    // CSS.escape there). close() clears the stale-eviction marker via
+    // CSS.escape(activeRunId); these tests use plain runIds, for which the
+    // identity escape is exact.
+    vi.stubGlobal('CSS', {escape: (value: string): string => value})
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    document.body.innerHTML = ''
+  })
+
+  interface HandleSpy {
+    close: ReturnType<typeof vi.fn<() => void>>
+  }
+
+  function makeHandle(): HandleSpy {
+    return {close: vi.fn<() => void>()}
+  }
+
+  it('attach records the active run and close releases exactly that handle', () => {
+    const owner = createActiveStreamOwner()
+    const handle = makeHandle()
+    owner.attach(handle, 'run-a')
+    expect(owner.activeRunId).toBe('run-a')
+    owner.close()
+    expect(handle.close).toHaveBeenCalledTimes(1)
+    expect(owner.activeRunId).toBeNull()
+  })
+
+  it('single-open within one instance: attaching run-b closes run-a first (accordion invariant preserved)', () => {
+    const owner = createActiveStreamOwner()
+    const a = makeHandle()
+    const b = makeHandle()
+    owner.attach(a, 'run-a')
+    owner.attach(b, 'run-b')
+    expect(a.close).toHaveBeenCalledTimes(1)
+    expect(b.close).not.toHaveBeenCalled()
+    expect(owner.activeRunId).toBe('run-b')
+  })
+
+  it('rm-283 regression: mount1 cleanup does not close mount2 stream — two owners, late close', async () => {
+    // The StrictMode double-mount shape: mount1 and mount2 each own their
+    // stream; mount1's cleanup resolves LATE — after mount2 already attached.
+    // With the pre-rm-283 module singletons, owner1.close() here would close
+    // mount2's handle and clear its runId, killing the just-opened stream.
+    const owner1 = createActiveStreamOwner()
+    const owner2 = createActiveStreamOwner()
+    const handle1 = makeHandle()
+    const handle2 = makeHandle()
+
+    owner1.attach(handle1, 'run-one')
+    owner2.attach(handle2, 'run-two')
+    // Let any stray microtasks settle, then fire the late mount1 cleanup.
+    await new Promise(resolve => setTimeout(resolve, 10))
+    owner1.close()
+
+    expect(handle1.close).toHaveBeenCalledTimes(1)
+    // mount2's stream SURVIVES mount1's late cleanup — the rm-283 invariant.
+    expect(handle2.close).not.toHaveBeenCalled()
+    expect(owner2.activeRunId).toBe('run-two')
+  })
+
+  it('close is idempotent: a second close neither throws nor double-closes', () => {
+    const owner = createActiveStreamOwner()
+    const handle = makeHandle()
+    owner.attach(handle, 'run-a')
+    owner.close()
+    expect(() => owner.close()).not.toThrow()
+    expect(handle.close).toHaveBeenCalledTimes(1)
+  })
+
+  it('close clears the data-stream-attached marker on the previously-active card', () => {
+    const card = document.createElement('div')
+    card.dataset.runId = 'run-a'
+    card.dataset.streamAttached = 'true'
+    document.body.append(card)
+
+    const owner = createActiveStreamOwner()
+    owner.attach(makeHandle(), 'run-a')
+    expect(card.dataset.streamAttached).toBe('true')
+
+    owner.close()
+    expect(card.dataset.streamAttached).toBeUndefined()
+  })
+})
+
+describe('runtime.ts source — active-stream ownership stays instance-scoped (rm-283)', () => {
+  it('defaultRuntimeLoader builds a fresh owner per call and no module-level singleton remains', async () => {
+    const fs = await import('node:fs/promises')
+    const path = await import('node:path')
+    const url = await import('node:url')
+    const dirName = path.dirname(url.fileURLToPath(import.meta.url))
+    const src = await fs.readFile(path.join(dirName, '../web/src/operator/runtime.ts'), 'utf8')
+    // Every loader invocation (one per runtime instance) constructs its own owner.
+    expect(src).toContain('createActiveStreamOwner()')
+    // The rm-283 hazard was the module-level shared state — it must stay gone.
+    // (The factory-internal lets are indented, so the anchored pattern matches
+    // only a module-scope declaration.)
+    expect(src).not.toMatch(/^let _activeStream\w+:/m)
   })
 })
