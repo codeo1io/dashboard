@@ -1,0 +1,75 @@
+# Weekly transitive-dependency audit signal (rm-278, 2026-09-30 cycle 2,
+# run 23d39aa7467e).
+#
+# Why this exists: nothing else watches TRANSITIVE dev dependencies.
+# - Dependabot version updates (.github/dependabot.yml) track direct
+#   dependencies only, so fast-uri (via ajv@8 in the eslint chain) and
+#   undici (via jsdom) have no PR path.
+# - Dependabot SECURITY updates cannot cure a transitive override floor: a
+#   floor the vulnerable version already satisfies pins the advisory open —
+#   proven live 2026-09-30 by fast-uri alerts #29/#30 (both high) staying
+#   open with dependabot_security_updates enabled while the '>=3.1.5' floor
+#   let 3.1.6 persist. The deterministic cure is a manual floor raise
+#   (rm-276, landed the same day); this workflow is the watch that makes the
+#   next one visible within a week instead of whenever someone audits by hand.
+# - dependency-review.yaml is PR-diff-only and minimumReleaseAge gates NEW
+#   resolutions, never already-resolved ones.
+#
+# Design constraints (rm-278): a SIGNAL, not a new required check —
+# schedule-only, no pull_request/push triggers, so it can never gate a merge
+# and never rides the validation runner budget. A red run IS the signal:
+# issues are disabled on this fork (has_issues=false → the issue API 410s),
+# the same convention base-drift.yaml documents for its authoritative exit 1.
+#
+# Day-2 designed red (also recorded in pnpm-workspace.yaml's undici floor
+# comment): the day npm's advisory DB ingests GHSA-3jxr (undici, fixed only
+# at 8.0.0), this gate goes red on ANY undici 7.x — that is the designed
+# forcing function for the undici 8 + jsdom 30 majors migration (rm-271's
+# window), not a regression.
+name: Dependency audit
+
+on:
+  schedule:
+    - cron: '37 3 * * 1' # Mondays 03:37 UTC — before the 04:13 base-drift check
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: pnpm audit --recursive
+    # rm-188 (cycle 13, 2026-09-25): pinned ubuntu-24.04 — ubuntu-26.04 images are
+    # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
+    # at the rm-139 Node-26 window (2026-10-28).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # pnpm audit reads pnpm-lock.yaml and queries the registry — NO
+      # dependency install is needed, so no ./.github/actions/setup (its
+      # frozen install is heavyweight for a weekly watch); canary.yaml's
+      # setup-node-only shape is the precedent, and the no-install audit was
+      # verified locally 2026-09-30 (a bare lockfile+workspace copy audits
+      # clean with no node_modules).
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - name: Audit every workspace resolution
+        run: |
+          set -euo pipefail
+          if pnpm audit --recursive; then
+            echo 'audit clean — zero known advisories against every resolved version'
+            exit 0
+          fi
+          echo '::error::pnpm audit --recursive found advisories against the resolved set (rm-278 weekly signal). Cure: raise the offending override floor in pnpm-workspace.yaml with its GHSA rationale and re-resolve pnpm-lock.yaml in the SAME change (rm-276 convention), then verify locally with pnpm audit --recursive returning zero. Known designed red: once npm ingests GHSA-3jxr (undici fixed only at 8.0.0), any undici 7.x flags here — that means the undici 8 + jsdom 30 majors migration (rm-271 window), not a floor bump.'
+          exit 1
