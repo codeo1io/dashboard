@@ -6,10 +6,10 @@ import {describe, expect, it} from 'vitest'
 /**
  * rm-214: README Configuration must document the complete env-var surface.
  *
- * Fails when a `DASHBOARD_*` / `RATE_LIMIT_*` variable is READ in `src/` but
- * missing from the README Configuration section (undocumented var), or when the
- * README documents one that `src/` no longer reads (stale row). Either direction
- * is drift; the table and the code must agree exactly.
+ * Fails when a `DASHBOARD_*` / `RATE_LIMIT_*` / `GATEWAY_*` variable is READ in
+ * `src/` but missing from the README Configuration section (undocumented var),
+ * or when the README documents one that `src/` no longer reads (stale row).
+ * Either direction is drift; the table and the code must agree exactly.
  *
  * Extraction model — "read in src/" means one of:
  *   1. a direct `process.env.<TOKEN>` access, or
@@ -17,9 +17,17 @@ import {describe, expect, it} from 'vitest'
  *      / int-default helpers such as readOptionalSecret('…') / envIntOrDefault('…')).
  * `<VAR>_FILE` indirection names are constructed dynamically inside the secret
  * readers, so they are covered by the README's prose convention note, not rows.
+ *
+ * rm-316: the token class is widened to the `GATEWAY_*` family — rm-214's
+ * `(?:DASHBOARD|RATE_LIMIT)_` prefix list was structurally blind to it, so a
+ * whole family could go undocumented while the guard stayed green. The class
+ * stays a scoped prefix list (NOT "every uppercase env read") on purpose:
+ * `NODE_ENV` and friends are outside the documented surface. The planted
+ * self-test below pins that a `GATEWAY_*` read is caught by the same
+ * extraction, in both drift directions.
  */
 const repoRoot = process.cwd()
-const ENV_TOKEN = '(?:DASHBOARD|RATE_LIMIT)_[A-Z0-9_]+'
+const ENV_TOKEN = '(?:DASHBOARD|RATE_LIMIT|GATEWAY)_[A-Z0-9_]+'
 
 function collectTypeScriptSources(dir: string): string[] {
   const out: string[] = []
@@ -34,23 +42,31 @@ function collectTypeScriptSources(dir: string): string[] {
   return out
 }
 
+/** The env vars read in one source text, by rm-214's extraction model. */
+function envTokensReadInSource(text: string): Set<string> {
+  const tokens = new Set<string>()
+  for (const match of text.matchAll(new RegExp(String.raw`process\.env\.(${ENV_TOKEN})`, 'g'))) {
+    tokens.add(match[1] ?? '')
+  }
+  // `readServerBindConfig(env = process.env)` destructures the env object into
+  // a parameter — its reads appear as bare `env.DASHBOARD_*` accesses.
+  for (const match of text.matchAll(new RegExp(String.raw`\benv\.(${ENV_TOKEN})`, 'g'))) {
+    tokens.add(match[1] ?? '')
+  }
+  for (const match of text.matchAll(
+    new RegExp(String.raw`\(\s*[\x27\x60](${ENV_TOKEN})[\x27\x60]`, 'g'),
+  )) {
+    tokens.add(match[1] ?? '')
+  }
+  return tokens
+}
+
 /** The set of env vars actually read somewhere under src/. */
 function envTokensReadInSrc(): Set<string> {
   const tokens = new Set<string>()
   for (const file of collectTypeScriptSources(resolve(repoRoot, 'src'))) {
-    const text = readFileSync(file, 'utf8')
-    for (const match of text.matchAll(new RegExp(String.raw`process\.env\.(${ENV_TOKEN})`, 'g'))) {
-      tokens.add(match[1] ?? '')
-    }
-    // `readServerBindConfig(env = process.env)` destructures the env object into
-    // a parameter — its reads appear as bare `env.DASHBOARD_*` accesses.
-    for (const match of text.matchAll(new RegExp(String.raw`\benv\.(${ENV_TOKEN})`, 'g'))) {
-      tokens.add(match[1] ?? '')
-    }
-    for (const match of text.matchAll(
-      new RegExp(String.raw`\(\s*[\x27\x60](${ENV_TOKEN})[\x27\x60]`, 'g'),
-    )) {
-      tokens.add(match[1] ?? '')
+    for (const token of envTokensReadInSource(readFileSync(file, 'utf8'))) {
+      tokens.add(token)
     }
   }
   return tokens
@@ -84,6 +100,28 @@ function envTokensDocumentedInReadme(): Set<string> {
 }
 
 describe('environment-variable documentation coverage (rm-214)', () => {
+  it('a planted GATEWAY_* read is caught by the extraction — the widened class is not decorative (rm-316)', () => {
+    const planted = [
+      'const raw = process.env.GATEWAY_PLANTED_PROBE',
+      "raw = readOptionalSecret('GATEWAY_PLANTED_STRING_ARG')",
+      'const scoped = env.GATEWAY_PLANTED_DESTRUCTURED',
+      'const noise = process.env.NODE_ENV',
+    ].join('\n')
+    const tokens = envTokensReadInSource(planted)
+    expect(tokens.has('GATEWAY_PLANTED_PROBE')).toBe(true)
+    expect(tokens.has('GATEWAY_PLANTED_STRING_ARG')).toBe(true)
+    expect(tokens.has('GATEWAY_PLANTED_DESTRUCTURED')).toBe(true)
+    // The class stays scoped: NODE_ENV must NOT be pulled into the documented
+    // surface by this widening.
+    expect(tokens.has('NODE_ENV')).toBe(false)
+    // A GATEWAY_* row the README carries but src/ stopped reading would land in
+    // the stale list by the same compare — pinned here at the README seam.
+    const readme = readFileSync(resolve(repoRoot, 'README.md'), 'utf8')
+    expect(readme, 'the GATEWAY_* widening must be reflected in the prose class list').toContain(
+      '`DASHBOARD_*` / `RATE_LIMIT_*` / `GATEWAY_*`',
+    )
+  })
+
   it('the NON_ENV_CONSTANTS list still names real constants in src/server.ts', () => {
     const serverSource = readFileSync(resolve(repoRoot, 'src/server.ts'), 'utf8')
     for (const name of NON_ENV_CONSTANTS) {

@@ -98,7 +98,7 @@ GitHub — the same fail-closed behavior as running without credentials (rm-204)
 
 ### Environment variables (rm-214)
 
-Every `DASHBOARD_*` / `RATE_LIMIT_*` environment variable actually read from `src/` is listed
+Every `DASHBOARD_*` / `RATE_LIMIT_*` / `GATEWAY_*` environment variable actually read from `src/` is listed
 here; this table is machine-checked by `test/env-docs-guard.test.ts`, which fails when a variable
 is read in `src/` but missing from this table — or documented here but no longer read.
 
@@ -129,6 +129,7 @@ missing `_FILE` path silently falls back to the environment variable).
 | `DASHBOARD_PORT` | `src/server.ts` | `3000` | Bind port; anything but an integer in 1–65535 throws at startup (fail loud). |
 | `DASHBOARD_SNAPSHOT_CACHE` | `src/server.ts` | unset (off) | Optional file path enabling the boot-time snapshot bridge (rm-198): the last good snapshot is persisted here and reloaded at restart to bridge the cold-start window (forced stale, original `refreshedAt` preserved); unset/blank keeps in-memory-only behavior, and a missing/corrupt/oversize file fails open to an empty boot. |
 | `DASHBOARD_WEB_DIST` | `src/server.ts` | `./web/dist` | Client bundle root served at `/`. |
+| `GATEWAY_ALLOWED_OPERATOR_LOGINS` | `src/server.ts` | unset (no restriction) | Comma-separated login allowlist for the gateway-session auth branch (rm-165): a gateway session whose login is not in the list is denied 403 after validation (fail closed). Unset or blank disables the restriction (single-trusted-gateway behavior); `DASHBOARD_OPERATOR_LOGIN` is never consulted on this branch. |
 | `RATE_LIMIT_MAX_PUBLIC` | `src/server.ts` | `60` | Requests per 60s window per client, pre-auth public class (`/`, `/auth/login`, `/auth/callback`, `/api/healthz` — the exact sensitive-path gate in `src/server.ts`; other `/auth/*` paths such as logout sit outside the limiter by design, rm-275). |
 | `RATE_LIMIT_MAX_OPERATOR` | `src/server.ts` | `60` | Same budget, operator class (remaining `/api/*` and `/operator/*`). |
 | `RATE_LIMIT_MAX_INGEST` | `src/server.ts` | `60` | Same budget, ingest class (`/api/listener/ingest`; HMAC-gated by the route itself). |

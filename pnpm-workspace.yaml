@@ -12,24 +12,33 @@ allowBuilds:
 # first-party pins that sometimes need same-day adoption.
 minimumReleaseAge: 1440
 
-# rm-196 rider (2026-09-25): hono@4.13.9 and vite@8.3.1 are the rider targets,
-# both past their 1440-minute maturity timestamps — an explicit, disclosed
-# bypass of the rm-133 age gate, not a weakening of it.
+# rm-196 rider (2026-09-25; amended 2026-10-01, rm-313): the remaining rider
+# targets are past their 1440-minute maturity timestamps — an explicit,
+# disclosed bypass of the rm-133 age gate, not a weakening of it. The
+# hono@4.13.9 exclude is GONE as of rm-313: it bypassed the gate straight
+# onto the serveStatic double-decode advisory (GHSA-5r4p-p66f-jhc7); hono
+# now rides the gate like every other dependency.
 minimumReleaseAgeExclude:
   - '@bfra.me/eslint-config@0.51.2 || 0.51.3 || 0.51.4 || 0.52.0 || 0.52.1 || 0.52.2'
   - '@bfra.me/tsconfig@0.13.2'
-  - hono@4.13.9
   - vite@8.3.1
 
 overrides:
-  brace-expansion@2: '>=2.1.2 <3.0.0'
-  brace-expansion@5: '>=5.0.7 <6.0.0'
-  fast-uri@3: '>=3.1.5 <4.0.0'
+  # rm-314 (2026-10-01): floors raised to the patched line of every open
+  # advisory the lockfile can clear WITHOUT a major bump — brace-expansion
+  # 2.1.7 / 5.0.12, fast-uri 3.1.8, undici 7.30.0 (the 7.x tip; the >=8 jump
+  # is rm-271's jsdom+undici combined-major window, not this item's). Caps are
+  # KEPT on purpose: upstream's cap-widening branches (fro-bot/dashboard
+  # issue #8, Renovate majors) are deliberately diverged — widening happens
+  # only through a recorded eval window, never by silent absorb.
+  brace-expansion@2: '>=2.1.7 <3.0.0'
+  brace-expansion@5: '>=5.0.12 <6.0.0'
+  fast-uri@3: '>=3.1.8 <4.0.0'
   # GHSA-82x6-q7mm-w9cf — toml is dev-transitive via
   # @opencode-ai/plugin>effect; >=4.2.0 is the patched line
   # (rescued by content from run b4aac9ba / PR #82 via cycle-13;
   # the batch's internal rm-171 numbering collided with landed ids).
   toml: '>=4.2.0'
-  undici@7: '>=7.29.0 <8.0.0'
+  undici@7: '>=7.30.0 <8.0.0'
 
 shamefullyHoist: true

@@ -1,0 +1,1 @@
+double-decode-canary-asset

@@ -492,6 +492,72 @@ describe('OAuth flow', () => {
       expect(res.status).toBe(415)
     })
 
+    // rm-312: the two orderings the old handler got wrong. Both drive a
+    // pull-based ReadableStream body — no Content-Length, the chunked-transfer
+    // shape the declared-length pre-check never saw. `produced` counts bytes
+    // PULLED from the producer: that is what distinguishes "413 after buffering
+    // everything" from "413 while cancelling the stream".
+    it('POST /auth/logout with an undeclared (chunked) oversized stream → 413 without buffering it all (rm-312)', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat'})
+      const sm = new SessionManager(TEST_KEY)
+      const sessionCookie = sm.sign('octocat')
+      const chunk = 'x'.repeat(512)
+      const encoder = new TextEncoder()
+      let produced = 0
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          // 2 MiB total, on demand — far past the 16 KiB cap; an uncapped
+          // read pulls all of it before the (old, post-read) length check.
+          produced += chunk.length
+          controller.enqueue(encoder.encode(chunk))
+          if (produced >= 2 * 1024 * 1024) controller.close()
+        },
+        // highWaterMark 0: the stream must not prefetch a chunk on its own —
+        // `produced` then counts exactly what the REQUEST path pulled.
+      }, {highWaterMark: 0})
+      const res = await app.request('/auth/logout', {
+        method: 'POST',
+        headers: {
+          cookie: `session=${sessionCookie}`,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: stream,
+        duplex: 'half',
+      })
+      expect(res.status).toBe(413)
+      expect(produced).toBeGreaterThan(0) // the producer actually ran
+      expect(produced).toBeLessThan(128 * 1024) // capped: never pulled the 2 MiB
+    })
+
+    it('POST /auth/logout with a bogus content type → 415 before reading any body byte (rm-312)', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat'})
+      const sm = new SessionManager(TEST_KEY)
+      const sessionCookie = sm.sign('octocat')
+      const chunk = 'x'.repeat(512)
+      const encoder = new TextEncoder()
+      let produced = 0
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          produced += chunk.length
+          controller.enqueue(encoder.encode(chunk))
+          if (produced >= 2 * 1024 * 1024) controller.close()
+        },
+        // highWaterMark 0: the stream must not prefetch a chunk on its own —
+        // `produced` then counts exactly what the REQUEST path pulled.
+      }, {highWaterMark: 0})
+      const res = await app.request('/auth/logout', {
+        method: 'POST',
+        headers: {
+          cookie: `session=${sessionCookie}`,
+          'content-type': 'multipart/form-data; boundary=x',
+        },
+        body: stream,
+        duplex: 'half',
+      })
+      expect(res.status).toBe(415)
+      expect(produced).toBe(0) // media-type gate fired before any body read
+    })
+
     it('GET /auth/logout is not a registered route (no GET handler)', async () => {
       // /auth/logout is POST-only; GET should return 404 or 405
       const app = await buildTestApp({operatorLogin: 'octocat'})

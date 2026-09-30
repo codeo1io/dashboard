@@ -18,6 +18,7 @@ import {Buffer} from 'node:buffer'
 import {createHmac, randomBytes, timingSafeEqual} from 'node:crypto'
 import {Hono} from 'hono'
 import {deleteCookie, getCookie, setCookie} from 'hono/cookie'
+import {readBodyCapped} from '../body-cap.ts'
 import {logger, sanitizeErrorMessage} from '../logger.ts'
 
 /** State cookie TTL: 10 minutes */
@@ -193,25 +194,24 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
    */
   // rm-268: bound the body BEFORE parsing — /auth/logout is a public pre-auth
   // path, so an oversized POST must not buy unbounded buffering ahead of the
-  // CSRF read. Mirrors the listener ingest cap (readBodyCapped /
-  // MAX_INGEST_BODY_BYTES). The real client (web/src/shell/AppShell.tsx) posts
-  // urlencoded `csrf_token`; other encodings are 415, never parsed.
+  // CSRF read. The real client (web/src/shell/AppShell.tsx) posts urlencoded
+  // `csrf_token`; other encodings are 415, never parsed.
+  // rm-312: the cap is now the shared streaming primitive (src/body-cap.ts,
+  // the listener ingest cap extracted) — the old declared-length pre-check plus
+  // a full c.req.text() buffer let a Transfer-Encoding: chunked POST (no
+  // Content-Length) buy an unbounded read, and the 415 fired only AFTER the
+  // buffer. Ordering now: media-type gate (415) → streaming cap (413) → parse.
   const MAX_LOGOUT_BODY_BYTES = 16384
 
   router.post('/logout', async c => {
-    const declaredLength = Number(c.req.header('content-length') ?? '0')
-    if (Number.isFinite(declaredLength) && declaredLength > MAX_LOGOUT_BODY_BYTES) {
-      logger.warning('Logout rejected: oversized body declared', {declaredLength})
-      return c.text('Payload Too Large', 413)
-    }
-    const rawBody = await c.req.text()
-    if (rawBody.length > MAX_LOGOUT_BODY_BYTES) {
-      logger.warning('Logout rejected: oversized body received', {bytes: rawBody.length})
-      return c.text('Payload Too Large', 413)
-    }
     const contentType = c.req.header('content-type') ?? ''
     if (!contentType.toLowerCase().includes('application/x-www-form-urlencoded')) {
       return c.text('Unsupported Media Type', 415)
+    }
+    const rawBody = await readBodyCapped(c.req.raw, MAX_LOGOUT_BODY_BYTES)
+    if (rawBody === null) {
+      logger.warning('Logout rejected: oversized body', {maxBytes: MAX_LOGOUT_BODY_BYTES})
+      return c.text('Payload Too Large', 413)
     }
     const submittedToken = new URLSearchParams(rawBody).get('csrf_token')
 
