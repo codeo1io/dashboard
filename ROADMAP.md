@@ -140,6 +140,37 @@
      installByDatabaseId / sse-reader extraction / gateway absorb are owned on main by cycle-18's
      rm-251/rm-257/rm-260/rm-255/rm-253/rm-252 — dated signals here only; census after edit: 133 defs /
      0 dups, in-file max rm-264) -->
+
+<!-- manual-revision 2026-09-30 (run 3984a04dc72c4ac3802985f0f85a1657, repository-maintenance
+     campaign 9dbd7296e21240ea8845a8dff15d5953 cycle:1 — roadmap attempt 1871fdd59eb6472c8cf1999422cc13ca,
+     assess 6c52fb2114774bd6a620390afef60368 + research f550ce0c4f38414fa8b429e28524fce7 at HEAD 31995a2,
+     re-verified == origin/main with a clean worktree at phase start; this run's first roadmap attempt
+     died at a 429 rate-limit before landing anything — porcelain verified empty, nothing to salvage):
+     minted rm-328 (transitive override floors carrying the live audit-zero floorproof), rm-329
+     (schedule-only no-install CI audit gate, ordered behind the floors), rm-330 (hono serveStatic pair
+     security refresh — audit-invisible) above the verified in-flight fleet ceiling rm-327 — the
+     integration-a53ea2333bd3 fold renumbered run 4084c786's frames rm-138/rm-140 INTO rm-326/rm-327
+     minutes before this write (conflict case 4bd77c2c; fold content, no collision with this mint),
+     and the rm-320..rm-325 band is three-way contested (bb9834fb1413, 7aa6908492a8, aa99bc5a9617);
+     census re-run immediately before this write (2026-09-30T23:3xZ) over all live dashboard-864ca327c8
+     run trees plus spool delegate/pending results — no rm-328+ claim anywhere; in-flight claims
+     renumber at integrate, landed meanings win ids). Fleet twin map — sibling ids cite the sibling run,
+     reconcile by content at integrate, never bare id: floors rm-276 (d997d9a8, a666f8c0) / rm-282
+     (a923284c) / rm-286 (0a6430c9) / rm-291 (f91bcdc2, ff300a3a) / rm-298 (f716b7e7, 84973783) /
+     rm-303 (a22e43a2) / rm-314 (15d46ddf); audit gate rm-278 (d997d9a8) / rm-293 (f91bcdc2,
+     ff300a3a) / rm-299 (f716b7e7) / rm-304 (a22e43a2 — Main-workflow variant; 23d39aa7's tree also
+     carries a landed audit.yaml draft); hono pair rm-290 (ff300a3a) / rm-306 (a22e43a2) / rm-313
+     (15d46ddf) / a666f8c0's selected B2. rm-328 disposition vs rm-303: rm-303's 'undici >=7.29.1 sits
+     below the fix line for six of twelve GHSAs' read derives from per-advisory OSV analysis; this
+     run's floorproof resolved undici 7.30.0 under floor '>=7.29.1 <8.0.0' and drove live pnpm audit
+     --recursive to zero advisories (2026-09-30T19:1xZ), and bulk OSV querybatch is measured incoherent
+     on this exact set (it flags the patched versions — brace-expansion 2.1.7 flagged under
+     GHSA-q2hr-2g5m-vwhr whose own /v1/vulns record FIXES 2.1.7), so the enforceable acceptance
+     everywhere is live pnpm audit -r == 0, never bulk OSV. Dated riders appended: rm-252 (upstream
+     window unmoved + PR #538 mergeable but lockfile-only), rm-116 (protection shell re-probe 17:41Z),
+     rm-271 (dist-tag re-measure). Census after edit: 157 defs / 0 dups / in-file max rm-330.
+     Paragraph-cliff discipline: every added line under 2.4K chars; pathology lines rm-103 signals
+     (:175, 7317) and rm-157 (:408, 7967) untouched; Completed and Superseded sections untouched. -->
 ## Open items
 
 ### Harden the roadmap render (vendored-path exclusion, stack-correct evidence, lint-clean output)
@@ -231,6 +262,7 @@
   - a periodic (weekly) workflow snapshots the protection/ruleset API state and alerts (open issue or failing check) on drift from the codified baseline
   - the hotfix override path documented in AGENTS.md (an admin merge over red checks becomes an explicit, visible decision, not a default)
 - evidence: `gh api /repos/codeo1io/dashboard/branches/main/protection` returns the configured object post-change; drift-check workflow run log on first run; AGENTS.md note merged; PR #4-style merge attempt with red checks is blocked (observed on a throwaway branch)
+- rider (2026-09-30, run 3984a04dc72c assess 6c52fb21): re-probed 17:41Z — the protection object now EXISTS but is an all-empty shell (required_status_checks.checks=[], strict=false, enforce_admins.enabled=false, required_conversation_resolution=false), so the 404-era signals are stale while the 'nothing structurally blocks red-check merges' state persists; when this item lands its required-check set, note that schedule-only workflows cannot be required contexts — rm-329 stays a watch signal and rm-304's Main-workflow variant is the shape that can block
 
 ### Make the gateway login-redirect topology assumption explicit
 - id: `rm-127` | track: reliability | priority: 56.0 | status: candidate (added 2026-09-20, run f69cd740 assess F1)
@@ -765,6 +797,7 @@
 - signals: src/gateway/operator-sse-reader.ts:494 fail-closes on contract ≠1.6.0, and two contract majors have now shipped upstream: v0.115.0/v0.117.0's run-status gains checkout provenance + a workspace-preparation failure kind and (v0.117.0, 2026-09-27) checkout-advance provenance with a Discord-based operator recovery flow and journaled operations; v0.116.0 (2026-09-26) reclassifies 401 as operator-actionable workspace-unavailable (this repo still maps 401→auth-required), requires the gateway bearer token on every control route except /healthz+/readyz, and couples gateway+workspace images to upgrade or roll back together — any gateway deployment past v0.114.1 bricks this fork's operator view until re-pin + parser work (releases verified via api.github.com/repos/fro-bot/agent with git ls-remote slug cross-check, 2026-09-29; 2026-09-29 integrate fold, conflict case 29354f50, ex rm-265: the exact browser fold sites are public/operator-stream.js:1569 and :1934, where 400/401/403 currently collapse into 'session-expired' with a reload affordance); riders on the same absorb: pnpm 11.28.0, @bfra.me/eslint-config 0.52.2→0.54.0 (peer eslint ^10.4.0 — fork pins 10.11.0, compatible), @opencode-ai/plugin 1.18.32, hono 4.13.9 (4.13.10 now latest, caret), vite 8.3.1 — codeql digest 2892aa5 already on the fork (codeql.yaml:51,57, no-op), and upstream's wiki-write identity divergence is dispositioned by rm-259
 - acceptance: the operator contract version accepted extends additively to 1.8.0 (1.6.0/1.7.0/1.8.0); run-status renders checkout-advance provenance and distinguishes workspace-preparation failures from run failures and incomplete invocation (rm-157's acceptance rides here); 401 from a gateway at v0.116.0+ maps to an operator-actionable workspace-unavailable state rather than auth-required; BOTH parsers (src/gateway/operator-sse-reader.ts and public/operator-stream.js — see rm-253's wire-or-fold decision) grow the new fields exactly once; the workflow pin bumps to the absorbed agent version with the riders above
 - evidence: contract tests for the new fields/kinds against fixture streams at 1.7.0 and 1.8.0 in both parsers; fro-bot.yaml pin diff; releases-API citations recorded in the cycle batch doc
+- rider (2026-09-30, run 3984a04dc72c research f550ce0c): upstream window re-measured 19:1xZ — still no commit past f4a1aeb (#537, pnpm 11.28.0, 2026-09-28) and no agent release past v0.117.0 (2026-09-27), so the absorb frontier is unmoved; NEW since the last rider: upstream PR #538 (fast-uri 3.1.8 via GHSA-58mr-gqgx-xq4g / CVE-2026-84394, upstream Dependabot alert #21) is open with mergeable_state=clean but is lockfile-only — insufficient for this fork, whose override floors must move (rm-328); and upstream's Renovate board (issue #8, updated 2026-09-30T15:12Z) queues the same majors cluster this fork caps (brace-expansion 2->5, fast-uri 3->4, undici 7->8, beside jsdom 30, vitest 5, TS 7, pnpm 12) — absorbing any of it relaxes the fork's floor caps, so every cap relaxation sequences behind rm-328's recorded-disposition acceptance, never drift
 
 ### operator-sse-reader.ts: wire it or fold it (zero production callers, and 1.8.0 doubles the cost of a dead twin)
 - id: `rm-253` | track: architecture | priority: 50.0 | status: candidate (added 2026-09-29, run 262f170c research C2; time-boxes rm-114/rm-220's standing extraction seam against rm-252's contract growth)
@@ -899,6 +932,44 @@
 - signals: npm dist-tags measured 2026-09-29 (one package per invocation, dist-tags re-verified): typescript 7.0.2 (pin 6.0.3 — stays blocked on the typescript-eslint peer, feeding rm-133's 2026-10-21 re-evaluation comment in .github/dependabot.yml), vitest 5.0.2 (pin 4.1.11; the V4 dist-tag still publishes 4.x), jsdom 30.1.1 (pin 29.1.1), pnpm 12.6.0 (pin 11.27.1; upstream sits at 11.28.0 = the rm-252 absorb rider) — no majors are auto-eligible (dependabot ignore block, rm-133), so each needs an explicit evaluation window; in-range refreshes available now: hono 4.13.11, @hono/node-server 2.1.3, fast-check 4.10.2; impeccable is at 4.1.0 while the CI Design Check pins impeccable@3.2.1 (.github/workflows/main.yaml:70) and pre-4 majors ignore .impeccable/config.json ignoreValues (AGENTS.md) — pin and config must bump together or the stay decision gets recorded
 - acceptance: one deliberate pass — vitest 5 evaluated on the full suite (46 server files + web) with breaking changes named or the bump declined in the entry; jsdom 30 and pnpm 12 evaluated with their migration notes; impeccable@4 tried against .impeccable/config.json (bump both or record why not); the in-range trio lands as a lockfile refresh rider; no bundled mega-PR — each major is its own landing
 - evidence: ledger status lines per major with the evaluation outcome; pnpm test green after the in-range rider; npm dist-tags citations in the cycle batch doc
+- rider (2026-09-30, run 3984a04dc72c research f550ce0c, dist-tags one package per invocation): vitest 5.0.2->5.0.3 (2026-09-30T11:30Z; engines node ^22.12.0 || ^24.0.0 || >=26.0.0 — compatible with the pin), pnpm 12.6.0->12.8.1 (dist-tag latest-11 11.28.2; upstream sits 11.28.0 per rm-252's rider; fork pins 11.27.1), typescript 7.0.2 unchanged and still hard-blocked (typescript-eslint 8.71.0 peers >=4.8.4 <6.1.0), jsdom 30.1.1 unchanged; the in-range trio re-reads hono 4.13.12 (published 2026-09-30T09:43Z — routine: #5485/#5486/#5475 and jsx px, NOT security; the security-relevant bump 4.13.11 plus its minimumReleaseAge coupling is owned by rm-330), @hono/node-server 2.1.3, fast-check 4.10.2; @bfra.me/eslint-config 0.54.0 (pin 0.52.2) also current-within-major
+
+### Audit-red at HEAD with a proven floor cure: 19 transitive advisories, four override floors, live audit-zero demonstrated
+- id: `rm-328` | track: security | priority: 86.0 | status: candidate (added 2026-09-30, run 3984a04dc72c4ac3802985f0f85a1657 — assess 6c52fb21 A1 + research f550ce0c C1, whose floorproof is the live-proof instance of this cure; sibling twins: rm-276 (d997d9a8, a666f8c0), rm-282 (a923284c), rm-286 (0a6430c9), rm-291 (f91bcdc2, ff300a3a), rm-298 (f716b7e7, 84973783), rm-303 (a22e43a2), rm-314 (15d46ddf) — reconcile by content at integrate, never bare id)
+- signals: `pnpm audit --recursive --json` at HEAD 31995a2 returns 19 advisories {low:3, moderate:8, high:8} (artifacts audit-head-31995a2.json, audit-fresh-1912Z.json), all dev/transitive; today's pnpm advisory DB patches ALL ten undici GHSAs at >=7.29.1 (WebSocket DoS, RetryHandler orphaned responses, response splitting, unrequested WebSocket subprotocol, unbounded decompression, cookie disclosure, chunked truncation, the TLS-validation bypass already fixed >=7.24.1, unsafe-method replay, WebSocketStream unclean close) — the 18:1xZ 'fixed only at 8.0.0, no 7.x floor reaches zero' read is stale; dependabot alerts #29/#30 (fast-uri HIGH, CVE-2026-84292/CVE-2026-84394) are the only two open alerts; this ledger carried zero fast-uri/undici/brace-expansion hits at the base (max id rm-275) — the family was unowned here
+
+  registry and floor state (2026-09-30T19:1xZ): undici 7.x tip 7.30.0 with 7.29.1 published (7.30.1/7.31.1 absent), fast-uri 3.x tip 3.1.8 (3.1.9 absent), brace-expansion 2.1.7 and 5.0.12 published; the live floors sit below every fix line — pnpm-workspace.yaml:25 brace-expansion@2 '>=2.1.2', :26 brace-expansion@5 '>=5.0.7', :27 fast-uri@3 '>=3.1.5', :33 undici@7 '>=7.29.0 — with pnpm-lock.yaml freezing undici 7.29.0 and fast-uri 3.1.6
+- acceptance:
+  - pnpm-workspace.yaml overrides raised exactly to the proven set: brace-expansion@2 '>=2.1.7 <3.0.0', brace-expansion@5 '>=5.0.12 <6.0.0', fast-uri@3 '>=3.1.8 <4.0.0', undici@7 '>=7.29.1 <8.0.0'
+  - `pnpm install --lockfile-only --ignore-scripts` rc=0 on the raised floors (floorproof: 873 packages, 40.5s), resolving brace-expansion 2.1.7 + 5.0.12, fast-uri 3.1.8, undici 7.30.0 (the floor admits the 7.x tip), jsdom 29.1.1 unchanged, hono 4.13.11 — minimumReleaseAge 1440 holds 4.13.12 back until it matures; never weaken the gate to admit anything
+  - live `pnpm audit --recursive` at the landed HEAD returns zero advisories rc=0 — the enforceable gate is the live audit, never bulk OSV querybatch (measured incoherent on exactly this set: it flags the patched versions, e.g. brace-expansion 2.1.7 flagged under GHSA-q2hr-2g5m-vwhr whose own /v1/vulns record FIXES 2.1.7) and never Dependabot alone
+  - dependabot alerts #29/#30 auto-close on landing, verified via `gh api repos/codeo1io/dashboard/dependabot/alerts?state=open`
+  - `pnpm check-types` and `pnpm test` green on the regenerated lockfile (floorproof touched only the workspace floors and lockfile; no manifest change)
+  - caps-vs-majors disposition recorded at landing: fast-uri GHSA-jvvf-x445-j334 (fixed 3.1.9, unpublished at measure) moves the floor again when published and indexed; '<4.0.0'/'<8.0.0' caps relax only as a recorded decision absorbing upstream's Renovate majors queue (see rm-252's 2026-09-30 rider), never as drift
+- evidence: floorproof scratch delegate/f550ce0c4f38414fa8b429e28524fce7-scratch/floorproof/ (pnpm-workspace.yaml, pnpm-lock.yaml, install.log, audit-raised-floors.json) + audit-fresh-1912Z.json; post-landing: audit --json at the new HEAD showing 0 advisories, gh api alerts state, CI Main run green on the regenerated lockfile
+
+### No CI audit gate: land a schedule-only, no-install pnpm audit workflow behind the floors
+- id: `rm-329` | track: security | priority: 72.0 | status: candidate (added 2026-09-30, run 3984a04dc72c4ac3802985f0f85a1657 — assess 6c52fb21 (zero audit mentions in .github/workflows at HEAD) + research f550ce0c C1; sibling twins: rm-278 (d997d9a8), rm-293 (f91bcdc2, ff300a3a), rm-299 (f716b7e7), rm-304 (a22e43a2 — the Main-workflow required-gate variant; this entry is the cheap schedule-only watch signal) — reconcile by content)
+- signals: main ships nine workflows and none mentions audit (grep -rn 'pnpm audit|audit' .github/workflows/*.yaml -> zero matches, 2026-09-30T17:41Z), so the 19-advisory red state of rm-328 sat invisible until a manual run caught it; `pnpm audit --recursive` needs no node_modules and no install — it reads pnpm-lock.yaml/pnpm-workspace.yaml and queries the registry (verified 2026-09-30 by the 23d39aa7 lane: a /tmp copy of package.json + both yaml files audits) — which is what makes a schedule-only, low-timeout signal cheap
+  - shape constraints the no-install property imposes: pnpm/action-setup + actions/setup-node ONLY (the ./.github/actions/setup composite's frozen install is heavyweight and pointless here), no bare `node scripts/*.ts` steps — canary.yaml's only-ever run 36417620616 died ERR_MODULE_NOT_FOUND exactly there (born-broken: a script step with no install) — and single-quoted YAML string values per the yml/quotes lint
+- acceptance:
+  - .github/workflows/audit.yaml lands schedule-only — weekly cron plus workflow_dispatch — with no push/pull_request triggers and an explicit timeout-minutes well under the Main job's 35
+  - the job installs NO dependencies: pnpm/action-setup + actions/setup-node only, then `pnpm audit --recursive` with default fail-on-advisory behavior (no continue-on-error)
+  - ordering enforced: lands on the same lineage as or after rm-328's floors — on today's red HEAD (19 advisories) the first fire would be born-red; floors and gate ride one landing
+  - actionlint-clean via the container form (docs/solutions/workflow-issues/actionlint-pipx-missing-container-form-2026-09-19.md)
+  - the required-context question recorded at landing: schedule-only workflows cannot be required status checks, so rm-116's protection fill uses rm-304's Main-workflow variant if audit must block — this item stays the watch signal
+- evidence: workflow file diff; first manual dispatch run green after the floors land (run URL recorded); actionlint output; gh api workflow listing showing the schedule
+
+### hono serveStatic pair lags the security fix: lockfile freezes 4.13.9/2.1.1 while 4.13.11 is the serveStatic double-decode fix — audit-invisible
+- id: `rm-330` | track: security | priority: 52.0 | status: candidate (added 2026-09-30, run 3984a04dc72c4ac3802985f0f85a1657 — research f550ce0c C2; sibling twins: rm-290 (ff300a3a), rm-306 (a22e43a2), rm-313 (15d46ddf), a666f8c0's selected B2 — reconcile by content; this entry adds the fork's exposure site and the audit-invisibility coupling to rm-329)
+- signals: the fork imports serveStatic from '@hono/node-server/serve-static' at src/server.ts:28 and mounts it at src/server.ts:986 (`app.get('/', serveStatic({root: webDistRoot, path: 'index.html'}))`); package.json specifiers already admit the fix pair (hono '^4.13.9' :28, '@hono/node-server' '^2.1.1' :22) but pnpm-lock.yaml freezes hono@4.13.9 (lockfile :2580) and '@hono/node-server'@2.1.1; hono v4.13.11 is the serveStatic double-decode middleware-bypass security fix and @hono/node-server 2.1.3 (2026-09-29) completes the pair; v4.13.12 (published 2026-09-30T09:43:10Z — #5485 d.ts privacy, #5486 consumer type-check, #5475 etag mixed-case, jsx px) is routine, NOT security; no GHSA for the serveStatic fix is indexed in pnpm's advisory DB, so the rm-329 audit gate can never flag this class — only lockfile/pin discipline can; minimumReleaseAge 1440 (pnpm-workspace.yaml:13) admits 4.13.11 on age merit while holding 4.13.12 until 2026-10-01T09:43Z, and the hono@4.13.9 minimumReleaseAgeExclude entry (:21, the rm-196 rider) goes stale the moment the lockfile moves
+- acceptance:
+  - lockfile refresh resolves hono 4.13.11 + @hono/node-server 2.1.3 with zero manifest/specifier changes (pure refresh, no new dependencies)
+  - minimumReleaseAge untouched — 4.13.11 enters on age merit; 4.13.12 follows via the gate after 2026-10-01T09:43Z without re-litigation (recorded here as routine)
+  - the stale hono@4.13.9 minimumReleaseAgeExclude entry is removed or re-pointed in the same change, truing the rm-196 rider comment above it
+  - `pnpm check-types` and `pnpm test` green on the refreshed lockfile (serveStatic import shape unchanged)
+  - `pnpm audit --recursive` output unchanged by this landing — demonstrating the audit-invisibility that couples this item to rm-329
+- evidence: pnpm-lock.yaml diff showing exactly the two resolution bumps; CI Main run green; dated registry citations (honojs/hono v4.13.11/v4.13.12 release notes, @hono/node-server 2.1.3) in the cycle batch doc
 
 
 
