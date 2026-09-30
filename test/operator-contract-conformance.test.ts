@@ -1,7 +1,7 @@
 /**
  * Operator contract conformance tests.
  *
- * Verifies the vendored operator contract v1.5.0 is correctly pinned and
+ * Verifies the vendored operator contract v1.8.0 is correctly pinned and
  * that parse helpers behave per spec. Also verifies the SSE frame types
  * vendored from fro-bot/agent (including the run-output and approval channels)
  * are structurally correct.
@@ -178,8 +178,8 @@ export {checkApprovalRunStreamFrame, checkReadyFrame, checkResetFrame, checkStat
 // ---------------------------------------------------------------------------
 
 describe('OPERATOR_CONTRACT_VERSION', () => {
-  it('is pinned to 1.6.0', () => {
-    expect(OPERATOR_CONTRACT_VERSION).toBe('1.6.0')
+  it('is pinned to 1.8.0', () => {
+    expect(OPERATOR_CONTRACT_VERSION).toBe('1.8.0')
   })
 })
 

@@ -44,6 +44,7 @@ const VALID_FAILURE_KINDS = new Set([
   'max-duration-timeout',
   'stream-ended',
   'workspace-unreachable',
+  'workspace-preparation',
   'session-error',
   'unknown',
 ])
@@ -59,6 +60,7 @@ export const FAILURE_REASON_LABELS = {
   'max-duration-timeout': 'Run timed out',
   'stream-ended': 'Stream ended early',
   'workspace-unreachable': 'Workspace unavailable',
+  'workspace-preparation': 'Workspace preparation failed',
   'session-error': 'Session error',
   unknown: 'Unknown failure',
 }

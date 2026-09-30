@@ -79,6 +79,20 @@ export interface OperatorRunStatus {
   readonly startedAt: string
   readonly stale: boolean
   readonly failureKind?: OperatorFailureKind
+  /**
+   * Checkout provenance (contract 1.7.0; checkout-advance signal 1.8.0).
+   *
+   * Optional and additive: a 1.6.0 stream simply omits it. `ref`/`commit`
+   * identify the workspace checkout the run was created from; `advanced`
+   * (1.8.0) is true when the workspace checkout has advanced ahead of the
+   * state the gateway recorded for the run — an operator-actionable signal
+   * (recovery per the gateway access runbook), not a run failure.
+   */
+  readonly checkout?: {
+    readonly ref?: string
+    readonly commit?: string
+    readonly advanced?: boolean
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +112,7 @@ export type OperatorFailureKind =
   | 'max-duration-timeout'
   | 'stream-ended'
   | 'workspace-unreachable'
+  | 'workspace-preparation'
   | 'session-error'
   | 'unknown'
 
@@ -111,6 +126,11 @@ export const OPERATOR_FAILURE_KINDS: ReadonlySet<OperatorFailureKind> = new Set(
   'max-duration-timeout',
   'stream-ended',
   'workspace-unreachable',
+  // Contract 1.8.0: the run failed before the workspace was ready (distinct
+  // from 'workspace-unreachable': preparation failures are operator-actionable
+  // — the gateway may report the workspace as unavailable with HTTP 401 per the
+  // v0.116.0 semantics change; see the gateway access runbook).
+  'workspace-preparation',
   'session-error',
   'unknown',
 ])
