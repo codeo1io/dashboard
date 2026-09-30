@@ -31,6 +31,11 @@ export {
 } from './parse.ts'
 export type {PushHandoffState, PushSubscriptionMetadata, VapidKeyResponse} from './push.ts'
 export {parsePushHandoffState, parsePushSubscriptionMetadata, parseVapidKeyResponse} from './push.ts'
+export {
+  deserializeProvenanceEvent,
+  OPERATOR_PROVENANCE_SCHEMA_V1,
+} from './provenance.ts'
+export type {OperatorCheckoutProvenance, OperatorProvenanceCommit} from './provenance.ts'
 export {assertRedactionApplied, AUTHORIZATION_OBLIGATION, REDACTION_OBLIGATION} from './redaction.ts'
 export type {RedactionContext} from './redaction.ts'
 export type {RepoSummary} from './repo-summary.ts'
@@ -57,8 +62,11 @@ export type {
 } from './run-responses.ts'
 export {PHASE_TO_WEB_STATUS} from './run-status.ts'
 export type {
+  OperatorCurrentOperation,
   OperatorFailureKind,
+  OperatorRemoteFreshness,
   OperatorRunStatus,
+  OperatorRunStatusPreparation,
   OperatorWebStatus,
   RunPhase,
   Surface,
@@ -67,4 +75,4 @@ export type {
 export type {RunsListResponse, RunSummary, RunSummaryStatus} from './run-summary.ts'
 export {parseRunsListResponse, parseRunSummary, parseRunSummaryList, RUN_INDEX_CAP} from './run-summary.ts'
 export type {ReadyFrame, ResetFrameData, ResetReason, RunStreamFrame, StatusFrameData} from './sse-frames.ts'
-export {OPERATOR_CONTRACT_VERSION} from './version.ts'
+export {isAcceptedContractVersion, OPERATOR_CONTRACT_VERSION} from './version.ts'

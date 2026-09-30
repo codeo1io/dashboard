@@ -19,7 +19,7 @@ import type {DashboardAppClient} from './app-client.ts'
 import {Octokit} from '@octokit/core'
 import {logger} from '../logger.ts'
 import {err, ok} from '../result.ts'
-import {GITHUB_REQUEST_TIMEOUT_MS, safeErrorMessage} from './app-client.ts'
+import {createBoundedFetch, GITHUB_REQUEST_TIMEOUT_MS, safeErrorMessage} from './app-client.ts'
 
 // ---------------------------------------------------------------------------
 // Read-only permissions
@@ -331,11 +331,15 @@ export async function enumerateRepos(
 // ---------------------------------------------------------------------------
 
 async function listInstallationReposWithToken(token: string): Promise<readonly Omit<RepoRecord, 'installation_id'>[]> {
+  // rm-197: per-repo installation walks are serial — a stalled request must
+  // not stall the whole refresh indefinitely. rm-251: the timeout key alone
+  // is inert on hung upstreams (docs/solutions/runtime-errors/
+  // octokit-timeout-option-inert-on-hung-upstreams-bind-at-fetch-layer-2026-09-24.md)
+  // so the wall-clock bound is enforced at the fetch layer like every
+  // sibling transport (rm-156).
   const installOctokit = new Octokit({
     auth: token,
-    // rm-197: per-repo installation walks are serial — a stalled request must
-    // not stall the whole refresh indefinitely.
-    request: {timeout: GITHUB_REQUEST_TIMEOUT_MS},
+    request: {fetch: createBoundedFetch(GITHUB_REQUEST_TIMEOUT_MS), timeout: GITHUB_REQUEST_TIMEOUT_MS},
   })
 
   const repos: Omit<RepoRecord, 'installation_id'>[] = []

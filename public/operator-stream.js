@@ -29,7 +29,26 @@
 // ---------------------------------------------------------------------------
 
 /** Contract version this client expects on the ready frame. */
-export const PINNED_CONTRACT_VERSION = '1.6.0'
+export const PINNED_CONTRACT_VERSION = '1.8.0'
+
+/**
+ * Ready-frame versions this client accepts (rm-157, cycle-18) — mirrors
+ * isAcceptedContractVersion in src/gateway/operator-contract/version.ts
+ * (parity enforced by tests). Additive minors parse identically; patches are
+ * structural no-ops. A major change or unknown future minor fails closed
+ * (drift) exactly as before.
+ */
+export const ACCEPTED_CONTRACT_MINOR_VERSIONS = [6, 7, 8]
+
+/** Gate an untrusted ready-frame version against the accepted range. */
+export function isAcceptedContractVersion(version) {
+  const match = /^(\d+)\.(\d+)\.\d+$/.exec(version)
+  if (match === null) return false
+  return (
+    Number(match[1]) === 1 &&
+    ACCEPTED_CONTRACT_MINOR_VERSIONS.includes(Number(match[2]))
+  )
+}
 
 /** Base delay in milliseconds for exponential backoff. */
 export const RETRY_BASE_MS = 1000
@@ -149,7 +168,9 @@ const VALID_FAILURE_KINDS = new Set([
   'inactivity-timeout',
   'max-duration-timeout',
   'stream-ended',
+  'workspace-unavailable',
   'workspace-unreachable',
+  'checkout-substituted',
   'session-error',
   'unknown',
 ])
@@ -164,7 +185,9 @@ export const FAILURE_REASON_LABELS = {
   'inactivity-timeout': 'No recent activity',
   'max-duration-timeout': 'Run timed out',
   'stream-ended': 'Stream ended early',
+  'workspace-unavailable': 'Workspace unavailable — action required',
   'workspace-unreachable': 'Workspace unavailable',
+  'checkout-substituted': 'Checkout substituted',
   'session-error': 'Session error',
   unknown: 'Unknown failure',
 }
@@ -414,7 +437,7 @@ export function nextStreamState(current, event) {
       if (current.connection === 'drift') {
         return current
       }
-      if (event.data.contractVersion !== PINNED_CONTRACT_VERSION) {
+      if (!isAcceptedContractVersion(event.data.contractVersion)) {
         // Contract version mismatch — fail closed, clear all run state
         return {
           connection: 'drift',
