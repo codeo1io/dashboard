@@ -22,14 +22,38 @@ minimumReleaseAgeExclude:
   - vite@8.3.1
 
 overrides:
-  brace-expansion@2: '>=2.1.2 <3.0.0'
-  brace-expansion@5: '>=5.0.7 <6.0.0'
-  fast-uri@3: '>=3.1.5 <4.0.0'
+  # rm-298 (2026-10-01, cycle 2): every floor now sits at/above its patched
+  # line — an override floor does NOT force re-resolution off an
+  # already-satisfying version, so a floor below the patched line pins the
+  # advisory open (proven live by Dependabot alerts #29/#30 staying open with
+  # security updates enabled). brace-expansion is dev-transitive via the
+  # ESLint lint chain; the binding advisory on the v2 line is GHSA-q2hr-2g5m-vwhr
+  # (moderate, patched 2.1.7) — the highs GHSA-qhr7-859c-m2p7 (2.1.6) and
+  # GHSA-6j4f-fj2g-mc7p (2.1.5) are covered with headroom.
+  brace-expansion@2: '>=2.1.7 <3.0.0'
+  # Same three advisories on the v5 line (5.0.12 moderate binding; highs
+  # 5.0.11/5.0.10 covered) — 5.0.12 is the patched line that covers all.
+  brace-expansion@5: '>=5.0.12 <6.0.0'
+  # fast-uri is dev-transitive via ajv@8 in the eslint lint chain;
+  # GHSA-qw65-cvwx-89v3 + GHSA-58mr-gqgx-xq4g (both high; Dependabot alerts
+  # #30/#29) patch at 3.1.7, GHSA-hrr3-gc8f-f4qj (moderate) forces 3.1.8.
+  fast-uri@3: '>=3.1.8 <4.0.0'
   # GHSA-82x6-q7mm-w9cf — toml is dev-transitive via
   # @opencode-ai/plugin>effect; >=4.2.0 is the patched line
   # (rescued by content from run b4aac9ba / PR #82 via cycle-13;
   # the batch's internal rm-171 numbering collided with landed ids).
   toml: '>=4.2.0'
-  undici@7: '>=7.29.0 <8.0.0'
+  # All ten undici advisories affecting the resolved 7.29.0 (OSV, npm
+  # ecosystem) patch at >=7.29.1 — highs GHSA-rfgv-xxqx-mfg5 and
+  # GHSA-w293-vg96-wgc3 — and every 7.x range in GitHub's advisory DB
+  # ends <7.29.1 (verified 2026-10-01). The floor takes the published
+  # 7.x tip 7.30.0 rather than the bare minimum 7.29.1 for headroom:
+  # the advisory DBs moved twice on 2026-09-30 alone, and the weekly
+  # audit gate (.github/workflows/audit.yaml, rm-299) is the standing
+  # detector — a future advisory patching only above 7.30.0 within 7.x
+  # means another floor raise; one patching only in 8.x means the
+  # undici 8 + jsdom 30 migration (rm-271's majors window), not a floor
+  # bump. undici is dev-transitive via jsdom.
+  undici@7: '>=7.30.0 <8.0.0'
 
 shamefullyHoist: true
