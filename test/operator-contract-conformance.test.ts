@@ -1,12 +1,13 @@
 /**
  * Operator contract conformance tests.
  *
- * Verifies the vendored operator contract v1.5.0 is correctly pinned and
+ * Verifies the vendored operator contract v1.8.0 is correctly pinned and
  * that parse helpers behave per spec. Also verifies the SSE frame types
  * vendored from fro-bot/agent (including the run-output and approval channels)
  * are structurally correct.
  *
- * Source: fro-bot/agent | Tag: v0.78.0
+ * Source: fro-bot/agent | Tag: v0.117.0 (rm-157 cycle-18 absorb of the 1.7.0/
+ * 1.8.0 additive surfaces; the pre-absorb lineage was v0.78.0/v1.6.0)
  */
 import type {ApprovalDecisionState, RunStatus} from '../src/gateway/operator-client.ts'
 import type {
@@ -30,7 +31,10 @@ import type {
 } from '../src/gateway/operator-contract/index.ts'
 import {describe, expect, it} from 'vitest'
 import {
+  deserializeProvenanceEvent,
+  isAcceptedContractVersion,
   OPERATOR_CONTRACT_VERSION,
+  OPERATOR_PROVENANCE_SCHEMA_V1,
   parseOperatorCancelResponse,
   parseOperatorCsrfToken,
   parseOperatorError,
@@ -178,8 +182,125 @@ export {checkApprovalRunStreamFrame, checkReadyFrame, checkResetFrame, checkStat
 // ---------------------------------------------------------------------------
 
 describe('OPERATOR_CONTRACT_VERSION', () => {
-  it('is pinned to 1.6.0', () => {
-    expect(OPERATOR_CONTRACT_VERSION).toBe('1.6.0')
+  it('is pinned to 1.8.0', () => {
+    expect(OPERATOR_CONTRACT_VERSION).toBe('1.8.0')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Accepted ready-frame version range (rm-157 brick cure)
+// ---------------------------------------------------------------------------
+
+describe('isAcceptedContractVersion', () => {
+  it('accepts every gateway pin the dashboard can face (1.6.0 – pinned minor)', () => {
+    expect(isAcceptedContractVersion('1.6.0')).toBe(true) // deployed v0.114.1
+    expect(isAcceptedContractVersion('1.6.1')).toBe(true) // patch no-op
+    expect(isAcceptedContractVersion('1.7.0')).toBe(true)
+    expect(isAcceptedContractVersion('1.8.0')).toBe(true)
+  })
+
+  it('rejects future majors, unknown minors, and malformed values fail-closed', () => {
+    expect(isAcceptedContractVersion('2.0.0')).toBe(false)
+    expect(isAcceptedContractVersion('1.9.0')).toBe(false)
+    expect(isAcceptedContractVersion('0.0.0-fixture-drift')).toBe(false)
+    expect(isAcceptedContractVersion('')).toBe(false)
+    expect(isAcceptedContractVersion('1.8')).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-157: 1.7.0/1.8.0 additive fields — absent/present matrix
+// ---------------------------------------------------------------------------
+
+describe('OperatorRunStatus absent-tolerance (1.6.0 payloads)', () => {
+  it('a 1.6.0-shaped payload (no 1.7.0/1.8.0 fields) stays type-valid', () => {
+    const legacy: OperatorRunStatus = {
+      runId: 'run-001',
+      entityRef: 'fro-bot/agent',
+      surface: 'github',
+      phase: 'EXECUTING',
+      status: 'running',
+      startedAt: '2026-09-29T00:00:00Z',
+      stale: false,
+    }
+    expect(legacy.preparing).toBeUndefined()
+    expect(legacy.provenance).toBeUndefined()
+    expect(legacy.remoteFreshness).toBeUndefined()
+  })
+
+  it('a 1.8.0-shaped payload carries the additive fields', () => {
+    const modern: OperatorRunStatus = {
+      runId: 'run-001',
+      entityRef: 'fro-bot/agent',
+      surface: 'github',
+      phase: 'EXECUTING',
+      status: 'running',
+      startedAt: '2026-09-29T00:00:00Z',
+      stale: false,
+      preparing: false,
+      preparation: {status: 'ok'},
+      remoteFreshness: 'checked',
+      freshnessCheckedAt: '2026-09-29T00:00:01Z',
+      currentOperation: null,
+      provenance: {
+        kind: 'provenance',
+        headSha: 'a'.repeat(40),
+        detached: false,
+        dirty: true,
+        operationInProgress: false,
+        headBranch: 'main',
+        headRefSlug: null,
+        aheadCount: 1,
+        behindCount: 0,
+        commits: [
+          {sha: 'b'.repeat(40), message: 'chore', authorName: 'Fro Bot', authoredAt: '2026-09-29T00:00:00Z'},
+        ],
+        fetchedAt: '2026-09-29T00:00:02Z',
+      },
+    }
+    expect(modern.remoteFreshness).toBe('checked')
+    expect(modern.provenance?.headSha).toBe('a'.repeat(40))
+  })
+})
+
+describe('deserializeProvenanceEvent', () => {
+  const validFrame = {
+    schema: OPERATOR_PROVENANCE_SCHEMA_V1,
+    kind: 'provenance',
+    headSha: 'a'.repeat(40),
+    detached: false,
+    dirty: true,
+    operationInProgress: false,
+    headBranch: 'main',
+    headRefSlug: null,
+    aheadCount: 1,
+    behindCount: 0,
+    commits: [
+      {sha: 'b'.repeat(40), message: 'chore', authorName: 'Fro Bot', authoredAt: '2026-09-29T00:00:00Z'},
+    ],
+    fetchedAt: '2026-09-29T00:00:02Z',
+  }
+
+  it('parses a schema-carrying provenance frame', () => {
+    const result = deserializeProvenanceEvent(validFrame)
+    expect(result).not.toBeNull()
+    expect(result?.headSha).toBe('a'.repeat(40))
+    expect(result?.commits).toHaveLength(1)
+  })
+
+  it('is absent-tolerant: non-frames and 1.6.0-era payloads (no provenance) return null', () => {
+    expect(deserializeProvenanceEvent(null)).toBeNull()
+    expect(deserializeProvenanceEvent({})).toBeNull()
+    expect(deserializeProvenanceEvent({kind: 'provenance'})).toBeNull() // no schema
+    expect(
+      deserializeProvenanceEvent({schema: 'operator-provenance/2', kind: 'provenance'}),
+    ).toBeNull()
+  })
+
+  it('rejects malformed provenance payloads fail-closed, never partial', () => {
+    expect(deserializeProvenanceEvent({...validFrame, headSha: 123})).toBeNull()
+    expect(deserializeProvenanceEvent({...validFrame, commits: [{sha: 'x'}]})).toBeNull()
+    expect(deserializeProvenanceEvent({...validFrame, dirty: 'yes'})).toBeNull()
   })
 })
 
@@ -188,16 +309,18 @@ describe('OPERATOR_CONTRACT_VERSION', () => {
 // ---------------------------------------------------------------------------
 
 describe('OperatorFailureKind', () => {
-  it('all six known reason codes are assignable to the union', () => {
+  it('all eight known reason codes are assignable to the union', () => {
     const checkFailureKinds: OperatorFailureKind[] = [
       'inactivity-timeout',
       'max-duration-timeout',
       'stream-ended',
+      'workspace-unavailable',
       'workspace-unreachable',
+      'checkout-substituted',
       'session-error',
       'unknown',
     ]
-    expect(checkFailureKinds).toHaveLength(6)
+    expect(checkFailureKinds).toHaveLength(8)
   })
 
   it('OperatorRunStatus accepts an optional failureKind on a failed status', () => {

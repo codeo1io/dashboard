@@ -11,6 +11,8 @@
  * construction — they do not appear in this type.
  */
 
+import type {OperatorCheckoutProvenance} from './provenance.ts'
+
 // ---------------------------------------------------------------------------
 // Inlined boundary types from @fro-bot/runtime (minimal, frozen literals only)
 // ---------------------------------------------------------------------------
@@ -70,6 +72,18 @@ export const PHASE_TO_WEB_STATUS: Readonly<Record<RunPhase, OperatorWebStatus>> 
  * Internal coordination fields (holder_id, thread_id, details) are excluded
  * by construction — they do not appear in this type.
  */
+// rm-157 (2026-09-29): 1.7.0 additions vendored from upstream
+// run-status.ts — workspace-preparation failures now surface as their own
+// operator-facing kinds instead of falling back to 'unknown'.
+export type OperatorRunStatusPreparation = {
+  status: 'ok' | 'failed'
+  failure?: {kind: string; message?: string} | null
+}
+
+export type OperatorRemoteFreshness = 'fresh' | 'stale' | 'auto' | 'checked'
+
+export type OperatorCurrentOperation = 'checkout' | 'apply' | 'plan'
+
 export interface OperatorRunStatus {
   readonly runId: string
   readonly entityRef: string
@@ -79,6 +93,15 @@ export interface OperatorRunStatus {
   readonly startedAt: string
   readonly stale: boolean
   readonly failureKind?: OperatorFailureKind
+  // rm-157 (2026-09-29): upstream 1.7.0/1.8.0 additive fields — optional on
+  // this mirror so payloads from an older gateway pin (the deployed gateway
+  // still speaks 1.6.0) pass through unchanged, absent-tolerant end to end.
+  readonly preparing?: boolean
+  readonly preparation?: OperatorRunStatusPreparation | null
+  readonly remoteFreshness?: OperatorRemoteFreshness
+  readonly freshnessCheckedAt?: string | null
+  readonly currentOperation?: OperatorCurrentOperation | null
+  readonly provenance?: OperatorCheckoutProvenance | null
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +120,9 @@ export type OperatorFailureKind =
   | 'inactivity-timeout'
   | 'max-duration-timeout'
   | 'stream-ended'
+  | 'workspace-unavailable'
   | 'workspace-unreachable'
+  | 'checkout-substituted'
   | 'session-error'
   | 'unknown'
 
@@ -110,7 +135,9 @@ export const OPERATOR_FAILURE_KINDS: ReadonlySet<OperatorFailureKind> = new Set(
   'inactivity-timeout',
   'max-duration-timeout',
   'stream-ended',
+  'workspace-unavailable',
   'workspace-unreachable',
+  'checkout-substituted',
   'session-error',
   'unknown',
 ])

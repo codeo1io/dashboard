@@ -94,7 +94,7 @@
   `docs/solutions/best-practices/lock-invariant-claims-with-tests-2026-09-21.md`).
 - **Problem**: the repo's only network-shaped parsing surfaces — the
   server-side SSE reader and the production browser parser
-  (`public/static/operator-stream.js`) plus the listener ingest payload
+  (`public/operator-stream.js`) plus the listener ingest payload
   validation — are exercised by hand-written example tests only. OSS-Fuzz
   (what Scorecard looks for) is disproportionate for a monitoring dashboard,
   but property-based testing is proportionate and in-stack.

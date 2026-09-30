@@ -160,7 +160,7 @@ Implementation and validation are recorded here from the implement (attempt a292
 | B0 landing gate | recorded for the commit phase | checklist below |
 | B1 pnpm 11.27.1 | implemented, validated | 5 pin sites at 11.27.1 (Dockerfile:4,24; package.json packageManager; fork-exclusion-guard test ×2 assertions); `pnpm install` ran under pnpm v11.27.1; upstream f35e281's content therefore already absorbed (rm-103 compound note) |
 | B2 security.txt | implemented, validated | `/.well-known/security.txt` (+trailing slash) as exact-match public paths, siblings stay 401; 5 route tests in test/server.test.ts; ephemeral PR #31 visual green |
-| B3 toml advisory | implemented, validated | override lives in pnpm-workspace.yaml (pnpm 11 ignores package.json `pnpm.overrides` — trap documented in docs/solutions/build-errors/pnpm11-overrides-must-live-in-pnpm-workspace-yaml-2026-09-24.md); toml 4.1.2→4.3.0; `pnpm audit` = No known vulnerabilities |
+| B3 toml advisory | implemented, validated | override lives in pnpm-workspace.yaml (pnpm 11 ignores package.json `pnpm.overrides` — trap documented in docs/solutions/build-errors/pnpm11-overrides-live-in-pnpm-workspace-yaml-2026-09-24.md); toml 4.1.2→4.3.0; `pnpm audit` = No known vulnerabilities |
 | B4 ack CSRF | implemented, validated | deriveAckCsrfToken HMAC + 1h window + timingSafeEqual, GET /api/listener/csrf, fail-closed 403/503 server-side; web client fail-closed; 5 server + 5 web tests; contract doc updated |
 
 Full-suite validation of record: verbatim engine full_command `github_ci_validate.py --repo .` →
