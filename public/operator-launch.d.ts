@@ -109,6 +109,13 @@ export declare function buildLaunchClient(opts?: {
   /** Called at submit time to get the current scenario; not frozen at init. */
   readonly getScenario?: () => string
   readonly fixtureSessionId?: string
+  /**
+   * rm-276: transport bound for the default browserFetch wrapper (default
+   * LAUNCH_FETCH_TIMEOUT_MS = 10s). A hung POST must not leave the submit
+   * control stuck in `sending` until reload. Test seam: pass a small value to
+   * assert the bound fires without waiting the full default.
+   */
+  readonly fetchTimeoutMs?: number
 }): {
   readonly refreshCsrf: () => Promise<
     | {readonly success: true; readonly data: {readonly csrfToken: string}}

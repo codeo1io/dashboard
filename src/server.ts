@@ -676,7 +676,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   const rateLimitTrustedProxy = opts?.rateLimitTrustedProxy ?? defaultRateLimitTrustedProxy()
   app.use('*', async (c: Context, next) => {
     const path = new URL(c.req.url).pathname
-    const sensitiveRoutes = ['/', '/auth/login', '/auth/callback', '/operator']
+    // rm-278: logout endpoints join their /auth/login sibling in the counting
+    // class — same pre-auth trust surface (cookie writes + CSRF mint), not a
+    // static asset, so the rm-262 asset exemption does not cover them.
+    const sensitiveRoutes = ['/', '/auth/login', '/auth/callback', '/auth/logout', '/auth/logout-csrf', '/operator']
     const isSensitive = sensitiveRoutes.includes(path) || path.startsWith('/api/') || path.startsWith('/operator/')
 
     if (isSensitive) {

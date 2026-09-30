@@ -349,7 +349,17 @@ export declare function resetBootstrapState(): void
 // ---------------------------------------------------------------------------
 
 /** Browser-direct approval client factory. Returns refreshCsrf/decideRunApproval/listRunApprovals. */
-export declare function buildApprovalClient(opts?: {readonly endpointBase?: string; readonly fixtureSessionId?: string}): ApprovalClient
+export declare function buildApprovalClient(opts?: {
+  readonly endpointBase?: string
+  readonly fixtureSessionId?: string
+  /**
+   * rm-276: transport bound for every approval fetch (default
+   * APPROVAL_FETCH_TIMEOUT_MS = 10s). A hung POST must not leave the prompt
+   * stuck in-flight with the controls disabled until reload. Test seam: pass a
+   * small value to assert the bound fires without waiting the full default.
+   */
+  readonly fetchTimeoutMs?: number
+}): ApprovalClient
 
 // ---------------------------------------------------------------------------
 // Browser-direct cancel client
