@@ -1,0 +1,101 @@
+# Weekly read-only git drift check against the upstream fro-bot/dashboard
+# repository (rm-103 alert half, 2026-09-26).
+#
+# This fork integrates upstream work in deliberate batches (the roadmap's
+# absorb cadence), so being behind upstream is EXPECTED between batches — the
+# point of this watch is that the lag never becomes invisible. During the
+# 2026-09-26 cycle this run's own frame sat 57 commits behind origin/main
+# while parallel cycles landed silently; nothing watched the upstream remote
+# at all (base-drift.yaml watches image/pin drift, not commits).
+#
+# ALERT-ONLY by design: this workflow never merges, rebases, fast-forwards,
+# or opens PRs. Absorption stays a human/agent-reviewed batch with its own
+# validation (automerge is deliberately sequenced behind rm-116's required
+# checks, which do not exist yet). The red run + deduplicated issue are the
+# signal; the action is always an explicit absorb batch.
+#
+# Topology note: the local `autonomy-upstream` remote convention does not
+# exist on a fresh Actions checkout, so upstream is fetched by URL into
+# FETCH_HEAD and compared against origin/<default branch>.
+name: Upstream drift check
+
+on:
+  schedule:
+    - cron: '17 5 * * 1' # Mondays 05:17 UTC, off the hour (base-drift is 04:13)
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout (full history for rev-list counts)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Compare fork main to upstream fro-bot/dashboard main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_URL: 'https://github.com/fro-bot/dashboard.git'
+        run: |
+          set -euo pipefail
+
+          DEFAULT_BRANCH='${{ github.event.repository.default_branch }}'
+          : "${DEFAULT_BRANCH:=main}"
+
+          git fetch "$UPSTREAM_URL" main
+          UPSTREAM='FETCH_HEAD'
+
+          BEHIND="$(git rev-list --count "origin/$DEFAULT_BRANCH..$UPSTREAM")"
+          AHEAD="$(git rev-list --count "$UPSTREAM..origin/$DEFAULT_BRANCH")"
+
+          {
+            echo '## Upstream drift (alert-only, rm-103)'
+            echo "- fork \`origin/$DEFAULT_BRANCH\` is **$BEHIND behind** and $AHEAD ahead of upstream \`fro-bot/dashboard@$DEFAULT_BRANCH\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "behind=$BEHIND ahead=$AHEAD"
+
+          if [ "$BEHIND" -eq 0 ]; then
+            echo 'no upstream drift — fork main is current with fro-bot/dashboard'
+            exit 0
+          fi
+
+          {
+            echo
+            echo '### Upstream commits not yet absorbed (oldest first, first 15)'
+            echo '```'
+            git log --oneline --reverse "origin/$DEFAULT_BRANCH..$UPSTREAM" | head -15
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Surface the drift as a tracking issue (deduplicated while one is
+          # open). Best-effort: issues are DISABLED on this fork
+          # (has_issues=false → the issue API 410s) — the same guard as
+          # base-drift.yaml. The unconditional exit 1 below is the
+          # authoritative drift signal.
+          ISSUES_ENABLED="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.has_issues' 2>/dev/null || echo 'false')"
+          if [ "$ISSUES_ENABLED" = 'true' ]; then
+            gh label create upstream-drift --color D4E8F7 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || true
+            OPEN="$(gh issue list --repo "$GITHUB_REPOSITORY" --label upstream-drift --state open --json number --jq 'length')"
+            if [ "$OPEN" = '0' ]; then
+              gh issue create \
+                --repo "$GITHUB_REPOSITORY" \
+                --label upstream-drift \
+                --title "Upstream drift: fork main is $BEHIND commits behind fro-bot/dashboard" \
+                --body "The weekly upstream drift check found \`origin/$DEFAULT_BRANCH\` **$BEHIND commits behind** upstream \`fro-bot/dashboard@$DEFAULT_BRANCH\` (and $AHEAD ahead).
+
+          Action: schedule an absorb batch through the normal validation gates. This workflow never merges anything (rm-103 alert half; automerge is sequenced behind rm-116)." >/dev/null
+            else
+              echo "open upstream-drift issue already exists ($OPEN) — skipping creation"
+            fi
+          else
+            echo '::warning::issues disabled on this repository — drift tracking issue skipped; the red run is the drift signal'
+          fi
+
+          # Non-zero so the run is visibly red on drift.
+          exit 1

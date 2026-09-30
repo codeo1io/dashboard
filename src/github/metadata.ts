@@ -329,11 +329,15 @@ export async function readRepoMetadata(reader: MetadataReader): Promise<Result<M
       }
       // Do NOT add to publicRepos. Do NOT log owner/name.
     } else if (
-      typeof entry.owner === 'string' &&
-      typeof entry.name === 'string' &&
-      typeof entry.node_id === 'string' &&
-      typeof entry.discovery_channel === 'string'
+      typeof entry.owner === 'string' && entry.owner.length > 0 &&
+      typeof entry.name === 'string' && entry.name.length > 0 &&
+      typeof entry.node_id === 'string' && entry.node_id.length > 0 &&
+      typeof entry.discovery_channel === 'string' && entry.discovery_channel.length > 0
     ) {
+      // Parity with the redacted branch's key validation (2026-09-26, cycle
+      // batch B2d): an entry whose required strings are EMPTY is not a usable
+      // public repo row — it falls through to the counted malformed-skip
+      // branch below instead of entering the aggregation input as garbage.
       publicRepos.push({
         owner: entry.owner,
         name: entry.name,

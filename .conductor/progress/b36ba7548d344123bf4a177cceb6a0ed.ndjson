@@ -1,0 +1,1 @@
+{"step":1,"ts":"2026-09-25T18:46:45Z","summary":"targeted cmd run: operator-ui 32 fails -> fixed helper ack -> 743/743 green; digest recomputed = dispatch verbatim","touched":["test/operator-ui.test.ts"]}

@@ -11,6 +11,14 @@ interface FixtureState {
   readonly fixtureSessionId: string
 }
 
+// Listener-poll status — see the poll loop below. Surfaced via a
+// screen-reader-only status node that renders ONLY on failure, so the
+// healthy-state DOM (and the Playwright visual baselines) stay unchanged.
+type ListenerPollStatus = 'ok' | 'auth' | 'unavailable'
+
+const POLL_BASE_MS = 30_000
+const POLL_MAX_BACKOFF_MS = 300_000
+
 export default function App() {
   const [operatorState, setOperatorState] = useState<OperatorState>('ready')
   const [fixtureState, setFixtureState] = useState<FixtureState | null>(null)
@@ -18,6 +26,12 @@ export default function App() {
   
   const [currentView, setCurrentView] = useState<'operator' | 'listener'>('operator')
   const [unreadCount, setUnreadCount] = useState(0)
+  // Listener-poll status — the minimal surfacing for poll outcomes the unread
+  // badge cannot express. 'ok' renders nothing (default DOM unchanged, so
+  // visual baselines stay valid); failure states render a screen-reader-only
+  // status node (see the JSX below).
+  const [listenerPollStatus, setListenerPollStatus] =
+    useState<ListenerPollStatus>('ok')
 
   useEffect(() => {
     if (!import.meta.env.DEV) return
@@ -42,22 +56,99 @@ export default function App() {
     }
   }, [])
 
-  const pollUnreadCount = useCallback(async () => {
+  // Poll the listener unread count for the nav badge. Response classes are
+  // handled explicitly — nothing is silently swallowed (2026-09-26, cycle
+  // batch B1):
+  // - ok            → update the badge, reset backoff, keep the 30s cadence
+  // - 'auth'        → 401/403: the operator session expired — surface + STOP
+  //                   (cannot self-recover; the operator reloads to
+  //                   re-authenticate)
+  // - 'unavailable' → 404/410: the listener surface is not mounted on this
+  //                   deployment — surface + STOP (polling would 404 forever)
+  // - transient ('network' | 'timeout' | 'contract-drift') → keep the last
+  //                   good badge value and back off exponentially, capped at
+  //                   POLL_MAX_BACKOFF_MS — the failure is visible in
+  //                   behavior (slower polling), never as a badge reset.
+  const pollUnreadCount = useCallback(async (): Promise<
+    'ok' | 'auth' | 'unavailable' | 'transient'
+  > => {
     const res = await fetchListenerMessages({ limit: 1, unreadOnly: true })
     if (res.ok) {
       setUnreadCount(res.data.unreadCount)
+      setListenerPollStatus('ok')
+      return 'ok'
     }
+    if (res.reason === 'auth') {
+      setListenerPollStatus('auth')
+      return 'auth'
+    }
+    if (res.reason === 'unavailable') {
+      setListenerPollStatus('unavailable')
+      return 'unavailable'
+    }
+    // Transient: keep the last good unreadCount (no reset to zero) and let
+    // the loop's backoff stretch the next attempt.
+    return 'transient'
   }, [])
 
   useEffect(() => {
-    void pollUnreadCount()
-    const intervalId = setInterval(() => void pollUnreadCount(), 30000)
-    
-    const handleFocus = () => void pollUnreadCount()
+    let stopped = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let transientFailures = 0
+    // A fired timer's id is stale the moment its callback runs; clearing it
+    // here plus the inFlight guard makes concurrent ticks impossible, so a
+    // focus event during an in-flight tick can never stack a second loop
+    // (review fix 2026-09-26: unbounded poll-rate growth on long-lived tabs).
+    let inFlight = false
+
+    const schedule = (delayMs: number) => {
+      timer = setTimeout(() => {
+        timer = undefined
+        void tick()
+      }, delayMs)
+    }
+
+    const tick = async () => {
+      if (inFlight) return
+      inFlight = true
+      try {
+        const outcome = await pollUnreadCount()
+        if (stopped) return
+        if (outcome === 'auth' || outcome === 'unavailable') {
+          // Permanent stop — a stopped poller never restarts on its own, and a
+          // focus event must not resurrect it: 'auth' recovers only via an
+          // operator reload, 'unavailable' only via a server-side change.
+          return
+        }
+        if (outcome === 'ok') {
+          transientFailures = 0
+          schedule(POLL_BASE_MS)
+        } else {
+          transientFailures += 1
+          schedule(Math.min(POLL_BASE_MS * 2 ** transientFailures, POLL_MAX_BACKOFF_MS))
+        }
+      } finally {
+        inFlight = false
+      }
+    }
+
+    void tick()
+
+    const handleFocus = () => {
+      if (stopped) return
+      // Poll immediately on focus (fresh badge when the tab returns) unless
+      // a tick is already in flight — that tick reschedules on completion.
+      if (timer !== undefined) {
+        clearTimeout(timer)
+        timer = undefined
+        void tick() // no-op when a tick is already in flight (inFlight guard)
+      }
+    }
     window.addEventListener('focus', handleFocus)
-    
+
     return () => {
-      clearInterval(intervalId)
+      stopped = true
+      if (timer !== undefined) clearTimeout(timer)
       window.removeEventListener('focus', handleFocus)
     }
   }, [pollUnreadCount])
@@ -83,6 +174,14 @@ export default function App() {
       
       {currentView === 'listener' && (
         <ListenerChannel />
+      )}
+
+      {listenerPollStatus !== 'ok' && (
+        <p data-testid="listener-poll-status" role="status" style={{position: 'absolute', width: '1px', height: '1px', padding: 0, margin: '-1px', overflow: 'hidden', clip: 'rect(0, 0, 0, 0)', whiteSpace: 'nowrap', border: 0}}>
+          {listenerPollStatus === 'auth'
+            ? 'Listener sign-in expired — reload to re-authenticate.'
+            : 'Listener channel is not available on this deployment.'}
+        </p>
       )}
     </AppShell>
   )

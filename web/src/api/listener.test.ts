@@ -108,6 +108,28 @@ describe('listener API', () => {
       const res = await fetchListenerMessages()
       expect(res).toEqual({ ok: false, reason: 'network' })
     })
+
+    it('classifies 401/403 as auth (even though server modes 302-redirect — direct 401 only if that ever changes)', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(new Response('unauthenticated', { status: 401 }))
+      expect(await fetchListenerMessages()).toEqual({ ok: false, reason: 'auth' })
+      vi.mocked(fetch).mockResolvedValueOnce(new Response('forbidden', { status: 403 }))
+      expect(await fetchListenerMessages()).toEqual({ ok: false, reason: 'auth' })
+    })
+
+    it('classifies a followed redirect as auth — session expiry 302s to the login page and fetch follows it (login HTML arrives as a 200)', async () => {
+      const followed = new Response('<html>login page</html>', { status: 200 })
+      Object.defineProperty(followed, 'redirected', { value: true })
+      vi.mocked(fetch).mockResolvedValueOnce(followed)
+      const res = await fetchListenerMessages()
+      expect(res).toEqual({ ok: false, reason: 'auth' })
+    })
+
+    it('classifies 404/410 as unavailable (listener surface unmounted)', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(new Response('gone', { status: 404 }))
+      expect(await fetchListenerMessages()).toEqual({ ok: false, reason: 'unavailable' })
+      vi.mocked(fetch).mockResolvedValueOnce(new Response('gone', { status: 410 }))
+      expect(await fetchListenerMessages()).toEqual({ ok: false, reason: 'unavailable' })
+    })
   })
 
   describe('ackListenerMessage', () => {
