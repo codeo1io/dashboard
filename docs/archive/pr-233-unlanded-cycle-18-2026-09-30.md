@@ -40,11 +40,22 @@ transient home and must never be the sole copy.
 |---|----------|-------|-------|---------------------------|
 | A | test-rate-limit-key-cap.test.ts (U3 red test) | 77 | 3079 | a808dced… |
 | B | cycle-18-batch-run-11121ee8.md (batch frame doc) | 110 | 6737 | 49e73255… |
-| C | server-cap-and-env-guard.diff (U3+U5 implementation diff) | 250 | 12687 | b8c6ea0f… |
+| C | server-cap-and-env-guard.diff (U3+U5 implementation diff) | 250 | 12676 | 3a8ddd40… |
 
 - A: `a808dcedcd64b7a1539758ca4f05e3899316b513f714e7ecb37a72661978a3cc`
 - B: `49e73255a7fd226e65b2aaf0e6e577f343bd8bbdaa931a46a0cf6680fa3e2290`
-- C: `b8c6ea0fb80437ec3aed2738cb8738cb0c8c67b5f6f7aadcbe49abe5f74a128b`
+- C: `3a8ddd405259a9effcf5d911e334563c484f17acbe3906983dbe13b557e91a2b`
+
+- Pre-normalization pin for C (dated 2026-10-01, cycle-19 lint rider for the
+  repo-wide `@stylistic/no-trailing-spaces` cure): the block was stripped of
+  trailing whitespace on exactly 11 lines (1 byte each, 11 bytes total) so
+  the file clears the Lint gate; the pinned value above is the NORMALIZED
+  block (250 lines, 12676 bytes). Before normalization it hashed to
+  `b8c6ea0fb80437ec3aed2738cb8738cb0c8c67b5f6f7aadcbe49abe5f74a128b` (250 lines, 12687
+  bytes) — recoverable from git history as blob
+  `5c3348e4bf999c6c27e63af54935e2f5c659437d` at base `31995a2` and, while
+  the ref lives, via the regeneration command below; the two forms differ
+  only in one trailing space on each of those 11 lines.
 
 ## Regeneration and verification
 
@@ -287,7 +298,7 @@ index f3f2577..1f6caa1 100644
 @@ -179,6 +186,22 @@ let rateLimitCallCount = 0
  const EVICT_INTERVAL = 500 // sweep every 500 calls
  const EVICT_STALE_AGE = 2 * RATE_LIMIT_WINDOW_MS
- 
+
 +/**
 + * rm-251 (port of fro-bot/agent v0.117.0's limiter defense): hard cap on
 + * distinct client keys in the limiter store. Unique first-hop XFF tokens
@@ -310,7 +321,7 @@ index f3f2577..1f6caa1 100644
 @@ -231,6 +254,23 @@ function sweepRateLimitMap(now: number): void {
    }
  }
- 
+
 +/**
 + * rm-251 admission control for a NEW limiter key. Below capacity: always
 + * admit. At capacity: sweep stale windows once, then — if the store is still
@@ -332,9 +343,9 @@ index f3f2577..1f6caa1 100644
   * Check rate limit for the given IP.
   * Accepts an optional `now` for testability (defaults to Date.now()).
 @@ -245,9 +285,15 @@ export function checkRateLimit(ip: string, now: number = Date.now(), pathClass?:
- 
+
    let entry = rateLimitMap.get(ip)
- 
+
 -  if (entry === undefined || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
 +  if (entry === undefined) {
 +    // rm-251: new-key admission goes through the cap check — at capacity the
@@ -347,7 +358,7 @@ index f3f2577..1f6caa1 100644
 +    entry = {windowStart: now, counts: {public: 0, operator: 0, ingest: 0}}
    }
    const current = entry
- 
+
 @@ -1138,54 +1184,76 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
     * Resolve the installation ID for a repo using the App JWT endpoint
     * GET /repos/{owner}/{repo}/installation — the only App-JWT endpoint valid
@@ -377,7 +388,7 @@ index f3f2577..1f6caa1 100644
 +  }
 +  const resolveInstallationIdForRepo =
 +    deps.resolveInstallationIdForRepo ?? createMemoizedInstallationResolver(rawResolveInstallationIdForRepo)
- 
+
    // Real Octokit-backed metadata reader: fetches metadata/repos.yaml from
    // codeo1io/.github at ref=data via an INSTALLATION token (not App JWT).
    // The installation is resolved via resolveInstallationIdForRepo('codeo1io', '.github').
@@ -462,7 +473,7 @@ index f3f2577..1f6caa1 100644
 +        const body = Buffer.from(data.content.replaceAll('\n', ''), 'base64').toString('utf8')
 +        return {etag: response.headers.etag, body}
 +      }, metadataEtagCache))
- 
+
    // Real per-installation graphql query function: mints a read-only token for
    // the given installationId and authenticates the graphql client with it.
 diff --git a/test/env-docs-guard.test.ts b/test/env-docs-guard.test.ts
@@ -470,7 +481,7 @@ index 0ef2cc8..1b2116b 100644
 --- a/test/env-docs-guard.test.ts
 +++ b/test/env-docs-guard.test.ts
 @@ -5,11 +5,14 @@ import {describe, expect, it} from 'vitest'
- 
+
  /**
   * rm-214: README Configuration must document the complete env-var surface.
 + * rm-255: the token family is prefix-EXHAUSTIVE by construction — every
@@ -494,7 +505,7 @@ index 0ef2cc8..1b2116b 100644
  const repoRoot = process.cwd()
 -const ENV_TOKEN = '(?:DASHBOARD|RATE_LIMIT)_[A-Z0-9_]+'
 +const ENV_TOKEN = '(?:DASHBOARD|RATE_LIMIT|GATEWAY)_[A-Z0-9_]+'
- 
+
  function collectTypeScriptSources(dir: string): string[] {
    const out: string[] = []
 @@ -68,6 +71,9 @@ const NON_ENV_CONSTANTS = [
@@ -505,12 +516,12 @@ index 0ef2cc8..1b2116b 100644
 +  // the census can never mistake it for a read, in either direction.
 +  'GATEWAY_LOGIN_REDIRECT',
  ] as const
- 
+
  /** Backticked env tokens inside the README "Configuration" section (table rows + prose). */
 @@ -93,7 +99,7 @@ describe('environment-variable documentation coverage (rm-214)', () => {
      }
    })
- 
+
 -  it('every DASHBOARD_*/RATE_LIMIT_* var read in src/ is documented in README Configuration, and no stale rows exist', () => {
 +  it('every DASHBOARD_*/RATE_LIMIT_*/GATEWAY_* var read in src/ is documented in README Configuration, and no stale rows exist', () => {
      const read = envTokensReadInSrc()

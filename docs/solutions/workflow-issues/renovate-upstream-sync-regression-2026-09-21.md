@@ -1,3 +1,18 @@
+---
+title: renovate.yaml reintroduced by upstream sync — deleted external workflow silently returned
+date: 2026-09-21
+category: workflow-issues
+module: dashboard
+problem_type: workflow_issue
+component: development_workflow
+severity: medium
+tags: ['renovate', 'upstream-sync', 'workflow-hygiene', 'app-secrets']
+applies_when:
+  - Absorbing upstream merges that can resurrect previously deleted workflow files
+  - Auditing .github/workflows for reusable workflows that execute on foreign-hosted runners
+  - Checking that a reintroduced CI surface has its required app secrets configured before it fires
+---
+
 # renovate.yaml reintroduced by upstream sync (2026-09-21)
 
 ## What happened

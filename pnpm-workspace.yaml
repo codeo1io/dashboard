@@ -12,24 +12,25 @@ allowBuilds:
 # first-party pins that sometimes need same-day adoption.
 minimumReleaseAge: 1440
 
-# rm-196 rider (2026-09-25): hono@4.13.9 and vite@8.3.1 are the rider targets,
-# both past their 1440-minute maturity timestamps — an explicit, disclosed
-# bypass of the rm-133 age gate, not a weakening of it.
+# rm-196 rider (2026-09-25): vite@8.3.1 is the remaining rider target
+# (past its 1440-minute maturity timestamp) — an explicit, disclosed
+# bypass of the rm-133 age gate, not a weakening of it. The hono@4.13.9
+# entry was retired 2026-10-01 (rm-320): long past the age floor and
+# superseded by the 4.13.11+ serveStatic security bump.
 minimumReleaseAgeExclude:
   - '@bfra.me/eslint-config@0.51.2 || 0.51.3 || 0.51.4 || 0.52.0 || 0.52.1 || 0.52.2'
   - '@bfra.me/tsconfig@0.13.2'
-  - hono@4.13.9
   - vite@8.3.1
 
 overrides:
-  brace-expansion@2: '>=2.1.2 <3.0.0'
-  brace-expansion@5: '>=5.0.7 <6.0.0'
-  fast-uri@3: '>=3.1.5 <4.0.0'
+  brace-expansion@2: '>=2.1.7 <3.0.0'
+  brace-expansion@5: '>=5.0.12 <6.0.0'
+  fast-uri@3: '>=3.1.8 <4.0.0'
   # GHSA-82x6-q7mm-w9cf — toml is dev-transitive via
   # @opencode-ai/plugin>effect; >=4.2.0 is the patched line
   # (rescued by content from run b4aac9ba / PR #82 via cycle-13;
   # the batch's internal rm-171 numbering collided with landed ids).
   toml: '>=4.2.0'
-  undici@7: '>=7.29.0 <8.0.0'
+  undici@7: '>=7.29.1 <8.0.0'
 
 shamefullyHoist: true
