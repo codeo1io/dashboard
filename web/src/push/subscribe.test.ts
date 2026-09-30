@@ -9,6 +9,7 @@ import type {
 } from './subscribe.ts'
 import {
   buildPushClient,
+  createCurrentKeyVersionSource,
   INITIAL_RECONCILE_SWEEP_CACHE,
   resubscribeStaleKey,
   runReconcileSweep,
@@ -143,6 +144,26 @@ describe('buildPushClient', () => {
     const result = await client.getVapidKey()
 
     expect(result).toEqual(ok({pushDisabled: false, vapidKey: {publicKey: 'BNc3xVwB', keyVersion: 'v1'}}))
+  })
+
+  it('getVapidKey: empty-string publicKey is a protocol error, never a usable key (rm-308)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, {publicKey: '', keyVersion: 'v1'}))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const client = buildPushClient()
+    const result = await client.getVapidKey()
+
+    expect(result).toEqual(err({kind: 'protocol'}))
+  })
+
+  it('getVapidKey: empty-string keyVersion is a protocol error (rm-308)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, {publicKey: 'BNc3xVwB', keyVersion: ''}))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const client = buildPushClient()
+    const result = await client.getVapidKey()
+
+    expect(result).toEqual(err({kind: 'protocol'}))
   })
 
   describe('fixtureSessionId query-param parity', () => {
@@ -798,6 +819,67 @@ describe('runReconcileSweep', () => {
     expect(result.action).toBe('none')
   })
 
+  it('rm-308: gateway key rotated past the subscription (getCurrentKeyVersion v2 vs metadata v1) -> stale_key -> resubscribe', async () => {
+    const subscription = fakeSubscription('https://push.example/rotated')
+    const hash = await import('./endpoint-hash.ts').then(m => m.endpointHash(subscription.endpoint))
+    const metadata: PushSubscriptionMetadata = {
+      endpointHash: hash,
+      keyVersion: 'v1',
+      active: true,
+      createdAt: '2026-07-08T00:00:00.000Z',
+      updatedAt: '2026-07-08T00:00:00.000Z',
+    }
+    const pushClient = fakePushClient({
+      getPushSubscriptionMetadata: vi.fn().mockResolvedValue(ok({pushDisabled: false, metadata})),
+    })
+
+    const result = await runReconcileSweep(
+      {
+        getLocalSubscription: () => Promise.resolve(subscription),
+        getPermission: () => 'granted',
+        pushClient,
+        getCurrentKeyVersion: () => 'v2',
+        now: () => 1,
+      },
+      cache,
+    )
+
+    expect(result.skipped).toBe(false)
+    expect(result.nextCache.handoffState).toBe('stale_key')
+    expect(result.uiState).toBe('subscribed')
+    expect(result.action).toBe('resubscribe')
+  })
+
+  it('rm-308: with getCurrentKeyVersion absent, the same metadata keyVersion never flags stale (behavior unchanged)', async () => {
+    const subscription = fakeSubscription('https://push.example/rotated')
+    const hash = await import('./endpoint-hash.ts').then(m => m.endpointHash(subscription.endpoint))
+    const metadata: PushSubscriptionMetadata = {
+      endpointHash: hash,
+      keyVersion: 'v1',
+      active: true,
+      createdAt: '2026-07-08T00:00:00.000Z',
+      updatedAt: '2026-07-08T00:00:00.000Z',
+    }
+    const pushClient = fakePushClient({
+      getPushSubscriptionMetadata: vi.fn().mockResolvedValue(ok({pushDisabled: false, metadata})),
+    })
+
+    const result = await runReconcileSweep(
+      {
+        getLocalSubscription: () => Promise.resolve(subscription),
+        getPermission: () => 'granted',
+        pushClient,
+        now: () => 1,
+      },
+      cache,
+    )
+
+    expect(result.skipped).toBe(false)
+    expect(result.nextCache.handoffState).toBe('subscribed')
+    expect(result.uiState).toBe('subscribed')
+    expect(result.action).toBe('none')
+  })
+
   it('derive-handoff-state mismatch -> not treated as subscribed', async () => {
     const subscription = fakeSubscription('https://push.example/mine')
     const metadata: PushSubscriptionMetadata = {
@@ -1218,5 +1300,86 @@ describe('rm-264: abort windows unsubscribe the local subscription', () => {
     expect(outcome).toEqual({kind: 'aborted'})
     expect(newSubscription.unsubscribeMock).toHaveBeenCalledTimes(1)
     expect(pushClient.subscribePush).not.toHaveBeenCalled()
+  })
+})
+
+describe('createCurrentKeyVersionSource (rm-308)', () => {
+  it('refresh fetches once, caches the keyVersion, and get() is sweep-sync', async () => {
+    const pushClient = fakePushClient()
+    let clock = 0
+    const source = createCurrentKeyVersionSource(pushClient, {ttlMs: 1_000, now: () => clock})
+
+    expect(source.get()).toBeUndefined()
+    await source.refresh()
+    expect(pushClient.getVapidKey).toHaveBeenCalledTimes(1)
+    expect(source.get()).toBe('v1')
+  })
+
+  it('refresh is TTL-bounded: inside the window it does not refetch, past it it does', async () => {
+    const pushClient = fakePushClient()
+    let clock = 0
+    const source = createCurrentKeyVersionSource(pushClient, {ttlMs: 1_000, now: () => clock})
+
+    await source.refresh()
+    clock = 500
+    await source.refresh()
+    expect(pushClient.getVapidKey).toHaveBeenCalledTimes(1)
+
+    clock = 1_001
+    await source.refresh()
+    expect(pushClient.getVapidKey).toHaveBeenCalledTimes(2)
+    expect(source.get()).toBe('v1')
+  })
+
+  it('overlapping refreshes past a clock jump share the in-flight fetch', async () => {
+    const pushClient = fakePushClient()
+    let clock = 0
+    const source = createCurrentKeyVersionSource(pushClient, {ttlMs: 1_000, now: () => clock})
+
+    const first = source.refresh()
+    clock = 2_000
+    const second = source.refresh()
+    await Promise.all([first, second])
+
+    expect(pushClient.getVapidKey).toHaveBeenCalledTimes(1)
+    expect(source.get()).toBe('v1')
+  })
+
+  it('a failed getVapidKey keeps the last known version and refresh never rejects', async () => {
+    let fail = false
+    const pushClient = fakePushClient({
+      getVapidKey: vi.fn().mockImplementation(async () => {
+        if (fail) return err({kind: 'network'})
+        return ok({pushDisabled: false, vapidKey: VAPID})
+      }),
+    })
+    let clock = 0
+    const source = createCurrentKeyVersionSource(pushClient, {ttlMs: 1_000, now: () => clock})
+
+    await source.refresh()
+    expect(source.get()).toBe('v1')
+
+    fail = true
+    clock = 1_001
+    await expect(source.refresh()).resolves.toBeUndefined()
+    expect(source.get()).toBe('v1')
+  })
+
+  it('a throwing client never rejects the refresh (partial mocks / teardown)', async () => {
+    const source = createCurrentKeyVersionSource({} as PushClient, {ttlMs: 1_000, now: () => 0})
+
+    await expect(source.refresh()).resolves.toBeUndefined()
+    expect(source.get()).toBeUndefined()
+  })
+
+  it('pushDisabled (gateway 404) leaves the version undefined', async () => {
+    const pushClient = fakePushClient({
+      getVapidKey: vi.fn().mockResolvedValue(ok({pushDisabled: true, vapidKey: undefined})),
+    })
+    const source = createCurrentKeyVersionSource(pushClient, {ttlMs: 1_000, now: () => 0})
+
+    await source.refresh()
+
+    expect(source.get()).toBeUndefined()
   })
 })
