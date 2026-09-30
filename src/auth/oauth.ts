@@ -25,12 +25,28 @@ const GITHUB_OAUTH_ERROR_CODES = new Set([
 const GITHUB_FETCH_TIMEOUT_MS = 10_000
 
 /**
+ * PKCE (rm-149): the authorization-URL challenge half. `codeChallengeMethod`
+ * is a literal — GitHub documents S256 as the supported plain-secret method.
+ */
+export interface PkceChallengeParams {
+  readonly codeChallenge: string
+  readonly codeChallengeMethod: 'S256'
+}
+
+/** PKCE (rm-149): the token-exchange half. */
+export interface PkceVerifierParams {
+  readonly codeVerifier: string
+}
+
+/**
  * Minimal interface for the GitHub OAuth client.
  * Uses function property style (not shorthand method signatures) per lint rules.
+ * Both PKCE parameters are optional so legacy fakes keep typechecking; the
+ * production client and the routes treat PKCE as mandatory in practice.
  */
 export interface GitHubOAuthClient {
-  readonly createAuthorizationURL: (state: string, scopes: string[]) => URL
-  readonly validateAuthorizationCode: (code: string) => Promise<{accessToken: () => string}>
+  readonly createAuthorizationURL: (state: string, scopes: string[], pkce?: PkceChallengeParams) => URL
+  readonly validateAuthorizationCode: (code: string, pkce?: PkceVerifierParams) => Promise<{accessToken: () => string}>
 }
 
 /**
@@ -46,18 +62,36 @@ export function makeGitHubOAuthClient(
   redirectURI: string,
 ): GitHubOAuthClient {
   return {
-    createAuthorizationURL: (state: string, scopes: string[]): URL => {
-      const url = new URL('https://github.com/login/oauth/authorize')
-      url.search = new URLSearchParams({
+    createAuthorizationURL: (state: string, scopes: string[], pkce?: PkceChallengeParams): URL => {
+      const params: Record<string, string> = {
         client_id: clientId,
         redirect_uri: redirectURI,
         state,
         scope: scopes.join(' '),
         response_type: 'code',
-      }).toString()
+      }
+      // rm-149: PKCE S256 — challenge goes in the authorize URL, verifier never
+      // leaves the server except via the HttpOnly /auth-scoped cookie.
+      if (pkce !== undefined) {
+        params.code_challenge = pkce.codeChallenge
+        params.code_challenge_method = pkce.codeChallengeMethod
+      }
+      const url = new URL('https://github.com/login/oauth/authorize')
+      url.search = new URLSearchParams(params).toString()
       return url
     },
-    validateAuthorizationCode: async (code: string): Promise<{accessToken: () => string}> => {
+    validateAuthorizationCode: async (code: string, pkce?: PkceVerifierParams): Promise<{accessToken: () => string}> => {
+      const body: Record<string, string> = {
+        client_id: clientId,
+        code,
+        redirect_uri: redirectURI,
+        grant_type: 'authorization_code',
+      }
+      // rm-149: PKCE — the verifier is only ever sent to GitHub's token
+      // endpoint (over TLS) alongside the code it proves.
+      if (pkce !== undefined) {
+        body.code_verifier = pkce.codeVerifier
+      }
       let res: Response
       try {
         res = await fetch('https://github.com/login/oauth/access_token', {
@@ -68,12 +102,7 @@ export function makeGitHubOAuthClient(
             Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`, 'utf8').toString('base64')}`,
             'User-Agent': 'fro-bot-dashboard',
           },
-          body: new URLSearchParams({
-            client_id: clientId,
-            code,
-            redirect_uri: redirectURI,
-            grant_type: 'authorization_code',
-          }).toString(),
+          body: new URLSearchParams(body).toString(),
           redirect: 'error',
           signal: AbortSignal.timeout(GITHUB_FETCH_TIMEOUT_MS),
         })
