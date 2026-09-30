@@ -219,7 +219,7 @@ describe('Notifications Component', () => {
       render(<Notifications />)
     })
 
-    expect(screen.getByTestId('notifications-headline')).toHaveTextContent('Alerts Active')
+    expect(screen.getByTestId('notifications-headline')).toHaveTextContent('Subscription Registered')
     expect(screen.getByTestId('notifications-cta')).toHaveTextContent('Disable notifications')
   })
 
@@ -406,7 +406,7 @@ describe('Notifications Component', () => {
     })
 
     expect(subscribeOptIn).toHaveBeenCalledTimes(1)
-    expect(screen.getByTestId('notifications-headline')).toHaveTextContent('Alerts Active')
+    expect(screen.getByTestId('notifications-headline')).toHaveTextContent('Subscription Registered')
   })
 
   it('runs reconcile actions: resubscribe', async () => {
@@ -424,7 +424,7 @@ describe('Notifications Component', () => {
     })
 
     expect(resubscribeStaleKey).toHaveBeenCalledTimes(1)
-    expect(screen.getByTestId('notifications-headline')).toHaveTextContent('Alerts Active')
+    expect(screen.getByTestId('notifications-headline')).toHaveTextContent('Subscription Registered')
   })
 
   it('regression: `cleanup` action notifies the Gateway via unsubscribeOptOut, not a local-only unsubscribe', async () => {
@@ -467,7 +467,7 @@ describe('Notifications Component', () => {
     await act(async () => {
       await Promise.resolve()
     })
-    expect(screen.getByTestId('notifications-headline')).toHaveTextContent('Alerts Active')
+    expect(screen.getByTestId('notifications-headline')).toHaveTextContent('Subscription Registered')
 
     // Second sweep: inconclusive (e.g. a metadata read that raced the
     // subscribe POST) — action: 'none', uiState: undefined. Pre-fix this
@@ -487,7 +487,7 @@ describe('Notifications Component', () => {
       rerender(<Notifications pushConfigReady={true} />)
     })
 
-    expect(screen.getByTestId('notifications-headline')).toHaveTextContent('Alerts Active')
+    expect(screen.getByTestId('notifications-headline')).toHaveTextContent('Subscription Registered')
     expect(screen.getByTestId('notifications-cta')).toHaveTextContent('Disable notifications')
   })
 

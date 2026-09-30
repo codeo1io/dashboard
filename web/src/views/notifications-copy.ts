@@ -37,8 +37,14 @@ const COPY: Record<NotificationUiState, NotificationStateCopy> = {
     recoveryHint: '',
   },
   subscribed: {
-    headline: 'Alerts Active',
-    detail: 'Monitoring pending approvals and failed run outcomes for this device.',
+    // rm-279: the gateway accepted the registration, but nothing in this
+    // build can deliver or show an alert — the shipped service worker is a
+    // self-unregistering kill-switch with no push or notification handlers,
+    // and the client wires no listener of its own (the gateway-side digest
+    // send path is rm-106, still absent upstream). Name the registration
+    // plainly; do not promise live monitoring.
+    headline: 'Subscription Registered',
+    detail: 'This device is registered for alerts, but delivery is not active in this deployment yet.',
     privacyPolicyLinkText: 'How we handle notification data',
     ctaText: 'Disable notifications',
     recoveryHint: '',
