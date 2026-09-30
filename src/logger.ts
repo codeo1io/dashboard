@@ -1,3 +1,5 @@
+import process from 'node:process'
+
 /**
  * Minimal structured logger + sensitive-field redaction.
  *
@@ -92,16 +94,45 @@ export function redactSensitiveFields<T>(value: T, patterns: readonly string[] =
   return result as T
 }
 
+export type LogFormat = 'human' | 'ndjson'
+
+/**
+ * rm-255: resolve the log output format from the environment.
+ * `LOG_FORMAT=ndjson` emits one JSON object per line on stdout (the
+ * machine-readable sink the operator claim in the old comment promised);
+ * any other value (or unset) keeps the historical `human` mode that routes
+ * everything except errors to stderr via console.warn. Read at emit time —
+ * NOT at module load — so the format is testable without module re-imports
+ * and a test can toggle it mid-suite.
+ */
+export function readLogFormat(env: {LOG_FORMAT?: string | undefined} = process.env): LogFormat {
+  return env.LOG_FORMAT === 'ndjson' ? 'ndjson' : 'human'
+}
+
 function emit(
   level: 'debug' | 'info' | 'warning' | 'error',
   message: string,
   context?: LogContext,
 ): void {
+  if (readLogFormat() === 'ndjson') {
+    // One JSON document per line, always on stdout. Deliberately no timestamp:
+    // container runtimes already timestamp stdout lines, and keeping the entry
+    // deterministic keeps the sink testable. Context is redacted with the same
+    // rules as human mode.
+    const entry =
+      context === undefined
+        ? {level, message}
+        : {level, message, context: redactSensitiveFields(context)}
+    // eslint-disable-next-line no-console -- the ndjson sink IS a stdout sink; warn/error stay in human mode
+    console.log(JSON.stringify(entry))
+    return
+  }
   const line =
     context === undefined
       ? message
       : `${message} ${JSON.stringify(redactSensitiveFields(context))}`
-  // Route through console.warn/error so stdout stays clean for structured output.
+  // Human mode: route through console.warn/error so stdout stays clean for
+  // structured output — which `LOG_FORMAT=ndjson` now actually provides.
   if (level === 'error') {
     console.error(`[${level}] ${line}`)
   } else {
