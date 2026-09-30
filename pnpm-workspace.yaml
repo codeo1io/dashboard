@@ -22,14 +22,22 @@ minimumReleaseAgeExclude:
   - vite@8.3.1
 
 overrides:
-  brace-expansion@2: '>=2.1.2 <3.0.0'
-  brace-expansion@5: '>=5.0.7 <6.0.0'
-  fast-uri@3: '>=3.1.5 <4.0.0'
+  # rm-276 rider (2026-10-01, run a9072bb2 cycle 3): floors trued to the
+  # patched lines of the 19 live audit advisories — all dev-transitive
+  # (brace-expansion and fast-uri via the lint chain's minimatch/ajv,
+  # undici via vitest>jsdom). brace-expansion: GHSA-6j4f-fj2g-mc7p /
+  # GHSA-qhr7-859c-m2p7 / GHSA-q2hr-2g5m-vwhr. fast-uri: GHSA-qw65-cvwx-89v3
+  # / GHSA-58mr-gqgx-xq4g (the two live HIGH Dependabot alerts, #29/#30)
+  # / GHSA-hrr3-gc8f-f4qj. undici: ten advisories, all patched >=7.29.1
+  # (the range resolves to the newest age-gated 7.x).
+  brace-expansion@2: '>=2.1.7 <3.0.0'
+  brace-expansion@5: '>=5.0.12 <6.0.0'
+  fast-uri@3: '>=3.1.8 <4.0.0'
   # GHSA-82x6-q7mm-w9cf — toml is dev-transitive via
   # @opencode-ai/plugin>effect; >=4.2.0 is the patched line
   # (rescued by content from run b4aac9ba / PR #82 via cycle-13;
   # the batch's internal rm-171 numbering collided with landed ids).
   toml: '>=4.2.0'
-  undici@7: '>=7.29.0 <8.0.0'
+  undici@7: '>=7.29.1 <8.0.0'
 
 shamefullyHoist: true
