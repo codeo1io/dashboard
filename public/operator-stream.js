@@ -15,7 +15,12 @@
  *   stream URLs, or status payloads.
  * - Render only phase/status/timestamps — never entityRef/surface/output/tool/path.
  * - All 404s collapse to one not-found state; no cause inference from body or timing.
- * - Read-only: GET stream only; no POST/PUT/DELETE, no telemetry endpoint.
+ * - Read-only by default: the run stream is a GET; the only writes are the
+ *   operator-initiated contract mutations cancelRun (POST /operator/runs/:id/cancel,
+ *   contract 1.7.0) and decideRunApproval (POST …/approvals/:requestID, contract
+ *   1.8.0) — no other POST/PUT/DELETE, and no telemetry endpoint.
+ * - Contract forward-support: accepts gateway contract versions 1.6.0/1.7.0/1.8.0
+ *   (additive fields; pin updated with each re-pin, see PINNED_CONTRACT_VERSION).
  * - Same-origin: credentials:'include', no URL rewriting.
  * - redirect:'error' prevents auth-redirect loops from being parsed as streams.
  * - Content-Type must be text/event-stream on 200; otherwise fail closed.
@@ -28,8 +33,17 @@
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Contract version this client expects on the ready frame. */
-export const PINNED_CONTRACT_VERSION = '1.6.0'
+/**
+ * Contract version this client expects on the ready frame.
+ * Contract version pinned by this mirror (rm-252, cycle 20). Must move in
+ * lockstep with src/gateway/operator-contract/version.ts. 1.6.0 → 1.8.0
+ * forward-support: the accepted set below is the additive union — every
+ * 1.7.0/1.8.0 field is optional on the wire, so a 1.6.0 gateway simply omits
+ * them. Contract 1.9.0 (dequeueMessageBatch + 'message:dequeue-batch') is
+ * unreleased on agent main as of 2026-09-30 — forward window only.
+ */
+export const PINNED_CONTRACT_VERSION = '1.8.0'
+const SUPPORTED_CONTRACT_VERSIONS = new Set(['1.6.0', '1.7.0', '1.8.0'])
 
 /** Base delay in milliseconds for exponential backoff. */
 export const RETRY_BASE_MS = 1000
@@ -150,6 +164,10 @@ const VALID_FAILURE_KINDS = new Set([
   'max-duration-timeout',
   'stream-ended',
   'workspace-unreachable',
+  // Contract 1.8.0: run failed before the workspace was ready. Operator-
+  // actionable (gateway may report workspace unavailable with HTTP 401 per
+  // v0.116.0 semantics; recovery per the gateway access runbook).
+  'workspace-preparation',
   'session-error',
   'unknown',
 ])
@@ -165,6 +183,8 @@ export const FAILURE_REASON_LABELS = {
   'max-duration-timeout': 'Run timed out',
   'stream-ended': 'Stream ended early',
   'workspace-unreachable': 'Workspace unavailable',
+  // Contract 1.8.0 (operator-actionable — gateway access runbook, not a reload).
+  'workspace-preparation': 'Workspace preparation failed',
   'session-error': 'Session error',
   unknown: 'Unknown failure',
 }
@@ -357,11 +377,16 @@ export function parseSseFrame(record) {
       if (parsed.filepath !== undefined && typeof parsed.filepath !== 'string') {
         return {success: false, error: 'approval frame missing required fields'}
       }
+      // approvalId (contract 1.7.0 — approval views over runs): optional
+      // non-empty string on the open variant; anything else normalizes to absent.
+      const approvalId =
+        typeof parsed.approvalId === 'string' && parsed.approvalId.length > 0 ? parsed.approvalId : undefined
       const data = {
         runId: parsed.runId,
         requestID: parsed.requestID,
         permission: parsed.permission,
         settled: false,
+        ...(approvalId === undefined ? {} : {approvalId}),
         ...(parsed.command === undefined ? {} : {command: parsed.command}),
         ...(parsed.filepath === undefined ? {} : {filepath: parsed.filepath}),
       }
@@ -414,7 +439,7 @@ export function nextStreamState(current, event) {
       if (current.connection === 'drift') {
         return current
       }
-      if (event.data.contractVersion !== PINNED_CONTRACT_VERSION) {
+      if (!SUPPORTED_CONTRACT_VERSIONS.has(event.data.contractVersion)) {
         // Contract version mismatch — fail closed, clear all run state
         return {
           connection: 'drift',
@@ -436,6 +461,11 @@ export function nextStreamState(current, event) {
         return current
       }
       const {runId, status, phase, startedAt, stale, failureKind} = event.data
+      // Contract 1.7.0/1.8.0 checkout provenance — surface only the safe
+      // boolean (the workspace checkout advanced ahead of the recorded run
+      // state). ref/commit stay OUT of the run entry (not operator-safe view
+      // material; toSafeRunView never emits them).
+      const checkoutAhead = event.data.checkout?.advanced === true
       const isTerminal = TERMINAL_STATUSES.has(status)
       // Use a null-prototype object to guard against __proto__ key pollution.
       // Spread the prior entry so accumulated output fields (outputText/outputSeq/
@@ -471,6 +501,7 @@ export function nextStreamState(current, event) {
           startedAt,
           stale,
           terminal: isTerminal,
+          ...(checkoutAhead ? {checkoutAhead} : {}),
           // Terminal-wins: a terminal status frame from ANY source clears cancelInFlight.
           // A non-terminal frame preserves whatever the prior entry carried (spread above).
           ...(isTerminal ? {cancelInFlight: false} : {}),
@@ -915,7 +946,7 @@ export function nextStreamState(current, event) {
 /**
  * Map a run status object to the safe render model.
  *
- * Returns ONLY: { runId, status, phase, startedAt, stale, reasonLabel? }
+ * Returns ONLY: { runId, status, phase, startedAt, stale, reasonLabel?, checkoutAhead? }
  *
  * Explicitly excluded: entityRef, surface, output, tool, path, repoName,
  * failureKind, and any other field not in the safe set. This is a whitelist,
@@ -923,6 +954,9 @@ export function nextStreamState(current, event) {
  * never the raw failureKind wire value — and is present only when the run
  * entry carries one (set by nextStreamState on a failed status with a known
  * failureKind, and sticky across later frames for the same run).
+ * checkoutAhead (contract 1.7.0/1.8.0) is a safe boolean — true when the
+ * workspace checkout advanced ahead of the recorded run state; the checkout's
+ * ref/commit identifiers never enter the safe view.
  */
 export function toSafeRunView(runStatus) {
   return {
@@ -932,6 +966,7 @@ export function toSafeRunView(runStatus) {
     startedAt: runStatus.startedAt,
     stale: runStatus.stale,
     ...(runStatus.reasonLabel === undefined ? {} : {reasonLabel: runStatus.reasonLabel}),
+    ...(runStatus.checkoutAhead === true ? {checkoutAhead: true} : {}),
   }
 }
 
@@ -1532,6 +1567,20 @@ export function renderApprovalPrompt(prompt, runId, approvalClient, _onSettle) {
     alwaysConfirmEl.hidden = true
   }
 
+  /**
+   * Contract 1.8.0 (v0.116.0 gateway semantics): HTTP 401 on an approval
+   * decision means the gateway WORKSPACE is unavailable — NOT an expired
+   * operator session. Operator-actionable: the gateway access runbook, not a
+   * reload. Distinct promptState so tests can assert the split.
+   */
+  function setWorkspaceUnavailable() {
+    promptState = 'workspace-unavailable'
+    updateStateAttr()
+    statusEl.textContent = 'The gateway workspace is unavailable \u2014 see docs/runbooks/gateway-access.md.'
+    controlsEl.textContent = ''
+    alwaysConfirmEl.hidden = true
+  }
+
   async function handleDecision(decision) {
     if (promptState === 'in-flight') return
     setInFlight()
@@ -1566,7 +1615,10 @@ export function renderApprovalPrompt(prompt, runId, approvalClient, _onSettle) {
       const {error} = result
       if (error.kind === 'http' && error.status === 404) {
         setCantApprove()
-      } else if (error.kind === 'http' && (error.status === 400 || error.status === 401 || error.status === 403)) {
+      } else if (error.kind === 'http' && error.status === 401) {
+        // v0.116.0+: workspace unavailable — distinct from a session failure.
+        setWorkspaceUnavailable()
+      } else if (error.kind === 'http' && (error.status === 400 || error.status === 403)) {
         setSessionFailure()
       } else {
         setTransportFailure()
@@ -1831,6 +1883,19 @@ export function renderCancelControl(runId, cancelClient, onCancelDispatch) {
     controlsEl.textContent = ''
   }
 
+  /**
+   * Contract 1.8.0 (v0.116.0 gateway semantics): HTTP 401 on a cancel POST
+   * means the gateway WORKSPACE is unavailable — NOT an expired operator
+   * session. Operator-actionable: the gateway access runbook, not a reload.
+   * Distinct controlState so tests can assert the split.
+   */
+  function setWorkspaceUnavailable() {
+    controlState = 'workspace-unavailable'
+    updateStateAttr()
+    statusEl.textContent = 'The gateway workspace is unavailable \u2014 see docs/runbooks/gateway-access.md.'
+    controlsEl.textContent = ''
+  }
+
   function setTransportFailure() {
     controlState = 'transport-failure'
     updateStateAttr()
@@ -1931,7 +1996,10 @@ export function renderCancelControl(runId, cancelClient, onCancelDispatch) {
 
     if (error.kind === 'http' && error.status === 404) {
       setUnavailable()
-    } else if (error.kind === 'http' && (error.status === 400 || error.status === 401 || error.status === 403)) {
+    } else if (error.kind === 'http' && error.status === 401) {
+      // v0.116.0+: workspace unavailable — distinct from a session expiry.
+      setWorkspaceUnavailable()
+    } else if (error.kind === 'http' && (error.status === 400 || error.status === 403)) {
       setSessionExpired()
     } else if (error.kind === 'network') {
       setTransportFailure()
@@ -2131,6 +2199,13 @@ export function initOperatorStream(opts) {
         // Update status class for styling — use allowlisted status value (no whitespace)
         statusEl.className = statusEl.className.replaceAll(/\bstatus-\S+/g, '')
         statusEl.classList.add(`status-${view.status.replaceAll('_', '-')}`)
+        // Surface checkout-advance provenance (contract 1.8.0) as a boolean flag —
+        // no wire strings cross into the DOM (rm-252).
+        if (view.checkoutAhead === true) {
+          if (statusEl.dataset) statusEl.dataset.checkoutAhead = 'true'
+        } else if (statusEl.dataset) {
+          delete statusEl.dataset.checkoutAhead
+        }
       } else if (!aborted) {
         const conn = state.connection
         const runIsTerminal = runEntry !== undefined && runEntry.terminal === true

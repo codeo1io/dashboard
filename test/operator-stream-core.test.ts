@@ -1225,8 +1225,8 @@ describe('backoff constants', () => {
     expect(Number.isInteger(RETRY_MAX_COUNT)).toBe(true)
   })
 
-  it('PINNED_CONTRACT_VERSION is 1.6.0', () => {
-    expect(PINNED_CONTRACT_VERSION).toBe('1.6.0')
+  it('PINNED_CONTRACT_VERSION is 1.8.0', () => {
+    expect(PINNED_CONTRACT_VERSION).toBe('1.8.0')
   })
 })
 
@@ -2941,7 +2941,7 @@ describe('renderApprovalPrompt — DOM-level failure states', () => {
     expect(buttons).toHaveLength(0)
   })
 
-  it('HTTP 401 from CSRF-refresh-expiry → session-failure copy shown, controls cleared', async () => {
+  it('HTTP 401 on the decision POST → workspace-unavailable copy (v0.116.0+ split), controls cleared', async () => {
     stubRenderEnv()
     vi.stubGlobal('crypto', {randomUUID: () => 'test-uuid-1234'})
     const prompt: ApprovalFrameDataOpen = {
@@ -2956,8 +2956,9 @@ describe('renderApprovalPrompt — DOM-level failure states', () => {
     onceBtn?.dispatchEvent({type: 'click'})
     await new Promise(resolve => setTimeout(resolve, 10))
 
+    expect(el.dataset.state).toBe('workspace-unavailable')
     const statusEl = findStatusElement(el)
-    expect(statusEl?.textContent).toMatch(/session.*expired|reload.*page/i)
+    expect(statusEl?.textContent).toMatch(/workspace.*unavailable|gateway-access/i)
     const buttons = findVisibleButtons(el)
     expect(buttons).toHaveLength(0)
   })
@@ -6988,10 +6989,10 @@ describe('renderCancelControl — two-step confirm interaction', () => {
     vi.useRealTimers()
   })
 
-  it('error: persistent 400/401/403 renders session-expired, not a retry loop', async () => {
+  it('error: persistent 400/403 renders session-expired, not a retry loop', async () => {
     stubCancelRenderEnv()
     const {client, cancelCalls} = makeFakeCancelClient({
-      cancelResult: {success: false, error: {kind: 'http', status: 401}},
+      cancelResult: {success: false, error: {kind: 'http', status: 400}},
     })
     const {el} = renderCancelControl('run-001', client, () => {}) as unknown as {el: FakeElement}
     findVisibleButtons(el).find(b => b.textContent === 'Cancel run')?.dispatchEvent({type: 'click'})
@@ -7001,6 +7002,21 @@ describe('renderCancelControl — two-step confirm interaction', () => {
     expect(cancelCalls).toHaveLength(1) // no loop
     const statusEl = findStatusElement(el)
     expect(statusEl?.textContent).toMatch(/session.*expired|reload/i)
+  })
+
+  it('error: 401 renders workspace-unavailable (v0.116.0+ split), no retry loop', async () => {
+    stubCancelRenderEnv()
+    const {client, cancelCalls} = makeFakeCancelClient({
+      cancelResult: {success: false, error: {kind: 'http', status: 401}},
+    })
+    const {el} = renderCancelControl('run-001', client, () => {}) as unknown as {el: FakeElement}
+    findVisibleButtons(el).find(b => b.textContent === 'Cancel run')?.dispatchEvent({type: 'click'})
+    findVisibleButtons(el).find(b => b.textContent === 'Confirm cancel')?.dispatchEvent({type: 'click'})
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(el.dataset.state).toBe('workspace-unavailable')
+    expect(cancelCalls).toHaveLength(1) // no loop
+    const statusEl = findStatusElement(el)
+    expect(statusEl?.textContent).toMatch(/workspace.*unavailable|gateway-access/i)
   })
 
   it('error: network failure renders retryable transport-failure', async () => {

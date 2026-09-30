@@ -1,48 +1,41 @@
 /**
- * Logout cache purge — page-side SW cache cleanup.
+ * purgeOperatorCache — page-side belt-and-braces cache cleanup for logout.
  *
- * Two-pronged approach:
- *   1. caches.delete(cacheName) — direct Cache Storage API call. Works
- *      even if the SW is mid-update or the tab is closing.
- *   2. postMessage({type:'PURGE_RUNTIME'}) — tells the SW to also delete the
- *      cache, guarding against race conditions.
- *
- * Only runtime caches are purged — NOT the precache. The app shell must
- * survive logout so the next user gets an instant load.
- *
- * Both calls are guarded for environments without caches/serviceWorker (e.g.
- * non-HTTPS, old browsers, test environments).
+ * Cycle-20 truth (rm-274): the service worker is a KILL SWITCH (src/sw.ts) —
+ * on activate it purges every cache and unregisters itself. It carries no
+ * `message` handler, so the legacy PURGE_RUNTIME postMessage was dead code
+ * and is gone. This page-side sweep remains for clients whose SW never
+ * re-activates: it deletes every operator-data-bearing cache by name, plus
+ * the scope-dependent workbox names left by the pre-kill-switch SW era
+ * (fff198c) that a fixed list would miss.
  */
 
-import {OPERATOR_RUNTIME_CACHE} from './cache-names.ts'
+import {LEGACY_MONITORING_CACHE, OPERATOR_RUNTIME_CACHE, WORKBOX_CACHE_PREFIX_PATTERN} from './cache-names.ts'
 
-/**
- * Legacy cache name from the monitoring-era SW. Clients that installed the old
- * SW may still have this cache on disk. Purge it alongside the current runtime
- * cache so stale monitoring data does not linger after migration.
- */
-const LEGACY_MONITORING_CACHE = 'monitoring-v1'
-
-/**
- * Purge operator runtime caches on logout, auth change, or app-version change.
- * Clears OPERATOR_RUNTIME_CACHE and the legacy MONITORING_CACHE without touching
- * the precache (shell continuity).
- * Safe to call without awaiting — errors are swallowed (best-effort).
- */
-export function purgeOperatorCache(): void {
-  // Direct Cache Storage delete — robust even if SW is mid-update.
-  if (typeof caches !== 'undefined') {
-    caches.delete(OPERATOR_RUNTIME_CACHE).catch(() => {
-      // Best-effort — ignore errors (quota, permissions, etc.)
-    })
-    // Legacy purge: remove orphaned monitoring-v1 cache from pre-migration clients.
-    caches.delete(LEGACY_MONITORING_CACHE).catch(() => {
-      // Best-effort — ignore errors (quota, permissions, etc.)
-    })
+export const purgeOperatorCache = (): void => {
+  const cachesApi = globalThis.caches
+  if (!cachesApi) {
+    return
   }
 
-  // Tell the SW to also purge — backup for race conditions.
-  if (typeof navigator !== 'undefined' && navigator.serviceWorker?.controller) {
-    navigator.serviceWorker.controller.postMessage({type: 'PURGE_RUNTIME'})
+  for (const name of [OPERATOR_RUNTIME_CACHE, LEGACY_MONITORING_CACHE]) {
+    void cachesApi.delete(name)
   }
+
+  const listCaches = cachesApi.keys?.bind(cachesApi)
+  if (!listCaches) {
+    return
+  }
+
+  void listCaches()
+    .then((keys) => {
+      for (const key of keys) {
+        if (WORKBOX_CACHE_PREFIX_PATTERN.test(key)) {
+          void cachesApi.delete(key)
+        }
+      }
+    })
+    .catch(() => {
+      // Swallow — logout must proceed even if cache enumeration fails.
+    })
 }
