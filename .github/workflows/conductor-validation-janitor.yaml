@@ -1,0 +1,78 @@
+# Scheduled close-only janitor for stale Conductor CI validation PR drafts
+# (rm-295, run f91bcdc2c6f7 cycle-2, 2026-09-30; extends rm-159's manual
+# residue sweep — 21 stale drafts at the 2026-09-30 17:02Z census).
+#
+# Scope guard-rails — ALL must hold for a PR to be closed:
+#   - title starts with 'Conductor CI validation'
+#   - is a draft
+#   - older than 48h (validators resolve their PR within ~30 min, so an
+#     in-flight validator's PR can never be 48h old)
+#   - head ref starts with 'conductor/ci-'
+# Close-only by design: refs are NEVER deleted here — ref deletion stays with
+# the push-authorized gates (rm-217 disposition precedent).
+#
+# DRY-RUN DEFAULT: landed runs only LOG the would-close set. Flip to closing
+# only after reviewing a dry-run set (dispatch with close=true, or flip
+# DRY_RUN below to 'false').
+name: Conductor validation PR janitor
+
+on:
+  schedule:
+    # Daily 04:23 UTC — off the hour, clear of base-drift.yaml's Monday 04:13.
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+    inputs:
+      close:
+        description: Actually close matched PRs (default false = dry-run)
+        type: boolean
+        default: false
+
+permissions:
+  pull-requests: write
+
+concurrency:
+  group: validation-janitor
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    name: Close stale validation drafts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DRY_RUN: ${{ inputs.close != true && 'true' || 'false' }}
+    steps:
+      - name: 🧹 Sweep stale Conductor CI validation drafts
+        run: |
+          set -euo pipefail
+
+          # Selection: ALL of draft + title prefix + head-ref prefix + age > 48h.
+          matched="$(gh pr list --state open --limit 200 \
+            --json number,createdAt,headRefName,isDraft,title \
+            --jq '[.[] | select(.isDraft) |
+                   select(.title | startswith("Conductor CI validation")) |
+                   select(.headRefName | startswith("conductor/ci-")) |
+                   select((now - (.createdAt | fromdateiso8601)) > 172800)]')"
+
+          open_count="$(gh pr list --state open --limit 200 --json number --jq 'length')"
+          stale_count="$(printf '%s' "$matched" | jq 'length')"
+          echo "open PRs: $open_count; stale Conductor CI validation drafts matched: $stale_count"
+
+          if [ "$stale_count" -eq 0 ]; then
+            echo 'nothing matched — residue is clean'
+            exit 0
+          fi
+
+          printf '%s\n' "$matched" | jq -r '.[] | "  would close #\(.number) (created \(.createdAt), head \(.headRefName))"'
+
+          if [ "$DRY_RUN" = 'true' ]; then
+            echo '::notice::dry-run (rm-295 default) — no PRs were closed; review this set, then dispatch with close=true or flip DRY_RUN.'
+            exit 0
+          fi
+
+          for num in $(printf '%s' "$matched" | jq -r '.[].number'); do
+            echo "closing #$num"
+            gh pr close "$num" --comment 'Closed by the scheduled validation-residue janitor (rm-295): draft Conductor CI validation PR older than 48h. Close-only by design — refs are left in place for the push-authorized gates.'
+          done
+          echo 'sweep complete'
