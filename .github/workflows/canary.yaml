@@ -36,15 +36,19 @@ jobs:
     # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
     # at the rm-139 Node-26 window (2026-10-28).
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    # rm-388 (cycle 3, 2026-10-02): composite setup + install. The canary
+    # imports src/github/aggregator.ts, which re-exports @bfra.me/es/result
+    # (src/result.ts) — node_modules is REQUIRED; the previous install-less
+    # setup-node step died ERR_MODULE_NOT_FOUND on '@bfra.me/es' (run
+    # 36417620616). Composite matches the 8 canonical uses in main/fro-bot/codeql.
+    # Timeout 5→10: the install adds cold-store download time to a 5-minute budget.
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up Node 24 (native TS, no install needed)
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
+      - name: 📦 Setup
+        uses: ./.github/actions/setup
 
       - name: Execute every registered query template (rm-225)
         env:

@@ -57,6 +57,46 @@ export function deriveLogoutCsrfToken(cookieKey: Buffer, login: string, now: num
 }
 
 /**
+ * Minimal shape of ReadableStreamDefaultReader.read() — the DOM global type
+ * is not resolvable in this TS lib configuration.
+ */
+type ChunkResult = {readonly done: true} | {readonly done: false; readonly value: Uint8Array}
+
+// rm-391: capped body read for /auth/logout, adapted from the listener ingest
+// cap (src/routes/listener.ts readBodyCapped). Returns the decoded body, or
+// null when the body is over the cap — either by declared content-length or
+// by the running wire-byte total (a chunked transfer-encoding POST has no
+// content-length, so a declared-length-only precheck is bypassable). The
+// stream is cancelled, not drained, the moment the cap is crossed.
+async function readBodyCapped(req: Request, maxBytes: number): Promise<string | null> {
+  const contentLength = req.headers.get('content-length')
+  if (contentLength !== null) {
+    const declared = Number.parseInt(contentLength, 10)
+    if (Number.isFinite(declared) && declared > maxBytes) return null
+  }
+
+  const body = req.body
+  if (body === null) return ''
+
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let received = 0
+  let text = ''
+  for (;;) {
+    const result = (await reader.read()) as ChunkResult
+    if (result.done) break
+    const value = result.value
+    received += value.byteLength
+    if (received > maxBytes) {
+      await reader.cancel().catch(() => undefined)
+      return null
+    }
+    text += decoder.decode(value, {stream: true})
+  }
+  return text + decoder.decode()
+}
+
+/**
  * Builds the auth router with the given config.
  * Mounted at `/auth` in the main app.
  */
@@ -199,14 +239,15 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
   const MAX_LOGOUT_BODY_BYTES = 16384
 
   router.post('/logout', async c => {
-    const declaredLength = Number(c.req.header('content-length') ?? '0')
-    if (Number.isFinite(declaredLength) && declaredLength > MAX_LOGOUT_BODY_BYTES) {
-      logger.warning('Logout rejected: oversized body declared', {declaredLength})
-      return c.text('Payload Too Large', 413)
-    }
-    const rawBody = await c.req.text()
-    if (rawBody.length > MAX_LOGOUT_BODY_BYTES) {
-      logger.warning('Logout rejected: oversized body received', {bytes: rawBody.length})
+    // rm-391: capped read replaces the declared-length precheck + c.req.text()
+    // pair — a chunked POST (no content-length) must not buy unbounded
+    // buffering on this public pre-auth path; the reader is cancelled the
+    // moment the running wire-byte total crosses the cap. Declared-length
+    // over-cap is still rejected inside readBodyCapped (rm-268 test stays
+    // green).
+    const rawBody = await readBodyCapped(c.req.raw, MAX_LOGOUT_BODY_BYTES)
+    if (rawBody === null) {
+      logger.warning('Logout rejected: oversized body (declared or received over cap)')
       return c.text('Payload Too Large', 413)
     }
     const contentType = c.req.header('content-type') ?? ''

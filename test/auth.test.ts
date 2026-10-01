@@ -477,6 +477,44 @@ describe('OAuth flow', () => {
       expect(res.status).toBe(413)
     })
 
+    it('POST /auth/logout with a chunked body over the cap → 413 with the stream cancelled, not drained (rm-391)', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat'})
+      const sm = new SessionManager(TEST_KEY)
+      const sessionCookie = sm.sign('octocat')
+
+      // No content-length header (stream body) = chunked transfer-encoding
+      // semantics: the declared-length precheck cannot fire, so the cap must
+      // be enforced on the running wire-byte total. Mirrors the listener
+      // ingest chunked-cap test (test/listener-routes.test.ts).
+      let pulledChunks = 0
+      const chunk = new Uint8Array(8192) // 8 KiB; cap is 16 KiB — crossed on chunk 3
+      const oversized = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulledChunks += 1
+          controller.enqueue(chunk)
+        },
+        cancel() {
+          /* reader.cancel() after crossing the cap lands here */
+        },
+      })
+
+      const req = new Request('http://localhost/auth/logout', {
+        method: 'POST',
+        headers: {
+          cookie: `session=${sessionCookie}`,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: oversized,
+        duplex: 'half',
+      })
+
+      const res = await app.request(req)
+      expect(res.status).toBe(413)
+      // The reader must stop as soon as the running total crosses the cap:
+      // 8 KiB + 8 KiB + 8 KiB = 24 KiB pulled, then cancel — never drained.
+      expect(pulledChunks).toBe(3)
+    })
+
     it('POST /auth/logout with a non-urlencoded content type → 415 (rm-268)', async () => {
       const app = await buildTestApp({operatorLogin: 'octocat'})
       const sm = new SessionManager(TEST_KEY)

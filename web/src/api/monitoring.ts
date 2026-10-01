@@ -36,6 +36,10 @@ export interface MonitoringData {
   readonly driftCount: number
   readonly enumerationIncomplete: number | null
   readonly refreshedAt: number | null
+  /** Wall-clock duration (ms) of the last completed refresh attempt (rm-156 watchdog signal). */
+  readonly refreshDurationMs: number | null
+  /** True when the last refresh attempt exceeded the watchdog ceiling (rm-156 watchdog signal). */
+  readonly refreshDegraded: boolean
 }
 
 export type FetchMonitoringResult =
@@ -130,6 +134,14 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
     if (data.refreshedAt !== null && typeof data.refreshedAt !== 'number') {
       return {ok: false, reason: 'contract-drift'}
     }
+    // rm-393: the server DTO always emits both watchdog fields (rm-156); a
+    // missing or mis-typed value is contract drift, same as the fields above.
+    if (data.refreshDurationMs !== null && typeof data.refreshDurationMs !== 'number') {
+      return {ok: false, reason: 'contract-drift'}
+    }
+    if (typeof data.refreshDegraded !== 'boolean') {
+      return {ok: false, reason: 'contract-drift'}
+    }
 
     const repos: MonitoringRepo[] = []
     for (const item of data.repos) {
@@ -146,6 +158,8 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
         driftCount: data.driftCount,
         enumerationIncomplete: data.enumerationIncomplete,
         refreshedAt: data.refreshedAt,
+        refreshDurationMs: data.refreshDurationMs,
+        refreshDegraded: data.refreshDegraded,
       },
     }
   } catch (err) {
