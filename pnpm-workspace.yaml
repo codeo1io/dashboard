@@ -15,21 +15,39 @@ minimumReleaseAge: 1440
 # rm-196 rider (2026-09-25): hono@4.13.9 and vite@8.3.1 are the rider targets,
 # both past their 1440-minute maturity timestamps — an explicit, disclosed
 # bypass of the rm-133 age gate, not a weakening of it.
+# rm-196 rider (2026-10-02, run 18737b9a cycle-4 B5): rider re-aimed — hono
+# now resolves 4.13.12 / @hono/node-server 2.1.3 / @opencode-ai/plugin
+# 1.18.34, all published >24h ago (2026-09-29/30), so the hono exclude is
+# dropped; vite@8.3.2 (published 2026-10-01T10:17Z) is still inside the age
+# gate until 2026-10-02T10:17Z, so it carries the disclosed bypass for the
+# remainder of that window — droppable by the next rider after 10:17Z.
 minimumReleaseAgeExclude:
   - '@bfra.me/eslint-config@0.51.2 || 0.51.3 || 0.51.4 || 0.52.0 || 0.52.1 || 0.52.2'
   - '@bfra.me/tsconfig@0.13.2'
-  - hono@4.13.9
-  - vite@8.3.1
+  - vite@8.3.2
 
+# rm-277 rider (2026-10-02, run 18737b9a cycle-4 B3): manual security-floor
+# raise — dependabot is structurally unable to bump these dev-tree
+# transitives (its only-ever run exited security_update_not_possible, zero
+# PRs ever; ajv/jsdom/minimatch parents do not re-resolve on their own), and
+# dependency-review gates PR diffs only, so nothing on main watched these.
+# Baseline 2026-10-02T00:57Z: pnpm audit = 19 vulns (3 low / 8 moderate /
+# 8 high) all in the dev tree (prod --prod clean; Dockerfile installs
+# --prod). Patched minimums (verified against the advisory ranges + registry
+# publish dates, all >24h old so minimumReleaseAge passes): fast-uri 3.1.8
+# (2026-09-15), brace-expansion 2.1.7 (2026-09-14) / 5.0.12 (2026-09-14),
+# undici 7.29.1 (2026-09-04).
 overrides:
-  brace-expansion@2: '>=2.1.2 <3.0.0'
-  brace-expansion@5: '>=5.0.7 <6.0.0'
-  fast-uri@3: '>=3.1.5 <4.0.0'
+  brace-expansion@2: '>=2.1.7 <3.0.0'
+  brace-expansion@5: '>=5.0.12 <6.0.0'
+  fast-uri@3: '>=3.1.8 <4.0.0'
   # GHSA-82x6-q7mm-w9cf — toml is dev-transitive via
   # @opencode-ai/plugin>effect; >=4.2.0 is the patched line
   # (rescued by content from run b4aac9ba / PR #82 via cycle-13;
   # the batch's internal rm-171 numbering collided with landed ids).
   toml: '>=4.2.0'
-  undici@7: '>=7.29.0 <8.0.0'
+  # rm-277: 7.29.1 is the patched minimum for the GHSA-8436 chain;
+  # re-resolution is free to take newer 7.x (7.30.0 at raise time).
+  undici@7: '>=7.29.1 <8.0.0'
 
 shamefullyHoist: true

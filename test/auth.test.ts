@@ -477,6 +477,98 @@ describe('OAuth flow', () => {
       expect(res.status).toBe(413)
     })
 
+    it('POST /auth/logout chunked (no content-length) over cap → 413 with the stream cancelled, not drained (rm-268)', async () => {
+      // rm-268 rider (2026-10-02, run 18737b9a cycle-4 B2): chunked transfer
+      // encoding sends no content-length, so the old declared-length precheck
+      // never fired and `c.req.text()` buffered the whole body first. The
+      // streaming cap must reject on the third 8 KiB chunk (16 KiB cap) and
+      // cancel the source — mirroring the ingest-twin test in
+      // test/listener-routes.test.ts.
+      const app = await buildTestApp({operatorLogin: 'octocat'})
+      const sm = new SessionManager(TEST_KEY)
+      const sessionCookie = sm.sign('octocat')
+      const encoder = new TextEncoder()
+      let pulledChunks = 0
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulledChunks += 1
+          controller.enqueue(encoder.encode('x'.repeat(8192)))
+        },
+      })
+      const req = new Request('http://localhost/auth/logout', {
+        method: 'POST',
+        headers: {
+          cookie: `session=${sessionCookie}`,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: stream,
+        // required by undici for streaming request bodies
+        duplex: 'half',
+      })
+      const res = await app.request(req)
+      expect(res.status).toBe(413)
+      expect(pulledChunks).toBe(3)
+    })
+
+    it('POST /auth/logout with a lying content-length under cap → 413 from the streaming cap (rm-268)', async () => {
+      // Declared 1 KiB (≤ cap) but the stream sends 8 KiB chunks: the body
+      // must still be bounded by what actually arrives, not what is declared.
+      const app = await buildTestApp({operatorLogin: 'octocat'})
+      const sm = new SessionManager(TEST_KEY)
+      const sessionCookie = sm.sign('octocat')
+      const encoder = new TextEncoder()
+      let pulledChunks = 0
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulledChunks += 1
+          controller.enqueue(encoder.encode('x'.repeat(8192)))
+        },
+      })
+      const req = new Request('http://localhost/auth/logout', {
+        method: 'POST',
+        headers: {
+          cookie: `session=${sessionCookie}`,
+          'content-type': 'application/x-www-form-urlencoded',
+          'content-length': '1024',
+        },
+        body: stream,
+        duplex: 'half',
+      })
+      const res = await app.request(req)
+      expect(res.status).toBe(413)
+      expect(pulledChunks).toBe(3)
+    })
+
+    it('POST /auth/logout chunked within cap → body decoded and parsed (403 wrong token, not 413/415) (rm-268)', async () => {
+      // Proves the streaming read preserves the normal path: a small chunked
+      // urlencoded body decodes to the same string `c.req.text()` produced,
+      // so the CSRF comparison (not the cap) answers.
+      const app = await buildTestApp({operatorLogin: 'octocat'})
+      const sm = new SessionManager(TEST_KEY)
+      const sessionCookie = sm.sign('octocat')
+      const encoder = new TextEncoder()
+      const payload = 'csrf_token=definitely-not-the-token'
+      const mid = Math.floor(payload.length / 2)
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(payload.slice(0, mid)))
+          controller.enqueue(encoder.encode(payload.slice(mid)))
+          controller.close()
+        },
+      })
+      const req = new Request('http://localhost/auth/logout', {
+        method: 'POST',
+        headers: {
+          cookie: `session=${sessionCookie}`,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: stream,
+        duplex: 'half',
+      })
+      const res = await app.request(req)
+      expect(res.status).toBe(403)
+    })
+
     it('POST /auth/logout with a non-urlencoded content type → 415 (rm-268)', async () => {
       const app = await buildTestApp({operatorLogin: 'octocat'})
       const sm = new SessionManager(TEST_KEY)

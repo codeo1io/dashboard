@@ -41,10 +41,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up Node 24 (native TS, no install needed)
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
+      # rm-179/rm-225 rider (2026-10-02, run 18737b9a cycle-4 B1): the canary
+      # was born install-less on the belief that Node 24 native TS runs
+      # scripts straight from the checkout — but scripts/graphql-canary.ts
+      # transitively imports '@bfra.me/es' (src/result.ts re-exports it), a
+      # package.json dependency that only resolves from node_modules, so every
+      # fire died at ERR_MODULE_NOT_FOUND (only-ever run 36417620616). The
+      # setup composite (pnpm + Node 24 + frozen install, warm-store cached)
+      # mirrors every sibling workflow; timeout stays 5 (install measured
+      # 5-84s) and permissions stay read-only — the canary still only reads.
+      - name: 📦 Setup
+        uses: ./.github/actions/setup
 
       - name: Execute every registered query template (rm-225)
         env:
