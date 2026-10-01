@@ -1,0 +1,51 @@
+# rm-397 (2026-10-02, run ddc4c014228a): a real audit workflow. The Actions
+# 'Audit' registry entry (workflow id 372028564) has been a phantom on this
+# fork — its only run rode a branch that no longer exists, the file has never
+# been on main, and the record never fires, so any 'Audit: active' claim had
+# nothing behind it. This file de-phantoms the record with the honest split:
+#   1. GATE — production-tree advisories fail the run (prod is clean today:
+#      pnpm audit --prod exits 0 at HEAD 5bf15e1).
+#   2. ADVISORY — the full recursive audit (dev deps included) never fails
+#      the job; it summarizes counts so the run's log is the truthful
+#      transitive-dev signal Dependabot does not cover (the rm-278 blind
+#      spot: grouped dependabot PRs target manifests, not lockfile edges).
+# No install step is needed: pnpm audit reads pnpm-lock.yaml directly.
+name: 'Dependency audit'
+
+on:
+  schedule:
+    - cron: '37 3 * * 1' # Mondays 03:37 UTC — ahead of base-drift's 04:13Z and the canary's 05:23Z
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04 # pinned, not ubuntu-latest (rm-188 alias-flip guard)
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Production dependency audit (gate)
+        run: pnpm audit --recursive --prod
+
+      - name: Full dependency audit (advisory — dev-scope advisories do not fail this job)
+        if: ${{ always() }}
+        run: |
+          set +e
+          pnpm audit --recursive > /tmp/full-audit.txt 2>&1
+          rc=$?
+          summary=$(grep -E 'vulnerabilit' /tmp/full-audit.txt | tail -1)
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning::Full audit (dev scope included) reports advisories — see the log below. ${summary:-}"
+            cat /tmp/full-audit.txt
+          else
+            echo "Full audit clean: ${summary:-no advisories}"
+          fi
+          exit 0
