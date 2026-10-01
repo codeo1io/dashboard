@@ -58,11 +58,108 @@ export const GITHUB_REQUEST_TIMEOUT_MS = 30_000
  * at the transport layer: race the caller's signal (if any) against
  * `AbortSignal.timeout(ms)` and pass the aggregate to undici.
  */
-export function createBoundedFetch(timeoutMs: number): typeof globalThis.fetch {
+export function createBoundedFetch(
+  timeoutMs: number,
+  observeResponseHeaders?: (headers: Headers) => void,
+): typeof globalThis.fetch {
   return async (input, init) => {
     const timeoutSignal = AbortSignal.timeout(timeoutMs)
     const signal = init?.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal
-    return globalThis.fetch(input, {...init, signal})
+    const response = await globalThis.fetch(input, {...init, signal})
+    // rm-107/rm-153: zero-cost budget observation at the only seam that sees
+    // every response (both transports). Never logs — no per-request output
+    // regression by construction.
+    if (observeResponseHeaders !== undefined) {
+      observeResponseHeaders(response.headers)
+    }
+    return response
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rate-limit budget recorder (rm-107 wiring, rm-153 surfacing)
+// ---------------------------------------------------------------------------
+
+/**
+ * Observed GitHub rate-limit budget + event counters (rm-107/rm-153).
+ *
+ * `limit`/`remaining`/`resetAt` are the last-seen `x-ratelimit-*` response
+ * headers captured at the transport layer; `takenEvents`/`secondaryEvents`
+ * count throttle-plugin hook firings since the last drain. Nulls mean
+ * "never observed" — the recorder never fabricates a budget.
+ */
+export interface RateLimitBudget {
+  readonly limit: number | null
+  readonly remaining: number | null
+  /** Epoch ms derived from `x-ratelimit-reset` (seconds). */
+  readonly resetAt: number | null
+  /** Epoch ms of the last header observation. */
+  readonly observedAt: number | null
+  readonly takenEvents: number
+  readonly secondaryEvents: number
+}
+
+export interface RateLimitRecorder {
+  readonly observe: (headers: Headers) => void
+  readonly noteTaken: () => void
+  readonly noteSecondary: () => void
+  /** Fresh snapshot per call; callers cannot mutate recorder state through it. */
+  readonly stats: () => RateLimitBudget
+  /** Snapshot + reset the event counters (budget headers persist) — rm-153 drain seam. */
+  readonly drain: () => RateLimitBudget
+}
+
+/**
+ * Pure closure-based recorder behind the dashboard's rate-limit observability
+ * (rm-107 S1). Unit-testable in isolation from Octokit.
+ */
+export function createRateLimitRecorder(): RateLimitRecorder {
+  let limit: number | null = null
+  let remaining: number | null = null
+  let resetAt: number | null = null
+  let observedAt: number | null = null
+  let takenEvents = 0
+  let secondaryEvents = 0
+  const parseHeader = (headers: Headers, name: string): number | null => {
+    const raw = headers.get(name)
+    if (raw === null) return null
+    const value = Number(raw)
+    return Number.isFinite(value) ? value : null
+  }
+  const snapshot = (): RateLimitBudget => ({
+    limit,
+    remaining,
+    resetAt,
+    observedAt,
+    takenEvents,
+    secondaryEvents,
+  })
+  return {
+    observe(headers) {
+      // Only advance fields on a parsed value: a response without the header
+      // (e.g. a local fixture or an HTML error page) must not erase the last
+      // real observation.
+      const nextLimit = parseHeader(headers, 'x-ratelimit-limit')
+      const nextRemaining = parseHeader(headers, 'x-ratelimit-remaining')
+      const nextReset = parseHeader(headers, 'x-ratelimit-reset')
+      if (nextLimit !== null) limit = nextLimit
+      if (nextRemaining !== null) remaining = nextRemaining
+      if (nextReset !== null) resetAt = nextReset * 1000
+      observedAt = Date.now()
+    },
+    noteTaken() {
+      takenEvents += 1
+    },
+    noteSecondary() {
+      secondaryEvents += 1
+    },
+    stats: snapshot,
+    drain() {
+      const drained = snapshot()
+      takenEvents = 0
+      secondaryEvents = 0
+      return drained
+    },
   }
 }
 
@@ -105,6 +202,17 @@ export interface DashboardAppClient {
     installationId: number,
     permissions: Record<string, 'read'>,
   ) => Promise<MintedToken>
+  /**
+   * Observed GitHub rate-limit budget + cumulative event counters (rm-107
+   * S1). Reads never mutate recorder state.
+   */
+  readonly stats: () => RateLimitBudget
+  /**
+   * rm-153 drain seam: snapshot then reset the event counters (budget
+   * headers persist). For diagnostics/tests; the steady-state surface is
+   * read-only.
+   */
+  readonly drainStats: () => RateLimitBudget
 }
 
 // ---------------------------------------------------------------------------
@@ -120,6 +228,7 @@ export interface DashboardAppClient {
 export function createDashboardAppClient(options: AppClientOptions): DashboardAppClient {
   const {appId, privateKey, requestTimeoutMs, baseUrl} = options
   const timeoutMs = requestTimeoutMs ?? GITHUB_REQUEST_TIMEOUT_MS
+  const recorder = createRateLimitRecorder()
 
   const octokit = new ThrottledOctokit({
     authStrategy: createAppAuth,
@@ -128,7 +237,7 @@ export function createDashboardAppClient(options: AppClientOptions): DashboardAp
     // rm-156: ENFORCED at the transport layer (createBoundedFetch) — this
     // runtime ignores the `timeout` option on hung upstreams. The key stays
     // (same deadline where honored; rm-197 transport-contract gate pins it).
-    request: {timeout: timeoutMs, fetch: createBoundedFetch(timeoutMs)},
+    request: {timeout: timeoutMs, fetch: createBoundedFetch(timeoutMs, recorder.observe)},
     // rm-156: a timed-out request must fail fast, not be retried. The retry
     // plugin cannot distinguish a timeout abort (surfaced as status 500 by
     // @octokit/request) from a retryable 5xx, and retrying multiplies the
@@ -138,10 +247,12 @@ export function createDashboardAppClient(options: AppClientOptions): DashboardAp
     retry: {enabled: false},
     throttle: {
       onRateLimit: (retryAfter: number, opts: Record<string, unknown>, _octokit: unknown, retryCount: number) => {
+        recorder.noteTaken()
         logger.warning('GitHub rate limit hit', {retryAfter, url: opts.url, retryCount})
         return retryCount < 2
       },
       onSecondaryRateLimit: (retryAfter: number, opts: Record<string, unknown>, _octokit: unknown) => {
+        recorder.noteSecondary()
         logger.warning('GitHub secondary rate limit hit', {retryAfter, url: opts.url})
         return false
       },
@@ -172,7 +283,7 @@ export function createDashboardAppClient(options: AppClientOptions): DashboardAp
     return {token: result.token, expiresAt}
   }
 
-  return {octokit, mintInstallationToken}
+  return {octokit, mintInstallationToken, stats: recorder.stats, drainStats: recorder.drain}
 }
 
 // ---------------------------------------------------------------------------

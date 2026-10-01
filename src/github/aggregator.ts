@@ -157,6 +157,24 @@ export interface AggregatorSnapshot {
 }
 
 /**
+ * rm-107 S3: monotone refresh telemetry for the monitoring composition.
+ * `failStreak` counts consecutive fail-visible attempts (the served
+ * snapshot carries `staleBanner`) — it only grows under failure and resets
+ * exclusively on a clean, fully-successful refresh, so a composite built
+ * from it is monotone under forced fail-closed refreshes by construction.
+ */
+export interface AggregatorRefreshStats {
+  /** Outcome of the last completed attempt; null before the first attempt finishes. */
+  readonly lastOutcome: 'ok' | 'failed' | null
+  /** Consecutive fail-visible attempts; resets only on a clean success. */
+  readonly failStreak: number
+  /** Epoch ms of the last attempt's start; null before the first attempt. */
+  readonly lastAttemptAt: number | null
+  /** Epoch ms of the last clean success; null before the first success. */
+  readonly lastSuccessAt: number | null
+}
+
+/**
  * Optional snapshot persistence seam (rm-198). `load()` is consulted ONCE
  * at aggregator-factory time to bridge the cold-start window (the loaded
  * snapshot is forced stale, its original `refreshedAt` preserved so
@@ -1019,6 +1037,13 @@ export function createAggregator(
   // up concurrent refreshes that race on lastGoodSnapshot.
   let refreshing = false
 
+  // rm-107 S3: monotone refresh telemetry state (exposed via
+  // getRefreshStats). See AggregatorRefreshStats for the invariants.
+  let refreshFailStreak = 0
+  let refreshLastOutcome: 'ok' | 'failed' | null = null
+  let refreshLastAttemptAt: number | null = null
+  let refreshLastSuccessAt: number | null = null
+
   /**
    * rm-156: stamp watchdog fields onto a snapshot write made from within a
    * refresh cycle — duration is measured from the cycle's wall-clock start
@@ -1052,7 +1077,20 @@ export function createAggregator(
         refreshedAt: null,
       }))
     } else {
-      setSnapshot(watchdogStamp({...lastGoodSnapshot, staleBanner: true}))
+      // rm-107 S3 monotonicity fix (cycle-1 batch, run be59a16e): a FAILED
+      // attempt must never serve a healthier watchdog picture than the
+      // snapshot it degrades. Previously a fast failure stamped its own
+      // (short) elapsed duration and computed degraded:false from it,
+      // flipping a previously-degraded signal to healthy while the system
+      // got strictly worse (verified live: watchdogStamp measured the
+      // failed cycle, not a completed one). Sticky-OR with the preserved
+      // snapshot's own degraded state; only a fully successful refresh
+      // may clear the flag.
+      const stamped = watchdogStamp({...lastGoodSnapshot, staleBanner: true})
+      setSnapshot({
+        ...stamped,
+        refreshDegraded: stamped.refreshDegraded || lastGoodSnapshot.refreshDegraded,
+      })
     }
   }
 
@@ -1376,7 +1414,8 @@ export function createAggregator(
       return
     }
     refreshing = true
-    cycleStartedAt = now()
+    const attemptStartedAt = now()
+    cycleStartedAt = attemptStartedAt
     try {
       await runRefresh()
     } catch (error) {
@@ -1387,8 +1426,30 @@ export function createAggregator(
       })
       markSnapshotStale()
     } finally {
+      // rm-107 S3: classify the attempt from the SERVED snapshot. This covers
+      // both the throw path above and runRefresh's internal fail-closed
+      // returns (which return normally, without throwing): any attempt that
+      // leaves staleBanner up counts as a failure for streak purposes.
+      const servedStale = lastGoodSnapshot?.staleBanner ?? true
+      refreshFailStreak = servedStale ? refreshFailStreak + 1 : 0
+      refreshLastOutcome = servedStale ? 'failed' : 'ok'
+      refreshLastAttemptAt = attemptStartedAt
+      if (!servedStale) refreshLastSuccessAt = now()
       refreshing = false
       cycleStartedAt = null
+    }
+  }
+
+  /**
+   * rm-107 S3: monotone refresh telemetry for the monitoring composition.
+   * Cheap side-effect-free read.
+   */
+  function getRefreshStats(): AggregatorRefreshStats {
+    return {
+      lastOutcome: refreshLastOutcome,
+      failStreak: refreshFailStreak,
+      lastAttemptAt: refreshLastAttemptAt,
+      lastSuccessAt: refreshLastSuccessAt,
     }
   }
 
@@ -1462,7 +1523,7 @@ export function createAggregator(
     }
   }
 
-  return {refresh, getSnapshot, start, stop}
+  return {refresh, getSnapshot, getRefreshStats, start, stop}
 }
 
 export type Aggregator = ReturnType<typeof createAggregator>

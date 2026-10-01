@@ -17,6 +17,30 @@ export interface ListenerStore {
   ackAll: () => number
   prune: () => void
   close: () => void
+  /**
+   * rm-107 S2: operator-facing backlog telemetry. Cheap (two COUNTs + one
+   * indexed MIN), safe to compose into the /api/monitor surface on every
+   * request.
+   */
+  stats: () => ListenerStats
+}
+
+/**
+ * Backlog/depth telemetry for the listener channel (rm-107 S2).
+ *
+ * `oldestUnreadAgeMs` is measured from the OLDEST unread row's `created_at`
+ * (the producer's timestamp, matching the operator's mental model of "how
+ * long has the oldest thing I haven't seen been waiting") and is null when
+ * nothing is unread.
+ */
+export interface ListenerStats {
+  /** Unread rows — the operator's actionable backlog depth. */
+  readonly unread: number
+  /** Total rows retained after the retention policy ran. */
+  readonly retained: number
+  readonly oldestUnreadAgeMs: number | null
+  /** Retention ceiling in rows (context for depth readings). */
+  readonly retentionMaxRows: number
 }
 
 /** Raw row shape as read back from `node:sqlite`. */
@@ -107,6 +131,9 @@ export function createListenerStore(dbPath: string): ListenerStore {
     )
   `)
   const pruneAgeStmt = db.prepare('DELETE FROM messages WHERE received_at < ?')
+  const oldestUnreadStmt = db.prepare(
+    'SELECT MIN(created_at) AS oldest FROM messages WHERE read_at IS NULL',
+  )
 
   // rm-244-class visibility: cumulative count of messages evicted by the
   // retention policy since the store was created. In-memory by design — it
@@ -205,5 +232,24 @@ export function createListenerStore(dbPath: string): ListenerStore {
     db.close()
   }
 
-  return {insert, list, ack, ackAll, prune, close}
+  function stats(): ListenerStats {
+    const unreadRow = countUnreadStmt.get() as unknown as {n: number}
+    const totalRow = pruneCountStmt.get() as unknown as {n: number}
+    const oldestRow = oldestUnreadStmt.get() as unknown as {oldest: string | null}
+    let oldestUnreadAgeMs: number | null = null
+    if (oldestRow.oldest !== null) {
+      const parsed = Date.parse(oldestRow.oldest)
+      if (!Number.isNaN(parsed)) {
+        oldestUnreadAgeMs = Math.max(0, Date.now() - parsed)
+      }
+    }
+    return {
+      unread: unreadRow.n,
+      retained: totalRow.n,
+      oldestUnreadAgeMs,
+      retentionMaxRows: RETENTION_MAX_ROWS,
+    }
+  }
+
+  return {insert, list, ack, ackAll, prune, close, stats}
 }
