@@ -5,6 +5,9 @@ import {describe, expect, it} from 'vitest'
 
 /**
  * rm-214: README Configuration must document the complete env-var surface.
+ * rm-287: census widened to the `GATEWAY_*` prefix — a var read in `src/` but
+ * invisible to this guard is exactly how `GATEWAY_ALLOWED_OPERATOR_LOGINS`
+ * (src/server.ts) went undocumented.
  *
  * Fails when a `DASHBOARD_*` / `RATE_LIMIT_*` variable is READ in `src/` but
  * missing from the README Configuration section (undocumented var), or when the
@@ -19,7 +22,7 @@ import {describe, expect, it} from 'vitest'
  * readers, so they are covered by the README's prose convention note, not rows.
  */
 const repoRoot = process.cwd()
-const ENV_TOKEN = '(?:DASHBOARD|RATE_LIMIT)_[A-Z0-9_]+'
+const ENV_TOKEN = '(?:DASHBOARD|RATE_LIMIT|GATEWAY)_[A-Z0-9_]+'
 
 function collectTypeScriptSources(dir: string): string[] {
   const out: string[] = []
