@@ -1,0 +1,2 @@
+$ tsc --noEmit && tsc --noEmit -p web/tsconfig.json && tsc --noEmit -p .opencode/tsconfig.json
+CT_RC=0

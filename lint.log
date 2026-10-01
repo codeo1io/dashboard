@@ -1,0 +1,20 @@
+$ eslint --cache --cache-location node_modules/.cache/eslint/
+
+/home/agent/.hermes/conductor-worktrees/dashboard-864ca327c8/run-b315d4ac2658-b315d4ac/docs/archive/pr-233-unlanded-cycle-18-2026-09-30.md
+  290:0  error  Trailing spaces not allowed  @stylistic/no-trailing-spaces
+  313:0  error  Trailing spaces not allowed  @stylistic/no-trailing-spaces
+  335:0  error  Trailing spaces not allowed  @stylistic/no-trailing-spaces
+  337:0  error  Trailing spaces not allowed  @stylistic/no-trailing-spaces
+  350:0  error  Trailing spaces not allowed  @stylistic/no-trailing-spaces
+  380:0  error  Trailing spaces not allowed  @stylistic/no-trailing-spaces
+  465:0  error  Trailing spaces not allowed  @stylistic/no-trailing-spaces
+  473:0  error  Trailing spaces not allowed  @stylistic/no-trailing-spaces
+  497:0  error  Trailing spaces not allowed  @stylistic/no-trailing-spaces
+  508:0  error  Trailing spaces not allowed  @stylistic/no-trailing-spaces
+  513:0  error  Trailing spaces not allowed  @stylistic/no-trailing-spaces
+
+✖ 11 problems (11 errors, 0 warnings)
+  11 errors and 0 warnings potentially fixable with the `--fix` option.
+
+[ELIFECYCLE] Command failed with exit code 1.
+LINT_RC=1

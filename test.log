@@ -1,0 +1,66 @@
+$ pnpm build:web
+$ vite build web
+vite v8.3.1 building client environment for production...
+transforming...
+✓ 45 modules transformed.
+rendering chunks...
+computing gzip size...
+web/dist/registerSW.js               0.13 kB
+web/dist/index.html                  0.71 kB │ gzip:  0.39 kB
+web/dist/privacy.html                8.25 kB │ gzip:  2.72 kB
+web/dist/assets/src-Cc240EdG.css    48.73 kB │ gzip:  8.97 kB
+web/dist/assets/index-DEP9cRcc.js  284.92 kB │ gzip: 84.79 kB
+
+✓ built in 4.93s
+
+PWA v1.3.0
+Building src/sw.ts service worker ("es" format)...
+vite v8.3.1 building client environment for production...
+
+ WARN  inlineDynamicImports option is deprecated, please use codeSplitting: false instead.
+
+transforming...
+✓ 2 modules transformed.
+rendering chunks...
+computing gzip size...
+web/dist/sw.mjs  0.34 kB │ gzip: 0.25 kB
+
+✓ built in 938ms
+
+PWA v1.3.0
+mode      injectManifest
+format:   es
+precache  3 entries (326.54 KiB)
+files generated
+  dist/sw.js
+[33m[PLUGIN_TIMINGS] [0mJavaScript callbacks ran for 18.6s. The build took 4.8s. Callbacks such as `closeBundle` run after the build ends, so callback time can be more than build time.
+The slowest callbacks, timed inside each callback (the wait before a callback starts is excluded, the time it awaits is included):
+  - plugin vite-plugin-pwa:build closeBundle (100%, 15.3s, 1 call)
+  - plugin @tailwindcss/vite:generate:build transform (50%, 2.4s, 1 call)
+Additional callback time came from the callbacks below and from callbacks under 1s.
+1 callback is listed without a time. Its calls overlapped, so the time inside one call includes work from other calls. To find its cost, profile the build with `node --cpu-prof`:
+  - plugin vite:build-html transform (2 calls)
+See https://rolldown.rs/reference/InputOptions.checks#bundlertimings for more details.
+
+$ vitest run && vitest run --config web/vitest.config.ts
+
+ RUN  v4.1.11 /home/agent/.hermes/conductor-worktrees/dashboard-864ca327c8/run-b315d4ac2658-b315d4ac
+
+
+ Test Files  48 passed (48)
+      Tests  2295 passed (2295)
+   Start at  20:47:40
+   Duration  150.83s (transform 206.26s, setup 0ms, import 339.31s, tests 444.07s, environment 30.53s)
+
+[vite:react-swc] We recommend switching to `@vitejs/plugin-react` for improved performance as no swc plugins are used. More information at https://vite.dev/rolldown
+
+ RUN  v4.1.11 /home/agent/.hermes/conductor-worktrees/dashboard-864ca327c8/run-b315d4ac2658-b315d4ac/web
+
+Not implemented: navigation to another Document
+
+ Test Files  30 passed (30)
+      Tests  1157 passed (1157)
+   Start at  20:50:34
+   Duration  82.78s (transform 225.64s, setup 70.39s, import 304.18s, tests 56.46s, environment 465.73s)
+
+TEST_RC=0
