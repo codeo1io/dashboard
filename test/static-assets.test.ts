@@ -856,3 +856,110 @@ describe('security — raw failure reason codes security invariants', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// Hashed SPA assets — Cache-Control immutable (rm-418)
+//
+// Hashed /assets/* and /icon-* bundles are content-addressed (every rebuild
+// mints new filenames), so they may be cached immutably per RFC 9111 §5.2.2.2.
+// The identity-reflecting shell at / (rm-166) and /sw.js must NOT become
+// immutable — caching those breaks post-deploy update detection.
+// ---------------------------------------------------------------------------
+
+describe('hashed SPA assets — Cache-Control immutable (rm-418)', () => {
+  it('GET /assets/<hashed JS bundle> is 200 with an immutable Cache-Control', async () => {
+    const fs = await import('node:fs/promises')
+    const entries = await fs.readdir('web/dist/assets')
+    const hashed = entries.find(f => f.endsWith('.js'))
+    if (hashed === undefined) throw new Error('no hashed JS asset in web/dist/assets — run pnpm build:web')
+    const app = await buildTestApp(false)
+    const res = await app.request(`/assets/${hashed}`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, immutable')
+  })
+
+  it('GET /assets/<hashed CSS bundle> is 200 with an immutable Cache-Control', async () => {
+    const fs = await import('node:fs/promises')
+    const entries = await fs.readdir('web/dist/assets')
+    const hashed = entries.find(f => f.endsWith('.css'))
+    if (hashed === undefined) throw new Error('no hashed CSS asset in web/dist/assets — run pnpm build:web')
+    const app = await buildTestApp(false)
+    const res = await app.request(`/assets/${hashed}`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, immutable')
+  })
+
+  it('GET /icon-192.svg is 200 with an immutable Cache-Control', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/icon-192.svg')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, immutable')
+  })
+
+  it('missing hashed assets 404 WITHOUT the immutable header (no year-long 404 pinning)', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/assets/index-DOESNOTEXIST.js')
+    expect(res.status).toBe(404)
+    // No Cache-Control at all on the miss — an absent header is fine; an
+    // immutable one would pin the 404 for a year.
+    expect(res.headers.get('cache-control') ?? '').not.toContain('immutable')
+  })
+
+  it('the SPA shell at / keeps no-store — immutable is for hashed assets only', async () => {
+    const app = await buildTestApp(false)
+    const res = await authedGet(app, '/')
+    expect(res.status).toBe(200)
+    const cc = res.headers.get('cache-control') ?? ''
+    expect(cc).toContain('no-store')
+    expect(cc).not.toContain('immutable')
+  })
+
+  it('/sw.js keeps its update-detecting no-store posture — no immutable', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/sw.js')
+    expect(res.status).toBe(200)
+    const cc = res.headers.get('cache-control') ?? ''
+    expect(cc).toContain('no-store')
+    expect(cc).not.toContain('immutable')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// serveStatic %-decode rejection — GHSA-5r4p-p66f-jhc7 rider (rm-196)
+//
+// The fix shipping in hono v4.13.11 / @hono/node-server v2.1.3 (both pinned
+// here) closes a double-decode middleware bypass on static paths: serveStatic
+// now (a) rejects any request path still containing % BEFORE decoding, and
+// (b) rejects decoded paths with . / .. segments or backslashes. These tests
+// pin both layers on the /assets/* mount so a future floor regression
+// (downgrade below the fix) fails the suite instead of silently reopening
+// the bypass. Hash-named assets carry no %, so legitimate traffic is unaffected.
+// ---------------------------------------------------------------------------
+
+describe('serveStatic %-decode rejection — GHSA-5r4p-p66f-jhc7 rider (rm-196)', () => {
+  it('a request path containing % is rejected with 404, never served from the decoded path', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/assets/index-%41.js')
+    expect(res.status).toBe(404)
+  })
+
+  it('%-encoded traversal cannot escape the static root (middleware-bypass class)', async () => {
+    const app = await buildTestApp(false)
+    // '%2e%2e' is collapsed to '..' by URL parsing itself, so this request
+    // arrives at the protected path /package.json — the auth layer answers
+    // with a 302 login redirect. Either way the static root is not escaped
+    // and no file content is served.
+    let res = await app.request('/assets/%2e%2e/package.json')
+    expect(res.status).toBe(302)
+    // '..%2f' and double-encoded '%252e' survive URL parsing with % intact —
+    // exactly the class the pre-fix double-decode resolved INSIDE the root.
+    // The post-fix guard (node-server 2.1.3) rejects them at the static
+    // layer with 404.
+    for (const attack of ['/assets/..%2fpackage.json', '/assets/%252e%252e/package.json']) {
+      res = await app.request(attack)
+      expect(res.status, `${attack} must be rejected at the static layer`).toBe(404)
+      const body = await res.text()
+      expect(body, `${attack} must not serve decoded file content`).not.toContain('"name": "@fro-bot/dashboard"')
+    }
+  })
+})

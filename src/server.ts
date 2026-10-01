@@ -27,7 +27,7 @@ import {serve} from '@hono/node-server'
 import {getConnInfo} from '@hono/node-server/conninfo'
 import {serveStatic} from '@hono/node-server/serve-static'
 import {Octokit} from '@octokit/core'
-import {Hono, type Context} from 'hono'
+import {Hono, type Context, type Next} from 'hono'
 import {getCookie, setCookie} from 'hono/cookie'
 import {secureHeaders} from 'hono/secure-headers'
 import {fetchGitHubUserLogin, makeGitHubOAuthClient} from './auth/oauth.ts'
@@ -983,6 +983,16 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       return c.html(spaShellCache.injected)
     })
   } else {
+    // rm-418 rider: the shell stays no-store in BOTH branches — a cached
+    // index.html keeps referencing dead hashed bundles after a redeploy (the
+    // classic stale-SPA-shell failure; the push-injection branch above
+    // already sets no-store per rm-166).
+    app.use('/', async (c, next) => {
+      await next()
+      if (c.res.status === 200) {
+        c.res.headers.set('cache-control', 'no-store')
+      }
+    })
     app.get('/', serveStatic({root: webDistRoot, path: 'index.html'}))
   }
 
@@ -1036,7 +1046,21 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   }
 
   // ── SPA static asset serving ─────────────────────────────────────────────
+  // rm-418: hashed SPA assets are content-addressed — every rebuild mints new
+  // filenames — so browsers may cache them immutably per RFC 9111 §5.2.2.2.
+  // The header is stamped only on 200s: a missing hashed file must NOT be
+  // pinned immutable (that would cache the 404 for a year). The shell at /
+  // stays no-store (identity-reflecting, rm-166) and /sw.js keeps its
+  // update-detecting no-cache posture.
+  const immutableCacheHeader = async (c: Context, next: Next) => {
+    await next()
+    if (c.res.status === 200) {
+      c.res.headers.set('cache-control', 'public, max-age=31536000, immutable')
+    }
+  }
+  app.use('/assets/*', immutableCacheHeader)
   app.use('/assets/*', serveStatic({root: webDistRoot}))
+  app.use('/icon-*', immutableCacheHeader)
   app.use('/icon-*', serveStatic({root: webDistRoot}))
 
   // ── PWA manifest ─────────────────────────────────────────────────────────
