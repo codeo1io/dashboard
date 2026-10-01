@@ -16,6 +16,7 @@ import type {ServerType} from '@hono/node-server'
 import type {GitHubOAuthClient} from './auth/oauth.ts'
 import type {OperatorClient, SessionDto} from './gateway/operator-client.ts'
 import type {AggregatorSnapshot, SnapshotStore} from './github/aggregator.ts'
+import type {RepoTokenScope} from './github/installations.ts'
 import type {MetadataReader} from './github/metadata.ts'
 import type {ListenerStore} from './listener/store.ts'
 import {Buffer} from 'node:buffer'
@@ -1150,9 +1151,19 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
    * Get a cached read-only token for the given installation.
    * Routes through mintReadOnlyToken (cache + optional-scope graceful fallback).
    * server.ts MUST NOT call appClient.mintInstallationToken directly.
+   *
+   * rm-118: when the caller names a repo (per-repo status queries), the mint
+   * is scoped to exactly that repo via `repository_ids` — a leaked token
+   * opens one repo, read-only, for its ≤55-min cached life. Enumeration and
+   * the metadata read pass no repo and keep the installation-wide token
+   * (the metadata repo's numeric id would cost an extra round-trip to learn;
+   * the capability stays the read-only permission subset either way).
    */
-  async function getReadOnlyToken(installationId: number): Promise<string> {
-    return mintReadOnlyToken(installationId, appClient.mintInstallationToken)
+  async function getReadOnlyToken(installationId: number, repo?: RepoTokenScope): Promise<string> {
+    return mintReadOnlyToken(installationId, appClient.mintInstallationToken, {
+      appId,
+      ...(repo === undefined ? {} : {repositoryIds: [repo.databaseId]}),
+    })
   }
 
   /**

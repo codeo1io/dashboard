@@ -11,7 +11,7 @@
  * - Octokit boundary casts use `as unknown as X`, never `any`.
  */
 
-import type {MintedToken} from './installations.ts'
+import type {MintedToken, RepoTokenScope} from './installations.ts'
 import {createAppAuth} from '@octokit/auth-app'
 import {Octokit} from '@octokit/core'
 import {graphql} from '@octokit/graphql'
@@ -104,7 +104,13 @@ export interface DashboardAppClient {
   readonly mintInstallationToken: (
     installationId: number,
     permissions: Record<string, 'read'>,
+    repositoryIds?: readonly number[],
   ) => Promise<MintedToken>
+  /**
+   * This client's GitHub App id — the token-cache partition key (rm-118).
+   * Mirrors `AppClientOptions.appId`.
+   */
+  readonly appId: string
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +157,7 @@ export function createDashboardAppClient(options: AppClientOptions): DashboardAp
   async function mintInstallationToken(
     installationId: number,
     permissions: Record<string, 'read'>,
+    repositoryIds?: readonly number[],
   ): Promise<MintedToken> {
     // rm-156: the mint rides the SAME bounded, throttled transport as the
     // REST client — auth-app honors a passed `request` for its token fetches.
@@ -158,6 +165,9 @@ export function createDashboardAppClient(options: AppClientOptions): DashboardAp
     const result = await installAuth({
       type: 'installation',
       permissions,
+      // rm-118: repository_ids scoping — auth-app sorts the array in place,
+      // so hand it a fresh mutable copy of the caller's readonly list.
+      ...(repositoryIds === undefined ? {} : {repositoryIds: [...repositoryIds]}),
     })
     // rm-185: thread the auth result's real expiry through instead of
     // discarding it. @octokit/auth-app returns expiresAt as an ISO string
@@ -172,7 +182,7 @@ export function createDashboardAppClient(options: AppClientOptions): DashboardAp
     return {token: result.token, expiresAt}
   }
 
-  return {octokit, mintInstallationToken}
+  return {octokit, mintInstallationToken, appId}
 }
 
 // ---------------------------------------------------------------------------
@@ -199,12 +209,20 @@ export interface InstallationGraphqlOptions {
  * landed inline shape.
  */
 export function createInstallationGraphqlQueryFn(
-  getToken: (installationId: number) => Promise<string>,
+  getToken: (installationId: number, repo?: RepoTokenScope) => Promise<string>,
   options: InstallationGraphqlOptions = {},
-): (installationId: number, query: string, variables: Record<string, unknown>) => Promise<unknown> {
+): (installationId: number, query: string, variables: Record<string, unknown>, repo?: RepoTokenScope) => Promise<unknown> {
   const timeoutMs = options.timeoutMs ?? GITHUB_REQUEST_TIMEOUT_MS
-  return async (installationId: number, query: string, variables: Record<string, unknown>): Promise<unknown> => {
-    const token = await getToken(installationId)
+  return async (
+    installationId: number,
+    query: string,
+    variables: Record<string, unknown>,
+    repo?: RepoTokenScope,
+  ): Promise<unknown> => {
+    // rm-118: when the caller supplies the repo's database id the token is
+    // minted scoped to exactly that repo (repository_ids); without it the
+    // call rides the installation-wide token (enumeration class).
+    const token = await getToken(installationId, repo)
     const gql = graphql.defaults({
       headers: {authorization: `token ${token}`},
       // rm-156: fetch-layer enforcement (load-bearing); rm-197: the `timeout`

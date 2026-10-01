@@ -14,6 +14,13 @@ view of Fro Bot's cross-repo footprint.
    `security_events`/`vulnerability_alerts:read` optional + graceful). The Agent
    App's registered permissions are therefore irrelevant to effective access.
    Never add a write code path.
+   Capability scoping (rm-118, 2026-10-01): beyond the permission subset, every
+   per-repo status query mints its token scoped via `repository_ids` to exactly
+   the repo it reads (a leaked token opens one repo, read-only, for its
+   ≤55-min cached life); installation enumeration and the metadata read keep
+   the installation-wide token. The token cache is keyed by the full mint
+   identity — `(appId, installationId, permission subset, repository scope)` —
+   never by installation id alone.
    Upstream divergence disposition (verified 2026-09-29, run 262f170c research):
    `fro-bot/dashboard` upstream has adopted an isolated repository-editing (wiki)
    capability —
@@ -130,3 +137,16 @@ Read-only dependency source repositories are available under
   body preserved, land, then re-enable enforcement in the same session — never
   delete the protection object (recreating it drops the check list; a
   body-less recreate produces exactly the current all-empty shell state).
+- Both `release.yaml` App-token mints are INERT until their secrets are
+  provisioned (`gh api /repos/codeo1io/dashboard/actions/secrets` reported
+  total_count 0, re-probed 2026-10-01). When provisioning, each mint site gets
+  its OWN dedicated minimal-scope GitHub App (decision rm-283, recorded in
+  `docs/prioritization/2026-09-30-cycle-2-batch-run-a2c2f6651161.md`):
+  publication (`APPLICATION_ID`/`APPLICATION_PRIVATE_KEY`) — installed on
+  `codeo1io/dashboard` only, with `contents:write` as its only permission (the
+  token only creates/deletes tag refs and releases in this repo); infra
+  dispatch (`INFRA_DISPATCH_APP_ID`/`INFRA_DISPATCH_APP_PRIVATE_KEY`) —
+  installed on `marcusrbrown/infra` only, `actions:write` only (matching the
+  mint-time `repositories`/`permission-actions` constraints already in the
+  workflow). Mint-time scoping bounds the token, not the key: only the App's
+  own installation footprint bounds what a leaked private key can mint.
