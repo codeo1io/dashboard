@@ -10,6 +10,7 @@
 // ---------------------------------------------------------------------------
 
 export declare const PINNED_CONTRACT_VERSION: string
+export declare const MIN_SUPPORTED_CONTRACT_VERSION: string
 export declare const RETRY_BASE_MS: number
 export declare const RETRY_FACTOR: number
 export declare const RETRY_MAX_COUNT: number
@@ -32,6 +33,8 @@ export type FailureKind =
   | 'stream-ended'
   | 'workspace-unreachable'
   | 'session-error'
+  | 'checkout-substituted'
+  | 'workspace-unavailable'
   | 'unknown'
 
 /**
@@ -40,6 +43,9 @@ export type FailureKind =
  * public/operator-run-index.js — parity is enforced by tests.
  */
 export declare const FAILURE_REASON_LABELS: Readonly<Record<FailureKind, string>>
+
+/** Contract-version range guard: true when value lies within [MIN_SUPPORTED_CONTRACT_VERSION, PINNED_CONTRACT_VERSION]. */
+export declare function isSupportedContractVersion(value: unknown): boolean
 
 // ---------------------------------------------------------------------------
 // Frame types (mirrors src/gateway/operator-contract/sse-frames.ts shapes)

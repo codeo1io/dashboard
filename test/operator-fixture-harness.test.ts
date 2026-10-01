@@ -733,7 +733,7 @@ async function launchAndStream(scenario: string, idempotencyKey: string) {
   return {app, runId, sseText}
 }
 
-describe('fixture launch — failure-reason scenarios (Gateway 1.6.0)', () => {
+describe('fixture launch — failure-reason scenarios (Gateway 1.8.0)', () => {
   it('terminal_failure_known_reason: failed status frame carries the expected reason and preserves final output', async () => {
     const {sseText} = await launchAndStream(
       FIXTURE_SCENARIO_NAMES.terminal_failure_known_reason,

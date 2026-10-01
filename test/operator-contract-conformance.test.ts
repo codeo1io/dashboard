@@ -1,12 +1,12 @@
 /**
  * Operator contract conformance tests.
  *
- * Verifies the vendored operator contract v1.5.0 is correctly pinned and
+ * Verifies the vendored operator contract v1.8.0 is correctly pinned and
  * that parse helpers behave per spec. Also verifies the SSE frame types
  * vendored from fro-bot/agent (including the run-output and approval channels)
  * are structurally correct.
  *
- * Source: fro-bot/agent | Tag: v0.78.0
+ * Source: fro-bot/agent | Tag: v0.117.0
  */
 import type {ApprovalDecisionState, RunStatus} from '../src/gateway/operator-client.ts'
 import type {
@@ -32,6 +32,8 @@ import {describe, expect, it} from 'vitest'
 import {
   OPERATOR_CONTRACT_VERSION,
   parseOperatorCancelResponse,
+  parseOperatorCheckoutPreparation,
+  parseOperatorCheckoutProvenance,
   parseOperatorCsrfToken,
   parseOperatorError,
   parseOperatorOk,
@@ -75,7 +77,7 @@ export {checkRunStatusBidirectional}
 // Using satisfies/export to avoid unused-variable lint while keeping the type constraint.
 
 // ReadyFrame: must accept a literal with contractVersion string
-const checkReadyFrameLiteral: ReadyFrame = {contractVersion: '1.6.0'}
+const checkReadyFrameLiteral: ReadyFrame = {contractVersion: '1.8.0'}
 export {checkReadyFrameLiteral}
 
 // ResetFrameData: must accept a literal with runId + ResetReason
@@ -141,7 +143,7 @@ const checkApprovalFrameSettle: OperatorApprovalFrame = {
 export {checkApprovalFrameSettle}
 
 // RunStreamFrame discriminated union: each variant must be constructable
-const checkReadyFrame: RunStreamFrame = {type: 'ready', data: {contractVersion: '1.6.0'}}
+const checkReadyFrame: RunStreamFrame = {type: 'ready', data: {contractVersion: '1.8.0'}}
 const checkOutputFrame: RunStreamFrame = {
   type: 'output',
   data: {runId: 'run-001', text: 'partial', final: false, seq: 0},
@@ -178,8 +180,8 @@ export {checkApprovalRunStreamFrame, checkReadyFrame, checkResetFrame, checkStat
 // ---------------------------------------------------------------------------
 
 describe('OPERATOR_CONTRACT_VERSION', () => {
-  it('is pinned to 1.6.0', () => {
-    expect(OPERATOR_CONTRACT_VERSION).toBe('1.6.0')
+  it('is pinned to 1.8.0', () => {
+    expect(OPERATOR_CONTRACT_VERSION).toBe('1.8.0')
   })
 })
 
@@ -188,16 +190,18 @@ describe('OPERATOR_CONTRACT_VERSION', () => {
 // ---------------------------------------------------------------------------
 
 describe('OperatorFailureKind', () => {
-  it('all six known reason codes are assignable to the union', () => {
+  it('all eight known reason codes are assignable to the union', () => {
     const checkFailureKinds: OperatorFailureKind[] = [
       'inactivity-timeout',
       'max-duration-timeout',
       'stream-ended',
       'workspace-unreachable',
       'session-error',
+      'checkout-substituted',
+      'workspace-unavailable',
       'unknown',
     ]
-    expect(checkFailureKinds).toHaveLength(6)
+    expect(checkFailureKinds).toHaveLength(8)
   })
 
   it('OperatorRunStatus accepts an optional failureKind on a failed status', () => {
@@ -1253,5 +1257,12 @@ describe('TerminalPhase and PHASE_TO_WEB_STATUS', () => {
     for (const phase of allPhases) {
       expect(PHASE_TO_WEB_STATUS[phase]).toBeDefined()
     }
+  })
+})
+
+describe('vendored checkout provenance/preparation surface (v1.8.0)', () => {
+  it('exposes both parse guards from the vendored module', () => {
+    expect(typeof parseOperatorCheckoutProvenance).toBe('function')
+    expect(typeof parseOperatorCheckoutPreparation).toBe('function')
   })
 })

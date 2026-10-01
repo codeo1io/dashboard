@@ -1,6 +1,6 @@
-Source: fro-bot/agent  | Tag: v0.78.0
+Source: fro-bot/agent  | Tag: v0.117.0
 Path: packages/gateway/src/operator-contract/ (contract barrel) + packages/gateway/src/web/sse/ (SSE surface)
-Contract: OPERATOR_CONTRACT_VERSION = 1.5.0
+Contract: OPERATOR_CONTRACT_VERSION = 1.8.0
 Vendored copy — do not hand-edit behavior. Refresh by re-copying upstream and
 re-applying the documented import rewrites (@fro-bot/runtime → ../../result.ts;
 inlined boundary types for RunPhase/Surface/RunState).
@@ -53,3 +53,12 @@ ResetFrameData, RunStreamFrame, ResetReason) are all present and correct.
 - `run-status.ts`: `import type {RunPhase, RunState, Surface} from '@fro-bot/runtime'` → inlined as local type definitions
 - `approval.ts`: `import type {ApprovalActor, DecisionOutcome} from '../approvals/registry.js'` → removed (dependent helpers omitted)
 - `sse-frames.ts`: `import type {OperatorRunStatus} from '@fro-bot/runtime'` → `import type {OperatorRunStatus} from './run-status.ts'`
+
+Refreshed 2026-09-30 from Tag v0.117.0 (contract 1.8.0): added
+`provenance.ts` (verbatim — the module is import-free), added the optional
+`OperatorRunStatus.checkoutProvenance` / `checkoutPreparation` fields, added
+the `OperatorFailureKind` values `checkout-substituted` and
+`workspace-unavailable`, and extended the barrel re-exports. Upstream's
+projection helpers (`toOperatorFailureKind`, `toOperatorRunStatus`, type
+`RunStatusRepoKey`, the `RUN_CORE_ERROR_KIND` map) are omitted as before:
+they import `@fro-bot/runtime`, which does not exist here.
