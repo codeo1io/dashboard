@@ -14,8 +14,9 @@
  */
 import {Buffer} from 'node:buffer'
 import {createHmac, timingSafeEqual} from 'node:crypto'
-import {readFile} from 'node:fs/promises'
 import process from 'node:process'
+
+import {readSecretFileBytes} from './secrets.ts'
 
 /** Verified session payload returned by `SessionManager.verify`. */
 export interface SessionPayload {
@@ -128,6 +129,11 @@ function isCookiePayload(value: unknown): value is CookiePayload {
  * 1. `DASHBOARD_COOKIE_KEY` env var (hex or base64 encoded, decoded to raw bytes)
  * 2. File at `DASHBOARD_COOKIE_KEY_FILE` env var (or `/data/cookie.key`)
  *
+ * rm-363 (2026-10-01): the file path is read through `readSecretFileBytes` —
+ * the same hardened read the gateway secrets use (`O_NOFOLLOW` at open,
+ * regular-file assertion, `MAX_SECRET_BYTES` cap) — so a symlinked or
+ * oversized key file fails closed at boot instead of being read as-is.
+ *
  * Throws if the resolved key is <32 bytes (fail-closed).
  */
 export async function loadCookieKey(): Promise<Buffer> {
@@ -137,7 +143,7 @@ export async function loadCookieKey(): Promise<Buffer> {
   }
 
   const keyFile = process.env.DASHBOARD_COOKIE_KEY_FILE ?? '/data/cookie.key'
-  const rawFile = await readFile(keyFile)
+  const rawFile = await readSecretFileBytes(keyFile)
 
   // If the file is already ≥32 raw bytes and not obviously text-encoded, try raw first.
   // We detect "obviously text-encoded" by checking if the content is valid ASCII printable

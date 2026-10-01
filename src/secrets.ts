@@ -11,7 +11,9 @@
  * Security invariant: never log or expose secret values in error messages.
  */
 
+import {Buffer} from 'node:buffer'
 import {closeSync, constants, fstatSync, openSync, readFileSync} from 'node:fs'
+import {open, type FileHandle} from 'node:fs/promises'
 import process from 'node:process'
 
 const MAX_SECRET_BYTES = 4096
@@ -81,6 +83,52 @@ function describeStatKind(stat: import('node:fs').Stats): string {
   if (stat.isDirectory()) return 'directory'
   if (stat.isSocket()) return 'socket'
   return 'unknown non-file'
+}
+
+/**
+ * Hardened secret-file read returning the RAW BYTES (rm-363, 2026-10-01).
+ *
+ * Identical open flags and size bound as `readSecretFile` — `O_NOFOLLOW` at
+ * open (symlinks fail immediately, no TOCTOU window between validation and
+ * read), then `stat()` on the already-open handle to assert a regular file
+ * under `MAX_SECRET_BYTES` — for callers that need the undecoded buffer. The
+ * session cookie key may legitimately be a raw binary file; routing it
+ * through a utf-8 string first would be a lossy re-encode.
+ */
+export async function readSecretFileBytes(filePath: string): Promise<Buffer> {
+  let handle: FileHandle
+  try {
+    handle = await open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW)
+  } catch (error) {
+    if (error instanceof Error && 'code' in error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new SecretFileNotFoundError(`Secret file does not exist: ${filePath}`)
+      }
+      if ((error as NodeJS.ErrnoException).code === 'ELOOP') {
+        throw new Error(
+          `Secret path is not a regular file: ${filePath} (got symlink). Symlinks are not supported — bind-mount a real file.`,
+        )
+      }
+    }
+    throw error
+  }
+  try {
+    const stat = await handle.stat()
+    if (stat.isFile() === false) {
+      const kind = describeStatKind(stat)
+      throw new Error(
+        `Secret path is not a regular file: ${filePath} (got ${kind}). FIFOs, devices, and directories are not supported — bind-mount a real file.`,
+      )
+    }
+    if (stat.size > MAX_SECRET_BYTES) {
+      throw new Error(
+        `Secret file is too large: ${filePath} (${stat.size} bytes > ${MAX_SECRET_BYTES} byte limit). Secrets should be a single value on a single line.`,
+      )
+    }
+    return await handle.readFile()
+  } finally {
+    await handle.close()
+  }
 }
 
 /**

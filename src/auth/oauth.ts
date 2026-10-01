@@ -7,8 +7,14 @@
  * Security: tokens are never logged (redactSensitiveFields covers 'token'
  * and 'access_token' patterns). The operator allowlist check lives in the
  * route handler, not here.
+ *
+ * rm-149 (2026-10-01): both sides of the round-trip carry PKCE (RFC 7636) —
+ * `createAuthorizationURL` derives the S256 `code_challenge` from the
+ * verifier, `validateAuthorizationCode` presents `code_verifier` at the
+ * token exchange.
  */
 import {Buffer} from 'node:buffer'
+import {createHash} from 'node:crypto'
 
 const GITHUB_OAUTH_ERROR_CODES = new Set([
   'access_denied',
@@ -29,8 +35,20 @@ const GITHUB_FETCH_TIMEOUT_MS = 10_000
  * Uses function property style (not shorthand method signatures) per lint rules.
  */
 export interface GitHubOAuthClient {
-  readonly createAuthorizationURL: (state: string, scopes: string[]) => URL
-  readonly validateAuthorizationCode: (code: string) => Promise<{accessToken: () => string}>
+  readonly createAuthorizationURL: (state: string, scopes: string[], codeVerifier: string) => URL
+  readonly validateAuthorizationCode: (code: string, codeVerifier: string) => Promise<{accessToken: () => string}>
+}
+
+/**
+ * RFC 7636 S256 code challenge for a code verifier (rm-149):
+ * BASE64URL-ENCODE(SHA256(ASCII(code_verifier))) with padding stripped.
+ * Shared by the production redirect builder below and the test fakes that
+ * emulate GitHub's server-side challenge check.
+ */
+export function createS256CodeChallenge(codeVerifier: string): string {
+  // Node's Hash.toString() ignores arguments ('[object Object]') — the
+  // base64url transform goes through digest().
+  return createHash('sha256').update(codeVerifier, 'ascii').digest('base64url')
 }
 
 /**
@@ -46,7 +64,7 @@ export function makeGitHubOAuthClient(
   redirectURI: string,
 ): GitHubOAuthClient {
   return {
-    createAuthorizationURL: (state: string, scopes: string[]): URL => {
+    createAuthorizationURL: (state: string, scopes: string[], codeVerifier: string): URL => {
       const url = new URL('https://github.com/login/oauth/authorize')
       url.search = new URLSearchParams({
         client_id: clientId,
@@ -54,10 +72,14 @@ export function makeGitHubOAuthClient(
         state,
         scope: scopes.join(' '),
         response_type: 'code',
+        // rm-149: PKCE S256 — the challenge is derived from the verifier the
+        // caller holds; the verifier itself never appears in the redirect.
+        code_challenge: createS256CodeChallenge(codeVerifier),
+        code_challenge_method: 'S256',
       }).toString()
       return url
     },
-    validateAuthorizationCode: async (code: string): Promise<{accessToken: () => string}> => {
+    validateAuthorizationCode: async (code: string, codeVerifier: string): Promise<{accessToken: () => string}> => {
       let res: Response
       try {
         res = await fetch('https://github.com/login/oauth/access_token', {
@@ -73,6 +95,9 @@ export function makeGitHubOAuthClient(
             code,
             redirect_uri: redirectURI,
             grant_type: 'authorization_code',
+            // rm-149: PKCE — GitHub rejects the exchange when this verifier's
+            // S256 does not match the challenge sent on the authorize redirect.
+            code_verifier: codeVerifier,
           }).toString(),
           redirect: 'error',
           signal: AbortSignal.timeout(GITHUB_FETCH_TIMEOUT_MS),

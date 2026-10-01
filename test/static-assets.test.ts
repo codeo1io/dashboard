@@ -25,9 +25,9 @@ const TEST_OPERATOR = 'octocat'
 
 function makeFakeOAuthClient(): GitHubOAuthClient {
   return {
-    createAuthorizationURL: (state: string, _scopes: string[]) =>
+    createAuthorizationURL: (state: string, _scopes: string[], _codeVerifier: string) =>
       new URL(`https://github.com/login/oauth/authorize?state=${state}`),
-    validateAuthorizationCode: async (_code: string) => ({
+    validateAuthorizationCode: async (_code: string, _codeVerifier: string) => ({
       accessToken: () => 'fake-access-token',
     }),
   }
