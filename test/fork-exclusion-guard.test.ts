@@ -57,13 +57,13 @@ describe('fork exclusion invariants (rm-131)', () => {
     expect(existsSync(resolve(repoRoot, '.github/renovate.json5'))).toBe(false)
   })
 
-  it('Dockerfile pins pnpm 11.27.1 in both stages', () => {
-    expect(read('Dockerfile').match(/pnpm@11\.27\.1/g)?.length).toBe(2)
+  it('Dockerfile pins pnpm 11.28.0 in both stages', () => {
+    expect(read('Dockerfile').match(/pnpm@11\.28\.0/g)?.length).toBe(2)
   })
 
-  it('package.json packageManager pins pnpm 11.27.1', () => {
+  it('package.json packageManager pins pnpm 11.28.0', () => {
     const pkg = JSON.parse(read('package.json')) as {packageManager?: string}
-    expect(pkg.packageManager).toBe('pnpm@11.27.1')
+    expect(pkg.packageManager).toBe('pnpm@11.28.0')
   })
 
   it('.gitignore keeps the run-state entries guarded against upstream merges (rm-159 residue)', () => {
