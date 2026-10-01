@@ -18,6 +18,10 @@ vi.mock('../push/capability.ts', () => ({
 vi.mock('../push/subscribe.ts', () => ({
   INITIAL_RECONCILE_SWEEP_CACHE: {},
   buildPushClient: vi.fn().mockReturnValue({}),
+  createCurrentKeyVersionSource: vi.fn().mockReturnValue({
+    get: vi.fn(),
+    refresh: vi.fn().mockResolvedValue(undefined),
+  }),
   runReconcileSweep: vi.fn(),
   subscribeOptIn: vi.fn(),
   resubscribeStaleKey: vi.fn(),
@@ -112,6 +116,17 @@ describe('Notifications Component', () => {
       render(<Notifications />)
     })
     expect(runReconcileSweep).toHaveBeenCalledTimes(1)
+  })
+
+  it('rm-308: the sweep is wired with a getCurrentKeyVersion source (rotated-key detection is live)', async () => {
+    addMetaTag()
+    await act(async () => {
+      render(<Notifications />)
+    })
+
+    const sweepDeps = vi.mocked(runReconcileSweep).mock.calls[0]?.[0]
+    expect(sweepDeps).toBeDefined()
+    expect(typeof sweepDeps?.getCurrentKeyVersion).toBe('function')
   })
 
   it('renders nothing when push-enabled meta is absent', () => {

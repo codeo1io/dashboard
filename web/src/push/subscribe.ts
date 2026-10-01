@@ -17,7 +17,7 @@ import {getNotificationPermission, getPushSupport} from './capability.ts'
 import {endpointHash} from './endpoint-hash.ts'
 import type {HandoffState, PushSubscriptionMetadata, VapidKeyResponse} from './push-types.ts'
 import {derivePushHandoffState, reconcile} from './reconcile.ts'
-import {urlB64ToUint8Array} from './vapid-key.ts'
+import {parseVapidKeyResponse, urlB64ToUint8Array} from './vapid-key.ts'
 
 // ---------------------------------------------------------------------------
 // Browser-direct push client
@@ -127,16 +127,13 @@ export function buildPushClient(opts?: BuildPushClientOptions): PushClient {
         })
         if (res.status === 404) return ok({pushDisabled: true, vapidKey: undefined})
         if (!res.ok) return err({kind: 'http', status: res.status})
+        // rm-308: route the response through the strict parser. The old
+        // inline `typeof === 'string'` check accepted empty-string
+        // publicKey/keyVersion and leaned on an `as VapidKeyResponse` cast.
         const data = (await res.json()) as unknown
-        if (
-          data === null ||
-          typeof data !== 'object' ||
-          typeof (data as {publicKey?: unknown}).publicKey !== 'string' ||
-          typeof (data as {keyVersion?: unknown}).keyVersion !== 'string'
-        ) {
-          return err({kind: 'protocol'})
-        }
-        return ok({pushDisabled: false, vapidKey: data as VapidKeyResponse})
+        const parsed = parseVapidKeyResponse(data)
+        if (!parsed.success) return err({kind: 'protocol'})
+        return ok({pushDisabled: false, vapidKey: parsed.data})
       } catch {
         return err({kind: 'network'})
       }
@@ -647,7 +644,12 @@ export interface ReconcileSweepDeps {
   readonly getLocalSubscription: () => Promise<MinimalPushSubscription | null>
   readonly getPermission?: () => NotificationPermission | 'unsupported'
   readonly pushClient: PushClient
-  /** Current Gateway VAPID key version, if known (fetched separately/cached by the caller). */
+  /**
+   * Current Gateway VAPID key version, if known - supply it via
+   * `createCurrentKeyVersionSource` (rm-308), the production fetch+cache.
+   * While absent or cold, `derivePushHandoffState` skips the key-version
+   * branch and a rotated Gateway key cannot be detected.
+   */
   readonly getCurrentKeyVersion?: () => string | undefined
   readonly now?: () => number
   readonly minIntervalMs?: number
@@ -756,4 +758,59 @@ export async function runReconcileSweep(
   }
 
   return {skipped: false, action, uiState, nextCache}
+}
+
+/**
+ * rm-308: production source for `ReconcileSweepDeps.getCurrentKeyVersion`.
+ *
+ * The sweep consumes the key version synchronously, so it is fetched
+ * separately and cached here - this is that cache. `refresh()` coalesces
+ * to at most one Gateway GET per `ttlMs` regardless of focus/visibility
+ * churn or fetch outcome, and never rejects: a failed, disabled, or
+ * throwing fetch keeps the previous value, degrading to exactly the
+ * dep-absent behavior (key-version branch skipped) instead of breaking
+ * the sweep.
+ */
+export const KEY_VERSION_CACHE_TTL_MS = 300_000
+
+export interface CurrentKeyVersionSource {
+  /** Latest known Gateway key version, or undefined while cold or failed. */
+  readonly get: () => string | undefined
+  /** Fetch the current key version (a no-op inside the TTL window). Never rejects. */
+  readonly refresh: () => Promise<void>
+}
+
+export function createCurrentKeyVersionSource(
+  pushClient: PushClient,
+  options?: {ttlMs?: number; now?: () => number},
+): CurrentKeyVersionSource {
+  const ttlMs = options?.ttlMs ?? KEY_VERSION_CACHE_TTL_MS
+  const now = options?.now ?? Date.now
+  let version: string | undefined
+  let attemptedAt = -Infinity
+  let refreshInFlight: Promise<void> | undefined
+
+  const doRefresh = async (): Promise<void> => {
+    try {
+      const result = await pushClient.getVapidKey()
+      if (result.success && !result.data.pushDisabled && result.data.vapidKey !== undefined) {
+        version = result.data.vapidKey.keyVersion
+      }
+    } catch {
+      // A throwing client (or a torn-down one) must not break the sweep;
+      // keep the last known value.
+    }
+  }
+
+  return {
+    get: () => version,
+    refresh: () => {
+      if (now() - attemptedAt < ttlMs) return Promise.resolve()
+      attemptedAt = now()
+      refreshInFlight ??= doRefresh().finally(() => {
+        refreshInFlight = undefined
+      })
+      return refreshInFlight
+    },
+  }
 }
