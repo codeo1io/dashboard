@@ -22,18 +22,15 @@ defaults:
     shell: bash -Eeuo pipefail {0}
 
 jobs:
-  lint:
-    name: Lint
+  lint-plan:
+    name: Lint Plan
     permissions:
       contents: read
     # rm-188 (cycle 13, 2026-09-25): pinned ubuntu-24.04 — ubuntu-26.04 images are
     # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
     # at the rm-139 Node-26 window (2026-10-28).
     runs-on: ubuntu-24.04
-    # rm-13640 rider (2026-09-29): 20 min self-kills cold repo-wide eslint on the
-    # shared runner pool before the CI validator's poll window closes; the
-    # Test job's 40 is the precedent for a heavyweight job.
-    timeout-minutes: 35
+    timeout-minutes: 10
     steps:
       - name: ⤵ Checkout Branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -45,10 +42,86 @@ jobs:
       - name: 📦 Setup
         uses: ./.github/actions/setup
 
-      - env:
-          TIMING: 1
-        name: 💅🏽 Lint
-        run: pnpm lint
+      # rm-294 (run f91bcdc2c6f7 cycle-2, 2026-09-30): derives the Lint matrix
+      # from scripts/lint-shards.ts (single source of truth) after asserting
+      # EXACT coverage — the union of the shard globs must equal the repo lint
+      # set (tracked files eslint does not ignore), no file linted zero times
+      # or twice. A red plan job means the shard map drifted from the tree;
+      # fix the map in scripts/lint-shards.ts, not here.
+      - name: 🧮 Assert shard coverage + emit lint matrix
+        id: plan
+        run: echo "matrix=$(node scripts/lint-shards.ts plan)" >> "$GITHUB_OUTPUT"
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+
+  lint:
+    name: Lint (${{ matrix.shard }})
+    needs: lint-plan
+    permissions:
+      contents: read
+    # rm-188 (cycle 13, 2026-09-25): pinned ubuntu-24.04 — ubuntu-26.04 images are
+    # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
+    # at the rm-139 Node-26 window (2026-10-28).
+    runs-on: ubuntu-24.04
+    # rm-294 (run f91bcdc2c6f7 cycle-2, 2026-09-30), superseding rm-13640's
+    # fixed 35-min whole-job rider (2026-09-29): the monolithic cold repo-wide
+    # Lint was flaky-under-ceiling on the hosted pool — 12m17s and 17m24s on
+    # green runs vs >35m rider-killed on the same day's validation runs — so
+    # Lint is now a matrix of cost-class shards with per-shard riders
+    # (timeout-minutes arrives from the plan job). The shard map, riders, and
+    # the exact-coverage assertion live in scripts/lint-shards.ts; re-measure
+    # cold durations there before re-sizing. markdown-roadmap carries the
+    # rm-103 paragraph cliff (ROADMAP.md ~10KB signals lines) and keeps the
+    # largest rider until that cure lands. rm-116 note: required-check names
+    # are now 'Lint (<shard>)', not 'Lint'.
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.lint-plan.outputs.matrix) }}
+    steps:
+      - name: ⤵ Checkout Branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: 📦 Setup
+        uses: ./.github/actions/setup
+
+      # TIMING=1 was dropped with the eslint CLI: it is inert under the
+      # API-based shard runner, which prints per-shard duration itself.
+      - name: 💅🏽 Lint (shard ${{ matrix.shard }})
+        run: node scripts/lint-shards.ts run ${{ matrix.shard }}
+
+  audit:
+    name: Dependency audit (advisory)
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: ⤵ Checkout Branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: 📦 Setup
+        uses: ./.github/actions/setup
+
+      # rm-293 (run f91bcdc2c6f7 cycle-2, 2026-09-30): advisory-mode dependency
+      # audit — the 2026-09-30 census (19 advisories: 3 low / 8 moderate /
+      # 8 high, incl. fast-uri GHSA-qw65-cvwx-89v3 + GHSA-58mr-gqgx-xq4g as
+      # Dependabot alerts #29/#30) is now visible in every Main run log
+      # instead of invisible. Deliberately non-failing this cycle; enforcement
+      # belongs to the ledger's gated floors work (rm-278/rm-281 lineage,
+      # acceptance `pnpm audit -r` == 0). Do not drop continue-on-error or
+      # raise --audit-level until that lands.
+      - name: 🔎 Dependency audit (advisory mode — logged, never red this cycle)
+        continue-on-error: true
+        run: pnpm audit --recursive
 
   design-check:
     name: Design Check
