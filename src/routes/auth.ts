@@ -4,6 +4,10 @@
  * Security invariants:
  * - State cookie is HttpOnly, Secure, SameSite=Lax, short-TTL (~10 min), path=/auth.
  * - State mismatch → 403 (CSRF protection).
+ * - PKCE (rm-149): the authorize redirect carries an S256 code_challenge; the
+ *   verifier lives in an HttpOnly Secure SameSite=Lax short-TTL cookie mirroring
+ *   the state pattern, is single-use, and is presented as code_verifier at the
+ *   token exchange. A missing verifier cookie → 403 before any exchange.
  * - Non-allowlisted login → 403, no session issued.
  * - Session cookie is HttpOnly, Secure, SameSite=Lax, 24h TTL.
  * - Operator login check is case-sensitive exact match.
@@ -25,6 +29,15 @@ const STATE_COOKIE_MAX_AGE = 10 * 60
 
 /** Name of the OAuth state cookie */
 const STATE_COOKIE_NAME = 'oauth_state'
+
+/**
+ * PKCE verifier cookie (rm-149): mirrors the state cookie — HttpOnly, Secure,
+ * SameSite=Lax, short-TTL, path=/auth — and is single-use like the state.
+ */
+const PKCE_COOKIE_NAME = 'oauth_pkce_verifier'
+const PKCE_COOKIE_MAX_AGE = 10 * 60
+/** RFC 7636 §4.1: base64url of 32 random bytes = 43 unreserved chars, inside the 43–128 range. */
+const PKCE_VERIFIER_BYTES = 32
 
 /** Name of the session cookie */
 const SESSION_COOKIE_NAME = 'session'
@@ -70,6 +83,9 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
    */
   router.get('/login', c => {
     const state = randomBytes(16).toString('hex')
+    // rm-149: fresh PKCE verifier per authorization request. 43 unreserved
+    // chars (base64url of 32 random bytes) — RFC 7636 §4.1 compliant.
+    const codeVerifier = randomBytes(PKCE_VERIFIER_BYTES).toString('base64url')
 
     // Store state in a short-TTL HttpOnly cookie scoped to /auth (only read on /auth/callback).
     // CSRF check compares query param state vs cookie state (exact match).
@@ -81,7 +97,17 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
       path: '/auth',
     })
 
-    const authURL = oauthClient.createAuthorizationURL(state, ['read:user'])
+    // PKCE verifier cookie mirrors the state pattern exactly (rm-149) — same
+    // flags, TTL and scope; read once on /auth/callback and deleted on use.
+    setCookie(c, PKCE_COOKIE_NAME, codeVerifier, {
+      httpOnly: true,
+      secure: c.req.url.startsWith('https://') || c.req.header('x-forwarded-proto') === 'https',
+      sameSite: 'Lax',
+      maxAge: PKCE_COOKIE_MAX_AGE,
+      path: '/auth',
+    })
+
+    const authURL = oauthClient.createAuthorizationURL(state, ['read:user'], codeVerifier)
     return c.redirect(authURL.toString(), 302)
   })
 
@@ -122,10 +148,21 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
     // Clear the state cookie immediately (one-time use)
     deleteCookie(c, STATE_COOKIE_NAME, {path: '/auth'})
 
+    // rm-149: PKCE — read the verifier cookie, clear it one-time like the
+    // state, and refuse to exchange without it. The exchange itself presents
+    // the verifier to GitHub, which rejects it when its S256 does not match
+    // the challenge from the authorize redirect.
+    const pkceCookie = getCookie(c, PKCE_COOKIE_NAME)
+    deleteCookie(c, PKCE_COOKIE_NAME, {path: '/auth'})
+    if (typeof pkceCookie !== 'string' || pkceCookie.length === 0) {
+      logger.warning('OAuth callback: missing PKCE verifier cookie')
+      return c.text('Forbidden: missing PKCE verifier', 403)
+    }
+
     // Exchange code for access token
     let accessToken: string
     try {
-      const tokens = await oauthClient.validateAuthorizationCode(code)
+      const tokens = await oauthClient.validateAuthorizationCode(code, pkceCookie)
       accessToken = tokens.accessToken()
     } catch (error) {
       logger.error('OAuth callback: token exchange failed', {error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error))})

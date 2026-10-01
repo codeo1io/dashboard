@@ -7,7 +7,7 @@ import type {GitHubOAuthClient} from '../src/auth/oauth.ts'
 import {Buffer} from 'node:buffer'
 import {createHmac} from 'node:crypto'
 import {describe, expect, it} from 'vitest'
-import {fetchGitHubUserLogin, makeGitHubOAuthClient} from '../src/auth/oauth.ts'
+import {createS256CodeChallenge, fetchGitHubUserLogin, makeGitHubOAuthClient} from '../src/auth/oauth.ts'
 import {sanitizeErrorMessage} from '../src/logger.ts'
 import {deriveLogoutCsrfToken} from '../src/routes/auth.ts'
 import {buildDashboardApp} from '../src/server.ts'
@@ -19,9 +19,9 @@ const TEST_KEY = Buffer.from('testkey-ABCDEFGHIJKLMNOPQRSTUV12', 'utf8') // 32 b
 // Minimal fake GitHub OAuth client
 function makeFakeGitHub(_login: string): GitHubOAuthClient {
   return {
-    createAuthorizationURL: (state: string, _scopes: string[]) =>
+    createAuthorizationURL: (state: string, _scopes: string[], _codeVerifier: string) =>
       new URL(`https://github.com/login/oauth/authorize?state=${state}`),
-    validateAuthorizationCode: async (_code: string) => ({
+    validateAuthorizationCode: async (_code: string, _codeVerifier: string) => ({
       accessToken: () => 'fake-access-token',
     }),
   }
@@ -52,6 +52,12 @@ function getSetCookie(res: Response, name: string): string | undefined {
 // Helper: extract cookie value from Set-Cookie header
 function extractCookieValue(header: string): string {
   return header.split(';')[0]?.split('=').slice(1).join('=') ?? ''
+}
+
+// rm-149: the callback additionally requires the one-time PKCE verifier cookie
+// issued by /auth/login (mirrors the state cookie pattern).
+function extractPkceCookieValue(res: Response): string {
+  return extractCookieValue(getSetCookie(res, 'oauth_pkce_verifier') ?? '')
 }
 
 describe('auth middleware', () => {
@@ -275,12 +281,13 @@ describe('OAuth flow', () => {
       const loginRes = await app.request('/auth/login')
       const stateCookieHeader = getSetCookie(loginRes, 'oauth_state') ?? ''
       const stateCookieValue = extractCookieValue(stateCookieHeader)
+      const pkceCookieValue = extractPkceCookieValue(loginRes)
       // Extract the state from the redirect URL
       const location = loginRes.headers.get('location') ?? ''
       const stateParam = new URL(location).searchParams.get('state') ?? ''
 
       const res = await app.request(`/auth/callback?code=fake-code&state=${stateParam}`, {
-        headers: {cookie: `oauth_state=${stateCookieValue}`},
+        headers: {cookie: `oauth_state=${stateCookieValue}; oauth_pkce_verifier=${pkceCookieValue}`},
       })
 
       // Should redirect to / with a session cookie
@@ -318,9 +325,9 @@ describe('OAuth flow', () => {
         operatorLogin: 'octocat',
         cookieKey: TEST_KEY,
         oauthClient: {
-          createAuthorizationURL: (state: string, _scopes: string[]) =>
+          createAuthorizationURL: (state: string, _scopes: string[], _codeVerifier: string) =>
             new URL(`https://github.com/login/oauth/authorize?state=${state}`),
-          validateAuthorizationCode: async (_code: string) => {
+          validateAuthorizationCode: async (_code: string, _codeVerifier: string) => {
             throw new Error('exchange failed')
           },
         },
@@ -333,11 +340,12 @@ describe('OAuth flow', () => {
       const loginRes = await app.request('/auth/login')
       const stateCookieHeader = getSetCookie(loginRes, 'oauth_state') ?? ''
       const stateCookieValue = extractCookieValue(stateCookieHeader)
+      const pkceCookieValue = extractPkceCookieValue(loginRes)
       const location = loginRes.headers.get('location') ?? ''
       const stateParam = new URL(location).searchParams.get('state') ?? ''
 
       const res = await app.request(`/auth/callback?code=auth-code&state=${stateParam}`, {
-        headers: {cookie: `oauth_state=${stateCookieValue}`},
+        headers: {cookie: `oauth_state=${stateCookieValue}; oauth_pkce_verifier=${pkceCookieValue}`},
       })
 
       expect(res.status).toBe(401)
@@ -352,11 +360,12 @@ describe('OAuth flow', () => {
       const loginRes = await app.request('/auth/login')
       const stateCookieHeader = getSetCookie(loginRes, 'oauth_state') ?? ''
       const stateCookieValue = extractCookieValue(stateCookieHeader)
+      const pkceCookieValue = extractPkceCookieValue(loginRes)
       const location = loginRes.headers.get('location') ?? ''
       const stateParam = new URL(location).searchParams.get('state') ?? ''
 
       const res = await app.request(`/auth/callback?code=fake-code&state=${stateParam}`, {
-        headers: {cookie: `oauth_state=${stateCookieValue}`},
+        headers: {cookie: `oauth_state=${stateCookieValue}; oauth_pkce_verifier=${pkceCookieValue}`},
       })
 
       expect([401, 403]).toContain(res.status)
@@ -372,9 +381,10 @@ describe('OAuth flow', () => {
       const loginRes = await app.request('/auth/login')
       const stateCookieHeader = getSetCookie(loginRes, 'oauth_state') ?? ''
       const stateCookieValue = extractCookieValue(stateCookieHeader)
+      const pkceCookieValue = extractPkceCookieValue(loginRes)
 
       const res = await app.request('/auth/callback?code=fake-code&state=WRONG_STATE', {
-        headers: {cookie: `oauth_state=${stateCookieValue}`},
+        headers: {cookie: `oauth_state=${stateCookieValue}; oauth_pkce_verifier=${pkceCookieValue}`},
       })
 
       expect([401, 403]).toContain(res.status)
@@ -392,11 +402,12 @@ describe('OAuth flow', () => {
       const loginRes = await app.request('/auth/login')
       const stateCookieHeader = getSetCookie(loginRes, 'oauth_state') ?? ''
       const stateCookieValue = extractCookieValue(stateCookieHeader)
+      const pkceCookieValue = extractPkceCookieValue(loginRes)
       const location = loginRes.headers.get('location') ?? ''
       const stateParam = new URL(location).searchParams.get('state') ?? ''
 
       const res = await app.request(`/auth/callback?state=${stateParam}`, {
-        headers: {cookie: `oauth_state=${stateCookieValue}`},
+        headers: {cookie: `oauth_state=${stateCookieValue}; oauth_pkce_verifier=${pkceCookieValue}`},
       })
       expect([400, 401, 403]).toContain(res.status)
     })
@@ -557,16 +568,20 @@ describe('makeGitHubOAuthClient', () => {
       'https://dashboard.example.com/auth/callback',
     )
 
-    const url = client.createAuthorizationURL('state value', ['read:user', 'repo:status'])
+    const url = client.createAuthorizationURL('state value', ['read:user', 'repo:status'], 'test-verifier')
 
     expect(url.origin).toBe('https://github.com')
     expect(url.pathname).toBe('/login/oauth/authorize')
+    // rm-149: PKCE S256 — the challenge is derived from the verifier and the
+    // verifier itself never appears in the redirect.
     expect(Object.fromEntries(url.searchParams)).toEqual({
       client_id: 'client-id',
       redirect_uri: 'https://dashboard.example.com/auth/callback',
       state: 'state value',
       scope: 'read:user repo:status',
       response_type: 'code',
+      code_challenge: createS256CodeChallenge('test-verifier'),
+      code_challenge_method: 'S256',
     })
   })
 
@@ -596,13 +611,14 @@ describe('makeGitHubOAuthClient', () => {
           code,
           redirect_uri: redirectURI,
           grant_type: 'authorization_code',
+          code_verifier: 'test-verifier',
         }).toString(),
       )
       return Response.json({access_token: token})
     }
 
     try {
-      const result = await client.validateAuthorizationCode(code)
+      const result = await client.validateAuthorizationCode(code, 'test-verifier')
       expect(result.accessToken()).toBe(token)
     } finally {
       globalThis.fetch = originalFetch
@@ -622,7 +638,7 @@ describe('makeGitHubOAuthClient', () => {
     }
 
     try {
-      const result = client.validateAuthorizationCode(code)
+      const result = client.validateAuthorizationCode(code, 'test-verifier')
       await expect(result).rejects.toThrow('GitHub OAuth token request failed')
       await expect(result).rejects.not.toThrow(clientSecret)
       await expect(result).rejects.not.toThrow(code)
@@ -645,7 +661,7 @@ describe('makeGitHubOAuthClient', () => {
     }
 
     try {
-      const result = client.validateAuthorizationCode(code)
+      const result = client.validateAuthorizationCode(code, 'test-verifier')
       await expect(result).rejects.toThrow('GitHub OAuth token request failed')
       await expect(result).rejects.not.toThrow(clientSecret)
       await expect(result).rejects.not.toThrow(code)
@@ -672,7 +688,7 @@ describe('makeGitHubOAuthClient', () => {
       })
 
     try {
-      const result = client.validateAuthorizationCode(code)
+      const result = client.validateAuthorizationCode(code, 'test-verifier')
       await expect(result).rejects.toThrow('bad_verification_code')
       await expect(result).rejects.not.toThrow(clientSecret)
       await expect(result).rejects.not.toThrow(code)
@@ -693,7 +709,7 @@ describe('makeGitHubOAuthClient', () => {
     globalThis.fetch = async () => new Response(clientSecret, {status: 200})
 
     try {
-      const result = client.validateAuthorizationCode(code)
+      const result = client.validateAuthorizationCode(code, 'test-verifier')
       await expect(result).rejects.toThrow('GitHub OAuth token response was not valid JSON')
       await expect(result).rejects.not.toThrow(clientSecret)
       await expect(result).rejects.not.toThrow(code)
@@ -715,7 +731,7 @@ describe('makeGitHubOAuthClient', () => {
       Response.json({error: 'bad_verification_code', access_token: token})
 
     try {
-      await expect(client.validateAuthorizationCode(code)).rejects.toThrow('bad_verification_code')
+      await expect(client.validateAuthorizationCode(code, 'test-verifier')).rejects.toThrow('bad_verification_code')
     } finally {
       globalThis.fetch = originalFetch
     }
@@ -733,7 +749,7 @@ describe('makeGitHubOAuthClient', () => {
     try {
       let message = ''
       try {
-        await client.validateAuthorizationCode(code)
+        await client.validateAuthorizationCode(code, 'test-verifier')
       } catch (error) {
         message = error instanceof Error ? error.message : ''
       }
@@ -755,7 +771,7 @@ describe('makeGitHubOAuthClient', () => {
     globalThis.fetch = async () => Response.json({error: 42, access_token: token})
 
     try {
-      const result = client.validateAuthorizationCode(code)
+      const result = client.validateAuthorizationCode(code, 'test-verifier')
       await expect(result).rejects.toThrow('GitHub OAuth token exchange failed')
       await expect(result).rejects.not.toThrow('42')
       await expect(result).rejects.not.toThrow(clientSecret)
@@ -777,7 +793,7 @@ describe('makeGitHubOAuthClient', () => {
     globalThis.fetch = async () => new Response(null, {status: 502})
 
     try {
-      const result = client.validateAuthorizationCode(code)
+      const result = client.validateAuthorizationCode(code, 'test-verifier')
       await expect(result).rejects.toThrow('502')
       await expect(result).rejects.not.toThrow(clientSecret)
       await expect(result).rejects.not.toThrow(code)
@@ -798,7 +814,7 @@ describe('makeGitHubOAuthClient', () => {
     globalThis.fetch = async () => Response.json({scope: 'read:user'})
 
     try {
-      const result = client.validateAuthorizationCode(code)
+      const result = client.validateAuthorizationCode(code, 'test-verifier')
       await expect(result).rejects.toThrow(TypeError)
       await expect(result).rejects.not.toThrow(clientSecret)
       await expect(result).rejects.not.toThrow(code)
@@ -819,7 +835,7 @@ describe('makeGitHubOAuthClient', () => {
     globalThis.fetch = async () => Response.json({access_token: ''})
 
     try {
-      const result = client.validateAuthorizationCode(code)
+      const result = client.validateAuthorizationCode(code, 'test-verifier')
       await expect(result).rejects.toThrow(TypeError)
       await expect(result).rejects.not.toThrow(clientSecret)
       await expect(result).rejects.not.toThrow(code)
@@ -840,7 +856,7 @@ describe('makeGitHubOAuthClient', () => {
     globalThis.fetch = async () => Response.json({access_token: token}, {status: 201})
 
     try {
-      const result = client.validateAuthorizationCode(code)
+      const result = client.validateAuthorizationCode(code, 'test-verifier')
       await expect(result).rejects.toThrow('201')
       await expect(result).rejects.not.toThrow(clientSecret)
       await expect(result).rejects.not.toThrow(code)
@@ -1047,7 +1063,7 @@ describe('/auth/callback — CSRF state compare (timing-safe)', () => {
   it('matching state passes the CSRF gate (no false rejection on the happy path)', async () => {
     const app = await buildTestApp({operatorLogin: 'octocat'})
     const res = await app.request(`/auth/callback?code=abc&state=${STATE}`, {
-      headers: {cookie: `oauth_state=${STATE}`},
+      headers: {cookie: `oauth_state=${STATE}; oauth_pkce_verifier=test-verifier`},
     })
     // Past the CSRF gate the code exchange runs (fake client) and the operator
     // login matches, so this must NOT be a 403.

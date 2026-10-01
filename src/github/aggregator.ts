@@ -1072,12 +1072,21 @@ export function createAggregator(
    * fail-closed semantics — when metadata is UNavailable nothing changes
    * (we cannot know the current denylist without it).
    *
-   * Matches on node_id only (DashboardRepo rows carry no database_id); this
-   * is the primary denylist guard, same key buildWorkingSet applies.
+   * rm-362 (2026-10-01): dual-key parity with buildWorkingSet — DashboardRepo
+   * rows carry no stored database_id, but a legacy-format node_id derives one
+   * (deriveDatabaseId), and the fresh denylist may list that database_id
+   * WITHOUT the node_id string (repos.yaml entries without a node_id match).
+   * A node_id-only match here left exactly that row surviving the scrub. Drop
+   * a row when EITHER key matches, using the same int64-safe membership the
+   * working-set path applies (redactedDatabaseIdIn).
    */
   function scrubLastGoodAgainstDenylist(metadata: MetadataResult): void {
     if (lastGoodSnapshot === null || lastGoodSnapshot.repos.length === 0) return
-    const denylisted = lastGoodSnapshot.repos.filter(repo => metadata.redactedNodeIds.has(repo.node_id))
+    const denylisted = lastGoodSnapshot.repos.filter(repo => {
+      if (metadata.redactedNodeIds.has(repo.node_id)) return true
+      const derivedDatabaseId = deriveDatabaseId(repo.node_id)
+      return derivedDatabaseId !== null && redactedDatabaseIdIn(metadata.redactedDatabaseIds, derivedDatabaseId)
+    })
     if (denylisted.length === 0) return
     const denylistedNodeIds = new Set(denylisted.map(repo => repo.node_id))
     setSnapshot({

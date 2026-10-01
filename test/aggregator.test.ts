@@ -2911,6 +2911,77 @@ describe('review fix P2-1 — last-good snapshot re-filtered against the fresh d
   })
 })
 
+// rm-362 (2026-10-01): the last-good scrub is DUAL-KEY, at parity with
+// buildWorkingSet (:563-566) — a persisted row is dropped when EITHER its
+// node_id is denylisted OR its DERIVED databaseId is. Closes the gap where a
+// format skew between the persisted node_id and the fresh denylist let a
+// redacted repo's name survive into the served and persisted snapshot.
+// ---------------------------------------------------------------------------
+
+describe('rm-362 — last-good scrub is dual-key (node_id + derived databaseId)', () => {
+  const LEGACY_DATABASE_ID = 429_965_777
+  // Legacy node_ids are the base64 of "010:Repository<database_id>" (see
+  // deriveDatabaseId). The fresh denylist below knows the DATABASE id only —
+  // its node_id entry has drifted formats — so a node_id-only filter passes.
+  const LEGACY_NODE_ID = Buffer.from(`010:Repository${LEGACY_DATABASE_ID}`, 'ascii').toString('base64')
+
+  function makeBootSnapshotWithLegacyRedactedRow(): AggregatorSnapshot {
+    return {
+      ...makeBootSnapshot(),
+      repos: [
+        makeBootSnapshotRepo({node_id: 'NODE_BOOT', full_name: 'fro-bot/agent'}),
+        makeBootSnapshotRepo({node_id: LEGACY_NODE_ID, full_name: 'fro-bot/redacted-by-database-id'}),
+      ],
+    }
+  }
+
+  it('warm-empty refresh drops a last-good row denylisted only by its derived databaseId (and persists the scrub)', async () => {
+    const snapshotStore = {load: vi.fn(() => makeBootSnapshotWithLegacyRedactedRow()), persist: vi.fn()}
+    const deps = makeDeps({
+      snapshotStore,
+      // Fresh denylist knows the databaseId, NOT the legacy node_id string
+      readMetadata: vi.fn().mockResolvedValue(
+        ok(makeMetadataResult({redactedNodeIds: [], redactedDatabaseIds: [LEGACY_DATABASE_ID]})),
+      ),
+      // Empty channel → warm-empty guard serves last-good (post-scrub)
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([])),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos.map(r => r.full_name)).toEqual(['fro-bot/agent'])
+    expect(snap.staleBanner).toBe(true)
+    // The persisted cache stops carrying the redacted name too
+    const persisted = snapshotStore.persist.mock.calls.at(-1)?.[0] as AggregatorSnapshot
+    expect(persisted.repos.map(r => r.node_id)).toEqual(['NODE_BOOT'])
+  })
+
+  it('a metadata failure AFTER a scrub still fail-closes on the scrubbed set (never re-serves the denylisted name)', async () => {
+    const snapshotStore = {load: vi.fn(() => makeBootSnapshotWithLegacyRedactedRow()), persist: vi.fn()}
+    const deps = makeDeps({
+      snapshotStore,
+      readMetadata: vi
+        .fn()
+        .mockResolvedValueOnce(
+          ok(makeMetadataResult({redactedNodeIds: [], redactedDatabaseIds: [LEGACY_DATABASE_ID]})),
+        )
+        // Second cycle: data-branch read fails → fail-closed serves last-good
+        .mockResolvedValueOnce(err(new MetadataTransportError('metadata down'))),
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([])),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh() // scrubs the legacy row out of last-good
+    await agg.refresh() // metadata failure → fail-closed on the SCRUBBED last-good
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos.map(r => r.full_name)).toEqual(['fro-bot/agent'])
+    expect(snap.staleBanner).toBe(true)
+  })
+})
+
 // rm-156: refresh watchdog — duration recording + degraded marker
 // ---------------------------------------------------------------------------
 
