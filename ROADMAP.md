@@ -140,6 +140,37 @@
      installByDatabaseId / sse-reader extraction / gateway absorb are owned on main by cycle-18's
      rm-251/rm-257/rm-260/rm-255/rm-253/rm-252 — dated signals here only; census after edit: 133 defs /
      0 dups, in-file max rm-264) -->
+<!-- manual-revision 2026-10-02 (run 6fd16153009340729d36e0cd12fba01b, repository-maintenance
+     4fd7a0d8 cycle:2 — assess 0ca2ab31 + research 973ea2dc + roadmap fd14a83a, built on
+     origin/main 5bf15e1 with worktree porcelain clean at dispatch; prior-attempt forensics: the
+     research action's first dispatch 26b543ae died 0.06s post-dispatch of session_reap_failed,
+     redone from scratch): id-space audit — main@5bf15e1 holds 154 def-lines / 0 dups / in-file
+     max rm-275 (counted pre-edit this turn); all-lineage uncommitted ceiling re-measured twice
+     this turn (09:37Z dispatch, ~10:4xZ pre-write): spool max rm-456 (522d901f batch), superseded
+     mid-turn by run 4f7369dd's rm-457/rm-458 roadmap patch (70861591-scratch/roadmap-diff-cycle2.patch);
+     rm-581 appears in-spool only as a quoted phantom id (2026-09-29 assess QA), not a mint; new
+     ids minted above rm-458: rm-459 (listener channel liveness + evolution guard), rm-460 (ingest
+     HMAC dual-key rotation window), rm-461 (fleet membership-change visibility) — the research
+     phase's provisional rm-434..rm-436 numbering is RELEASED (sibling lineages own that band);
+     boundary recorded: rm-457's fixture corpus owns the listener doc-example pinning half,
+     rm-459 owns version/liveness/logging only. Dated riders appended to rm-102 (dependabot
+     security-update run 36745179690 failed 2026-09-30T16:34:21Z — override-pinned transitives
+     structurally unreachable by dependabot, narrowing the first-window proof to the regular
+     update class; 0 dependabot PRs at 13 days; 2 open fast-uri alerts), rm-103 (upstream tip
+     a086886 unchanged; #538/#549 OPEN/MERGEABLE — upstream itself uncured; the Renovate +
+     lockfile-only fix(security) two-layer automation and the advisory-DB-blindness class are
+     fleet-research discoveries, spool-verified live this turn), rm-271 (typescript-eslint 8.71.0
+     still latest so TS 7.0.2 stays blocked; @opencode-ai/plugin 1.18.34 vs pin 1.18.32;
+     @hono/node-server latest == 2.1.3 makes the in-range refresh resolve to the patched line
+     today). NOT minted, with reasons: the Main lint red since eb9ed3f (fleet-claimed rm-429/
+     rm-443/rm-449), the /auth/logout chunked-TE cap (fleet rm-430 + this run's assess F1), the
+     undici/fast-uri floor-raise lockfile refresh (fleet rm-450-class; vehicle PR #315 OPEN/
+     CONFLICTING, 9/9 checks SUCCESS — recorded as the rm-102 rider instead), RFC 9457
+     problem+json (rejected on value), the general board-delta view (mechanism folded into
+     rm-461). Probe pitfalls recorded in this run's research artifact: `gh api --paginate … |
+     wc -l` yields a false 0 for code-scanning (63 open confirmed page-by-page). Completed and
+     Superseded sections untouched; no statuses flipped; census after edit: 157 defs / 0 dups,
+     in-file max rm-461) -->
 ## Open items
 
 ### Harden the roadmap render (vendored-path exclusion, stack-correct evidence, lint-clean output)
@@ -169,6 +200,7 @@
 - signals: `.github/dependabot.yml` present on origin/main (landed at 3075f4a — verified by `git log origin/main -- .github/dependabot.yml`); Renovate never runs here (PR #1 deleted renovate.yaml; config .github/renovate.json5 persists uninvoked); weekly cadence, first window opened 2026-09-19 (fresh measure 2026-09-24, run 41c7d471 assess: gh pr list --author 'app/dependabot' -> 0 PRs ~10 days into the window; closes ~2026-10-03) (fresh measure 2026-09-25, run 71991cb3 research 77dda854: `gh pr list --author app/dependabot` → still 0 PRs ~6 days into the window; queued candidates for the first window: codeql-action codeql-bundle-v2.27.1 @ 416ff0de (fork pins 2892aa5), vite 8.3.1, fast-check 4.10.2)
 - acceptance: first dependabot-authored PR visible within 14 days of 2026-09-19; grouped updates honored (npm, docker digests, github-actions; `open-pull-requests-limit: 3` for the single serialized runner); `pnpm test` green after the first merged automated bump
 - evidence: `gh pr list --author "app/dependabot"` non-empty; merge commit's Main run green
+- dated rider 2026-10-02, run 6fd16153009340729d36e0cd12fba01b cycle:2 roadmap (from this run's research 973ea2dc, re-verified live ~10:4xZ): window closes ~2026-10-03 with the proof still absent — `gh pr list --author "app/dependabot"` empty at 13 days (25 open PRs, zero dependabot-authored); the SECURITY half of the proof is structurally unreachable: dependabot security-update run 36745179690 ("npm_and_yarn in /. for fast-uri - Update #1600460071") failed 2026-09-30T16:34:21Z — fast-uri sits at its exact lockfile pin 3.1.6 (this run's assess grep) though 3.1.8 is published and floor-admitted, and the updater does not regenerate override-pinned transitives — so the realistic first-window proof narrows to the regular update class (codeql-action digest / vite minors); the 2 open dependabot alerts (both fast-uri, development scope) point at the same pin and are cured by the manual lockfile-refresh vehicle (PR #315, OPEN/CONFLICTING, 9/9 checks SUCCESS — fleet-tracked, not re-minted here)
 
 ### Automated upstream-absorb cadence with drift gate
 - id: `rm-103` | track: reliability | priority: 85.0 | status: candidate
@@ -182,6 +214,7 @@
 - implementation note (2026-09-20, f4622d7e lineage): the 2026-09-20 absorb's CONTENT (hono 4.13.8 + base digest 0e0ff40) landed as direct edits via rm-111 rather than a history merge, so upstream history stays ahead while content converged — a future history absorb must not double-apply (Dockerfile pins and pnpm-lock.yaml already sit at the upstream values)
 - acceptance: scheduled workflow compares HEAD to `autonomy-upstream/main` and opens a human-approved merge PR when behind (auto-prepare + gate, never auto-push — fork exclusions demand human review); drift past a documented threshold opens an alert issue; #481 fast-followed within one cycle of merging upstream
 - evidence: workflow run logs showing the compare step; merge PR links; `git rev-list --count HEAD..autonomy-upstream/main` → 0 (or ≤ threshold with an open alert)
+- dated rider 2026-10-02, run 6fd16153009340729d36e0cd12fba01b cycle:2 roadmap (fresh live measure): upstream tip unchanged at a086886 since the 2026-10-01 signal; upstream PRs #538 (fast-uri 3.1.8, GHSA-58mr-gqgx-xq4g) and #549 (undici 7.30.0, GHSA-w293) both OPEN/MERGEABLE — upstream itself uncured and running a two-layer dep automation (Renovate + fro-bot-authored lockfile-only fix(security) PRs from security/* branches) that the fork's dependabot-only setup lacks (fleet-research discovery, spool-verified live this turn); advisory-DB-blindness class rides the same discovery: public OSV/npm/GitHub databases 404 the scanner-invisible serveStatic/hono advisories upstream is patching on a 48h cadence — absorb timing must not wait on audit tooling; fork's own cure vehicle remains PR #315
 
 ### Supply-chain baseline v2: SBOM + build provenance in Release
 - id: `rm-105` | track: security | priority: 80.0 | status: implemented 2026-09-25 (rider landed with the integrate to 20ade64; cycle-13 rider implemented in-tree 2026-09-25, run 11d3a522 implement a14443cc, landed: `.github/workflows/release.yaml` build-push step now sets `sbom: true` and `provenance: mode=max` — actionlint clean; the registry-side verification runbook landed as docs/solutions/workflow-issues/registry-attestation-verification-2026-09-25.md; post-landing: confirm the next release run emits TWO attestation layers (provenance + SBOM) on the published index and that `gh api repos/codeo1io/dashboard/attestations` still 404s as expected for registry-embedded attestations — VERIFIED CLOSED 2026-09-25, run 71991cb3 research 77dda854, see the dated signal below)
@@ -911,6 +944,25 @@
 - signals: npm dist-tags measured 2026-09-29 (one package per invocation, dist-tags re-verified): typescript 7.0.2 (pin 6.0.3 — stays blocked on the typescript-eslint peer, feeding rm-133's 2026-10-21 re-evaluation comment in .github/dependabot.yml), vitest 5.0.2 (pin 4.1.11; the V4 dist-tag still publishes 4.x), jsdom 30.1.1 (pin 29.1.1), pnpm 12.6.0 (pin 11.27.1; upstream sits at 11.28.0 = the rm-252 absorb rider) — no majors are auto-eligible (dependabot ignore block, rm-133), so each needs an explicit evaluation window; in-range refreshes available now: hono 4.13.11, @hono/node-server 2.1.3, fast-check 4.10.2; impeccable is at 4.1.0 while the CI Design Check pins impeccable@3.2.1 (.github/workflows/main.yaml:70) and pre-4 majors ignore .impeccable/config.json ignoreValues (AGENTS.md) — pin and config must bump together or the stay decision gets recorded
 - acceptance: one deliberate pass — vitest 5 evaluated on the full suite (46 server files + web) with breaking changes named or the bump declined in the entry; jsdom 30 and pnpm 12 evaluated with their migration notes; impeccable@4 tried against .impeccable/config.json (bump both or record why not); the in-range trio lands as a lockfile refresh rider; no bundled mega-PR — each major is its own landing
 - evidence: ledger status lines per major with the evaluation outcome; pnpm test green after the in-range rider; npm dist-tags citations in the cycle batch doc
+- dated rider 2026-10-02, run 6fd16153009340729d36e0cd12fba01b cycle:2 roadmap (re-measured ~10:4xZ, registry.npmjs.org dist-tags, one package per invocation): typescript-eslint still 8.71.0-latest (peers `typescript >=4.8.4 <6.1.0`) so TS 7.0.2 stays blocked, feeding rm-133's 2026-10-21 gate; @opencode-ai/plugin 1.18.34 latest vs the fork's 1.18.32 pin (upstream took 1.18.33 in PR #543); @hono/node-server npm latest == 2.1.3 — the in-range refresh resolves to the GHSA-rmxm-3fg6-px4f-cured line today; jsdom 30.1.1 / vitest 5.0.3 / fast-check 4.10.2 unchanged since the 2026-10-02 09:35Z measure
+
+### Listener channel liveness and evolution guard
+- id: `rm-459` | track: reliability | priority: 48.0 | status: candidate (added 2026-10-02, run 6fd16153009340729d36e0cd12fba01b cycle:2 roadmap fd14a83a, from research 973ea2dc C1; minted above the live uncommitted fleet ceiling rm-458 — the research phase's provisional rm-434 numbering is released, sibling lineages own rm-434..rm-436; boundary: rm-457's fixture corpus owns the doc-example pinning half, this item owns version/liveness/logging only)
+- signals: the listener ingest channel can die silently end to end — src/routes/listener.ts:145-175 answers 401/413/400 with fixed reasons to the PRODUCER only, and the route's logger import is used exclusively by the ack-CSRF rejections (:208/:223), so ingest failures emit no log line anywhere; MessagesResponse (src/listener/contract.ts:39-48) carries messages/unreadCount/prunedCount with no lastIngestAt or channel-health field, so the operator UI cannot distinguish "quiet" from "dead"; the wire contract has no evolution story — parseIngestBody (src/listener/contract.ts:93) is a closed 13-field parse-don't-validate DTO with no version field and docs/contracts/operator-listener-channel.md contains no version/evolution/compat section (grep zero hits) — while producers (infra + the fro-bot/agent gateway, several majors upstream of the v0.78.0 clonedep reference in .slim/clonedeps, with the v0.107.1-era repair class recorded in AGENTS.md) release independently: one producer-side rename (e.g. a new severity enum member) 400s EVERY message with zero dashboard-side trace; tests build their own bodies (test/listener-contract.property.test.ts, test/listener-routes.test.ts), so the doc's wire example is pinned by nothing
+- acceptance: ingest 4xx rejections logged at warning with the fixed reason, rate-capped; MessagesResponse or /api/monitoring exposes lastSuccessfulIngestAt plus last-failure class age, rendered as a channel-health affordance on the Listener view (dead vs quiet states distinguishable); an optional schemaVersion field is accepted within a documented compat window and rejected with a distinct out-of-window reason; the contract doc gains an Evolution section; doc-example fixtures ride rm-457's corpus, not a duplicate
+- evidence: red-suite demonstration (an out-of-window version body rejected with the distinct reason); a logged-rejection transcript from a probe run; Listener-view tests showing dead-vs-quiet states; grep lands lastSuccessfulIngestAt in the contract + doc; contract doc Evolution section present
+
+### Ingest HMAC rotation window (dual-key acceptance)
+- id: `rm-460` | track: security | priority: 38.0 | status: candidate (added 2026-10-02, run 6fd16153009340729d36e0cd12fba01b cycle:2 roadmap fd14a83a, from research 973ea2dc C2; provisional rm-435 numbering released)
+- signals: DASHBOARD_LISTENER_INGEST_KEY is a single secret (src/listener/config.ts:14-19, readOptionalSecret — unset unmounts the route, fail-closed) verified alone in src/listener/ingest-auth.ts; rotating it requires a simultaneous redeploy of BOTH independent producers (infra + agent), and any skew window is a 401 storm that rm-459 shows is invisible to the operator — so rotation is effectively deferred indefinitely, lengthening the life of a shared secret
+- acceptance: an optional previous-key setting (e.g. DASHBOARD_LISTENER_INGEST_KEY_PREVIOUS) accepted for a documented grace window with both keys timing-safe compared; rotation procedure written into docs/runbooks (mint new on producers, set old as previous, drop previous after the window); unset previous behaves exactly as today (single-key path, no behavior change); property suite covers both-key acceptance and window expiry
+- evidence: config + ingest-auth diffs; runbook section; pnpm test green incl. dual-key and expired-window cases; env-docs guard extended to the new optional var
+
+### Fleet membership-change visibility
+- id: `rm-461` | track: operator-experience | priority: 36.0 | status: candidate (added 2026-10-02, run 6fd16153009340729d36e0cd12fba01b cycle:2 roadmap fd14a83a, from research 973ea2dc C3; provisional rm-436 numbering released)
+- signals: the monitored set (installation enumeration minus denylist, AGENTS.md invariant 2) can gain or lose repos with no operator-visible event — web/src/views/Monitoring.tsx:131-136 renders only failing repos plus a non-failing count, so a newly added GREEN repo is rendered nowhere and the count moves silently; the aggregator carries no membership-delta signal (grep added/removed/joined/left/membership: one incidental hit); no listener message, DTO field, or push fires on set change, and a repo leaving the fleet vanishes the same way; rm-104's grid is the visibility substrate but a static grid is not a change event — the dashboard's product promise is Fro Bot's cross-repo footprint, and that footprint changing is currently unobservable
+- acceptance: the aggregator diffs the working set per refresh and exposes membership deltas (added/removed repo names + since, denylist-scrubbed) through the monitoring DTO; the operator view renders a dismissible fleet-changed affordance (or self-emits a listener message — decided in the batch doc); redaction preserved: a delta involving a denylisted repo surfaces as count-only, never a name; tests cover add, remove, and the denylist-scrub delta case
+- evidence: DTO + view diffs; aggregator tests for the three delta cases; a manual run-log showing a fleet join surfaced; denylist-scrub case pinned by test
 
 
 
