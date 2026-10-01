@@ -174,3 +174,36 @@ jobs:
             node -e "import('./$f').then(() => {}).catch(err => { process.stderr.write('FAIL $f: ' + (err.code || err.message) + '\\n'); process.exit(1); })"
             echo "  ok   $f"
           done < <(find src -name '*.ts' ! -name '*.test.ts' | sort)
+
+  audit-prod:
+    name: Audit Prod
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: ⤵ Checkout Branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      # rm-281 (cycle-2, 2026-10-01): lean setup on purpose — `pnpm audit` reads
+      # the lockfile + workspace overrides and queries the registry, so there is
+      # no install step and the gate audits the locked tree exactly as committed.
+      # Action SHAs mirror ./.github/actions/setup.
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      # rm-281: prod-scope advisory gate, hard-fail. Dev-tree advisories are
+      # answered on the maintenance cycle's override-floor cadence (rm-280; see
+      # the overrides comment in pnpm-workspace.yaml), so dev-tree churn cannot
+      # red the pipeline here — only production-range exposure can.
+      - name: 🛡 Audit Prod Dependencies
+        run: pnpm audit --prod
