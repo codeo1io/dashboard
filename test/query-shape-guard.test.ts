@@ -29,14 +29,17 @@ import {
   REPO_STATUS_QUERY,
   REPO_STATUS_QUERY_NO_ALERTS,
   REPO_STATUS_QUERY_REGISTRY,
-} from '../src/github/aggregator.ts'
+} from '../src/github/query-templates.ts'
 
 const QUERIES: Record<string, string> = Object.fromEntries(
   REPO_STATUS_QUERY_REGISTRY.map(entry => [entry.name, entry.query]),
 )
 
-const aggregatorSource = readFileSync(
-  fileURLToPath(new URL('../src/github/aggregator.ts', import.meta.url)),
+// rm-321 (2026-10-01): the templates moved to the dependency-free leaf
+// src/github/query-templates.ts so the zero-install canary can import them on
+// a bare runner — the completeness scan below reads THE LEAF's source now.
+const templatesSource = readFileSync(
+  fileURLToPath(new URL('../src/github/query-templates.ts', import.meta.url)),
   'utf8',
 )
 const canarySource = readFileSync(
@@ -82,10 +85,10 @@ describe('GraphQL query-shape guard (rm-177)', () => {
   it('rm-225: the registry contains every exported template constant (completeness)', () => {
     // A template constant exported without a registry entry is exactly how
     // rm-177's blind spot happened: NO_ALERTS shipped live-destined but the
-    // canary covered only the primary. Scan the module source for every
+    // canary covered only the primary. Scan the leaf module's source for every
     // exported REPO_STATUS_QUERY* template constant and demand the registry
     // name it — a new template fails here until it is registered.
-    const exportedTemplates = [...aggregatorSource.matchAll(/export const (REPO_STATUS_QUERY[A-Z_]*) = `/g)].map(
+    const exportedTemplates = [...templatesSource.matchAll(/export const (REPO_STATUS_QUERY[A-Z_]*) = `/g)].map(
       m => m[1] ?? '',
     )
     const registered = REPO_STATUS_QUERY_REGISTRY.map(entry => entry.name)
@@ -94,6 +97,32 @@ describe('GraphQL query-shape guard (rm-177)', () => {
       expect(QUERIES[entry.name]).toBe(entry.query)
     }
     expect(registered, 'no duplicate registrations').toEqual([...new Set(registered)])
+  })
+
+  it('rm-321: the leaf is dependency-free and the canary imports no workspace packages', () => {
+    // The canary workflow runs `node scripts/graphql-canary.ts` on a bare
+    // runner with NO install step, so its whole import graph must resolve
+    // without node_modules. Two linear guards, checked line-by-line
+    // (unicorn/no-unsafe-regex):
+    // 1. the template leaf imports NOTHING (a bare specifier there is fatal
+    //    at canary load time — the ERR_MODULE_NOT_FOUND '@bfra.me/es' class);
+    // 2. every canary import is a node: builtin or a relative path, never a
+    //    workspace package (a transitive workspace import would reintroduce
+    //    the same death through the back door).
+    const leafImportLines = templatesSource
+      .split('\n')
+      .filter(line => line.startsWith('import '))
+    expect(leafImportLines, 'query-templates.ts must have zero imports').toEqual([])
+    const canaryImportLines = canarySource
+      .split('\n')
+      .filter(line => line.startsWith('import '))
+    expect(canaryImportLines.length, 'canary imports').toBeGreaterThan(0)
+    for (const line of canaryImportLines) {
+      expect(
+        /^import\s[^']*from '(?:node:|\.\.\/)/.test(line) || /^import\s[^']*from '\.\//.test(line),
+        `canary import must be node: or relative (rm-321): ${line}`,
+      ).toBe(true)
+    }
   })
 
   it('rm-225: the canary iterates the registry, not a hand-picked template import', () => {

@@ -21,7 +21,12 @@
 import {createHash} from 'node:crypto'
 import process from 'node:process'
 
-import {REPO_STATUS_QUERY_REGISTRY} from '../src/github/aggregator.ts'
+// rm-321 (2026-10-01): import the registry from the dependency-free leaf, NOT
+// from the aggregator — this script runs on a bare runner with no install
+// step, and the aggregator's value import of ../result.ts (which re-exports
+// @bfra.me/es/result) was fatal at load time (ERR_MODULE_NOT_FOUND, run
+// 36417620616). The leaf imports nothing, so this chain resolves bare.
+import {REPO_STATUS_QUERY_REGISTRY} from '../src/github/query-templates.ts'
 
 const rawRepository = process.env.GITHUB_REPOSITORY ?? ''
 // In Actions this is always 'owner/repo'; locally it may be unset or junk.

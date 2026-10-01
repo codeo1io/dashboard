@@ -84,3 +84,37 @@ archive any unique unlanded content out of the head ref first — durably, in-re
 not-planned with an explanatory comment, and only then delete both refs —
 close strictly before delete, so a base ref is never removed from under an
 open PR.
+
+## Supersession: the cold-lint monolith cliff, not herd contention (2026-10-01)
+
+Date: 2026-10-01 · Run: 7aa6908492a8 (dashboard cycle 2, implement) ·
+Author: conductor delegate
+
+The herd-contention framing above ("three or more Main workflows running
+concurrently") turned out to be only half the story — and not the causal half.
+Adversarial re-measurement of three consecutive Main runs cancelled ONLY on
+Lint at the 35-minute wall (36576833307, 36599485283, 36692888877) found the
+real driver: `ROADMAP.md` had grown three mega-paragraphs (7967 / 7317 / 5222
+chars) and the markdown lint path is superlinear in paragraph length on a COLD
+checkout (CI's fresh clone is always cold; `--cache` helps only local runs).
+No amount of window discipline fixes a job that needs 35+ minutes alone.
+
+Proof by cure, on main at 5bf15e1 (2026-10-01): the ROADMAP monolith split
+landed (max line 5222) and the next Main run's Lint job completed in 51
+seconds — and then failed, honestly, on 11 latent
+`@stylistic/no-trailing-spaces` errors in a newly-reached archive doc that the
+dead 35-minute path had never gotten far enough to lint. That whitespace-only
+micro-fix is cycle-2's B0 (ROADMAP rm-320 records the lineage).
+
+What survives from this doc:
+
+- The window-discipline recipe (fire into a quiet window, background launch,
+  let foreign validators exit) remains correct operational hygiene.
+- The "every functional check green, one heavyweight check cancelled at a
+  constant wall-clock offset" signature remains a deadline signature — but the
+  FIRST suspect for a lint-shaped one is now lint input size (measure the
+  longest markdown lines in the diff) before runner-pool contention.
+- The guard-suite trap (a check that dies in seconds after a doc/comment-only
+  edit is a guard suite, not a flake) is unchanged.
+
+Tracked at ROADMAP rm-320, whose acceptance names this addendum.
