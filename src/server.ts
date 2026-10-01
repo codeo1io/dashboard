@@ -676,7 +676,15 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   const rateLimitTrustedProxy = opts?.rateLimitTrustedProxy ?? defaultRateLimitTrustedProxy()
   app.use('*', async (c: Context, next) => {
     const path = new URL(c.req.url).pathname
-    const sensitiveRoutes = ['/', '/auth/login', '/auth/callback', '/operator']
+    // rm-283 (2026-09-30): the logout pair joins the sensitive set — POST
+    // /auth/logout runs a (bounded) body read and GET /auth/logout-csrf
+    // mints an HMAC token, both on pre-auth public paths, so leaving them
+    // budget-free handed an unauthenticated client an unthrottled CPU/log
+    // vector (recorded decision, superseding rm-275's outside-the-limiter
+    // narration). They classify into the PUBLIC budget via
+    // classifyRateLimitPath's /auth/ branch, which this gate now makes
+    // reachable; README's RATE_LIMIT_MAX_PUBLIC row cross-references this.
+    const sensitiveRoutes = ['/', '/auth/login', '/auth/callback', '/operator', '/auth/logout', '/auth/logout-csrf']
     const isSensitive = sensitiveRoutes.includes(path) || path.startsWith('/api/') || path.startsWith('/operator/')
 
     if (isSensitive) {
