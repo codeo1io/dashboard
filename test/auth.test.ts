@@ -477,6 +477,59 @@ describe('OAuth flow', () => {
       expect(res.status).toBe(413)
     })
 
+    it('POST /auth/logout with an oversized CHUNKED body (no content-length) → 413 via a bounded read, never a full-buffer hang (rm-357)', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat'})
+      const sm = new SessionManager(TEST_KEY)
+      const sessionCookie = sm.sign('octocat')
+
+      // 18 KB delivered in chunks with no Content-Length and NO end-of-body:
+      // the old buffer-then-cap code awaited the full body forever; the
+      // streaming reader cuts off at the cap and cancels the producer.
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('x'.repeat(9_000)))
+          controller.enqueue(new TextEncoder().encode('x'.repeat(9_000)))
+          // deliberately never close(): the stream stays pending past the cap
+        },
+      })
+      const req = new Request('http://localhost/auth/logout', {
+        method: 'POST',
+        headers: {
+          cookie: `session=${sessionCookie}`,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: stream,
+        duplex: 'half',
+      } as unknown as RequestInit)
+
+      const res = await app.request(req)
+      expect(res.status).toBe(413)
+    })
+
+    it('POST /auth/logout with a chunked body and a mismatched CSRF token → 403 after a full streamed read (rm-357)', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat'})
+      const sm = new SessionManager(TEST_KEY)
+      const sessionCookie = sm.sign('octocat')
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('csrf_token=definitely-not-the-token'))
+          controller.close()
+        },
+      })
+      const req = new Request('http://localhost/auth/logout', {
+        method: 'POST',
+        headers: {
+          cookie: `session=${sessionCookie}`,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: stream,
+        duplex: 'half',
+      } as unknown as RequestInit)
+
+      const res = await app.request(req)
+      expect(res.status).toBe(403)
+    })
+
     it('POST /auth/logout with a non-urlencoded content type → 415 (rm-268)', async () => {
       const app = await buildTestApp({operatorLogin: 'octocat'})
       const sm = new SessionManager(TEST_KEY)
