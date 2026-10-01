@@ -477,6 +477,75 @@ describe('OAuth flow', () => {
       expect(res.status).toBe(413)
     })
 
+    it('POST /auth/logout chunked (no content-length) oversized body → 413 with the stream cancelled, not drained (rm-283)', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat'})
+      const sm = new SessionManager(TEST_KEY)
+      const sessionCookie = sm.sign('octocat')
+
+      let pulledChunks = 0
+      const chunk = new Uint8Array(8192) // 8 chunks × 8 KiB = 64 KiB total, cap is 16 KiB
+      const oversized = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulledChunks += 1
+          controller.enqueue(chunk)
+        },
+        cancel() {
+          /* reader.cancel() after crossing the cap lands here */
+        },
+      })
+
+      const req = new Request('http://localhost/auth/logout', {
+        method: 'POST',
+        headers: {
+          cookie: `session=${sessionCookie}`,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: oversized,
+        duplex: 'half',
+      })
+
+      const res = await app.request(req)
+      expect(res.status).toBe(413)
+      // The read must STREAM: the reader is cancelled as soon as the running
+      // total crosses the cap — 8 KiB + 8 KiB + 8 KiB = 24 KiB pulled, then
+      // cancel — never the full 64 KiB (the pre-rm-283 shape buffered whole).
+      expect(pulledChunks).toBe(3)
+    })
+
+    it('POST /auth/logout with oversized declared Content-Length → 413 before reading body bytes (rm-283 keeps the fast path)', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat'})
+      const sm = new SessionManager(TEST_KEY)
+      const sessionCookie = sm.sign('octocat')
+
+      let pulledBytes = 0
+      const endless = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulledBytes += 8192
+          controller.enqueue(new Uint8Array(8192))
+        },
+      })
+
+      const req = new Request('http://localhost/auth/logout', {
+        method: 'POST',
+        headers: {
+          cookie: `session=${sessionCookie}`,
+          'content-type': 'application/x-www-form-urlencoded',
+          'content-length': String(1024 * 1024),
+        },
+        body: endless,
+        duplex: 'half',
+      })
+
+      const res = await app.request(req)
+      expect(res.status).toBe(413)
+      // The precheck rejects on the declared length alone and the handler
+      // reads nothing. (Same caveat as the listener ingest route: Hono's
+      // request adapter itself probes at most one 8 KiB chunk regardless of
+      // the handler, so the assertable invariant is "bounded to a single
+      // chunk", never the declared 1 MiB.)
+      expect(pulledBytes).toBeLessThanOrEqual(8192)
+    })
+
     it('POST /auth/logout with a non-urlencoded content type → 415 (rm-268)', async () => {
       const app = await buildTestApp({operatorLogin: 'octocat'})
       const sm = new SessionManager(TEST_KEY)
