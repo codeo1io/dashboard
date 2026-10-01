@@ -157,3 +157,15 @@ identified the outage recorded in
 `docs/solutions/security-issues/gateway-operator-oauth-rate-limit-shared-key-behind-caddy-2026-09-21.md`.
 
 Delete the capture when done; it is sensitive.
+
+## Certificate renewal watch (Let's Encrypt, October 2026)
+
+Noted 2026-10-01: Let's Encrypt changes its ACME production and staging endpoint URLs in October
+2026. Renewals through the gateway are handled by certmagic; `fro-bot/agent` v0.117.1 (released
+2026-09-30) carries the certmagic 1.1.0 update for that change. The gateway deployment in
+`marcusrbrown/infra` must absorb an agent release at or above v0.117.1 — and verify its certmagic
+lands at or above 1.1.0 — before the October 2026 window opens, or certificate renewals behind
+`/operator/*` can start failing while the dashboard itself stays green. This repo's Fro Bot
+workflow pins the agent for its own runs (SHA pin with version comment in
+`.github/workflows/fro-bot.yaml`); the gateway deployment pin is owned by `marcusrbrown/infra`,
+not by this repository.
