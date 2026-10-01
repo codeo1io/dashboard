@@ -40,11 +40,14 @@ transient home and must never be the sole copy.
 |---|----------|-------|-------|---------------------------|
 | A | test-rate-limit-key-cap.test.ts (U3 red test) | 77 | 3079 | a808dced… |
 | B | cycle-18-batch-run-11121ee8.md (batch frame doc) | 110 | 6737 | 49e73255… |
-| C | server-cap-and-env-guard.diff (U3+U5 implementation diff) | 250 | 12687 | b8c6ea0f… |
+| C | server-cap-and-env-guard.diff (U3+U5 implementation diff) | 250 | 12676 | 3a8ddd40… (normalized 2026-10-01, see addendum) |
 
 - A: `a808dcedcd64b7a1539758ca4f05e3899316b513f714e7ecb37a72661978a3cc`
 - B: `49e73255a7fd226e65b2aaf0e6e577f343bd8bbdaa931a46a0cf6680fa3e2290`
-- C: `b8c6ea0fb80437ec3aed2738cb8738cb0c8c67b5f6f7aadcbe49abe5f74a128b`
+- C (normalized 2026-10-01, what the recipe below prints against this file):
+  `3a8ddd405259a9effcf5d911e334563c484f17acbe3906983dbe13b557e91a2b`
+- C (pre-normalization, minted 2026-09-30 — original artifact bytes):
+  `b8c6ea0fb80437ec3aed2738cb8738cb0c8c67b5f6f7aadcbe49abe5f74a128b`
 
 ## Regeneration and verification
 
@@ -58,13 +61,15 @@ While the refs still live:
 tree equals d89ffe7's.)
 
 After the refs are deleted, THIS file is the source of record. Each fenced
-block below reproduces its artifact byte-exactly: the content lines between
-the opening info-string fence and the closing fence, every line
-newline-terminated, no other bytes. Verify with:
+block below reproduces its artifact byte-exactly (archive-C as normalized
+2026-10-01 — see the Provenance addendum at the end of this file): the
+content lines between the opening info-string fence and the closing fence,
+every line newline-terminated, no other bytes. Verify with:
 
     awk '/^````archive-A$/{f=1;next} f && /^````$/{exit} f' docs/archive/pr-233-unlanded-cycle-18-2026-09-30.md | sha256sum
 
-(same with `archive-B`, `archive-C`) — each must print the pinned value.
+(same with `archive-B`, `archive-C`) — each must print the pinned value
+(archive-C: its 2026-10-01 normalized pin).
 
 ## Artifact A — test-rate-limit-key-cap.test.ts (U3 red test; 77 lines)
 
@@ -287,7 +292,7 @@ index f3f2577..1f6caa1 100644
 @@ -179,6 +186,22 @@ let rateLimitCallCount = 0
  const EVICT_INTERVAL = 500 // sweep every 500 calls
  const EVICT_STALE_AGE = 2 * RATE_LIMIT_WINDOW_MS
- 
+
 +/**
 + * rm-251 (port of fro-bot/agent v0.117.0's limiter defense): hard cap on
 + * distinct client keys in the limiter store. Unique first-hop XFF tokens
@@ -310,7 +315,7 @@ index f3f2577..1f6caa1 100644
 @@ -231,6 +254,23 @@ function sweepRateLimitMap(now: number): void {
    }
  }
- 
+
 +/**
 + * rm-251 admission control for a NEW limiter key. Below capacity: always
 + * admit. At capacity: sweep stale windows once, then — if the store is still
@@ -332,9 +337,9 @@ index f3f2577..1f6caa1 100644
   * Check rate limit for the given IP.
   * Accepts an optional `now` for testability (defaults to Date.now()).
 @@ -245,9 +285,15 @@ export function checkRateLimit(ip: string, now: number = Date.now(), pathClass?:
- 
+
    let entry = rateLimitMap.get(ip)
- 
+
 -  if (entry === undefined || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
 +  if (entry === undefined) {
 +    // rm-251: new-key admission goes through the cap check — at capacity the
@@ -347,7 +352,7 @@ index f3f2577..1f6caa1 100644
 +    entry = {windowStart: now, counts: {public: 0, operator: 0, ingest: 0}}
    }
    const current = entry
- 
+
 @@ -1138,54 +1184,76 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
     * Resolve the installation ID for a repo using the App JWT endpoint
     * GET /repos/{owner}/{repo}/installation — the only App-JWT endpoint valid
@@ -377,7 +382,7 @@ index f3f2577..1f6caa1 100644
 +  }
 +  const resolveInstallationIdForRepo =
 +    deps.resolveInstallationIdForRepo ?? createMemoizedInstallationResolver(rawResolveInstallationIdForRepo)
- 
+
    // Real Octokit-backed metadata reader: fetches metadata/repos.yaml from
    // codeo1io/.github at ref=data via an INSTALLATION token (not App JWT).
    // The installation is resolved via resolveInstallationIdForRepo('codeo1io', '.github').
@@ -462,7 +467,7 @@ index f3f2577..1f6caa1 100644
 +        const body = Buffer.from(data.content.replaceAll('\n', ''), 'base64').toString('utf8')
 +        return {etag: response.headers.etag, body}
 +      }, metadataEtagCache))
- 
+
    // Real per-installation graphql query function: mints a read-only token for
    // the given installationId and authenticates the graphql client with it.
 diff --git a/test/env-docs-guard.test.ts b/test/env-docs-guard.test.ts
@@ -470,7 +475,7 @@ index 0ef2cc8..1b2116b 100644
 --- a/test/env-docs-guard.test.ts
 +++ b/test/env-docs-guard.test.ts
 @@ -5,11 +5,14 @@ import {describe, expect, it} from 'vitest'
- 
+
  /**
   * rm-214: README Configuration must document the complete env-var surface.
 + * rm-255: the token family is prefix-EXHAUSTIVE by construction — every
@@ -494,7 +499,7 @@ index 0ef2cc8..1b2116b 100644
  const repoRoot = process.cwd()
 -const ENV_TOKEN = '(?:DASHBOARD|RATE_LIMIT)_[A-Z0-9_]+'
 +const ENV_TOKEN = '(?:DASHBOARD|RATE_LIMIT|GATEWAY)_[A-Z0-9_]+'
- 
+
  function collectTypeScriptSources(dir: string): string[] {
    const out: string[] = []
 @@ -68,6 +71,9 @@ const NON_ENV_CONSTANTS = [
@@ -505,12 +510,12 @@ index 0ef2cc8..1b2116b 100644
 +  // the census can never mistake it for a read, in either direction.
 +  'GATEWAY_LOGIN_REDIRECT',
  ] as const
- 
+
  /** Backticked env tokens inside the README "Configuration" section (table rows + prose). */
 @@ -93,7 +99,7 @@ describe('environment-variable documentation coverage (rm-214)', () => {
      }
    })
- 
+
 -  it('every DASHBOARD_*/RATE_LIMIT_* var read in src/ is documented in README Configuration, and no stale rows exist', () => {
 +  it('every DASHBOARD_*/RATE_LIMIT_*/GATEWAY_* var read in src/ is documented in README Configuration, and no stale rows exist', () => {
      const read = envTokensReadInSrc()
@@ -526,3 +531,33 @@ rm-159 rider records the same advice): the patch is a 2026-09-29-era artifact
 and its `src/server.ts` context will have drifted. The batch frame doc
 (Artifact B) carries the unit lineage and supersession relationships for the
 whole cycle-18 batch.
+
+## Provenance addendum (2026-10-01) — archive-C normalized, re-pinned
+
+The 2026-10-01 repo-wide whitespace-lint cure (cycle-2 batch, run
+23d39aa7467e) stripped trailing whitespace from 11 lines, all inside
+archive-C (file lines 290, 313, 335, 337, 350, 380, 465, 473, 497, 508, 513
+of the pre-normalization file): 250 lines, 12687 → 12676 bytes, nothing else
+moved. archive-A and archive-B were untouched and both pins still verify
+byte-exactly.
+
+archive-C is therefore re-pinned to the normalized block; the pre-normalization
+pin is kept above and remains the identity of the ORIGINAL artifact bytes,
+which stay byte-recoverable:
+
+- this file's git-history blob at base commit 31995a2:
+  `git cat-file blob 5c3348e4bf999c6c27e63af54935e2f5c659437d` (this doc's
+  HEAD blob before the addendum landed — carries the original archive-C);
+- the still-live PR #233 refs (verified present 2026-10-01):
+  `git diff d89ffe7 origin/conductor/ci-c05313a9ec2a -- src/server.ts
+  test/env-docs-guard.test.ts | sha256sum` prints the pre-normalization pin
+  (equivalent base ref: `conductor/ci-base-2f8680bfaa59e7c8ec81a08e64377abf1f985274`);
+- the PR #233 head-ref blobs, via the regeneration recipe above;
+- the normalization delta itself is exactly the 11 stripped trailing bytes,
+  so rstrip-recovering the original and re-stripping reproduces this block
+  byte-exactly (`sed -E 's/[ \t]+$//'` on the recovered original).
+
+Rule going forward (same class as the rm-281 comment-truth lesson): the fenced
+blocks are byte-pinned artifacts — never run a whitespace normalizer inside
+them; if one runs anyway, re-pin here the same day, keep the prior pin labeled
+pre-normalization, and record the recovery paths.
