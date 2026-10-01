@@ -12,24 +12,32 @@ allowBuilds:
 # first-party pins that sometimes need same-day adoption.
 minimumReleaseAge: 1440
 
-# rm-196 rider (2026-09-25): hono@4.13.9 and vite@8.3.1 are the rider targets,
-# both past their 1440-minute maturity timestamps — an explicit, disclosed
-# bypass of the rm-133 age gate, not a weakening of it.
+# rm-196 rider (2026-09-25; hono row dropped 2026-10-01, run f89673c5be19
+# rm-285 — the lockfile moved to hono 4.13.11, published >24h before, so the
+# hono bypass is inert and removed): vite@8.3.1 is the rider target, past
+# its 1440-minute maturity timestamp — an explicit, disclosed bypass of
+# the rm-133 age gate, not a weakening of it.
 minimumReleaseAgeExclude:
   - '@bfra.me/eslint-config@0.51.2 || 0.51.3 || 0.51.4 || 0.52.0 || 0.52.1 || 0.52.2'
   - '@bfra.me/tsconfig@0.13.2'
-  - hono@4.13.9
   - vite@8.3.1
 
 overrides:
-  brace-expansion@2: '>=2.1.2 <3.0.0'
-  brace-expansion@5: '>=5.0.7 <6.0.0'
-  fast-uri@3: '>=3.1.5 <4.0.0'
+  # rm-284 (2026-10-01, run f89673c5be19): floors raised from the stale
+  # 2.1.2/5.0.7/3.1.5/7.29.0 lines to today's patched lines — the live
+  # 'pnpm audit --recursive' gate on this tree reads 19 advisories
+  # (3 low / 8 moderate / 8 high) at the old floors and 0 after this raise.
+  # undici floor set to 7.30.0 (not the 7.29.1 patched line) per the fleet
+  # twin-fold correction: the floor should sit at the highest known-clean
+  # 7.x release, which is also what the lockfile resolves.
+  brace-expansion@2: '>=2.1.7 <3.0.0'
+  brace-expansion@5: '>=5.0.12 <6.0.0'
+  fast-uri@3: '>=3.1.8 <4.0.0'
   # GHSA-82x6-q7mm-w9cf — toml is dev-transitive via
   # @opencode-ai/plugin>effect; >=4.2.0 is the patched line
   # (rescued by content from run b4aac9ba / PR #82 via cycle-13;
   # the batch's internal rm-171 numbering collided with landed ids).
   toml: '>=4.2.0'
-  undici@7: '>=7.29.0 <8.0.0'
+  undici@7: '>=7.30.0 <8.0.0'
 
 shamefullyHoist: true
