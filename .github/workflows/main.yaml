@@ -30,9 +30,16 @@ jobs:
     # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
     # at the rm-139 Node-26 window (2026-10-28).
     runs-on: ubuntu-24.04
-    # rm-13640 rider (2026-09-29): 20 min self-kills cold repo-wide eslint on the
-    # shared runner pool before the CI validator's poll window closes; the
-    # Test job's 40 is the precedent for a heavyweight job.
+    # rm-13640 rider (2026-09-29; wording made truthful by rm-281,
+    # 2026-09-30): the Lint job self-kills at 35 min — above the worst
+    # legitimate cold repo-wide eslint on the shared runner pool (the
+    # 2026-09-29 markdown paragraph-length cliff ran a single file past
+    # 35 min before the paragraph-split fix) and below the CI validator's
+    # ~36-minute poll window, so a wedged lint can never wedge validation.
+    # Every other job in this file — including Test, the heavyweight
+    # precedent for ordinary jobs — self-kills at 20. The 35 ceiling is
+    # load-bearing: raise it and validation's poll window closes first;
+    # lower it and a legitimate cold lint dies.
     timeout-minutes: 35
     steps:
       - name: ⤵ Checkout Branch

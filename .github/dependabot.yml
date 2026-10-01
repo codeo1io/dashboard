@@ -18,7 +18,13 @@
 #   (rm-135's dependabot half; mirrors pnpm-workspace.yaml's minimumReleaseAge:
 #   1440 at :13, which carries the matching minimumReleaseAgeExclude list).
 #   Units differ: dependabot cooldown is DAYS, pnpm minimumReleaseAge is MINUTES.
-#   GitHub does not apply cooldown to security updates — they land without delay.
+#   GitHub does not apply cooldown to security updates — they land without
+#   delay. But a security update can never cure a TRANSITIVE override floor:
+#   a floor the vulnerable version already satisfies pins the advisory open
+#   (proven live 2026-09-30: fast-uri alerts #29/#30 stayed open with
+#   dependabot_security_updates enabled while the '>=3.1.5' floor let 3.1.6
+#   persist — rm-276 raised the floors; the weekly audit signal in
+#   .github/workflows/audit.yaml (rm-278) is the transitive watch).
 # - Weekly cadence, low open-PR cap, to keep the runner queue shallow.
 version: 2
 updates:
