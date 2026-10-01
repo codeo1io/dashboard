@@ -1220,3 +1220,199 @@ describe('rm-264: abort windows unsubscribe the local subscription', () => {
     expect(pushClient.subscribePush).not.toHaveBeenCalled()
   })
 })
+
+describe('cancellation wiring (rm-134: logout-abort reaches the unsubscribe + sweep fetches)', () => {
+  // The logout-abort contract (./logout-abort.ts): once the shared signal is
+  // aborted, no push operation may issue a dangling Gateway POST. Before this
+  // wiring, the logout-cleanup fetches (refreshCsrf / unsubscribePush) and the
+  // reconcile sweep's metadata GET accepted no signal at all, so an opt-out or
+  // sweep started before logout kept hitting the Gateway after it.
+
+  function abortingCsrf(): PushClient['refreshCsrf'] {
+    // Resolves like the real client does when its fetch aborts: err(network).
+    return vi.fn().mockImplementation((signal?: AbortSignal) =>
+      new Promise(resolve => {
+        if (signal?.aborted) {
+          resolve(err({kind: 'network'}))
+          return
+        }
+        signal?.addEventListener('abort', () => resolve(err({kind: 'network'})), {once: true})
+      }),
+    )
+  }
+
+  it('unsubscribeOptOut forwards the signal to refreshCsrf and unsubscribePush', async () => {
+    const subscription = fakeSubscription()
+    const pushClient = fakePushClient({refreshCsrf: abortingCsrf()})
+    const controller = new AbortController()
+
+    const result = await unsubscribeOptOut({
+      getLocalSubscription: () => Promise.resolve(subscription),
+      pushClient,
+      signal: controller.signal,
+    })
+
+    expect(result).toEqual({gatewayUnsubscribeCalled: true})
+    expect(pushClient.refreshCsrf).toHaveBeenCalledWith(controller.signal)
+    expect(pushClient.unsubscribePush).toHaveBeenCalledWith(
+      subscription.endpoint,
+      'csrf-token',
+      expect.any(String),
+      controller.signal,
+    )
+  })
+
+  it('unsubscribeOptOut with a pre-aborted signal performs no local read and no Gateway call', async () => {
+    const pushClient = fakePushClient({refreshCsrf: abortingCsrf()})
+    const getLocalSubscription = vi.fn()
+    const controller = new AbortController()
+    controller.abort()
+
+    const result = await unsubscribeOptOut({
+      getLocalSubscription,
+      pushClient,
+      signal: controller.signal,
+    })
+
+    expect(result).toEqual({gatewayUnsubscribeCalled: false})
+    expect(getLocalSubscription).not.toHaveBeenCalled()
+    expect(pushClient.refreshCsrf).not.toHaveBeenCalled()
+    expect(pushClient.unsubscribePush).not.toHaveBeenCalled()
+  })
+
+  it('abort during the CSRF fetch -> no dangling Gateway unsubscribe POST', async () => {
+    const subscription = fakeSubscription()
+    const refreshCsrf = abortingCsrf()
+    const pushClient = fakePushClient({refreshCsrf})
+    const controller = new AbortController()
+    const pending = unsubscribeOptOut({
+      getLocalSubscription: () => Promise.resolve(subscription),
+      pushClient,
+      signal: controller.signal,
+    })
+
+    await Promise.resolve() // let the flow reach the CSRF fetch
+    controller.abort()
+    const result = await pending
+
+    expect(result).toEqual({gatewayUnsubscribeCalled: false})
+    expect(pushClient.unsubscribePush).not.toHaveBeenCalled()
+  })
+
+  it('runReconcileSweep with a pre-aborted signal is skipped before any read', async () => {
+    const pushClient = fakePushClient()
+    const getLocalSubscription = vi.fn()
+    const getPermission = vi.fn()
+    const controller = new AbortController()
+    controller.abort()
+
+    const result = await runReconcileSweep(
+      {
+        getLocalSubscription,
+        getPermission,
+        pushClient,
+        now: () => 1,
+        signal: controller.signal,
+      },
+      INITIAL_RECONCILE_SWEEP_CACHE,
+    )
+
+    expect(result.skipped).toBe(true)
+    expect(result.action).toBeUndefined()
+    expect(result.uiState).toBeUndefined()
+    expect(getLocalSubscription).not.toHaveBeenCalled()
+    expect(getPermission).not.toHaveBeenCalled()
+    expect(pushClient.getPushSubscriptionMetadata).not.toHaveBeenCalled()
+  })
+
+  it('runReconcileSweep forwards the signal to the metadata GET', async () => {
+    const subscription = fakeSubscription('https://push.example/wired')
+    const pushClient = fakePushClient()
+    const controller = new AbortController()
+
+    await runReconcileSweep(
+      {
+        getLocalSubscription: () => Promise.resolve(subscription),
+        getPermission: () => 'granted',
+        pushClient,
+        now: () => 1,
+        signal: controller.signal,
+      },
+      INITIAL_RECONCILE_SWEEP_CACHE,
+    )
+
+    expect(pushClient.getPushSubscriptionMetadata).toHaveBeenCalledTimes(1)
+    expect(pushClient.getPushSubscriptionMetadata).toHaveBeenCalledWith(subscription.endpoint, controller.signal)
+  })
+
+  it('abort after the metadata read suppresses the cleanup action (no dangling unsubscribe)', async () => {
+    // Drift scenario: local subscription alive, Gateway metadata says gone ->
+    // the sweep would run a cleanup unsubscribe; an abort that lands during
+    // the metadata read must suppress that POST.
+    const subscription = fakeSubscription('https://push.example/gone')
+    const controller = new AbortController()
+    const getPushSubscriptionMetadata = vi.fn().mockImplementation(async () => {
+      controller.abort()
+      return ok({pushDisabled: false, metadata: undefined})
+    })
+    const pushClient = fakePushClient({getPushSubscriptionMetadata})
+
+    const result = await runReconcileSweep(
+      {
+        getLocalSubscription: () => Promise.resolve(subscription),
+        getPermission: () => 'granted',
+        pushClient,
+        now: () => 1,
+        signal: controller.signal,
+      },
+      INITIAL_RECONCILE_SWEEP_CACHE,
+    )
+
+    expect(result.skipped).toBe(true)
+    expect(result.action).toBeUndefined()
+    expect(pushClient.unsubscribePush).not.toHaveBeenCalled()
+  })
+})
+
+describe('buildPushClient signal wiring (rm-134: the fetches themselves are abortable)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('refreshCsrf chains the caller signal into the fetch', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({token: 't'}), {status: 200}))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = buildPushClient()
+    const controller = new AbortController()
+
+    const pending = client.refreshCsrf(controller.signal)
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+    expect(init.signal?.aborted).toBe(false)
+    controller.abort()
+    expect(init.signal?.aborted).toBe(true)
+    await pending
+  })
+
+  it('unsubscribePush chains the caller signal into both the POST and the CSRF retry', async () => {
+    const fetchMock = vi.fn()
+    fetchMock.mockResolvedValueOnce(new Response(null, {status: 400})) // initial POST
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({csrfToken: 'fresh'}), {status: 200})) // CSRF retry
+    fetchMock.mockResolvedValueOnce(new Response(null, {status: 200})) // retried POST
+    vi.stubGlobal('fetch', fetchMock)
+    const client = buildPushClient()
+    const controller = new AbortController()
+
+    const result = await client.unsubscribePush('https://push.example/abc', 'stale', 'idem-1', controller.signal)
+
+    expect(result).toEqual(ok(undefined))
+    for (const call of fetchMock.mock.calls) {
+      const init = call[1] as RequestInit
+      expect(init.signal).toBeInstanceOf(AbortSignal)
+      expect(init.signal?.aborted).toBe(false)
+    }
+    controller.abort()
+    const allInits = fetchMock.mock.calls.map(call => (call[1] as RequestInit).signal)
+    for (const signal of allInits) expect(signal?.aborted).toBe(true)
+  })
+})

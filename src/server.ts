@@ -1036,6 +1036,15 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   }
 
   // ── SPA static asset serving ─────────────────────────────────────────────
+  // rm-140: every /assets/* filename is Vite content-hashed (fingerprinted), so
+  // a given URL always serves the same bytes — safe to cache hard. The header
+  // is set after next() so it decorates the serveStatic response itself (same
+  // pattern as /registerSW.js above). /icon-* stays uncached: icons are NOT
+  // fingerprinted, so a long max-age would pin stale icons across releases.
+  app.use('/assets/*', async (c, next) => {
+    await next()
+    c.res.headers.set('cache-control', 'public, max-age=31536000, immutable')
+  })
   app.use('/assets/*', serveStatic({root: webDistRoot}))
   app.use('/icon-*', serveStatic({root: webDistRoot}))
 
