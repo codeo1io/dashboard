@@ -22,14 +22,32 @@ minimumReleaseAgeExclude:
   - vite@8.3.1
 
 overrides:
-  brace-expansion@2: '>=2.1.2 <3.0.0'
-  brace-expansion@5: '>=5.0.7 <6.0.0'
-  fast-uri@3: '>=3.1.5 <4.0.0'
+  # rm-338 (run f9854748fa28, 2026-10-01): four-floor raise clearing the
+  # 2026-09-28/29 advisory batch. Ids/severities/first-patched lines
+  # re-derived live against the GitHub advisory DB at implement time:
+  # - brace-expansion: q2hr-2g5m-vwhr (medium, 2.1.7/5.0.12),
+  #   qhr7-859c-m2p7 (high, 2.1.6/5.0.11), 6j4f-fj2g-mc7p (high,
+  #   2.1.5/5.0.10), rgw5-rvv9-x895 (high, 2.1.4/5.0.9), mh99-v99m-4gvg
+  #   (high, 2.1.3/5.0.8), 3jxr-9vmj-r5cp (high, 2.1.2/5.0.7) — every
+  #   first-patched line is at/below 2.1.7 and 5.0.12.
+  # - fast-uri: qw65-cvwx-89v3 (high, first-patched 3.1.7),
+  #   58mr-gqgx-xq4g (high, =3.1.6 → 3.1.7), hrr3-gc8f-f4qj (medium,
+  #   3.1.8 — the highest first-patched line, hence the floor).
+  # - undici: every 7.x record first-patches at/below 7.29.1 (the two
+  #   high records are rfgv-xxqx-mfg5 and w293-vg96-wgc3); 7.30.0
+  #   (published 2026-09-25) is what actually resolves in-range.
+  # All floor targets are 2026-09-14..25 publishes, so every one is past
+  # minimumReleaseAge: 1440. Weekly audit gate: .github/workflows/audit.yaml
+  # keeps these honest — a new advisory against a resolved version goes
+  # red there.
+  brace-expansion@2: '>=2.1.7 <3.0.0'
+  brace-expansion@5: '>=5.0.12 <6.0.0'
+  fast-uri@3: '>=3.1.8 <4.0.0'
   # GHSA-82x6-q7mm-w9cf — toml is dev-transitive via
   # @opencode-ai/plugin>effect; >=4.2.0 is the patched line
   # (rescued by content from run b4aac9ba / PR #82 via cycle-13;
   # the batch's internal rm-171 numbering collided with landed ids).
   toml: '>=4.2.0'
-  undici@7: '>=7.29.0 <8.0.0'
+  undici@7: '>=7.29.1 <8.0.0'
 
 shamefullyHoist: true
