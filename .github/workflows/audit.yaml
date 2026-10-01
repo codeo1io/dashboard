@@ -1,0 +1,77 @@
+# Standing dependency-advisory gate over the pnpm lockfile (rm-285, run
+# 4334b758, 2026-10-01). `dependency-review.yaml` only inspects the PR DIFF
+# against its base — every existing resolved row that is not part of a pull
+# request's delta stays invisible to it, which is how the 19 audited
+# advisories (8 high) sat on main for weeks with a green Dependency Review
+# badge. This workflow audits the WHOLE resolved lockfile instead: it goes
+# red whenever any resolved version in pnpm-lock.yaml draws a known advisory.
+#
+# `pnpm audit --recursive` is lockfile-driven: NO `pnpm install` step, by
+# design — audit needs only pnpm itself plus network to the advisory DB, so
+# this job never pays the cold-install tax and cannot break on an install
+# step that the advisory DB does not care about. A red run means one of
+# exactly two things: a floor regression in the lockfile, or a newly indexed
+# advisory against an already-resolved version — both cured by raising the
+# pnpm-workspace.yaml override floor for the affected package and
+# re-resolving with `pnpm install`.
+#
+# Born-green by pairing: this workflow lands in the same batch as rm-284's
+# floor raise (run 4334b758), so its first push-to-main run audits an
+# already-floored lockfile (`19 vulnerabilities → 0` verified live at
+# implement time). Landing it standalone against the pre-floors lockfile
+# would mint a permanently red branch check.
+#
+# Read-only credentials: contents: read only. Issues are disabled on this
+# repository (verified live 2026-10-01: has_issues=false), so there is no
+# issue-filing path and no issues: write grant — a red run IS the advisory
+# signal.
+name: Audit
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '41 5 * * 1' # Mondays 05:41 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash -Eeuo pipefail {0}
+
+jobs:
+  audit:
+    name: Audit dependencies
+    # rm-188 lineage: pinned ubuntu-24.04 per the hosted-runner CI policy —
+    # re-evaluate at the rm-139 Node-26 window (2026-10-28).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # pnpm via pnpm/action-setup reads the packageManager pin. No
+      # setup-node store cache on purpose: this job installs nothing, so
+      # there is nothing in the store worth caching.
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - name: Audit dependencies
+        run: pnpm audit --recursive
+
+      - name: Advisory report (issues-disabled fallback)
+        if: failure()
+        run: |
+          echo '::warning::advisories found — issues are disabled on this repository, so this red run is the advisory signal: raise the pnpm-workspace.yaml overrides floor for the affected package and re-resolve with pnpm install (rm-285)'
