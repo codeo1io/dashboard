@@ -36,29 +36,15 @@ jobs:
     # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
     # at the rm-139 Node-26 window (2026-10-28).
     runs-on: ubuntu-24.04
-    # rm-280 (2026-10-01): 5 → 10 — the rm-280 install (below) adds the cold
-    # pnpm-install spread on top of the seconds-scale canary run itself. Cold
-    # installs measured 5-84s at aa9937f (run 35688534671 — the setup action's
-    # own rm-145 note) and the pnpm-store cache only helps from the second run
-    # on, so 10 covers a slow cold runner without inviting a silent hang.
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # rm-280 (2026-10-01): the canary is NOT zero-install — it never was. The
-      # script imports the production chain (scripts/graphql-canary.ts →
-      # src/github/aggregator.ts → src/result.ts → bare npm specifier
-      # @bfra.me/es/result), so without node_modules it dies ~10s in with
-      # ERR_MODULE_NOT_FOUND: the workflow's only run ever (36417620616, a
-      # 2026-09-28 dispatch) did exactly that, and the weekly cron has never
-      # produced a run. rm-280's acceptance offers install-vs-inline; we
-      # INSTALL, via the same digest-pinned composite every Main job runs
-      # (pnpm + Node 24 + cache: pnpm + `pnpm install --frozen-lockfile`),
-      # because inlining the Result helpers into the script would decouple the
-      # canary from the exact production import chain it exists to prove.
-      - name: 📦 Setup
-        uses: ./.github/actions/setup
+      - name: Set up Node 24 (native TS, no install needed)
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
 
       - name: Execute every registered query template (rm-225)
         env:
