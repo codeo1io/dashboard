@@ -47,11 +47,76 @@ describe('classifyRateLimitPath', () => {
     expect(classifyRateLimitPath('/api/healthz')).toBe('public')
     expect(classifyRateLimitPath('/auth/login')).toBe('public')
     expect(classifyRateLimitPath('/auth/callback')).toBe('public')
+    // rm-422: the logout pair is now INSIDE the sensitive gate, so this
+    // /auth/ → public branch is finally reachable for it (previously the
+    // gate filtered the pair out before classification ever ran).
+    expect(classifyRateLimitPath('/auth/logout')).toBe('public')
+    expect(classifyRateLimitPath('/auth/logout-csrf')).toBe('public')
     expect(classifyRateLimitPath('/api/listener/ingest')).toBe('ingest')
     expect(classifyRateLimitPath('/operator')).toBe('operator')
     expect(classifyRateLimitPath('/operator/runs')).toBe('operator')
     expect(classifyRateLimitPath('/api/status')).toBe('operator')
     expect(classifyRateLimitPath('/api/listener/messages')).toBe('operator')
+  })
+})
+
+describe('rm-422: the logout pair is budget-gated in the public class', () => {
+  // POST /auth/logout runs a bounded body read and GET /auth/logout-csrf
+  // mints an HMAC token, both pre-auth; leaving them outside the sensitive
+  // gate (rm-275's narration) handed an unauthenticated client an
+  // unthrottled CPU/log vector. The recorded decision (see the gate comment
+  // in src/server.ts and README's RATE_LIMIT_MAX_PUBLIC row) classifies the
+  // pair into the PUBLIC budget.
+  afterEach(() => {
+    resetRateLimitForTesting()
+  })
+
+  it('the 61st POST /auth/logout inside the window 429s', async () => {
+    const app = await buildTestApp()
+    for (let i = 0; i < 60; i++) {
+      const res = await app.request('/auth/logout', {
+        method: 'POST',
+        headers: {'content-type': 'application/x-www-form-urlencoded'},
+        body: 'csrf_token=x',
+      })
+      // No valid CSRF token → 403 at the handler, but the limiter counted it.
+      expect(res.status).toBe(403)
+    }
+    const blocked = await app.request('/auth/logout', {
+      method: 'POST',
+      headers: {'content-type': 'application/x-www-form-urlencoded'},
+      body: 'csrf_token=x',
+    })
+    expect(blocked.status).toBe(429)
+  })
+
+  it('the 61st GET /auth/logout-csrf inside the window 429s (session-less hammering is capped)', async () => {
+    const app = await buildTestApp()
+    for (let i = 0; i < 60; i++) {
+      const res = await app.request('/auth/logout-csrf')
+      // Session-less → auth middleware denies, but the limiter counted it.
+      expect([401, 302, 303]).toContain(res.status)
+    }
+    expect((await app.request('/auth/logout-csrf')).status).toBe(429)
+  })
+
+  it('the pair consumes the PUBLIC budget, not the operator budget (class isolation holds)', async () => {
+    const app = await buildTestApp()
+    for (let i = 0; i < 60; i++) {
+      await app.request('/auth/logout', {
+        method: 'POST',
+        headers: {'content-type': 'application/x-www-form-urlencoded'},
+        body: 'csrf_token=x',
+      })
+    }
+    expect((await app.request('/auth/logout', {
+      method: 'POST',
+      headers: {'content-type': 'application/x-www-form-urlencoded'},
+      body: 'csrf_token=x',
+    })).status).toBe(429)
+    // The operator class budget is untouched by the flood: /api/status
+    // denies session-less callers (401/302/303), never 429.
+    expect([401, 302, 303]).toContain((await app.request('/api/status')).status)
   })
 })
 

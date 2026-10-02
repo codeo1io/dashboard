@@ -11,6 +11,8 @@
  */
 import type {GitHubOAuthClient} from '../src/auth/oauth.ts'
 import {Buffer} from 'node:buffer'
+import {existsSync, readdirSync, statSync} from 'node:fs'
+import {join, resolve} from 'node:path'
 import process from 'node:process'
 import {afterEach, describe, expect, it} from 'vitest'
 import {buildDashboardApp} from '../src/server.ts'
@@ -854,5 +856,85 @@ describe('security — raw failure reason codes security invariants', () => {
       expect(src).not.toMatch(/className[^;\n]*failureKind/)
       expect(src).not.toMatch(/setProperty\([^)]*failureKind/)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-420 — serveStatic double-decode middleware bypass (fixed adapter pair)
+// ---------------------------------------------------------------------------
+
+describe('rm-420 — serveStatic double-decode bypass (GHSA-rmxm-3fg6-px4f / GHSA-5r4p-p66f-jhc7)', () => {
+  // The 2026-09-29 coordinated fixes (@hono/node-server v2.1.3 GHSA-rmxm-3fg6-px4f,
+  // hono v4.13.11 GHSA-5r4p-p66f-jhc7) closed a serveStatic double-decode
+  // bypass: the adapter served a path derived from an ADDITIONAL percent-decode
+  // of the already-decoded request path, so an encoded traversal could reach
+  // files outside the static root while the auth middleware matched the
+  // encoded form. The fixed adapter rejects paths whose decode differs from
+  // what the router saw (and any path still containing '%' after decoding,
+  // unless allowPercentInPath is set — we keep that unset).
+  //
+  // Sentinel: the repo-root Dockerfile (first line 'FROM node:24-slim') — a
+  // file that exists OUTSIDE the static roots and must never be servable
+  // through /static/* or /assets/*.
+
+  it('single-encoded traversal /static/%2e%2e/Dockerfile is not served (rm-420)', async () => {
+    const app = await buildTestApp(true)
+    const res = await app.request('/static/%2e%2e/Dockerfile')
+    expect(res.status).not.toBe(200)
+    expect(await res.text()).not.toContain('FROM node:24-slim')
+  })
+
+  it('double-encoded traversal /static/%252e%252e/Dockerfile is rejected, not re-decoded (rm-420)', async () => {
+    // The sharpest discriminator: one decode pass leaves literal '%' in the
+    // path, which the fixed serveStatic rejects outright. A double-decoding
+    // adapter would decode TWICE and serve the repo-root Dockerfile.
+    const app = await buildTestApp(true)
+    const res = await app.request('/static/%252e%252e/Dockerfile')
+    expect(res.status).not.toBe(200)
+    expect(await res.text()).not.toContain('FROM node:24-slim')
+  })
+
+  it('double-encoded traversal against /assets/* (webDistRoot) is never served either (rm-420)', async () => {
+    // With web/dist built (pretest/full_tests) this pins the dist-root mount;
+    // without it the 404 is trivially correct — full_tests carries the
+    // dist-present proof.
+    const app = await buildTestApp(true)
+    const res = await app.request('/assets/%252e%252e/Dockerfile')
+    expect(res.status).not.toBe(200)
+    expect(await res.text()).not.toContain('FROM node:24-slim')
+  })
+
+  it('encoded traversal stays unauthenticated-safe: same denials without a session cookie (rm-420)', async () => {
+    const app = await buildTestApp(true)
+    for (const path of ['/static/%2e%2e/Dockerfile', '/static/%252e%252e/Dockerfile']) {
+      const res = await app.request(path)
+      expect(res.status).not.toBe(200)
+      expect(await res.text()).not.toContain('FROM node:24-slim')
+    }
+  })
+})
+
+describe('rm-420 — % rejection compatibility (allowPercentInPath stays unset)', () => {
+  it('no served filename under public/ or web/dist contains a literal %', () => {
+    // The fixed serveStatic rejects any path that still contains '%' after
+    // decoding unless allowPercentInPath is set; this fork keeps that option
+    // unset, so the served asset trees must never need a %-encoded filename.
+    // Pinned as a tree property so a future asset cannot silently break
+    // serving for every consumer.
+    // Served trees are walked via the static node:fs/node:path imports above.
+    const repoRoot = process.cwd()
+
+    const offenders: string[] = []
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir)) {
+        if (entry.includes('%')) offenders.push(join(dir, entry))
+        const full = join(dir, entry)
+        if (statSync(full).isDirectory()) walk(full)
+      }
+    }
+    walk(resolve(repoRoot, 'public'))
+    const dist = resolve(repoRoot, 'web/dist')
+    if (existsSync(dist)) walk(dist)
+    expect(offenders).toEqual([])
   })
 })

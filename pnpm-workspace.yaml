@@ -24,7 +24,12 @@ minimumReleaseAgeExclude:
 overrides:
   brace-expansion@2: '>=2.1.2 <3.0.0'
   brace-expansion@5: '>=5.0.7 <6.0.0'
-  fast-uri@3: '>=3.1.5 <4.0.0'
+  # GHSA-58mr-gqgx-xq4g — fast-uri is dev-transitive via ajv (the
+  # @bfra.me/eslint-config chain); the advisory is introduced at 3.1.6 and
+  # fixed at 3.1.7, so the floor sits at the upstream-parity line 3.1.8
+  # (fro-bot/dashboard PR #538; rm-421, cycle-2 batch — the prior >=3.1.5
+  # floor admitted the vulnerable 3.1.6 lockfile resolution).
+  fast-uri@3: '>=3.1.8 <4.0.0'
   # GHSA-82x6-q7mm-w9cf — toml is dev-transitive via
   # @opencode-ai/plugin>effect; >=4.2.0 is the patched line
   # (rescued by content from run b4aac9ba / PR #82 via cycle-13;
