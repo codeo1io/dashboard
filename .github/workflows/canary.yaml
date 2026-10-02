@@ -36,15 +36,25 @@ jobs:
     # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
     # at the rm-139 Node-26 window (2026-10-28).
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    # rm-310 (2026-10-01): raised 5 → 10 minutes — the rm-310 install step
+    # adds a pnpm install (warm-store ~30-60s, cold worst case a few minutes
+    # for the full tree); 5 minutes left no headroom for the query round-trips.
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up Node 24 (native TS, no install needed)
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
+      # rm-310 (2026-10-01, run 6cf825ee): the original 'no install needed'
+      # claim was wrong — scripts/graphql-canary.ts imports
+      # src/github/aggregator.ts, whose src/result.ts re-exports
+      # @bfra.me/es/result (a runtime dependency), so a bare Node runner dies
+      # ERR_MODULE_NOT_FOUND before reaching any template (the only-ever run
+      # 36417620616 failed exactly there). Use the shared setup composite
+      # (pnpm + Node 24 + pnpm install --frozen-lockfile) like every main.yaml
+      # job. Twin of the PR #315 lineage's rm-288 (query-registry isolation);
+      # whichever lands first, the other reconciles at integrate.
+      - name: Set up Node 24 + install dependencies (rm-310)
+        uses: ./.github/actions/setup
 
       - name: Execute every registered query template (rm-225)
         env:

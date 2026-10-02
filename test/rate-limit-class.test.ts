@@ -14,7 +14,7 @@
  */
 import {Buffer} from 'node:buffer'
 import {afterEach, describe, expect, it} from 'vitest'
-import {buildDashboardApp, checkRateLimit, classifyRateLimitPath, resetRateLimitForTesting} from '../src/server.ts'
+import {buildDashboardApp, checkRateLimit, classifyRateLimitPath, rateLimitRetryAfterSeconds, resetRateLimitForTesting} from '../src/server.ts'
 
 const TEST_KEY = Buffer.from('testkey-ABCDEFGHIJKLMNOPQRSTUV12', 'utf8') // 32 bytes
 
@@ -110,6 +110,18 @@ describe('rm-129: per-class budget isolation (checkRateLimit unit)', () => {
   })
 })
 
+describe('rm-316: Retry-After on 429s', () => {
+  it('rateLimitRetryAfterSeconds is bounded to the window and floors at 1', () => {
+    const now = Date.now()
+    // Fill an entry via a classified call, then probe the reset math.
+    checkRateLimit('probe-ip', now, 'public')
+    expect(rateLimitRetryAfterSeconds('probe-ip', now)).toBe(60) // fresh window
+    expect(rateLimitRetryAfterSeconds('probe-ip', now + 59_000)).toBe(1) // partial second rounds up
+    expect(rateLimitRetryAfterSeconds('probe-ip', now + 60_000)).toBe(1) // expired window floors at 1 (defensive)
+    expect(rateLimitRetryAfterSeconds('never-seen-ip', now)).toBe(1) // absent entry floors at 1
+  })
+})
+
 describe('rm-129: flood on public cannot starve the operator surface (middleware)', () => {
   it('61st public request 429s while the operator API stays available', async () => {
     const app = await buildTestApp()
@@ -120,6 +132,16 @@ describe('rm-129: flood on public cannot starve the operator surface (middleware
       expect(res.status).not.toBe(429)
     }
     expect((await app.request('/auth/login')).status).toBe(429)
+
+    // rm-316: the 429 must carry Retry-After (seconds to window reset).
+    const limited = await app.request('/auth/login')
+    expect(limited.status).toBe(429)
+    const retryAfter = limited.headers.get('retry-after')
+    expect(retryAfter).not.toBeNull()
+    const seconds = Number(retryAfter)
+    expect(Number.isFinite(seconds)).toBe(true)
+    expect(seconds).toBeGreaterThanOrEqual(1)
+    expect(seconds).toBeLessThanOrEqual(60)
 
     // Operator class: /api/status is auth-gated (302 login redirect) but NOT
     // rate-limited — the limiter must not add a 429 on top of the exhausted
