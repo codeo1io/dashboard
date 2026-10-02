@@ -68,21 +68,39 @@ function runScript(
 ): {stdout: string; stderr: string; exitCode: number} {
   // Build env: start from parent, strip CALVER_MONTH, then apply overrides.
   const {CALVER_MONTH, ...parentEnv} = process.env
-  const result = spawnSync(nodeBin ?? 'node', [SCRIPT], {
-    cwd: dir,
-    env: {
-      ...parentEnv,
-      ...(calverMonth === undefined ? {} : {CALVER_MONTH: calverMonth}),
-      ...extraEnv,
-    },
-    encoding: 'utf8',
-    timeout: 30_000,
-  })
-  return {
-    stdout: (result.stdout ?? '').trim(),
-    stderr: (result.stderr ?? '').trim(),
-    exitCode: result.status ?? 1,
+  // A `null` status means the child never ran to completion (fork failure,
+  // signal kill under fleet load, or the 30s wall) — an infrastructure
+  // signature, never one of the script's own decisions. The historical
+  // `status ?? 1` mapping could even make such a failure silently PASS a
+  // skip-expecting test (see
+  // docs/solutions/workflow-issues/guard-spawnsync-null-status-conflation-2026-10-02.md).
+  // One retry absorbs transient host blips; a persistent failure throws with
+  // the spawn cause instead of fabricating an exit code.
+  let lastFailure = 'unknown spawn failure'
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const result = spawnSync(nodeBin ?? 'node', [SCRIPT], {
+      cwd: dir,
+      env: {
+        ...parentEnv,
+        ...(calverMonth === undefined ? {} : {CALVER_MONTH: calverMonth}),
+        ...extraEnv,
+      },
+      encoding: 'utf8',
+      timeout: 30_000,
+    })
+    if (result.status !== null) {
+      return {
+        stdout: (result.stdout ?? '').trim(),
+        stderr: (result.stderr ?? '').trim(),
+        exitCode: result.status,
+      }
+    }
+    lastFailure = `${result.error?.message ?? 'no error object'}; signal=${result.signal ?? 'none'}`
   }
+  throw new Error(
+    'compute-release-tag spawn produced no exit status (infrastructure failure, ' +
+    `not a script decision): ${lastFailure}`,
+  )
 }
 
 // ---------------------------------------------------------------------------

@@ -97,6 +97,42 @@ function writePkg(dir: string, name: string, pkg: PkgShape): string {
 }
 
 /**
+ * Spawn the guard script and require a genuine exit status.
+ *
+ * A `null` status means the child never ran to completion — fork failure,
+ * signal kill (e.g. OOM under fleet load), or the 15s wall. That is an
+ * infrastructure signature, never one of the script's own decisions, and
+ * must not be conflated with an exit code: the historical `status ?? 2`
+ * mapping made a killed spawn masquerade as the guard's usage-error exit 2
+ * (conflict case 643099884; see
+ * docs/solutions/workflow-issues/guard-spawnsync-null-status-conflation-2026-10-02.md).
+ * One retry absorbs transient host blips; a persistent failure throws with
+ * the spawn cause so the assertion failure names the real problem instead
+ * of a bogus exit code.
+ */
+function spawnGuard(args: string[]): {stdout: string; stderr: string; exitCode: number} {
+  let lastFailure = 'unknown spawn failure'
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const result = spawnSync(process.execPath, args, {
+      encoding: 'utf8',
+      timeout: 15_000,
+    })
+    if (result.status !== null) {
+      return {
+        stdout: (result.stdout ?? '').trim(),
+        stderr: (result.stderr ?? '').trim(),
+        exitCode: result.status,
+      }
+    }
+    lastFailure = `${result.error?.message ?? 'no error object'}; signal=${result.signal ?? 'none'}`
+  }
+  throw new Error(
+    'guard spawn produced no exit status (infrastructure failure, not a guard decision): ' +
+    `${lastFailure}`,
+  )
+}
+
+/**
  * Run the guard script.
  *
  * @param changedFiles  Newline-separated list of changed file paths (or undefined to omit the flag).
@@ -122,15 +158,7 @@ function runGuard(
   }
   args.push(...extraArgs)
 
-  const result = spawnSync(process.execPath, args, {
-    encoding: 'utf8',
-    timeout: 15_000,
-  })
-  return {
-    stdout: (result.stdout ?? '').trim(),
-    stderr: (result.stderr ?? '').trim(),
-    exitCode: result.status ?? 2,
-  }
+  return spawnGuard(args)
 }
 
 // ---------------------------------------------------------------------------
