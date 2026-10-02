@@ -46,17 +46,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # rm-280 (2026-10-01): the canary is NOT zero-install — it never was. The
-      # script imports the production chain (scripts/graphql-canary.ts →
-      # src/github/aggregator.ts → src/result.ts → bare npm specifier
-      # @bfra.me/es/result), so without node_modules it dies ~10s in with
+      # rm-280 (2026-10-01): the canary was born NOT zero-install. At that
+      # point the script imported the production chain (scripts/graphql-canary.ts
+      # → src/github/aggregator.ts → src/result.ts → bare npm specifier
+      # @bfra.me/es/result), so without node_modules it died ~10s in with
       # ERR_MODULE_NOT_FOUND: the workflow's only run ever (36417620616, a
-      # 2026-09-28 dispatch) did exactly that, and the weekly cron has never
-      # produced a run. rm-280's acceptance offers install-vs-inline; we
+      # 2026-09-28 dispatch) did exactly that, and the weekly cron had never
+      # produced a run. rm-280's acceptance offered install-vs-inline and chose
       # INSTALL, via the same digest-pinned composite every Main job runs
-      # (pnpm + Node 24 + cache: pnpm + `pnpm install --frozen-lockfile`),
-      # because inlining the Result helpers into the script would decouple the
-      # canary from the exact production import chain it exists to prove.
+      # (pnpm + Node 24 + cache: pnpm + `pnpm install --frozen-lockfile`).
+      # rm-288 (2026-10-03, run 7ce48fe5 integrate) landed the sibling half:
+      # the registry moved to zero-import src/github/query-registry.ts and
+      # scripts/graphql-canary.ts now imports only it, so the script itself no
+      # longer needs node_modules. The install step STAYS — both halves of the
+      # rm-280/rm-288 family on one tree (see the rm-280/rm-288 riders): parity
+      # with every Main job's composite, a scheduled frozen-lockfile check, and
+      # no path back to the 36417620616 failure if the script or the registry
+      # module ever regains a package import (the rot class the zero-install
+      # solution doc in docs/solutions/workflow-issues/ warns about).
       - name: 📦 Setup
         uses: ./.github/actions/setup
 

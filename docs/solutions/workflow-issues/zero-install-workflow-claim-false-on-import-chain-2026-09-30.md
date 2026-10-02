@@ -10,6 +10,14 @@ applies_when: a GitHub workflow runs a repo script without an install step
 
 # Zero-install workflow claims go false on the first package import
 
+> **Retargeted (2026-10-03, run 7ce48fe5 integrate, rm-288)**: the import
+> chain below is now historical — the registry moved to zero-import
+> `src/github/query-registry.ts` and `scripts/graphql-canary.ts` imports only
+> it, so the chain no longer reaches `@bfra.me/es`. The workflow still
+> installs via the composite (rm-280 stays landed — both halves of the family
+> on one tree), and the prevention rules below stand unchanged: no step name
+> or comment may claim an environment property no gate checks.
+
 ## Problem
 
 The `Canary` workflow's setup step was named "Set up Node 24 (native TS, no
