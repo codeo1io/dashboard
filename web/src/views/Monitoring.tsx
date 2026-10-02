@@ -101,6 +101,15 @@ function MonitoringBoard({data}: {data: MonitoringData}) {
         </div>
       )}
 
+      {/* rm-393: refresh-degraded is DISTINCT from stale — the watchdog
+          ceiling was exceeded on the last attempt, so freshness is suspect
+          even when a snapshot was served. Separate banner, separate testid. */}
+      {data.refreshDegraded && (
+        <div data-testid="monitoring-degraded-banner" className="operator-warning-panel" role="status">
+          Refresh is degraded — the last refresh exceeded its watchdog ceiling. Data may lag live state.
+        </div>
+      )}
+
       {redRepos.length === 0 ? (
         <div data-testid="monitoring-all-clear" className="operator-empty-state">
           <div className="operator-empty-icon" aria-hidden="true" style={{opacity: 0.2}}>✓</div>
@@ -121,6 +130,12 @@ function MonitoringBoard({data}: {data: MonitoringData}) {
           </span>
         )}
         {refreshedAt !== null ? <span>refreshed {refreshedAt}</span> : <span>never refreshed</span>}
+        {data.refreshDurationMs !== null && (
+          <span>
+            {' '}
+            · last refresh took {(data.refreshDurationMs / 1000).toFixed(1)}s
+          </span>
+        )}
       </div>
     </div>
   )
