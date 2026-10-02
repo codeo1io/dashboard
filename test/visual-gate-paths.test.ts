@@ -31,6 +31,13 @@ interface VisualWorkflow {
 // surface (review b310d051 additions); `web/vite.config.ts` was in the
 // original filter and must not regress away
 // again; `web/src/**` is the app source; the rest are the suite's own files.
+// rm-420 union (2026-10-03 integrate, conflict case c709c4d4): `package.json`
+// and `pnpm-lock.yaml` pin the dependency versions that ship the rendered
+// bundle — a dep bump can shift rendered output without touching web/src, so
+// they join this REQUIRED_PATHS set. They arrived via the parallel lineage's
+// test/visual-trigger-paths.test.ts; pinning them HERE too means this suite
+// alone carries the full union of both lineages' coverage sets, so neither
+// guard can be deleted to silently re-narrow the other's entries.
 const REQUIRED_PATHS = [
   'web/src/**',
   'web/index.html',
@@ -40,6 +47,8 @@ const REQUIRED_PATHS = [
   'public/**',
   'tests/visual/**',
   'playwright.config.ts',
+  'package.json',
+  'pnpm-lock.yaml',
   '.github/workflows/visual.yaml',
 ] as const
 
