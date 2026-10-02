@@ -14,11 +14,18 @@
 #   (The original 2026-09 rationale — every PR's checks serializing behind
 #   the fork's single self-hosted runner — became historical when PR #11/#12
 #   moved CI to GitHub-hosted runners on 2026-09-22.)
-# - cooldown.default-days: 1 holds every PR one day after upstream publication
-#   (rm-135's dependabot half; mirrors pnpm-workspace.yaml's minimumReleaseAge:
-#   1440 at :13, which carries the matching minimumReleaseAgeExclude list).
-#   Units differ: dependabot cooldown is DAYS, pnpm minimumReleaseAge is MINUTES.
-#   GitHub does not apply cooldown to security updates — they land without delay.
+# - cooldown.default-days: REMOVED 2026-10-02 (run ddc4c014228a, rm-102
+#   rider). Dependabot has opened zero PRs in this fork's entire history
+#   (gh pr list --author app/dependabot --state all is empty, re-probed
+#   2026-10-01) while vulnerability-alerts (204) and automated-security-fixes
+#   (200) confirm the service is active — the classic signature of a config
+#   parse failure, and the cooldown block was the top suspect. Dropping it
+#   loses nothing: GitHub never applied it to security updates anyway, and
+#   pnpm-workspace.yaml's minimumReleaseAge: 1440 (:13, with its
+#   minimumReleaseAgeExclude list) enforces the same one-day stabilization
+#   delay at install time, in minutes instead of days. Acceptance evidence:
+#   the fork's first dependabot PR on the next weekly tick (rm-102 window
+#   ~2026-10-03).
 # - Weekly cadence, low open-PR cap, to keep the runner queue shallow.
 version: 2
 updates:
@@ -26,8 +33,6 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    cooldown:
-      default-days: 1
     open-pull-requests-limit: 3
     groups:
       actions:
@@ -38,8 +43,6 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    cooldown:
-      default-days: 1
     open-pull-requests-limit: 3
     groups:
       npm-and-workspaces:
@@ -60,8 +63,6 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    cooldown:
-      default-days: 1
     open-pull-requests-limit: 3
     groups:
       docker:

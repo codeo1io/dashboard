@@ -36,15 +36,26 @@ jobs:
     # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
     # at the rm-139 Node-26 window (2026-10-28).
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    # rm-395 (2026-10-02, run ddc4c014228a): the 2026-09-28 install-less
+    # shape produced the canary's only-ever run and it died before the first
+    # query executed — run 36417620616 log: ERR_MODULE_NOT_FOUND
+    # '@bfra.me/es' imported from src/result.ts (chain:
+    # scripts/graphql-canary.ts:23 -> src/github/aggregator.ts:31-33 value
+    # imports -> src/result.ts:12), with the bare 'yaml' import in
+    # src/github/metadata.ts:28 the same failure class behind it. The canary
+    # executes src/ modules, so it needs the workspace's frozen install like
+    # every other job — the repo's composite setup action provides it
+    # (checkout stays required for the local action). Timeout 10 min: the
+    # install adds minutes to what was a 5-min budget.
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Node 24 (native TS, no install needed)
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24'
+          persist-credentials: false
+
+      - name: Setup (Node 24 + pnpm + frozen install)
+        uses: ./.github/actions/setup
 
       - name: Execute every registered query template (rm-225)
         env:
