@@ -9,6 +9,15 @@ problem_type: 'process'
 Date: 2026-09-29 · Run: 995ad0e10428 (dashboard cycle 19, full_tests) ·
 Author: conductor delegate (attempt lineage 9dd3fe0a → 83bc2935 → 4387be9a)
 
+> **Superseded in part (2026-09-30, run 7ce48fe5 implement)**: the dominant
+> mechanism behind the 35m Lint cancellations is the ROADMAP paragraph-length
+> cliff — quadratic inline-markdown parsing once item paragraphs pass ~5K
+> chars (the two cliff paragraphs grew to 7317/7967 chars with the 2026-09-29
+> landings); the same tree lints in 41-54s once the paragraphs are split. The
+> poll-window mechanics documented below remain accurate for what they
+> describe. See `roadmap-paragraph-length-quadratic-lint-cliff-2026-09-30.md`
+> in this directory.
+
 ## Problem
 
 `github_ci_validate.py --repo .` (the full_tests full_command) pushes an

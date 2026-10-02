@@ -29,14 +29,14 @@ import {
   REPO_STATUS_QUERY,
   REPO_STATUS_QUERY_NO_ALERTS,
   REPO_STATUS_QUERY_REGISTRY,
-} from '../src/github/aggregator.ts'
+} from '../src/github/query-registry.ts'
 
 const QUERIES: Record<string, string> = Object.fromEntries(
   REPO_STATUS_QUERY_REGISTRY.map(entry => [entry.name, entry.query]),
 )
 
-const aggregatorSource = readFileSync(
-  fileURLToPath(new URL('../src/github/aggregator.ts', import.meta.url)),
+const registrySource = readFileSync(
+  fileURLToPath(new URL('../src/github/query-registry.ts', import.meta.url)),
   'utf8',
 )
 const canarySource = readFileSync(
@@ -85,7 +85,7 @@ describe('GraphQL query-shape guard (rm-177)', () => {
     // canary covered only the primary. Scan the module source for every
     // exported REPO_STATUS_QUERY* template constant and demand the registry
     // name it — a new template fails here until it is registered.
-    const exportedTemplates = [...aggregatorSource.matchAll(/export const (REPO_STATUS_QUERY[A-Z_]*) = `/g)].map(
+    const exportedTemplates = [...registrySource.matchAll(/export const (REPO_STATUS_QUERY[A-Z_]*) = `/g)].map(
       m => m[1] ?? '',
     )
     const registered = REPO_STATUS_QUERY_REGISTRY.map(entry => entry.name)
