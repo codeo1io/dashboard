@@ -12,9 +12,13 @@ allowBuilds:
 # first-party pins that sometimes need same-day adoption.
 minimumReleaseAge: 1440
 
-# rm-196 rider (2026-09-25): hono@4.13.9 and vite@8.3.1 are the rider targets,
-# both past their 1440-minute maturity timestamps — an explicit, disclosed
-# bypass of the rm-133 age gate, not a weakening of it.
+# rm-196 rider (2026-09-25): hono@4.13.9 and vite@8.3.1 are the rider targets
+# — an explicit, disclosed bypass of the rm-133 age gate, not a weakening of
+# it. Truth note (run 5ae8aaf72d8f, B3): at the rider merge (828a1e6,
+# 2026-09-25T11:18:36Z) hono@4.13.9 was ~33h past its 1440-minute maturity,
+# but vite@8.3.1 (published 2026-09-24T12:26Z) was ~68 minutes SHORT — the
+# exclude was load-bearing for vite at merge time. Both are past maturity as
+# of 2026-09-25T12:26Z; the entry remains as the dated bypass record.
 minimumReleaseAgeExclude:
   - '@bfra.me/eslint-config@0.51.2 || 0.51.3 || 0.51.4 || 0.52.0 || 0.52.1 || 0.52.2'
   - '@bfra.me/tsconfig@0.13.2'

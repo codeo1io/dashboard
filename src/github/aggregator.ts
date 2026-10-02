@@ -405,7 +405,7 @@ export interface AggregatorDeps {
   readonly resolveInstallationIdForRepo?: (owner: string, name: string) => Promise<number>
   /**
    * Per-call-site deadline raced against each outbound call site in a refresh
-   * cycle (this run's rm-203: deadline racing + stall watchdog — a second layer
+   * cycle (this run's rm-222: deadline racing + stall watchdog — a second layer
    * on top of the transport-level GITHUB_REQUEST_TIMEOUT_MS bounds, so even a
    * deps-injected transport with no timeout of its own cannot wedge a
    * cycle; note the budget granularity is per CALL SITE, not per HTTP
@@ -863,7 +863,7 @@ async function fetchRepoStatus(
 }
 
 // ---------------------------------------------------------------------------
-// Outbound deadline machinery (this run's rm-203)
+// Outbound deadline machinery (this run's rm-222)
 // ---------------------------------------------------------------------------
 
 /**
@@ -1133,7 +1133,7 @@ export function createAggregator(
     // this point.
     scrubLastGoodAgainstDenylist(metadata)
 
-    // 2. Enumerate installation repos (deadline-bounded, rm-203)
+    // 2. Enumerate installation repos (deadline-bounded, rm-222)
     const enumerateResult = await deadlineOr(deps.enumerate(installationsClient), fetchDeadlineMs, 'installation enumeration')
 
     let installRepos: readonly {node_id: string; database_id: number; owner: string; name: string; full_name: string; installation_id: number}[] = []
