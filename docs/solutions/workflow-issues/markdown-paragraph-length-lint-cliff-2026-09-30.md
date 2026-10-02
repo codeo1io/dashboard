@@ -10,6 +10,11 @@ applies_when: markdown files carry very long single-line (or lazily joined) para
 
 # Markdown paragraph length is a lint-time cliff — split paragraphs, not lines
 
+> **Sibling record**: `roadmap-paragraph-length-quadratic-lint-cliff-2026-09-30.md`
+> in this directory is sibling run 7ce48fe5's same-day record of the same
+> cliff; on top of the split cure documented here it added the standing
+> automated guard (`test/roadmap-length-guard.test.ts`, fail >4000 chars).
+
 ## Problem
 
 The markdown lint pipeline goes superlinear on long paragraphs. Measured
