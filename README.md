@@ -114,6 +114,7 @@ missing `_FILE` path silently falls back to the environment variable).
 | `DASHBOARD_FIXTURE_HARNESS_ENABLED` | `src/gateway/operator-fixture-config.ts` | off | Operator fixture-harness flag; only the exact value `true` enables (fail-closed). |
 | `DASHBOARD_GATEWAY_OPERATOR_ORIGIN` | `src/gateway/operator-config.ts` | `https://dashboard.fro.bot` | Pinned trusted origin for the `/operator/*` proxy target — never derived from the request Host header. Must be an absolute http(s) origin with no path/query/fragment. |
 | `DASHBOARD_GATEWAY_OPERATOR_SESSION_ENABLED` | `src/gateway/operator-config.ts` | off | Gateway-backed operator session forwarding; only the exact value `true` enables (fail-closed). |
+| `DASHBOARD_GATEWAY_PROXY_ACK` | `src/server.ts` | unset | Required when gateway operator-session mode is on: set to `same-origin` to acknowledge the reverse proxy maps `/operator/*` (including the gateway login redirect) onto this origin. Without it the server **fails fast at boot** rather than serving an undiagnosable login redirect loop (rm-127; see `docs/runbooks/gateway-access.md`). |
 | `DASHBOARD_GITHUB_APP_ID` | `src/server.ts` | unset | GitHub App id; together with the key below — when either is unset the GitHub data layer is disabled and an empty snapshot is served with a warning. |
 | `DASHBOARD_GITHUB_APP_KEY` | `src/server.ts` | unset | GitHub App private key (multiline PEM). |
 | `DASHBOARD_HOST` | `src/server.ts` | `0.0.0.0` | Bind host; must be loopback for `DASHBOARD_DEV_AUTOLOGIN` to be honored. |

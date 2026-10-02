@@ -111,6 +111,7 @@ async function buildGatewayApp(client: OperatorClient) {
     getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
     operatorUiEnabled: false,
     gatewayOperatorSessionEnabled: true,
+    gatewayProxyAcknowledged: true,
     gatewayOperatorOrigin: 'https://dashboard.fro.bot',
     operatorClient: client,
   })

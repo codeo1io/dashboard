@@ -154,6 +154,36 @@ const tokenCache = new Map<number, CachedToken>()
 
 const TOKEN_EXPIRY_BUFFER_MS = 60_000 // refresh 1 min before expiry
 
+/**
+ * Upper bound on cached installation tokens. Insertion-ordered Map eviction,
+ * LRU-style: getCachedToken re-inserts an entry on every hit, so the drop
+ * order tracks recency of USE rather than first insertion — when the cache
+ * is full and a NEW installation id is being cached, the least-recently-used
+ * entry goes first (review fix 2026-09-26: plain FIFO evicted the hottest
+ * entry under churn). The live installation census is normally far smaller;
+ * this bound exists so churn (install/uninstall cycles) can never grow the
+ * map without limit (2026-09-26, cycle batch B2b).
+ */
+const TOKEN_CACHE_MAX = 32
+
+/** Drop entries whose tokens are fully expired (not merely near-expiry). */
+function sweepExpiredTokens(now = Date.now()): void {
+  for (const [installationId, cached] of tokenCache) {
+    if (now >= cached.expiresAt) {
+      tokenCache.delete(installationId)
+    }
+  }
+}
+
+/** Drop cached tokens for installations absent from a successful census. */
+function pruneTokenCache(knownInstallationIds: ReadonlySet<number>): void {
+  for (const installationId of tokenCache.keys()) {
+    if (!knownInstallationIds.has(installationId)) {
+      tokenCache.delete(installationId)
+    }
+  }
+}
+
 function getCachedToken(installationId: number): string | null {
   const cached = tokenCache.get(installationId)
   if (cached === undefined) return null
@@ -161,10 +191,25 @@ function getCachedToken(installationId: number): string | null {
     tokenCache.delete(installationId)
     return null
   }
+  // LRU refresh: re-insert on hit so eviction order tracks recency of use.
+  tokenCache.delete(installationId)
+  tokenCache.set(installationId, cached)
   return cached.token
 }
 
 function setCachedToken(installationId: number, token: string, expiresAt: Date | null): void {
+  // Opportunistic hygiene on every insert (2026-09-26, cycle batch B2b):
+  // expired entries left behind by departed installations used to linger
+  // forever (entries were only ever deleted on their own re-access), and the
+  // LRU-style bound below keeps install/uninstall churn from growing the map
+  // without limit.
+  sweepExpiredTokens()
+  if (!tokenCache.has(installationId) && tokenCache.size >= TOKEN_CACHE_MAX) {
+    const lru = tokenCache.keys().next()
+    if (!lru.done) {
+      tokenCache.delete(lru.value)
+    }
+  }
   // rm-185: honor the API-provided expiry, but CAP it at the historical
   // 55-min guess — a far-future expiry can never extend a token's cached
   // life beyond the pre-seam behavior. The cap doubles as the fallback when
@@ -276,8 +321,17 @@ export async function enumerateRepos(
   }
 
   if (installations.length === 0) {
+    // Prune against the (empty) census before the early return — an empty
+    // census means NO installations are reachable, so no cached token can
+    // still be needed.
+    pruneTokenCache(new Set<number>())
     return ok({repos: [], installations: [], failedInstallationIds: []})
   }
+
+  // The successful census is the ground truth for which installation tokens
+  // may still be needed — drop tokens for installations that no longer exist
+  // instead of leaving them to expire silently in the map.
+  pruneTokenCache(new Set(installations.map(installation => installation.id)))
 
   logger.debug('Enumerating repos across installations', {count: installations.length})
 
