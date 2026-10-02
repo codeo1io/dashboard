@@ -26,14 +26,21 @@ minimumReleaseAgeExclude:
   - vite@8.3.1
 
 overrides:
-  brace-expansion@2: '>=2.1.2 <3.0.0'
-  brace-expansion@5: '>=5.0.7 <6.0.0'
-  fast-uri@3: '>=3.1.5 <4.0.0'
+  # rm-282 (2026-10-03): floors raised to the patched lines — every entry
+  # below now admits only audit-clean versions. brace-expansion GHSA-q2hr
+  # (2.1.7 / 5.0.12 are the line tips), fast-uri GHSA-jvvf+qw65 (3.1.8 is the
+  # 3.x tip; 3.1.9 unpublished), undici GHSA-3jxr (no 7.x fix exists — the
+  # durable floor pairs with jsdom 30.1.1, whose undici dep is ^8.10.2).
+  brace-expansion@2: '>=2.1.7 <3.0.0'
+  brace-expansion@5: '>=5.0.12 <6.0.0'
+  fast-uri@3: '>=3.1.8 <4.0.0'
   # GHSA-82x6-q7mm-w9cf — toml is dev-transitive via
   # @opencode-ai/plugin>effect; >=4.2.0 is the patched line
   # (rescued by content from run b4aac9ba / PR #82 via cycle-13;
   # the batch's internal rm-171 numbering collided with landed ids).
   toml: '>=4.2.0'
-  undici@7: '>=7.29.0 <8.0.0'
+  # selector moved @7→@8 with the jsdom 29→30 pair; jsdom 30.1.1 is the
+  # tree's only undici dependent
+  undici@8: '>=8.10.2 <9.0.0'
 
 shamefullyHoist: true
