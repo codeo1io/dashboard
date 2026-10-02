@@ -280,6 +280,20 @@ export function checkRateLimit(ip: string, now: number = Date.now(), pathClass?:
 }
 
 /**
+ * Seconds until the given IP's current rate-limit window resets (rm-316).
+ * Used for the Retry-After header on 429s so operators (and well-behaved
+ * clients) can see when the budget returns instead of guessing. Defensive
+ * minimum of 1; the caller only consults it immediately after a rejection,
+ * where an entry always exists.
+ */
+export function rateLimitRetryAfterSeconds(ip: string, now: number = Date.now()): number {
+  const entry = rateLimitMap.get(ip)
+  if (entry === undefined) return 1
+  const resetAt = entry.windowStart + RATE_LIMIT_WINDOW_MS
+  return Math.max(1, Math.ceil((resetAt - now) / 1000))
+}
+
+/**
  * Injectable config for `buildDashboardApp`.
  * All fields optional — production reads from env; tests inject fakes.
  */
@@ -702,8 +716,9 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       }
 
       if (!checkRateLimit(ip, Date.now(), classifyRateLimitPath(path))) {
-        logger.warning('Rate limit exceeded', {ip, path})
-        return c.text('Too Many Requests', 429)
+        const retryAfter = rateLimitRetryAfterSeconds(ip)
+        logger.warning('Rate limit exceeded', {ip, path, retryAfter})
+        return c.text('Too Many Requests', 429, {'retry-after': String(retryAfter)})
       }
     }
 

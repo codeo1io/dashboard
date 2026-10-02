@@ -176,6 +176,32 @@ describe('buildInstallationsClient — listInstallations pagination', () => {
     // Only one page request
     expect(requestFn).toHaveBeenCalledTimes(1)
   })
+
+  it('rm-315: an always-full pager stops at the 50-page hard cap (bounded enumeration)', async () => {
+    const {buildInstallationsClient} = await import('../src/github/installations.ts')
+
+    // A misbehaving upstream: every page comes back exactly full, forever.
+    // The only in-range exits are the short-page and total_count conditions,
+    // so without the cap this loops until the caller's withDeadline kills the
+    // whole refresh.
+    const fullPage = Array.from({length: 100}, (_, i) => ({
+      id: i + 1,
+      account: {login: `org-${i + 1}`},
+    }))
+    const requestFn = vi.fn().mockImplementation(async () => ({data: fullPage}))
+
+    const fakeAppClient = {
+      octokit: {request: requestFn},
+      mintInstallationToken: vi.fn(),
+    }
+
+    const client = buildInstallationsClient(fakeAppClient as unknown as Parameters<typeof buildInstallationsClient>[0])
+    const installations = await client.listInstallations()
+
+    // Exactly the hard cap of pages, then a bounded exit with the partial list.
+    expect(requestFn).toHaveBeenCalledTimes(50)
+    expect(installations).toHaveLength(5_000)
+  })
 })
 
 // ---------------------------------------------------------------------------

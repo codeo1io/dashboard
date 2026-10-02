@@ -154,6 +154,14 @@ const tokenCache = new Map<number, CachedToken>()
 
 const TOKEN_EXPIRY_BUFFER_MS = 60_000 // refresh 1 min before expiry
 
+/**
+ * rm-315: hard page cap for installation/repo enumeration loops. 50 pages ×
+ * 100 per page = 5000 records per enumeration — far above the real footprint,
+ * but bounded before the caller's withDeadline kills the whole refresh on a
+ * misbehaving upstream that always returns exactly-full pages.
+ */
+const ENUMERATION_PAGES_HARD_CAP = 50
+
 function getCachedToken(installationId: number): string | null {
   const cached = tokenCache.get(installationId)
   if (cached === undefined) return null
@@ -370,6 +378,15 @@ async function listInstallationReposWithToken(token: string): Promise<readonly O
     }
     if (repos.length >= data.total_count || data.repositories.length < 100) break
     page++
+    if (page > ENUMERATION_PAGES_HARD_CAP) {
+      // rm-315: defense-in-depth — log and serve the partial union rather than
+      // looping until the caller's deadline kills the refresh.
+      logger.warning('Installation repository enumeration hit the page cap; serving partial union', {
+        pages: ENUMERATION_PAGES_HARD_CAP,
+        reposSoFar: repos.length,
+      })
+      break
+    }
   }
   return repos
 }
@@ -396,6 +413,14 @@ export function buildInstallationsClient(appClient: DashboardAppClient): Install
       }
       if (data.length < 100) break
       page++
+      if (page > ENUMERATION_PAGES_HARD_CAP) {
+        // rm-315: same defense-in-depth as the repo enumeration loop above.
+        logger.warning('App installation enumeration hit the page cap; serving partial list', {
+          pages: ENUMERATION_PAGES_HARD_CAP,
+          installationsSoFar: installations.length,
+        })
+        break
+      }
     }
     return installations
   }

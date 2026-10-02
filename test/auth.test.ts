@@ -477,6 +477,71 @@ describe('OAuth flow', () => {
       expect(res.status).toBe(413)
     })
 
+    it('POST /auth/logout with an oversized CHUNKED body → 413 before buffering, stream cancelled (rm-309)', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat'})
+      const sm = new SessionManager(TEST_KEY)
+      const sessionCookie = sm.sign('octocat')
+      // No content-length: a ReadableStream body is sent chunked, so the rm-268
+      // declared-length precheck never sees it. readBodyCapped must count bytes
+      // as it reads and cancel the stream once the cap is exceeded.
+      let pulled = 0
+      let cancelled = false
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulled++
+          controller.enqueue(new TextEncoder().encode('x'.repeat(4096)))
+        },
+        cancel() {
+          cancelled = true
+        },
+      })
+      const request = new Request('http://localhost/auth/logout', {
+        method: 'POST',
+        headers: {
+          cookie: `session=${sessionCookie}`,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: stream,
+        // Node's fetch requires `duplex: 'half'` to stream a request body
+        // without a content-length (chunked transfer).
+        ...({duplex: 'half'} as RequestInit),
+      })
+      const res = await app.request(request)
+      expect(res.status).toBe(413)
+      // The reader must not have drained an unbounded stream: the cap (16 KiB)
+      // is hit after at most a handful of 4 KiB pulls, and the stream is cancelled.
+      expect(pulled).toBeLessThanOrEqual(6)
+      expect(cancelled).toBe(true)
+    })
+
+    it('POST /auth/logout with a within-cap CHUNKED body → parsed normally (rm-309)', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat'})
+      const sm = new SessionManager(TEST_KEY)
+      const sessionCookie = sm.sign('octocat')
+      const csrfToken = deriveLogoutCsrfToken(TEST_KEY, 'octocat')
+      const payload = new TextEncoder().encode(`csrf_token=${csrfToken}`)
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(payload)
+          controller.close()
+        },
+      })
+      const request = new Request('http://localhost/auth/logout', {
+        method: 'POST',
+        headers: {
+          cookie: `session=${sessionCookie}`,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: stream,
+        // Node's fetch requires `duplex: 'half'` to stream a request body
+        // without a content-length (chunked transfer).
+        ...({duplex: 'half'} as RequestInit),
+      })
+      const res = await app.request(request)
+      expect([302, 303]).toContain(res.status)
+      expect(res.headers.get('location')).toContain('/auth/login')
+    })
+
     it('POST /auth/logout with a non-urlencoded content type → 415 (rm-268)', async () => {
       const app = await buildTestApp({operatorLogin: 'octocat'})
       const sm = new SessionManager(TEST_KEY)
