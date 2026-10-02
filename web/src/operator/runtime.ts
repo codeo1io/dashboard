@@ -188,15 +188,6 @@ const _streamSpecifier = '/static/operator-stream.js' + '?manual=1'
 const _launchSpecifier = '/static/operator-launch.js' + '?manual=1'
 const _runIndexSpecifier = '/static/operator-run-index.js' + '?manual=1'
 
-// Active-stream state owned by the runtime seam.
-// Only one stream is active at a time; switching cards closes the prior handle first.
-let _activeStreamHandle: {close(): void} | null = null
-
-// The runId whose stream is currently attached (mirrors _activeStreamHandle's target).
-// Used by onSelectRun to distinguish "expand a new run" (attach) from "select the
-// already-expanded run again" (collapse) — the single-open accordion's decision point.
-let _activeStreamRunId: string | null = null
-
 /**
  * Write the expanded runId to location.hash. runId is used ONLY for setting the
  * hash fragment here — never interpolated into HTML, textContent, or a logger.
@@ -222,23 +213,63 @@ function _clearRunHash(): void {
   }
 }
 
-function _closeActiveStream(): void {
-  if (_activeStreamHandle !== null) {
-    try {
-      _activeStreamHandle.close()
-    } catch {
-      // ignore close errors
+/**
+ * Active-stream ownership, scoped to ONE runtime instance (rm-283).
+ *
+ * Historically the handle and runId were module-level singletons shared by
+ * every runtime instance. Under React StrictMode's double-mount, mount1's
+ * late-resolving cleanup could then close the singleton handle AFTER mount2
+ * had attached its own stream — closing mount2's just-opened stream. Each
+ * defaultRuntimeLoader() call now creates its own owner, so a stale cleanup
+ * can only ever release the stream its own instance attached.
+ *
+ * Within one owner the single-open accordion invariant is unchanged: only one
+ * stream is active at a time, and attach() closes the prior handle first.
+ * activeRunId is what lets onSelectRun distinguish "expand a new run" (attach)
+ * from "select the already-expanded run again" (collapse).
+ *
+ * Exported for direct testing (rm-283's two-instance lifecycle test).
+ */
+export function createActiveStreamOwner(): {
+  attach: (handle: {close(): void}, runId: string) => void
+  close: () => void
+  readonly activeRunId: string | null
+} {
+  // The stream handle currently owned by THIS runtime instance.
+  let _activeStreamHandle: {close(): void} | null = null
+  // The runId whose stream is currently attached (mirrors _activeStreamHandle's target).
+  let _activeStreamRunId: string | null = null
+
+  function _closeActiveStream(): void {
+    if (_activeStreamHandle !== null) {
+      try {
+        _activeStreamHandle.close()
+      } catch {
+        // ignore close errors
+      }
+      _activeStreamHandle = null
     }
-    _activeStreamHandle = null
+    // Clear the stale-eviction-protection marker on the previously-active card so a
+    // collapsed card doesn't keep looking stream-attached until some future
+    // markRunStreamAttached call happens to overwrite it (or never does).
+    if (_activeStreamRunId !== null && typeof document !== 'undefined') {
+      const card = document.querySelector(`[data-run-id="${CSS.escape(_activeStreamRunId)}"]`)
+      if (card !== null) delete (card as HTMLElement).dataset.streamAttached
+    }
+    _activeStreamRunId = null
   }
-  // Clear the stale-eviction-protection marker on the previously-active card so a
-  // collapsed card doesn't keep looking stream-attached until some future
-  // markRunStreamAttached call happens to overwrite it (or never does).
-  if (_activeStreamRunId !== null && typeof document !== 'undefined') {
-    const card = document.querySelector(`[data-run-id="${CSS.escape(_activeStreamRunId)}"]`)
-    if (card !== null) delete (card as HTMLElement).dataset.streamAttached
+
+  return {
+    attach(handle, runId) {
+      _closeActiveStream()
+      _activeStreamHandle = handle
+      _activeStreamRunId = runId
+    },
+    close: _closeActiveStream,
+    get activeRunId() {
+      return _activeStreamRunId
+    },
   }
-  _activeStreamRunId = null
 }
 
 async function defaultRuntimeLoader(opts?: {
@@ -249,6 +280,10 @@ async function defaultRuntimeLoader(opts?: {
   onRunLaunched?: (runId: string, card: HTMLElement) => void
   onStateChange?: (state: OperatorState) => void
 }): Promise<() => void> {
+  // rm-283: active-stream ownership is INSTANCE-scoped — one owner per loader
+  // call (one per runtime instance), never module-shared, so a stale StrictMode
+  // cleanup cannot close another instance's stream. See createActiveStreamOwner.
+  const streamOwner = createActiveStreamOwner()
   const streamMod = await import(/* @vite-ignore */ _streamSpecifier) as {
     bootstrapOperatorStreams?: (opts?: {endpointBase?: string; fixtureSessionId?: string}) => void
     resetBootstrapState?: () => void
@@ -297,7 +332,11 @@ async function defaultRuntimeLoader(opts?: {
   }
 
   function _attachStream(runId: string, statusEl: Element | null, noticeEl: Element | null): void {
-    _closeActiveStream()
+    // Release any stream THIS instance already owns before attaching. attach()
+    // would close it too, but closing up front preserves the original semantics
+    // where a missing or throwing initOperatorStream still releases the prior
+    // stream instead of leaving it dangling as "active".
+    streamOwner.close()
 
     if (typeof streamMod.initOperatorStream !== 'function') return
 
@@ -319,8 +358,7 @@ async function defaultRuntimeLoader(opts?: {
         endpointBase: opts?.endpointBase,
         fixtureSessionId: opts?.fixtureSessionId,
       })
-      _activeStreamHandle = handle
-      _activeStreamRunId = runId
+      streamOwner.attach(handle, runId)
       if (typeof runIndexMod.markRunStreamAttached === 'function') {
         runIndexMod.markRunStreamAttached(runId)
       }
@@ -345,8 +383,8 @@ async function defaultRuntimeLoader(opts?: {
   //   (if any) and attach the new one. _attachStream already closes the prior
   //   handle first, so this covers both "nothing was open" and "switching cards."
   const onSelectRun = (runId: string) => {
-    if (_activeStreamRunId === runId) {
-      _closeActiveStream()
+    if (streamOwner.activeRunId === runId) {
+      streamOwner.close()
       _clearRunHash()
       return
     }
@@ -447,8 +485,8 @@ async function defaultRuntimeLoader(opts?: {
   }
 
   return () => {
-    // Close the active stream handle on cleanup.
-    _closeActiveStream()
+    // Close the stream handle owned by THIS runtime instance on cleanup.
+    streamOwner.close()
     if (typeof streamMod.resetBootstrapState === 'function') {
       streamMod.resetBootstrapState()
     }
@@ -470,7 +508,9 @@ async function defaultRuntimeLoader(opts?: {
  *
  * One lifecycle owner: React calls this once when the shell is ready and calls
  * cleanup() on unmount or auth expiry. React Strict Mode double-effects are safe
- * because cleanup() is idempotent.
+ * because cleanup() is idempotent AND the active-stream handle is instance-scoped
+ * (rm-283, createActiveStreamOwner) — a late first-mount cleanup can never close
+ * the second mount's just-attached stream.
  *
  * @param opts - Runtime options including container, state change callback, and
  *               optional injectable runtime loader for testing.
