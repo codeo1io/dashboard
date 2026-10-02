@@ -196,17 +196,68 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
   // CSRF read. Mirrors the listener ingest cap (readBodyCapped /
   // MAX_INGEST_BODY_BYTES). The real client (web/src/shell/AppShell.tsx) posts
   // urlencoded `csrf_token`; other encodings are 415, never parsed.
+  // rm-268 rider (2026-10-02, run 18737b9a cycle-4 B2): the first landing
+  // rejected on declared content-length and then `c.req.text()` — which
+  // buffers the ENTIRE body before any check runs — so
+  // `Transfer-Encoding: chunked` (no content-length header) bypassed the cap
+  // on a route outside the rate limiter. The read is now a streaming byte cap
+  // (readLogoutBodyCapped below): declared length is rejected up front when
+  // present, and the stream itself is counted byte-wise with reader.cancel()
+  // on breach — chunked, lying-length, and declared-oversize bodies all fail
+  // closed at the cap before any parse.
   const MAX_LOGOUT_BODY_BYTES = 16384
 
-  router.post('/logout', async c => {
-    const declaredLength = Number(c.req.header('content-length') ?? '0')
-    if (Number.isFinite(declaredLength) && declaredLength > MAX_LOGOUT_BODY_BYTES) {
-      logger.warning('Logout rejected: oversized body declared', {declaredLength})
-      return c.text('Payload Too Large', 413)
+  /**
+   * Minimal shape of ReadableStreamDefaultReader.read() — the DOM global
+   * type is not resolvable in this TS lib configuration (mirrors listener.ts).
+   */
+  type LogoutChunkResult =
+    | {readonly done: true}
+    | {readonly done: false; readonly value: Uint8Array}
+
+  /**
+   * rm-268: streaming byte-capped body read for the pre-auth logout POST.
+   * Returns null when the body exceeds maxBytes — either declared up front
+   * (rejected before reading a byte) or crossed mid-stream (reader cancelled,
+   * the remaining bytes are never buffered) — so no encoding of the request
+   * can buffer past the cap. Mirrors readBodyCapped in src/routes/listener.ts
+   * (the ingest twin); returns '' for a bodyless POST, preserving the empty
+   * parse (403 missing-token) behavior of the previous `c.req.text()` path.
+   */
+  async function readLogoutBodyCapped(req: Request, maxBytes: number): Promise<string | null> {
+    const contentLength = req.headers.get('content-length')
+    if (contentLength !== null) {
+      const declared = Number.parseInt(contentLength, 10)
+      if (Number.isFinite(declared) && declared > maxBytes) return null
     }
-    const rawBody = await c.req.text()
-    if (rawBody.length > MAX_LOGOUT_BODY_BYTES) {
-      logger.warning('Logout rejected: oversized body received', {bytes: rawBody.length})
+
+    const body = req.body
+    if (body === null) return ''
+
+    const reader = body.getReader()
+    const decoder = new TextDecoder()
+    let received = 0
+    let text = ''
+    for (;;) {
+      const result = (await reader.read()) as LogoutChunkResult
+      if (result.done) break
+      const value = result.value
+      received += value.byteLength
+      if (received > maxBytes) {
+        await reader.cancel().catch(() => undefined)
+        return null
+      }
+      text += decoder.decode(value, {stream: true})
+    }
+    return text + decoder.decode()
+  }
+
+  router.post('/logout', async c => {
+    const rawBody = await readLogoutBodyCapped(c.req.raw, MAX_LOGOUT_BODY_BYTES)
+    if (rawBody === null) {
+      logger.warning('Logout rejected: oversized body (declared or streamed over cap)', {
+        maxBytes: MAX_LOGOUT_BODY_BYTES,
+      })
       return c.text('Payload Too Large', 413)
     }
     const contentType = c.req.header('content-type') ?? ''

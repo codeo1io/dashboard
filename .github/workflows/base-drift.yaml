@@ -159,6 +159,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # rm-204 advisory-audit leg rider (2026-10-02, run 18737b9a cycle-4
+      # B4): pnpm audit reads the lockfile, so this job now needs the setup
+      # composite (pnpm + Node 24 + frozen install); the adjacent report
+      # steps shift onto the repo node pin, which is the house standard.
+      - name: 📦 Setup
+        uses: ./.github/actions/setup
+
       - name: Report packageManager pin vs upstream fro-bot/dashboard
         run: |
           set -euo pipefail
@@ -263,6 +270,41 @@ jobs:
 
           echo "checked $TOTAL packages, $DRIFT behind latest, $MAJOR_PINNED major-pinned by design"
           echo "checked: $TOTAL, behind latest: $DRIFT, major-pinned by design: $MAJOR_PINNED (rm-133) — dependabot owns the bumps (rm-102)" >> "$SUMMARY"
+
+      # rm-204 rider (2026-10-02, run 18737b9a cycle-4 B4): the advisory
+      # leg — dependency-review gates PR diffs only; nothing on main watched
+      # advisory state, so the dev-tree hits (19 at baseline, all cleared by
+      # the rm-277 floors in the same batch) grew unseen. Report-only by
+      # design, same contract as the pin legs: never red on registry state;
+      # the cure for real hits is a floor raise (rm-277) or a version bump,
+      # never silencing this step.
+      - name: Report dependency advisories (pnpm audit, warnings-only)
+        run: |
+          set -euo pipefail
+          echo '### Dependency advisories (pnpm audit)' >> "$GITHUB_STEP_SUMMARY"
+
+          report_audit() {
+            local scope="$1"
+            shift
+            local out=''
+            # pnpm audit exits non-zero when advisories exist; capture and
+            # annotate instead of failing the report-only job.
+            out="$(pnpm audit "$@" 2>&1)" || true
+            if printf '%s' "$out" | grep -q 'No known vulnerabilities found'; then
+              echo "- $scope: clean" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning::$scope dependency advisories present — see summary (cure: floor raise or version bump)"
+              {
+                echo "- $scope:"
+                echo '  ```'
+                printf '%s\n' "$out"
+                echo '  ```'
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          }
+
+          report_audit 'prod (shipped tree)' --prod
+          report_audit 'full (dev tree included)'
 
       - name: Report workflow action and image pins vs latest releases
         env:
