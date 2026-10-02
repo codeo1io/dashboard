@@ -14,6 +14,7 @@
 
 import type {RunStreamFrame} from '../src/gateway/operator-contract/sse-frames.ts'
 import type {Logger} from '../src/logger.ts'
+import fc from 'fast-check'
 import {describe, expect, it, vi} from 'vitest'
 import {FIXTURE_RUN_ID_FOR_TESTS, FIXTURE_SCENARIO_NAMES, serializeScenarioToSse} from '../src/gateway/operator-fixture-sse.ts'
 import {createOperatorSseReader, MAX_SSE_BUFFER_BYTES, parseSseChunk} from '../src/gateway/operator-sse-reader.ts'
@@ -1142,6 +1143,34 @@ describe('parseSseChunk — CRLF normalization', () => {
   })
 })
 
+// rm-477 regressions: both readers used to normalize CRLF per read() chunk, so
+// a chunk boundary landing inside a CRLF pair left the pair as two newlines —
+// a phantom record boundary that silently dropped the frame.
+const rm265StatusPayload = {
+  runId: 'run-001',
+  entityRef: 'fro-bot/agent',
+  surface: 'github',
+  phase: 'EXECUTING',
+  status: 'running',
+  startedAt: '2026-06-18T20:00:00Z',
+  stale: false,
+}
+const rm265ReadyText = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+const rm265StatusText = `event: status\r\ndata: ${JSON.stringify(rm265StatusPayload)}\r\n\r\n`
+
+async function collectFrames(chunks: string[]): Promise<{events: RunStreamFrame[]; errors: Error[]}> {
+  const {fetchImpl} = makeFakeFetch(makeResponse(200, chunks))
+  const reader = createOperatorSseReader({fetchImpl})
+  const events: RunStreamFrame[] = []
+  const errors: Error[] = []
+  await reader.open('/operator/runs/run-001/stream', {
+    onEvent: frame => events.push(frame),
+    onError: err => errors.push(err),
+    onClose: () => {},
+  })
+  return {events, errors}
+}
+
 describe('createOperatorSseReader — CRLF normalization in stream', () => {
   it('parses ready+status frames delivered with CRLF delimiters', async () => {
     const statusPayload = {
@@ -1171,6 +1200,44 @@ describe('createOperatorSseReader — CRLF normalization in stream', () => {
     expect(events).toHaveLength(2)
     expect(events[0]?.type).toBe('ready')
     expect(events[1]?.type).toBe('status')
+  })
+
+  it('still parses a CRLF frame whose CR and LF land in different read chunks', async () => {
+    // Split exactly at the CR of the status frame's first record separator.
+    const idx = rm265StatusText.indexOf('\r\n')
+    const {events, errors} = await collectFrames([
+      rm265ReadyText + rm265StatusText.slice(0, idx + 1),
+      rm265StatusText.slice(idx + 1),
+    ])
+    expect(errors).toHaveLength(0)
+    expect(events.map(frame => frame.type)).toEqual(['ready', 'status'])
+  })
+
+  it('still parses a CRLF frame split between the two separators of its record boundary', async () => {
+    // Split after the first CRLF of the '…\r\n\r\n' terminator.
+    const terminator = rm265StatusText.length - 2
+    const {events, errors} = await collectFrames([
+      rm265ReadyText + rm265StatusText.slice(0, terminator),
+      rm265StatusText.slice(terminator),
+    ])
+    expect(errors).toHaveLength(0)
+    expect(events.map(frame => frame.type)).toEqual(['ready', 'status'])
+  })
+
+  it('property: any split of a CRLF stream yields the same frames as a single chunk', async () => {
+    const whole = rm265ReadyText + rm265StatusText
+    await fc.assert(
+      fc.asyncProperty(fc.nat(whole.length - 1), async split => {
+        const single = await collectFrames([whole])
+        const splitFrames = await collectFrames([whole.slice(0, split), whole.slice(split)])
+        expect(single.errors).toHaveLength(0)
+        expect(splitFrames.errors).toHaveLength(0)
+        expect(splitFrames.events.map(frame => frame.type)).toEqual(
+          single.events.map(frame => frame.type),
+        )
+      }),
+      {numRuns: 300},
+    )
   })
 })
 

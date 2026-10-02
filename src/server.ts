@@ -20,7 +20,8 @@ import type {AggregatorSnapshot, SnapshotStore} from './github/aggregator.ts'
 import type {MetadataReader} from './github/metadata.ts'
 import type {ListenerStore} from './listener/store.ts'
 import {Buffer} from 'node:buffer'
-import {existsSync} from 'node:fs'
+import {createHash} from 'node:crypto'
+import {existsSync, readFileSync, statSync} from 'node:fs'
 import {readFile} from 'node:fs/promises'
 import {join} from 'node:path'
 import process from 'node:process'
@@ -1037,16 +1038,51 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   // Root / owns the operator shell and always depends on these modules.
   // Mounted unconditionally so they are available regardless of operatorUiEnabled.
   // isPublicPath already allows these paths so auth middleware passes them through.
+  //
+  // rm-478: explicit revalidation policy for these three unversioned assets —
+  // their URLs are load-bearing import strings in the operator shell (unhashable
+  // without a loader change) and the service worker is a self-purging kill-switch,
+  // so without an explicit policy there is NO client caching layer at all: every
+  // operator launch refetched ~150KB on heuristic caching alone. no-cache + a
+  // content-hash ETag (recomputed only when mtime moves) lets browsers revalidate
+  // cheaply; a matching If-None-Match short-circuits the transfer with a 304.
+  const operatorRuntimeAssetCache = new Map<string, {etag: string; mtimeMs: number}>()
+  const operatorRuntimeCaching = async (c: Context, next: () => Promise<void>): Promise<void | Response> => {
+    await next()
+    if (c.res.status !== 200) return
+    let etag: string | undefined
+    try {
+      const absolutePath = join('./public', c.req.path.replace(/^\/static\//, ''))
+      const stats = statSync(absolutePath)
+      const cached = operatorRuntimeAssetCache.get(absolutePath)
+      if (cached !== undefined && cached.mtimeMs === stats.mtimeMs) {
+        etag = cached.etag
+      } else {
+        etag = `"${createHash('sha256').update(readFileSync(absolutePath)).digest('hex').slice(0, 32)}"`
+        operatorRuntimeAssetCache.set(absolutePath, {etag, mtimeMs: stats.mtimeMs})
+      }
+    } catch {
+      return // unreadable file — serveStatic's own not-found path already ran
+    }
+    c.res.headers.set('Cache-Control', 'no-cache')
+    c.res.headers.set('ETag', etag)
+    if (c.req.header('If-None-Match') === etag) {
+      c.res = new Response(null, {status: 304, headers: c.res.headers})
+    }
+  }
   app.use(
     '/static/operator-stream.js',
+    operatorRuntimeCaching,
     serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}),
   )
   app.use(
     '/static/operator-launch.js',
+    operatorRuntimeCaching,
     serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}),
   )
   app.use(
     '/static/operator-run-index.js',
+    operatorRuntimeCaching,
     serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}),
   )
 

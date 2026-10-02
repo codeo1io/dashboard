@@ -178,6 +178,59 @@ describe('static asset serving — /static/operator.css', () => {
 })
 
 // ---------------------------------------------------------------------------
+// rm-478 — explicit caching policy for the unversioned operator runtime JS
+// ---------------------------------------------------------------------------
+
+describe('operator runtime JS caching policy (rm-478)', () => {
+  it('GET /static/operator-stream.js serves no-cache with a content-hash ETag', async () => {
+    const app = await buildTestApp(false) // runtime JS is flag-independent
+    const res = await app.request('/static/operator-stream.js')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-cache')
+    const etag = res.headers.get('etag')
+    expect(etag).toBeTruthy()
+    expect(etag).toMatch(/^"[0-9a-f]{32}"$/)
+  })
+
+  it('the ETag is deterministic across apps (content hash, not instance state)', async () => {
+    const appA = await buildTestApp(false)
+    const appB = await buildTestApp(false)
+    const resA = await appA.request('/static/operator-stream.js')
+    const resB = await appB.request('/static/operator-stream.js')
+    expect(resA.headers.get('etag')).toBe(resB.headers.get('etag'))
+  })
+
+  it('a matching If-None-Match short-circuits the transfer with 304', async () => {
+    const app = await buildTestApp(false)
+    const first = await app.request('/static/operator-stream.js')
+    const etag = first.headers.get('etag') ?? ''
+    const revalidated = await app.request('/static/operator-stream.js', {headers: {'If-None-Match': etag}})
+    expect(revalidated.status).toBe(304)
+    expect(revalidated.headers.get('etag')).toBe(etag)
+    expect(revalidated.headers.get('cache-control')).toBe('no-cache')
+    await expect(revalidated.text()).resolves.toBe('')
+  })
+
+  it('a non-matching If-None-Match still serves the full asset (200)', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/static/operator-stream.js', {headers: {'If-None-Match': '"stale"'}})
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-cache')
+    expect((await res.text()).length).toBeGreaterThan(0)
+  })
+
+  it('operator-launch.js and operator-run-index.js carry the same policy', async () => {
+    const app = await buildTestApp(false)
+    for (const asset of ['/static/operator-launch.js', '/static/operator-run-index.js']) {
+      const res = await app.request(asset)
+      expect(res.status, asset).toBe(200)
+      expect(res.headers.get('cache-control'), asset).toBe('no-cache')
+      expect(res.headers.get('etag'), asset).toMatch(/^"[0-9a-f]{32}"$/)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
 // /operator → / redirect
 // ---------------------------------------------------------------------------
 
