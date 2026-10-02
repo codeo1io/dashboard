@@ -55,6 +55,10 @@ async function buildApp(operatorClient: OperatorClient) {
   return buildDashboardApp({
     cookieKey: TEST_KEY,
     gatewayOperatorSessionEnabled: true,
+    // rm-127 topology guard: gateway mode refuses to construct without the
+    // same-origin-proxy acknowledgement (landed 2026-10-03 from run
+    // 4084c786aa67 batch B3 — this suite predates it and must ack explicitly).
+    gatewayProxyAcknowledged: true,
     operatorClient,
     gatewaySessionCache: createGatewaySessionCache(() => fakeNow),
   })

@@ -234,14 +234,18 @@ export function buildPushClient(opts?: BuildPushClientOptions): PushClient {
   }
 }
 
-/** Mint a fresh unique idempotency key. Memory-only — never persisted or logged. */
-export function mintIdempotencyKey(): string {
+/**
+ * Mint a fresh unique idempotency key, or null when this environment cannot
+ * mint one securely (no crypto.randomUUID). Memory-only — never persisted or
+ * logged. Callers MUST fail closed on null: never fall back to a weaker
+ * generator (e.g. Math.random) — a predictable key would defeat the gateway's
+ * zero-duplicate-subscription retry invariant.
+ */
+export function mintIdempotencyKey(): string | null {
   if (globalThis.crypto !== undefined && typeof globalThis.crypto.randomUUID === 'function') {
     return globalThis.crypto.randomUUID()
   }
-  const ts = Date.now().toString(36)
-  const rand = Math.random().toString(36).slice(2)
-  return `${ts}-${rand}`
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -291,7 +295,7 @@ export interface SubscribeDeps {
   readonly pushClient: PushClient
   readonly signal?: AbortSignal
   readonly swReadyTimeoutMs?: number
-  readonly mintIdempotencyKey?: () => string
+  readonly mintIdempotencyKey?: () => string | null
 }
 
 const DEFAULT_SW_READY_TIMEOUT_MS = 5000
@@ -368,6 +372,11 @@ export async function subscribeOptIn(deps: SubscribeDeps): Promise<SubscribeOutc
   const getSupport = deps.getSupport ?? getPushSupport
   const getPermission = deps.getPermission ?? getNotificationPermission
   const mintKey = deps.mintIdempotencyKey ?? mintIdempotencyKey
+  // Fail closed BEFORE any side effect: without a securely minted key the
+  // gateway's zero-duplicate-subscription retry invariant cannot be upheld,
+  // so a browser subscription must not even be started.
+  const idempotencyKey = mintKey()
+  if (idempotencyKey === null) return {kind: 'subscribe-failed'}
 
   const support = getSupport()
   if (support.needsInstall) return {kind: 'ios-not-installed'}
@@ -434,7 +443,7 @@ export async function subscribeOptIn(deps: SubscribeDeps): Promise<SubscribeOutc
   const postResult = await deps.pushClient.subscribePush(
     subscription.toJSON(),
     csrfResult.data,
-    mintKey(),
+    idempotencyKey,
     deps.signal,
   )
 
@@ -473,6 +482,10 @@ export async function subscribeOptIn(deps: SubscribeDeps): Promise<SubscribeOutc
  */
 export async function resubscribeStaleKey(deps: SubscribeDeps): Promise<SubscribeOutcome> {
   const mintKey = deps.mintIdempotencyKey ?? mintIdempotencyKey
+  // Same fail-closed rule as subscribeOptIn: no securely minted key → no
+  // browser (re)subscription attempt.
+  const idempotencyKey = mintKey()
+  if (idempotencyKey === null) return {kind: 'subscribe-failed'}
 
   const readyResult = await withTimeout(deps.serviceWorkerReady(), deps.swReadyTimeoutMs ?? DEFAULT_SW_READY_TIMEOUT_MS)
   if (readyResult === 'timeout') return classifySwReadiness(deps)
@@ -529,7 +542,6 @@ export async function resubscribeStaleKey(deps: SubscribeDeps): Promise<Subscrib
     return {kind: 'aborted'}
   }
 
-  const idempotencyKey = mintKey()
   const postResult = await deps.pushClient.subscribePush(subscription.toJSON(), csrfResult.data, idempotencyKey, deps.signal)
 
   if (!postResult.success) {
@@ -583,7 +595,7 @@ export interface UnsubscribeDeps {
   /** rm-272: bound on the local read — serviceWorker.ready never settles with no registration, and logout cleanup must not hang on it. */
   readonly localReadTimeoutMs?: number
   readonly pushClient: PushClient
-  readonly mintIdempotencyKey?: () => string
+  readonly mintIdempotencyKey?: () => string | null
 }
 
 /**
@@ -618,7 +630,12 @@ export async function unsubscribeOptOut(deps: UnsubscribeDeps): Promise<{readonl
     const csrfResult = await deps.pushClient.refreshCsrf()
     if (!csrfResult.success) return {gatewayUnsubscribeCalled: false}
 
-    await deps.pushClient.unsubscribePush(endpoint, csrfResult.data, mintKey())
+    // Fail closed on null: skip the gateway POST rather than send a weakly
+    // minted key. The local unsubscribe above already ran, so the browser is
+    // unsubscribed either way — only the gateway-side cleanup is skipped.
+    const idempotencyKey = mintKey()
+    if (idempotencyKey === null) return {gatewayUnsubscribeCalled: false}
+    await deps.pushClient.unsubscribePush(endpoint, csrfResult.data, idempotencyKey)
     return {gatewayUnsubscribeCalled: true}
   } catch {
     return {gatewayUnsubscribeCalled: false}
