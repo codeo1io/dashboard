@@ -106,6 +106,17 @@ export async function fetchListenerMessages(opts: {
       return { ok: false, reason: 'network' }
     }
 
+    // rm-421b: a followed redirect means the server bounced the request to the
+    // login surface — the SPA session expired. This is the same session-expiry
+    // class as rm-273's 401 above (gateway-mode auth returns a 302 that fetch
+    // follows onto the login page with a 200), so it reports the SAME
+    // `unauthenticated` reason — a distinct name here would fall through every
+    // consumer's expiry branch (App.tsx / Listener.tsx / Monitoring.tsx) and
+    // blame the network instead of offering the sign-in affordance.
+    if (res.redirected) {
+      return { ok: false, reason: 'unauthenticated' }
+    }
+
     const data = await res.json()
     if (!isPlainObject(data) || !Array.isArray(data.messages) || typeof data.unreadCount !== 'number') {
       return { ok: false, reason: 'contract-drift' }

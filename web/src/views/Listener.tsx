@@ -17,7 +17,15 @@ type ViewState =
   | { state: 'ready'; data: ListenerMessagesResponse }
 
 export const POLL_INTERVAL_MS = 30000
-/** rm-155: hard ceiling on a single poll — releases the latch even if the transport never settles. */
+/**
+ * rm-155: hard ceiling on a single poll — releases the latch even if the transport
+ * never settles, and aborts the in-flight request when the signal is honored.
+ *
+ * rm-421c: this is the value that actually ARMS the AbortSignal handed to
+ * fetchListenerMessages. Before it existed the controller was constructed but
+ * never aborted, leaving the api's 'timeout' branch dead code — useBoundedPoll
+ * (rm-251) now drives the race+abort, and this is the per-poll ceiling it uses.
+ */
 export const LISTENER_FETCH_TIMEOUT_MS = 15000
 
 export function ListenerChannel() {

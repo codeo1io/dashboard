@@ -18,4 +18,14 @@ jobs:
       - name: Dependency Review
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
+          # rm-421e rationale: 'high' blocks vulnerabilities with direct exploit
+          # impact (CVSS high/critical) while not failing the gate on unexploitable
+          # low/moderate advisories in the lockfile's transitive surface.
+          # 'critical'-only would silently pass high-severity drops; 'moderate'
+          # would make the gate noisy against routine transitive churn.
+          # Compensating controls for the passed low/moderate band (rm-421e
+          # acceptance): pnpm-workspace.yaml `minimumReleaseAge: 1440` (a 24h
+          # release-age gate on every install), weekly dependabot cadence with
+          # a 1-day cooldown (.github/dependabot.yml), and the committed
+          # lockfile installed with --frozen-lockfile (no floating resolution).
           fail-on-severity: high
