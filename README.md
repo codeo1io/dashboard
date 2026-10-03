@@ -145,6 +145,12 @@ it. Identifiers you may see in `src/server.ts` such as `RATE_LIMIT_MAX`, `RATE_L
 `RATE_LIMIT_MAX_PER_CLASS`, and `RATE_LIMIT_WINDOW_MS` are code constants (the per-class defaults
 the three `RATE_LIMIT_MAX_*` variables override), not environment variables.
 
+When a budget trips, the 429 response carries `Retry-After` — whole seconds until the shared fixed
+window resets (ceil, floored at 1; rm-602) — and `Cache-Control: no-store`; well-behaved clients
+back off for the advertised span instead of retrying blind. Budget classification keys on the
+percent-decoded request pathname (rm-601), so encoding a character of a path (`/%61uth/login`)
+cannot dodge its class budget.
+
 ## Development
 
 ```sh

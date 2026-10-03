@@ -63,6 +63,15 @@ The failure mode is invisible: the process is alive, "Waiting for file changes..
 - Any time `pnpm dev` is being reached for as a verification tool — its `--watch` is a developer-loop convenience, not a verification tool.
 - Any EADDRINUSE / "alive but not serving" symptom, or after an aborted run that may have left the port held.
 
+## Reuse discipline (rm-605)
+
+`playwright.config.ts` deliberately refuses to reuse an already-running local server unless you
+opt in with `PW_REUSE_SERVER=1`. `pnpm dev` serves the **prebuilt** `web/dist` — a leftover dev
+server on the port would hand the visual/e2e suite a stale build and green-lie about the current
+tree. When you want to attach to a server you started yourself (e.g. iterating on one spec),
+start it fresh, set `PW_REUSE_SERVER=1`, and kill it (and any orphans) with the recipe above when
+done. CI never reuses.
+
 ## Related
 
 - `docs/solutions/workflow-issues/pwa-service-worker-registration-invisible-to-unit-tests-2026-06-25.md` — *why* browser verification is required (this doc is *how* you stand up the server for it). Bidirectional sibling.

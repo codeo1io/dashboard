@@ -22,6 +22,7 @@
  */
 
 import type {AggregatorSnapshot, SnapshotStore} from './aggregator.ts'
+import {Buffer} from 'node:buffer'
 import {readFileSync, renameSync, writeFileSync} from 'node:fs'
 import {logger} from '../logger.ts'
 
@@ -93,7 +94,10 @@ export function createFileSnapshotStore(path: string | undefined): SnapshotStore
         // Missing/unreadable — normal on first boot; stay quiet + fail open.
         return null
       }
-      if (raw.length > MAX_SNAPSHOT_BYTES) {
+      // rm-604: bound BYTES, not UTF-16 code units — .length undercounts
+      // astral-plane characters 2x-4x, so an astral-heavy payload could slip
+      // past the guard while being up to 4x the intended max on disk.
+      if (Buffer.byteLength(raw, 'utf8') > MAX_SNAPSHOT_BYTES) {
         logPersistProblem('Snapshot cache exceeds size bound; ignoring (fail-open)', resolved, {
           length: raw.length,
         })
@@ -119,7 +123,8 @@ export function createFileSnapshotStore(path: string | undefined): SnapshotStore
         logPersistProblem('Snapshot serialization failed; skipping persist', resolved, error)
         return
       }
-      if (serialized.length > MAX_SNAPSHOT_BYTES) {
+      // rm-604: byte-exact twin of the persist guard (see above).
+      if (Buffer.byteLength(serialized, 'utf8') > MAX_SNAPSHOT_BYTES) {
         logger.warning('Snapshot exceeds size bound; not persisted', {path: resolved, length: serialized.length})
         return
       }

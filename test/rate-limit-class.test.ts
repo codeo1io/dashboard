@@ -14,7 +14,7 @@
  */
 import {Buffer} from 'node:buffer'
 import {afterEach, describe, expect, it} from 'vitest'
-import {buildDashboardApp, checkRateLimit, classifyRateLimitPath, resetRateLimitForTesting} from '../src/server.ts'
+import {buildDashboardApp, checkRateLimit, classifyRateLimitPath, decodePathname, resetRateLimitForTesting} from '../src/server.ts'
 
 const TEST_KEY = Buffer.from('testkey-ABCDEFGHIJKLMNOPQRSTUV12', 'utf8') // 32 bytes
 
@@ -274,5 +274,84 @@ describe('rm-129: X-Forwarded-For handling', () => {
       await app.request('/auth/login')
     }
     expect((await app.request('/auth/login')).status).toBe(429) // remote-address fallback bucket
+  })
+})
+
+describe('rm-601 — pathname gates run on the decoded form', () => {
+  /**
+   * Deterministically percent-encode the first ASCII letter of a path (≥1
+   * encoded octet) without changing which route the router matches.
+   */
+  const encodedVariant = (path: string): string => {
+    const idx = path.search(/[a-z]/)
+    expect(idx).toBeGreaterThan(-1)
+    return `${path.slice(0, idx)}%${path.charCodeAt(idx).toString(16)}${path.slice(idx + 1)}`
+  }
+
+  it('decodePathname: decodes escapes; malformed escapes fall back to raw, never throw', () => {
+    expect(decodePathname('/%61pi/status')).toBe('/api/status')
+    expect(decodePathname('/%E4%B8%AD')).toBe('/中')
+    expect(decodePathname('/%')).toBe('/%')
+    expect(decodePathname('/%zz')).toBe('/%zz')
+    expect(decodePathname('/a%2Fb')).toBe('/a/b')
+    expect(decodePathname('/plain')).toBe('/plain')
+  })
+
+  it('classifier property: percent-encoded variants of every surface classify identically to the plain form', () => {
+    // '/' is excluded: it has no letter to encode, and its '//'-family
+    // variants are slash-collapse territory (isPublicPath's collapse), not
+    // percent-decoding — a different, already-pinned normalization.
+    const surfaces = [
+      '/api/healthz',
+      '/api/status',
+      '/api/listener/messages',
+      '/api/listener/ingest',
+      '/auth/login',
+      '/auth/callback',
+      '/auth/logout',
+      '/auth/logout-csrf',
+      '/operator',
+      '/operator/runs',
+      '/assets/app.js',
+      '/nonexistent',
+    ]
+    for (const path of surfaces) {
+      expect(classifyRateLimitPath(decodePathname(encodedVariant(path)))).toBe(classifyRateLimitPath(path))
+    }
+  })
+
+  it('regression pin: the encoded operator flood trips at the plain threshold (assess 70-hits/0-four-29s repro)', async () => {
+    const app = await buildTestApp()
+    resetRateLimitForTesting()
+    let four29s = 0
+    for (let i = 0; i < 61; i++) {
+      // '/%61pi/status' decodes to '/api/status' → operator class, 60/min —
+      // before rm-601 the raw-pathname isSensitive gate skipped this path
+      // entirely (zero 429s across 70 hits, live-proven).
+      const res = await app.request('/%61pi/status')
+      if (res.status === 429) four29s++
+    }
+    expect(four29s).toBe(1)
+  })
+
+  it('auth parity: the encoded public path matches its plain form exactly (status + redirect target sans nonce)', async () => {
+    const app = await buildTestApp()
+    resetRateLimitForTesting()
+    const plain = await app.request('/auth/login')
+    resetRateLimitForTesting()
+    const encoded = await app.request('/%61uth/login')
+    expect(encoded.status).toBe(plain.status)
+    // /auth/login starts OAuth: the Location carries a per-request state
+    // nonce, so compare origin + pathname only.
+    const target = (loc: string | null): string => {
+      if (loc === null) return 'none'
+      try {
+        const u = new URL(loc, 'http://parity.local')
+        return u.origin + u.pathname
+      } catch {
+        return loc
+      }
+    }
+    expect(target(encoded.headers.get('location'))).toBe(target(plain.headers.get('location')))
   })
 })
