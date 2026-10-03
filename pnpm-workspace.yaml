@@ -46,7 +46,11 @@ overrides:
   brace-expansion@5: '>=5.0.12 <6.0.0'
   # fast-uri is dev-transitive via ajv@8 in the eslint lint chain;
   # GHSA-qw65-cvwx-89v3 + GHSA-58mr-gqgx-xq4g (both high; Dependabot alerts
-  # #30/#29) patch at 3.1.7, GHSA-hrr3-gc8f-f4qj (moderate) forces 3.1.8.
+  # #30/#29) patch at 3.1.7, GHSA-hrr3-gc8f-f4qj (moderate) forces 3.1.8 —
+  # the fleet-cycle-20 restatement (formerly rm-282, renumbered rm-499 at
+  # this integrate; see the INTEGRATE-MERGE comment in ROADMAP.md) adds
+  # that 3.1.6 was the vulnerable line the prior >=3.1.5 floor admitted
+  # (fro-bot/dashboard PR #538), already covered by this >=3.1.8 floor.
   fast-uri@3: '>=3.1.8 <4.0.0'
   # GHSA-82x6-q7mm-w9cf — toml is dev-transitive via
   # @opencode-ai/plugin>effect; >=4.2.0 is the patched line

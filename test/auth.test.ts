@@ -477,6 +477,116 @@ describe('OAuth flow', () => {
       expect(res.status).toBe(413)
     })
 
+    // rm-497: the read itself is bounded (shared readBodyCapped /
+    // MAX_REQUEST_BODY_BYTES — src/read-body.ts). The three wire shapes rm-268's
+    // post-hoc `.length` check could not defend against are pinned here:
+    // endless chunked, finite-but-over-cap with NO content-length, and a
+    // lying (under-declaring) Content-Length header.
+    it('POST /auth/logout endless chunked body over the cap → 413 with the stream cancelled, not drained (rm-497)', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat'})
+      const sm = new SessionManager(TEST_KEY)
+      const sessionCookie = sm.sign('octocat')
+
+      let pulledChunks = 0
+      const chunk = new Uint8Array(8192) // endless: 8 chunks × 8 KiB available, cap is 16 KiB
+      const endless = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulledChunks += 1
+          controller.enqueue(chunk)
+        },
+        cancel() {
+          /* reader.cancel() after crossing the cap lands here */
+        },
+      })
+
+      const req = new Request('http://localhost/auth/logout', {
+        method: 'POST',
+        headers: {
+          cookie: `session=${sessionCookie}`,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: endless,
+        duplex: 'half',
+      })
+
+      const res = await app.request(req)
+      expect(res.status).toBe(413)
+      // 8 KiB × 3 = 24 KiB crosses the 16 KiB cap, then cancel — the flood
+      // never gets to push the rest of the stream.
+      expect(pulledChunks).toBe(3)
+    })
+
+    it('POST /auth/logout finite body over the cap with NO content-length → 413 by the incremental byte count (rm-497)', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat'})
+      const sm = new SessionManager(TEST_KEY)
+      const sessionCookie = sm.sign('octocat')
+
+      let pulledChunks = 0
+      const chunk = new Uint8Array(8192) // finite: 4 chunks × 8 KiB = 32 KiB total, cap is 16 KiB
+      const finite = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulledChunks += 1
+          controller.enqueue(chunk)
+          if (pulledChunks >= 4) controller.close()
+        },
+        cancel() {
+          /* reader.cancel() after crossing the cap lands here */
+        },
+      })
+
+      const req = new Request('http://localhost/auth/logout', {
+        method: 'POST',
+        headers: {
+          cookie: `session=${sessionCookie}`,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body: finite,
+        duplex: 'half',
+      })
+
+      const res = await app.request(req)
+      // No content-length to precheck against — only the incremental count
+      // can fire, and it must fire BEFORE the stream closes at 32 KiB.
+      expect(res.status).toBe(413)
+      expect(pulledChunks).toBe(3)
+    })
+
+    it('POST /auth/logout with a lying (under-declaring) Content-Length → 413 by the incremental byte count (rm-497)', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat'})
+      const sm = new SessionManager(TEST_KEY)
+      const sessionCookie = sm.sign('octocat')
+
+      let pulledChunks = 0
+      const chunk = new Uint8Array(8192) // declares 10 bytes, actually ships 4 × 8 KiB
+      const lying = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulledChunks += 1
+          controller.enqueue(chunk)
+          if (pulledChunks >= 4) controller.close()
+        },
+        cancel() {
+          /* reader.cancel() after crossing the cap lands here */
+        },
+      })
+
+      const req = new Request('http://localhost/auth/logout', {
+        method: 'POST',
+        headers: {
+          cookie: `session=${sessionCookie}`,
+          'content-type': 'application/x-www-form-urlencoded',
+          'content-length': '10',
+        },
+        body: lying,
+        duplex: 'half',
+      })
+
+      const res = await app.request(req)
+      // The declared 10 passes the precheck — the incremental count must be
+      // the check that fires when the real wire bytes cross the cap.
+      expect(res.status).toBe(413)
+      expect(pulledChunks).toBe(3)
+    })
+
     it('POST /auth/logout with a non-urlencoded content type → 415 (rm-268)', async () => {
       const app = await buildTestApp({operatorLogin: 'octocat'})
       const sm = new SessionManager(TEST_KEY)
