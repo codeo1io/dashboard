@@ -1095,6 +1095,26 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   // Mounted unconditionally so they are available regardless of operatorUiEnabled.
   // isPublicPath already allows these paths so auth middleware passes them through.
   //
+  // rm-509: RFC 9110 §13.1.2 If-None-Match comparison for the revalidation
+  // path below. The header may arrive as a weak validator (`W/"…"`), a
+  // comma-separated list of validators, or `*` (any current representation);
+  // comparison against this origin's strong ETag is weak — strip an optional
+  // case-sensitive `W/` prefix and compare the opaque quoted tag. Malformed
+  // entries simply never match, which fails open to a full transfer (the safe
+  // side for a cache validator).
+  const ifNoneMatchSatisfied = (header: string | undefined, etag: string): boolean => {
+    if (header === undefined) return false
+    const value = header.trim()
+    if (value === '') return false
+    if (value === '*') return true
+    for (const rawCandidate of value.split(',')) {
+      let candidate = rawCandidate.trim()
+      if (candidate.startsWith('W/')) candidate = candidate.slice(2).trim()
+      if (candidate === etag) return true
+    }
+    return false
+  }
+
   // rm-478: explicit revalidation policy for these three unversioned assets —
   // their URLs are load-bearing import strings in the operator shell (unhashable
   // without a loader change) and the service worker is a self-purging kill-switch,
@@ -1102,6 +1122,9 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   // operator launch refetched ~150KB on heuristic caching alone. no-cache + a
   // content-hash ETag (recomputed only when mtime moves) lets browsers revalidate
   // cheaply; a matching If-None-Match short-circuits the transfer with a 304.
+  // rm-509 widened that match to the RFC 9110 header forms (weak validators,
+  // comma lists, `*`) — proxies and CDNs routinely send those, and the exact
+  // string match was a silent full re-transfer for every one of them.
   const operatorRuntimeAssetCache = new Map<string, {etag: string; mtimeMs: number}>()
   const operatorRuntimeCaching = async (c: Context, next: () => Promise<void>): Promise<void | Response> => {
     await next()
@@ -1122,7 +1145,7 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     }
     c.res.headers.set('Cache-Control', 'no-cache')
     c.res.headers.set('ETag', etag)
-    if (c.req.header('If-None-Match') === etag) {
+    if (ifNoneMatchSatisfied(c.req.header('If-None-Match'), etag)) {
       c.res = new Response(null, {status: 304, headers: c.res.headers})
     }
   }

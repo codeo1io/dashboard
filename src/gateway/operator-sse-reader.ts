@@ -102,6 +102,89 @@ function normalizeCrlf(text: string): string {
   return text.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
 }
 
+// rm-510: shared UTF-8 byte length for the incremental buffer accounting. A
+// single module-level encoder — the previous read-loop accounting built a
+// fresh full-buffer Uint8Array on every network chunk.
+const utf8Encoder = new TextEncoder()
+
+function utf8Bytes(text: string): number {
+  return utf8Encoder.encode(text).length
+}
+
+/**
+ * rm-510: how many trailing code units of a stream buffer are UNSTABLE under
+ * the next append — at most two. One for a held trailing CR (rm-477: it may
+ * pair with an incoming LF), and one more for a trailing lone high surrogate
+ * that the next chunk may complete into an astral pair (its encoded size
+ * changes from 3 replacement bytes to 4 pair bytes). The reader itself only
+ * ever appends complete decoder output, but the helpers are exported and
+ * must stay exact for arbitrary string callers.
+ */
+function unstableSuffixUnits(buffer: string): number {
+  let unstable = 0
+  const last = buffer.length - 1
+  if (last >= 0 && buffer.charCodeAt(last) === 0x0D /* CR */) unstable = 1
+  const high = buffer.length - 1 - unstable
+  if (high >= 0) {
+    const unit = buffer.charCodeAt(high)
+    if (unit >= 0xD800 && unit <= 0xDBFF) unstable += 1
+  }
+  return unstable
+}
+
+/**
+ * rm-510: append one decoded read() chunk to the stream buffer while keeping
+ * the byte count INCREMENTAL. The read loop previously re-encoded the whole
+ * buffer (`encoder.encode(buffer).length`) on every chunk — up to
+ * MAX_SSE_BUFFER_BYTES of allocation per chunk, worst-case quadratic across a
+ * long record. The stored buffer's unstable suffix is at most the two units
+ * described by unstableSuffixUnits: everything before them is stable across
+ * appends (no interior CR — rm-477 — and no rejoinable surrogate), and UTF-8
+ * is closed under concatenation, so re-encoding just the tail region equals
+ * the whole-buffer count exactly. The unstable suffix's own byte cost is
+ * recomputed (≤ 2 code units), never assumed.
+ *
+ * Exported for property tests in test/operator-sse-reader.test.ts; mirrors
+ * appendStreamChunkState in public/operator-stream.js.
+ */
+export function appendStreamChunkState(
+  buffer: string,
+  decoded: string,
+  bufferBytes: number,
+): {buffer: string; bufferBytes: number} {
+  let text = buffer + decoded
+  let held = ''
+  if (text.endsWith('\r')) {
+    held = '\r'
+    text = text.slice(0, -1)
+  }
+  const next = normalizeCrlf(text) + held
+  const stableLength = buffer.length - unstableSuffixUnits(buffer)
+  return {
+    buffer: next,
+    bufferBytes: bufferBytes - utf8Bytes(buffer.slice(stableLength)) + utf8Bytes(next.slice(stableLength)),
+  }
+}
+
+/**
+ * rm-510: drain one complete record (the record plus its `\n\n` terminator)
+ * from the front of the stream buffer. The byte count drops by the record's
+ * own UTF-8 length plus the 2 terminator bytes — exact by UTF-8 closure under
+ * concatenation, with no re-encode of the retained remainder.
+ */
+export function drainRecordState(
+  buffer: string,
+  boundary: number,
+  bufferBytes: number,
+): {buffer: string; bufferBytes: number; record: string} {
+  const record = buffer.slice(0, boundary)
+  return {
+    record,
+    buffer: buffer.slice(boundary + 2),
+    bufferBytes: bufferBytes - utf8Bytes(record) - 2,
+  }
+}
+
 /**
  * Parse a single SSE record (the text between two blank lines) into a
  * typed RunStreamFrame or a typed parse failure.
@@ -463,7 +546,6 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
     }
 
     const decoder = new TextDecoder()
-    const encoder = new TextEncoder()
     let buffer = ''
     let bufferBytes = 0
     let contractVerified = false
@@ -528,22 +610,12 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
         if (done) break
 
         if (value !== undefined) {
-          // rm-477: a chunk ending in CR must not be normalized yet — converting
-          // the lone CR to LF here terminates its line early, so the LF that
-          // opens the NEXT chunk forges a phantom record boundary and the frame
-          // is dropped without even a parse error. Hold a trailing CR back and
-          // let it normalize together with the following chunk.
-          let text = buffer + decoder.decode(value, {stream: true})
-          let held = ''
-          if (text.endsWith('\r')) {
-            held = '\r'
-            text = text.slice(0, -1)
-          }
-          // normalizeCrlf is idempotent on already-normalized text, so
-          // re-normalizing the concatenation is safe; only the junction
-          // between a held CR and a following LF changes.
-          buffer = normalizeCrlf(text) + held
-          bufferBytes = encoder.encode(buffer).length
+          // rm-477 (held-CR contract, now carried by appendStreamChunkState) +
+          // rm-510: the append keeps bufferBytes incremental — O(new text)
+          // instead of re-encoding the whole buffer per chunk.
+          const appended = appendStreamChunkState(buffer, decoder.decode(value, {stream: true}), bufferBytes)
+          buffer = appended.buffer
+          bufferBytes = appended.bufferBytes
         }
 
         // Hard buffer cap (UTF-8 bytes, rm-114) — fail closed if exceeded without a boundary
@@ -557,9 +629,10 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
         // Extract complete SSE records (terminated by \n\n)
         let boundary = buffer.indexOf('\n\n')
         while (boundary !== -1) {
-          const record = buffer.slice(0, boundary)
-          buffer = buffer.slice(boundary + 2)
-          bufferBytes -= encoder.encode(`${record}\n\n`).length
+          const drained = drainRecordState(buffer, boundary, bufferBytes)
+          const record = drained.record
+          buffer = drained.buffer
+          bufferBytes = drained.bufferBytes
 
           const results = parseSseChunk(`${record}\n\n`)
           for (const result of results) {

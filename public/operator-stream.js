@@ -197,6 +197,48 @@ export function appendStreamChunk(buffer, decoded) {
   return normalizeCrlf(text) + held
 }
 
+// rm-510: module-level encoder for the incremental byte accounting — the
+// stream loop previously re-encoded the whole buffer on every chunk.
+const streamByteEncoder = new TextEncoder()
+
+function utf8Bytes(text) {
+  return streamByteEncoder.encode(text).length
+}
+
+// rm-510: how many trailing code units of a stream buffer are UNSTABLE under
+// the next append — at most two: one for a held trailing CR (rm-477: it may
+// pair with an incoming LF), and one more for a trailing lone high surrogate
+// that the next chunk may complete into an astral pair (3 replacement bytes
+// become 4 pair bytes). Mirrors unstableSuffixUnits in the server reader.
+function unstableSuffixUnits(buffer) {
+  let unstable = 0
+  const last = buffer.length - 1
+  if (last >= 0 && buffer.charCodeAt(last) === 0x0D /* CR */) unstable = 1
+  const high = buffer.length - 1 - unstable
+  if (high >= 0) {
+    const unit = buffer.charCodeAt(high)
+    if (unit >= 0xD800 && unit <= 0xDBFF) unstable += 1
+  }
+  return unstable
+}
+
+// rm-510: append one decoded read() chunk to the stream buffer while keeping
+// the byte count INCREMENTAL. The stored buffer's unstable suffix is at most
+// the two units described by unstableSuffixUnits: everything before them is
+// stable across appends (no interior CR — rm-477 — and no rejoinable
+// surrogate), and UTF-8 is closed under concatenation, so re-encoding just
+// that tail region equals the whole-buffer count exactly. Mirrors
+// appendStreamChunkState in src/gateway/operator-sse-reader.ts; exported for
+// the twin suite (test/operator-stream-core.test.ts).
+export function appendStreamChunkState(buffer, decoded, bufferBytes) {
+  const next = appendStreamChunk(buffer, decoded)
+  const stableLength = buffer.length - unstableSuffixUnits(buffer)
+  return {
+    buffer: next,
+    bufferBytes: bufferBytes - utf8Bytes(buffer.slice(stableLength)) + utf8Bytes(next.slice(stableLength)),
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Pure SSE frame parser
 // ---------------------------------------------------------------------------
@@ -2493,7 +2535,6 @@ export function initOperatorStream(opts) {
         }
 
         const decoder = new TextDecoder()
-        const encoder = new TextEncoder()
         let buffer = ''
         let bufferBytes = 0
         const reader = response.body.getReader()
@@ -2526,8 +2567,11 @@ export function initOperatorStream(opts) {
                 // would terminate its line early, so the LF opening the next
                 // chunk would forge a phantom record boundary and silently
                 // drop the frame. The held CR normalizes with the next chunk.
-                buffer = appendStreamChunk(buffer, decoder.decode(value, {stream: true}))
-                bufferBytes = encoder.encode(buffer).length
+                // rm-510: appendStreamChunkState keeps the byte count
+                // incremental — O(new text), not a whole-buffer re-encode.
+                const appended = appendStreamChunkState(buffer, decoder.decode(value, {stream: true}), bufferBytes)
+                buffer = appended.buffer
+                bufferBytes = appended.bufferBytes
               }
 
               // Hard buffer cap (UTF-8 bytes, rm-114) — abort the reader and fail
@@ -2544,9 +2588,11 @@ export function initOperatorStream(opts) {
               // Process complete SSE records (terminated by \n\n)
               let boundary = buffer.indexOf('\n\n')
               while (boundary !== -1) {
+                // rm-510: the record plus its `\n\n` terminator is exactly
+                // its UTF-8 length + 2 bytes — no re-encode of the remainder.
                 const record = buffer.slice(0, boundary)
                 buffer = buffer.slice(boundary + 2)
-                bufferBytes -= encoder.encode(`${record}\n\n`).length
+                bufferBytes -= utf8Bytes(record) + 2
 
                 const result = parseSseFrame(`${record}\n\n`)
                 if (result !== null && result.success) {
