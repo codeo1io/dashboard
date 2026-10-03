@@ -1071,7 +1071,18 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       c.header('Cache-Control', 'no-store')
       if (spaShellCache === null || Date.now() - spaShellCache.at >= SPA_SHELL_CACHE_TTL_MS) {
         const injected = await loadSpaShell()
-        if (injected === null) return c.notFound()
+        if (injected === null) {
+          if (spaShellCache === null) return c.notFound() // cold start: no shell ever loaded
+          // rm-609: a TTL-expired reload that fails transiently (dist swap or
+          // momentary read failure) must not 404 the operator while a usable
+          // shell is still cached. Serve the stale copy — stale asset
+          // references intact — and refresh the cache window so reload
+          // attempts (and this warning) are throttled to one per TTL while
+          // the dist stays unreadable. Cold start keeps the 404.
+          logger.warning('SPA shell reload failed — serving stale cached shell', {path: indexHtmlPath})
+          spaShellCache = {injected: spaShellCache.injected, at: Date.now()}
+          return c.html(spaShellCache.injected)
+        }
         spaShellCache = {injected, at: Date.now()}
         return c.html(injected)
       }
