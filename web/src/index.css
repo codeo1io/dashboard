@@ -1115,6 +1115,38 @@
   border-color: color-mix(in srgb, var(--color-text) 10%, transparent);
 }
 
+/* rm-194: age-bucket emphasis on the approvals feed — attention ordering
+   puts unread-first and newest-first; the badge shows how old a pending
+   approval is at a glance. */
+.listener-age {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-label);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: var(--tracking-label);
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.listener-age.age-fresh {
+  color: var(--color-success);
+  background: color-mix(in srgb, var(--color-success) 10%, transparent);
+  border-color: color-mix(in srgb, var(--color-success) 20%, transparent);
+}
+.listener-age.age-aging {
+  color: var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 10%, transparent);
+  border-color: color-mix(in srgb, var(--color-warning) 20%, transparent);
+}
+.listener-age.age-stale {
+  color: var(--color-text-muted);
+  background: color-mix(in srgb, var(--color-text-muted) 10%, transparent);
+  border-color: color-mix(in srgb, var(--color-text-muted) 20%, transparent);
+}
+
 .listener-source {
   font-family: var(--font-mono);
   font-size: var(--text-code);

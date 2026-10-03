@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, act, fireEvent } from '@testing-library/react'
 import { ListenerChannel } from './Listener.tsx'
 import * as listenerApi from '../api/listener.ts'
-import { LISTENER_FETCH_TIMEOUT_MS, POLL_INTERVAL_MS } from './Listener.tsx'
+import type { ListenerMessage } from '../api/listener.ts'
+import { LISTENER_FETCH_TIMEOUT_MS, POLL_INTERVAL_MS, orderListenerMessages, listenerAgeBucket } from './Listener.tsx'
 
 vi.mock('../api/listener.ts')
 
@@ -357,5 +358,118 @@ describe('ListenerChannel', () => {
       await Promise.resolve()
     })
     expect(listenerApi.fetchListenerMessages).toHaveBeenCalledTimes(2)
+  })
+
+  // rm-194: attention ordering + age bucketing — pure helpers first, then render invariants.
+  const msg = (overrides: Partial<ListenerMessage>): ListenerMessage => ({
+    id: 'm',
+    source: 'infra',
+    kind: 'approval',
+    severity: 'info',
+    title: 't',
+    body: 'b',
+    createdAt: '2026-07-11T12:00:00Z',
+    receivedAt: '2026-07-11T12:00:01Z',
+    read: false,
+    links: [],
+    ...overrides,
+  })
+
+  it('orderListenerMessages: unread first, newest first within each group, deterministic ties', () => {
+    const unreadOld = msg({id: 'b', read: false, createdAt: '2026-07-10T00:00:00Z'})
+    const unreadNew = msg({id: 'c', read: false, createdAt: '2026-07-11T00:00:00Z'})
+    const readNewest = msg({id: 'a', read: true, createdAt: '2026-07-12T00:00:00Z'})
+    const readOld = msg({id: 'd', read: true, createdAt: '2026-07-01T00:00:00Z'})
+
+    const ordered = orderListenerMessages([readNewest, readOld, unreadOld, unreadNew])
+
+    expect(ordered.map(m => m.id)).toEqual(['c', 'b', 'a', 'd']) // unread newest, unread oldest, then read by age desc
+  })
+
+  it('orderListenerMessages: equal read+createdAt falls back to id; unknown dates sort last in group; empty and single lists pass through', () => {
+    const tieA = msg({id: 'a', read: false, createdAt: '2026-07-11T00:00:00Z'})
+    const tieB = msg({id: 'b', read: false, createdAt: '2026-07-11T00:00:00Z'})
+    const badDate = msg({id: 'z', read: false, createdAt: 'not-a-date'})
+
+    expect(orderListenerMessages([badDate, tieB, tieA]).map(m => m.id)).toEqual(['a', 'b', 'z'])
+    expect(orderListenerMessages([])).toEqual([])
+    expect(orderListenerMessages([tieA]).map(m => m.id)).toEqual(['a'])
+  })
+
+  it('listenerAgeBucket: 24h/72h boundaries, future timestamps clamp to fresh, invalid dates are unknown', () => {
+    const now = Date.parse('2026-07-12T12:00:00Z')
+    expect(listenerAgeBucket('2026-07-12T11:00:00Z', now)).toBe('fresh') // 1h old
+    expect(listenerAgeBucket('2026-07-11T12:00:01Z', now)).toBe('fresh') // exactly under 24h
+    expect(listenerAgeBucket('2026-07-11T11:59:00Z', now)).toBe('aging') // just over 24h
+    expect(listenerAgeBucket('2026-07-09T12:00:01Z', now)).toBe('aging') // just under 72h
+    expect(listenerAgeBucket('2026-07-09T11:59:00Z', now)).toBe('stale') // just over 72h
+    expect(listenerAgeBucket('2026-07-13T00:00:00Z', now)).toBe('fresh') // clock skew: future clamps to fresh
+    expect(listenerAgeBucket('not-a-date', now)).toBe('unknown')
+  })
+
+  it('renders the feed ordered: unread newest first, stale read items last, with age badges', async () => {
+    const hours = (h: number) => new Date(Date.now() - h * 3600_000).toISOString()
+    const unreadNew = msg({id: 'm1', read: false, title: 'unread new approval', createdAt: hours(2)})
+    const unreadStale = msg({id: 'm2', read: false, title: 'unread stale approval', createdAt: hours(80)})
+    const readNew = msg({id: 'm3', read: true, title: 'read recent', createdAt: hours(1)})
+
+    vi.mocked(listenerApi.fetchListenerMessages).mockResolvedValueOnce({
+      ok: true,
+      data: {
+        // Server order deliberately scrambles the expected attention order.
+        messages: [readNew, unreadStale, unreadNew],
+        unreadCount: 2, prunedCount: 0, droppedCount: 0,
+      },
+    })
+
+    render(<ListenerChannel />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    const cards = screen.getAllByTestId('listener-message-card')
+    expect(cards).toHaveLength(3)
+    expect(cards[0]).toHaveTextContent('unread new approval')
+    expect(cards[1]).toHaveTextContent('unread stale approval') // unread beats age even when stale
+    expect(cards[2]).toHaveTextContent('read recent') // read never outranks unread, regardless of age
+
+    const badges = screen.getAllByTestId('listener-age-bucket')
+    expect(badges[0]).toHaveAttribute('aria-label', 'Age: fresh')
+    expect(badges[0]).toHaveTextContent('new')
+    expect(badges[1]).toHaveAttribute('aria-label', 'Age: stale')
+    expect(badges[2]).toHaveAttribute('aria-label', 'Age: fresh')
+  })
+
+  it('poll refresh that appends a new message preserves the ordering invariant', async () => {
+    const hours = (h: number) => new Date(Date.now() - h * 3600_000).toISOString()
+    const staleUnread = msg({id: 'm1', read: false, title: 'old pending approval', createdAt: hours(80)})
+    const freshRead = msg({id: 'm2', read: true, title: 'read yesterday', createdAt: hours(30)})
+
+    vi.mocked(listenerApi.fetchListenerMessages).mockResolvedValueOnce({
+      ok: true,
+      data: { messages: [freshRead, staleUnread], unreadCount: 1, prunedCount: 0, droppedCount: 0 },
+    })
+    render(<ListenerChannel />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+    expect(screen.getAllByTestId('listener-message-card')[0]).toHaveTextContent('old pending approval')
+
+    // Next poll: server appends a brand-new unread approval at the END of its list.
+    const justArrived = msg({id: 'm3', read: false, title: 'approval just landed', createdAt: hours(0.1)})
+    vi.mocked(listenerApi.fetchListenerMessages).mockResolvedValueOnce({
+      ok: true,
+      data: { messages: [freshRead, staleUnread, justArrived], unreadCount: 2, prunedCount: 0, droppedCount: 0 },
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    })
+
+    const cards = screen.getAllByTestId('listener-message-card')
+    expect(cards.map(c => c.textContent)).toEqual([
+      expect.stringContaining('approval just landed'),
+      expect.stringContaining('old pending approval'),
+      expect.stringContaining('read yesterday'),
+    ])
   })
 })

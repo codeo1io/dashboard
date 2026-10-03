@@ -17,6 +17,37 @@ type ViewState =
   | { state: 'ready'; data: ListenerMessagesResponse }
 
 export const POLL_INTERVAL_MS = 30000
+
+// rm-194: attention ordering + age bucketing for the approvals feed. Pure
+// helpers so the ordering invariant is pinnable by unit tests; the ready render
+// applies orderListenerMessages per pass, so poll refreshes that append new
+// messages (replacing the server list wholesale) preserve the invariant by
+// construction.
+export type ListenerAgeBucket = 'fresh' | 'aging' | 'stale' | 'unknown'
+export const AGE_FRESH_MS = 24 * 60 * 60 * 1000
+export const AGE_STALE_MS = 72 * 60 * 60 * 1000
+
+export function listenerAgeBucket(createdAt: string, now: number = Date.now()): ListenerAgeBucket {
+  const created = Date.parse(createdAt)
+  if (Number.isNaN(created)) return 'unknown'
+  const age = now - created
+  if (age <= AGE_FRESH_MS) return 'fresh'
+  if (age <= AGE_STALE_MS) return 'aging'
+  return 'stale'
+}
+
+export function orderListenerMessages(messages: readonly ListenerMessage[]): ListenerMessage[] {
+  return [...messages].sort((a, b) => {
+    if (a.read !== b.read) return a.read ? 1 : -1 // unread first — attention beats age
+    const aTime = Date.parse(a.createdAt)
+    const bTime = Date.parse(b.createdAt)
+    const aRank = Number.isNaN(aTime) ? Number.NEGATIVE_INFINITY : aTime
+    const bRank = Number.isNaN(bTime) ? Number.NEGATIVE_INFINITY : bTime
+    if (aRank !== bRank) return bRank - aRank // newest first within each group; unknown dates last
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0 // deterministic tie-break
+  })
+}
+
 /**
  * rm-155: hard ceiling on a single poll — releases the latch even if the transport
  * never settles, and aborts the in-flight request when the signal is honored.
@@ -161,7 +192,7 @@ export function ListenerChannel() {
               )}
             </div>
           )}
-          {viewState.data.messages.map(msg => (
+          {orderListenerMessages(viewState.data.messages).map(msg => (
             <MessageCard
               key={msg.id}
               msg={msg}
@@ -186,6 +217,7 @@ function getSeverityClass(severity: string) {
 
 function MessageCard({ msg, isAcking, onAck }: { msg: ListenerMessage; isAcking: boolean; onAck: () => void }) {
   const isUnread = !msg.read
+  const ageBucket = listenerAgeBucket(msg.createdAt)
   
   return (
     <div
@@ -209,6 +241,15 @@ function MessageCard({ msg, isAcking, onAck }: { msg: ListenerMessage; isAcking:
               className="listener-unread-dot"
             >
               <span className="sr-only">Unread</span>
+            </span>
+          )}
+          {ageBucket !== 'unknown' && (
+            <span
+              data-testid="listener-age-bucket"
+              aria-label={`Age: ${ageBucket}`}
+              className={`listener-age age-${ageBucket}`}
+            >
+              {ageBucket === 'fresh' ? 'new' : ageBucket}
             </span>
           )}
         </div>
