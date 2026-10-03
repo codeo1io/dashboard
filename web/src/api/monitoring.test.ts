@@ -45,6 +45,24 @@ describe('monitoring API', () => {
       expect(res).toEqual({ ok: false, reason: 'network' })
     })
 
+    it('rm-515: a followed redirect is session expiry → unauthenticated, not network', async () => {
+      // A real Response cannot have `redirected` set manually — emulate the
+      // post-redirect shape the browser produces when the session cookie
+      // expired and the server bounced the API call to the login page
+      // (mirrors listener.test.ts's rm-421b case).
+      const redirectedResponse = {
+        ok: true,
+        redirected: true,
+        url: 'http://localhost/auth/login',
+        json: async () => {
+          throw new SyntaxError('Unexpected token < in JSON')
+        },
+      } as unknown as Response
+      vi.mocked(fetch).mockResolvedValueOnce(redirectedResponse)
+      const res = await fetchMonitoring()
+      expect(res).toEqual({ ok: false, reason: 'unauthenticated' })
+    })
+
     it('maps a transport rejection to network', async () => {
       vi.mocked(fetch).mockRejectedValueOnce(new TypeError('fetch failed'))
       const res = await fetchMonitoring()
