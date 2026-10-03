@@ -19,21 +19,49 @@ minimumReleaseAge: 1440
 # but vite@8.3.1 (published 2026-09-24T12:26Z) was ~68 minutes SHORT — the
 # exclude was load-bearing for vite at merge time. Both are past maturity as
 # of 2026-09-25T12:26Z; the entry remains as the dated bypass record.
+# 2026-10-03 integrate (run 23d39aa7 landing): the hono@4.13.9 entry retired
+# — the security refresh to hono 4.13.11 + @hono/node-server 2.1.3 is landed
+# (rm-285; that same batch's fast-uri floor cure is what closed the two live
+# HIGH alerts #29/#30 — both fast-uri, per the batch doc's live probes), so
+# the name was a dead bypass record; the retirement is rm-277's acceptance
+# rider (rm-271's 2026-09-30 note).
+# vite@8.3.1 stays (both rider targets past maturity; the record remains dated).
 minimumReleaseAgeExclude:
   - '@bfra.me/eslint-config@0.51.2 || 0.51.3 || 0.51.4 || 0.52.0 || 0.52.1 || 0.52.2'
   - '@bfra.me/tsconfig@0.13.2'
-  - hono@4.13.9
   - vite@8.3.1
 
 overrides:
+  # rm-276 (2026-09-30, cycle 2): every floor now sits at/above its patched
+  # line — an override floor does NOT force re-resolution off an
+  # already-satisfying version, so a floor below the patched line pins the
+  # advisory open (proven live by Dependabot alerts #29/#30 staying open with
+  # security updates enabled). brace-expansion is dev-transitive via the
+  # ESLint lint chain; the binding advisory on the v2 line is GHSA-q2hr-2g5m-vwhr
+  # (moderate, patched 2.1.7) — the highs GHSA-qhr7-859c-m2p7 (2.1.6) and
+  # GHSA-6j4f-fj2g-mc7p (2.1.5) are covered with headroom.
   brace-expansion@2: '>=2.1.7 <3.0.0'
+  # Same three advisories on the v5 line (5.0.12 moderate binding; highs
+  # 5.0.11/5.0.10 covered) — 5.0.12 is the patched line that covers all.
   brace-expansion@5: '>=5.0.12 <6.0.0'
+  # fast-uri is dev-transitive via ajv@8 in the eslint lint chain;
+  # GHSA-qw65-cvwx-89v3 + GHSA-58mr-gqgx-xq4g (both high; Dependabot alerts
+  # #30/#29) patch at 3.1.7, GHSA-hrr3-gc8f-f4qj (moderate) forces 3.1.8.
   fast-uri@3: '>=3.1.8 <4.0.0'
   # GHSA-82x6-q7mm-w9cf — toml is dev-transitive via
   # @opencode-ai/plugin>effect; >=4.2.0 is the patched line
   # (rescued by content from run b4aac9ba / PR #82 via cycle-13;
   # the batch's internal rm-171 numbering collided with landed ids).
   toml: '>=4.2.0'
-  undici@7: '>=7.29.1 <8.0.0'
+  # All ten npm-DB undici advisories patch at >=7.29.1 (highs
+  # GHSA-rfgv-xxqx-mfg5 + GHSA-w293-vg96-wgc3); the floor deliberately takes
+  # the published 7.x tip 7.30.0, not the bare minimum. 7.29.1 itself sits in
+  # NO indexed advisory's vulnerable range (verified 2026-10-01: GitHub's
+  # advisory DB indexes 46 undici records, none containing 7.29.1 or 7.30.0)
+  # and the npm backports 7.30.1/7.31.1 are unpublished, so the weekly audit
+  # gate (.github/workflows/audit.yaml, rm-278) going red on any 7.x means a
+  # NEWLY indexed advisory BY DESIGN and the undici 8 + jsdom 30 migration
+  # rides rm-271's majors window. undici is dev-transitive via jsdom.
+  undici@7: '>=7.30.0 <8.0.0'
 
 shamefullyHoist: true

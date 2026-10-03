@@ -40,11 +40,14 @@ transient home and must never be the sole copy.
 |---|----------|-------|-------|---------------------------|
 | A | test-rate-limit-key-cap.test.ts (U3 red test) | 77 | 3079 | a808dced… |
 | B | cycle-18-batch-run-11121ee8.md (batch frame doc) | 110 | 6737 | 49e73255… |
-| C | server-cap-and-env-guard.diff (U3+U5 implementation diff) | 250 | 12687 | b8c6ea0f… |
+| C | server-cap-and-env-guard.diff (U3+U5 implementation diff) | 250 | 12676 | 3a8ddd40… (normalized 2026-10-01, see addendum) |
 
 - A: `a808dcedcd64b7a1539758ca4f05e3899316b513f714e7ecb37a72661978a3cc`
 - B: `49e73255a7fd226e65b2aaf0e6e577f343bd8bbdaa931a46a0cf6680fa3e2290`
-- C: `b8c6ea0fb80437ec3aed2738cb8738cb0c8c67b5f6f7aadcbe49abe5f74a128b`
+- C (normalized 2026-10-01, what the recipe below prints against this file):
+  `3a8ddd405259a9effcf5d911e334563c484f17acbe3906983dbe13b557e91a2b`
+- C (pre-normalization, minted 2026-09-30 — original artifact bytes):
+  `b8c6ea0fb80437ec3aed2738cb8738cb0c8c67b5f6f7aadcbe49abe5f74a128b`
 
 ## Regeneration and verification
 
@@ -58,13 +61,15 @@ While the refs still live:
 tree equals d89ffe7's.)
 
 After the refs are deleted, THIS file is the source of record. Each fenced
-block below reproduces its artifact byte-exactly: the content lines between
-the opening info-string fence and the closing fence, every line
-newline-terminated, no other bytes. Verify with:
+block below reproduces its artifact byte-exactly (archive-C as normalized
+2026-10-01 — see the Provenance addendum at the end of this file): the
+content lines between the opening info-string fence and the closing fence,
+every line newline-terminated, no other bytes. Verify with:
 
     awk '/^````archive-A$/{f=1;next} f && /^````$/{exit} f' docs/archive/pr-233-unlanded-cycle-18-2026-09-30.md | sha256sum
 
-(same with `archive-B`, `archive-C`) — each must print the pinned value.
+(same with `archive-B`, `archive-C`) — each must print the pinned value
+(archive-C: its 2026-10-01 normalized pin).
 
 ## Artifact A — test-rate-limit-key-cap.test.ts (U3 red test; 77 lines)
 
@@ -526,3 +531,34 @@ rm-159 rider records the same advice): the patch is a 2026-09-29-era artifact
 and its `src/server.ts` context will have drifted. The batch frame doc
 (Artifact B) carries the unit lineage and supersession relationships for the
 whole cycle-18 batch.
+
+## Provenance addendum (2026-10-01) — archive-C normalized, re-pinned
+
+The 2026-10-01 repo-wide whitespace-lint cure (cycle-2 batch, run
+23d39aa7467e) stripped trailing whitespace from 11 lines, all inside
+archive-C (file lines 290, 313, 335, 337, 350, 380, 465, 473, 497, 508, 513
+of the pre-normalization file): 250 lines, 12687 → 12676 bytes, nothing else
+moved. archive-A and archive-B were untouched and both pins still verify
+byte-exactly.
+
+archive-C is therefore re-pinned to the normalized block; the pre-normalization
+pin is kept above and remains the identity of the ORIGINAL artifact bytes,
+which stay byte-recoverable:
+
+- this file's git-history blob at base commit 31995a2:
+  `git cat-file blob 5c3348e4bf999c6c27e63af54935e2f5c659437d` (this doc's
+  HEAD blob before the addendum landed — carries the original archive-C);
+- the still-live PR #233 refs (verified present 2026-10-01):
+  `git diff d89ffe7 origin/conductor/ci-c05313a9ec2a -- src/server.ts
+  test/env-docs-guard.test.ts | sha256sum` prints the pre-normalization pin
+  (equivalent base ref: `conductor/ci-base-2f8680bfaa59e7c8ec81a08e64377abf1f985274`);
+- the PR #233 head-ref blobs, via the regeneration recipe above;
+- the normalization delta itself is exactly the 11 stripped trailing bytes,
+  so rstrip-recovering the original and re-stripping reproduces this block
+  byte-exactly (`sed -E 's/[ \t]+$//'` on the recovered original).
+
+Rule going forward (same class as the rm-486 comment-truth lesson; rm-281 at
+mint, renumbered at the 2026-10-03 integrate): the fenced
+blocks are byte-pinned artifacts — never run a whitespace normalizer inside
+them; if one runs anyway, re-pin here the same day, keep the prior pin labeled
+pre-normalization, and record the recovery paths.
