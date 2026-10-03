@@ -1,0 +1,46 @@
+            "attempt_seq": attempt.seq,
+            "intent": action.intent or action.id,
+            "context_refs": action.context_refs,
+            "ship_target_digest": run.ship_target_digest,
+            "action_payload": action.payload,
+            # Advisory only (T2 backend hint): routing authority stays with the
+            # agent; conductor records its choice, it does not enforce it.
+            "backend_hint": attempt.backend or action.backend_hint,
+            # The delegated turn's budget. The spool server waits this long for
+            # a terminal session state before reporting the attempt failed.
+            "timeout_seconds": self.timeout_seconds,
+            # Work-graph units with a dedicated managed worktree override the
+            # run workspace (R10); everything else dispatches onto the run
+            # workspace exactly as before.
+            "workspace_path": (action.payload or {}).get("unit_workspace_path")
+            or run.workspace_path,
+            # H1 (2026-09-07 campaign, P0): the spool server's R5
+            # emission-restamp reads order["base_sha"] to compute the
+            # canonical current digest (validation_digest(base_sha,
+            # workspace)). Until now no order carried it, so every restamp
+            # digested base=None — which can NEVER match the fold's
+            # validation_digest(run.workspace_base_sha, ...) because the
+            # recipe mixes the base into the digest footer
+            # ("base:<sha|unknown>"). Managed-workspace campaign runs
+            # therefore looped on unsatisfiable R5 retries. The fold's
+            # recipe is the contract: stamp the SAME base the fold
+            # re-derives. None (unmanaged runs) preserves legacy behavior
+            # exactly (the server already falls back to None).
+            "base_sha": getattr(run, "workspace_base_sha", None),
+        }
+        context_getter = getattr(self.dispatch_store, "maintenance_context", None)
+        if callable(context_getter):
+            maintenance = context_getter(run.id)
+            if maintenance is not None:
+                payload["action_payload"] = {
+                    **action.payload,
+                    "maintenance": maintenance,
+                }
+
+        payload["session_binding"] = self._session_binding_payload(run, action, attempt)
+        # v1.6 task 2: the phase-bounded prompt names exactly ONE
+        # authoritative action, the required evidence, and the prohibited
+        # later stages. The spool server renders it verbatim.
+        prompt = self._phase_prompt(run, action, attempt)
+        # v1.8 WS-B (PR 1): deterministic contract lint between prompt
+        # assembly and the durable handoff. None (legacy definition,
