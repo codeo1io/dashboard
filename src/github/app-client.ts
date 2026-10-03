@@ -58,11 +58,21 @@ export const GITHUB_REQUEST_TIMEOUT_MS = 30_000
  * at the transport layer: race the caller's signal (if any) against
  * `AbortSignal.timeout(ms)` and pass the aggregate to undici.
  */
+// Bounded fetch used as Octokit's `request.fetch` for every installation-token
+// API call (rm-528): the wall-clock bound is paired with a default
+// `redirect: 'error'` — authenticated GitHub traffic must REFUSE a redirect at
+// the transport seam rather than follow it to an attacker-chosen location with
+// the Authorization header attached. A caller may still override (the spread
+// puts `init.redirect` after the default), which tests pin.
 export function createBoundedFetch(timeoutMs: number): typeof globalThis.fetch {
   return async (input, init) => {
     const timeoutSignal = AbortSignal.timeout(timeoutMs)
     const signal = init?.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal
-    return globalThis.fetch(input, {...init, signal})
+    return globalThis.fetch(input, {
+      ...init,
+      redirect: init?.redirect ?? 'error',
+      signal,
+    })
   }
 }
 
