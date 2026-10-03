@@ -119,6 +119,13 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
       return { ok: false, reason: 'network' }
     }
 
+    // rm-515 (rm-421b twin): a followed redirect means the gateway bounced
+    // the request to the login surface (302 → login HTML → 200); without this
+    // guard the JSON read below throws and the catch blames the network.
+    if (res.redirected) {
+      return { ok: false, reason: 'unauthenticated' }
+    }
+
     const data = await res.json()
     if (!isPlainObject(data) || !Array.isArray(data.repos)) return {ok: false, reason: 'contract-drift'}
     if (typeof data.staleBanner !== 'boolean' || typeof data.driftCount !== 'number') {
