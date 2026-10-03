@@ -27,6 +27,10 @@ and names every by-design deviation in [docs/runbooks/security-posture.md](docs/
 
 - **Server** — [Hono](https://hono.dev) + `@hono/node-server` on Node 24 native TypeScript
   (strip-only, no backend build step). Serves the API, GitHub OAuth, and the built client.
+  Pinned past the 2026-09-29 `serveStatic` double-decode fixes — `@hono/node-server` 2.1.3
+  (GHSA-rmxm-3fg6-px4f) + `hono` 4.13.11 (GHSA-5r4p-p66f-jhc7); rm-498 regression-pins this in
+  `test/static-assets.test.ts`. Body-reading public routes share one bounded reader
+  (`src/read-body.ts` — 16 KiB wire-byte cap, ingest + logout; rm-497).
 - **Client** — [Vite](https://vite.dev) + [React 19](https://react.dev) +
   [Tailwind CSS v4](https://tailwindcss.com), shipped as an installable PWA via
   [vite-plugin-pwa](https://vite-pwa-org.netlify.app). The service worker is a
@@ -131,7 +135,7 @@ missing `_FILE` path silently falls back to the environment variable).
 | `DASHBOARD_SNAPSHOT_CACHE` | `src/server.ts` | unset (off) | Optional file path enabling the boot-time snapshot bridge (rm-198): the last good snapshot is persisted here and reloaded at restart to bridge the cold-start window (forced stale, original `refreshedAt` preserved); unset/blank keeps in-memory-only behavior, and a missing/corrupt/oversize file fails open to an empty boot. |
 | `DASHBOARD_WEB_DIST` | `src/server.ts` | `./web/dist` | Client bundle root served at `/`. |
 | `GATEWAY_ALLOWED_OPERATOR_LOGINS` | `src/server.ts` | unset (no restriction) | Optional comma-separated allowlist of gateway-session logins accepted on the `/operator/*` branch (rm-165); entries are whitespace-trimmed, a session whose login is not listed is denied 403 after validation (fail-closed). Unset/blank preserves single-trusted-gateway behavior; `DASHBOARD_OPERATOR_LOGIN` is never consulted on this branch. |
-| `RATE_LIMIT_MAX_PUBLIC` | `src/server.ts` | `60` | Requests per 60s window per client, pre-auth public class (`/`, `/auth/login`, `/auth/callback`, `/api/healthz` — the exact sensitive-path gate in `src/server.ts`; other `/auth/*` paths such as logout sit outside the limiter by design, rm-275). |
+| `RATE_LIMIT_MAX_PUBLIC` | `src/server.ts` | `60` | Requests per 60s window per client, pre-auth public class (`/`, `/auth/login`, `/auth/callback`, `/auth/logout`, `/auth/logout-csrf`, `/api/healthz` — the exact sensitive-path gate in `src/server.ts`; the logout pair joined the public budget at rm-500, superseding rm-275's outside-the-limiter note, rationale at the gate comment). |
 | `RATE_LIMIT_MAX_OPERATOR` | `src/server.ts` | `60` | Same budget, operator class (remaining `/api/*` and `/operator/*`). |
 | `RATE_LIMIT_MAX_INGEST` | `src/server.ts` | `60` | Same budget, ingest class (`/api/listener/ingest`; HMAC-gated by the route itself). |
 | `RATE_LIMIT_TRUSTED_PROXY` | `src/server.ts` | off | `1`/`true`/`yes` (case-insensitive) opts in to X-Forwarded-For-based client resolution for rate-limit keying behind a trusted reverse proxy. Off (the default) keys budgets on the remote address, so an untrusted direct client cannot spoof its way to multiple budgets. |
