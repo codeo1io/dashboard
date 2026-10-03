@@ -31,6 +31,7 @@ function makeRepoRow(): DashboardRepo {
       openPrCount: 0,
       openIssueCount: 0,
       openAlertCount: null,
+      securityPosture: null,
       stale: false,
       fetchedAt: 1234,
     },

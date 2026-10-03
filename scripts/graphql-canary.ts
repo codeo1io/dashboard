@@ -87,6 +87,21 @@ async function runTemplate(token: string, entry: {readonly name: string; readonl
   const suitesWithWorkflowRun = suites.filter(suite => suite.workflowRun !== null && suite.workflowRun !== undefined).length
   const suitesWithCheckRunNodes = suites.filter(suite => (suite.checkRuns?.nodes ?? []).length > 0).length
   console.log(`canary: drill-down coverage — ${suites.length} check suite(s), ${suitesWithWorkflowRun} with workflowRun, ${suitesWithCheckRunNodes} with check-run nodes (rm-192, ${entry.name})`)
+
+  // rm-117 (this cycle): the posture templates select node-level
+  // vulnerabilityAlerts (severity/EPSS/CVSS/CWEs/identifiers + the
+  // FIXED-tail walk's pageInfo). Open alerts on the canary target are
+  // legitimately empty — an ABSENT connection would mean shape drift, an
+  // empty one is healthy. NO_ALERTS selects no alerts field at all (its
+  // purpose), so report n/a there.
+  const alertsConnection = (body as {data?: {repository?: {vulnerabilityAlerts?: {totalCount?: number | null; nodes?: unknown[] | null} | null} | null} | null} | null)?.data?.repository?.vulnerabilityAlerts
+  if (alertsConnection !== null && alertsConnection !== undefined) {
+    const alertSample = (alertsConnection.nodes ?? []) as {securityAdvisory?: {severity?: unknown; epss?: unknown} | null}[]
+    const withAdvisory = alertSample.filter(node => node.securityAdvisory !== null && node.securityAdvisory !== undefined).length
+    console.log(`canary: alert coverage — totalCount ${alertsConnection.totalCount ?? 'null'}, ${alertSample.length} alert node(s), ${withAdvisory} with securityAdvisory drill-down (rm-117, ${entry.name})`)
+  } else {
+    console.log(`canary: alert coverage — n/a (${entry.name} selects no vulnerabilityAlerts; NO_ALERTS by design) (rm-117, ${entry.name})`)
+  }
   console.log(`canary: OK — ${owner}/${name} answered the exact shipped ${entry.name}`)
 }
 

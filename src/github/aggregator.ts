@@ -32,6 +32,7 @@ import {logger, sanitizeErrorMessage, type LogContext} from '../logger.ts'
 import {isErr, isOk} from '../result.ts'
 import {deriveDatabaseId, redactedDatabaseIdIn} from './metadata.ts'
 import {
+  REPO_RECENT_CURES_QUERY,
   REPO_STATUS_QUERY,
   REPO_STATUS_QUERY_NO_ALERTS,
 } from './query-registry.ts'
@@ -90,6 +91,89 @@ export interface FailingCheckDetail {
  */
 export const FAILING_CHECK_DETAILS_CAP = 25
 
+/**
+ * Upper bound on the OPEN-alert node sample kept per repo (rm-117). The
+ * openAlertCount COUNT stays authoritative; the node drill-down is the
+ * sample. 10 is GitHub's server-side page cap for vulnerabilityAlerts
+ * (verified live 2026-10-03: requesting `first: 20` still returns 10 nodes).
+ */
+export const SECURITY_OPEN_ALERTS_CAP = 10
+
+/**
+ * Upper bound on recent-cure entries kept per repo (rm-117) — the display
+ * sample for the cured-alert story.
+ */
+export const SECURITY_RECENT_CURES_CAP = 10
+
+/**
+ * How often a repo's recent-cures walk runs (rm-117). Cure events are rare;
+ * walking hourly keeps steady-state cost at ~1 request/repo/hour while the
+ * posture panel never lags more than an hour on a new cure.
+ */
+export const SECURITY_CURES_REFRESH_MS = 3_600_000
+
+/**
+ * Page budget for one recent-cures walk (rm-117). The walk pages `after:`
+ * cursors toward the tail of the FIXED connection (ascending from oldest —
+ * no orderBy exists and `last` is ignored, verified live 2026-10-03). At
+ * GitHub's 10-node page cap, 5 pages/walk reaches the tail for any repo
+ * with ≤50 lifetime cures in one window; longer histories converge over
+ * successive windows (the carried cursor keeps advancing).
+ */
+export const SECURITY_CURES_MAX_PAGES = 5
+
+/**
+ * Node-level Dependabot alert drill-down (rm-117) — the display-safe
+ * projection of one vulnerabilityAlert: identity (GHSA/CVE/CWEs), severity +
+ * CVSS vectors, EPSS, lifecycle timestamps, scope, the manifest PATH (never
+ * lockfile CONTENTS), the vulnerable→patched version window, and the cure
+ * PR's state/URL when a Dependabot update PR exists.
+ */
+export interface SecurityAlertDetail {
+  readonly state: string | null
+  readonly createdAt: string | null
+  readonly fixedAt: string | null
+  readonly dismissedAt: string | null
+  readonly autoDismissedAt: string | null
+  readonly dismissReason: string | null
+  readonly dependencyScope: string | null
+  readonly manifestPath: string | null
+  readonly firstPatchedVersion: string | null
+  readonly vulnerableVersionRange: string | null
+  readonly updatePrState: string | null
+  readonly updatePrUrl: string | null
+  readonly severity: string | null
+  readonly classification: string | null
+  readonly withdrawnAt: string | null
+  readonly ghsaId: string | null
+  readonly cveId: string | null
+  readonly cvssV3Score: number | null
+  readonly cvssV3Vector: string | null
+  readonly cvssV4Score: number | null
+  readonly cvssV4Vector: string | null
+  readonly epssPercentage: number | null
+  readonly epssPercentile: number | null
+  readonly cwes: readonly string[]
+  readonly identifiers: readonly {readonly type: string; readonly value: string}[]
+}
+
+/**
+ * Per-repo security posture (rm-117): what the cured-alert story view renders.
+ * openAlerts rides the existing per-refresh fetch; recentCures comes from the
+ * TTL-gated cures walk. The WHOLE posture is null when the token lacks the
+ * alerts scope (the NO_ALERTS degradation path) — never a half-populated mix.
+ */
+export interface SecurityPosture {
+  /** Bounded OPEN-alert node sample; openAlertCount stays authoritative beyond it */
+  readonly openAlerts: readonly SecurityAlertDetail[]
+  /** Most-recent-cures sample (bounded, fixedAt-desc); empty = none reached yet */
+  readonly recentCures: readonly SecurityAlertDetail[]
+  /** Authoritative lifetime FIXED count (connection totalCount) */
+  readonly recentCureCount: number | null
+  /** When the cures walk last SUCCEEDED (ms epoch) — age is visible staleness */
+  readonly curesFetchedAt: number | null
+}
+
 export interface RepoCiStatus {
   /** Mapped from statusCheckRollup.state: SUCCESS→green, FAILURE/ERROR→red, PENDING→pending */
   readonly rollupState: CiRollupState
@@ -107,6 +191,12 @@ export interface RepoCiStatus {
   readonly openIssueCount: number
   /** Number of open security alerts (null if permission unavailable) */
   readonly openAlertCount: number | null
+  /**
+   * Node-level security-posture drill-down (rm-117). null whenever
+   * openAlertCount is null (NO_ALERTS degradation — permission parity);
+   * recentCures fields are null until the first cures walk succeeds.
+   */
+  readonly securityPosture: SecurityPosture | null
   /** Whether this repo's data is stale (per-repo fetch failed) */
   readonly stale: boolean
   /** When this data was fetched (ms since epoch) */
@@ -220,7 +310,21 @@ interface GraphqlRepoResponse {
     } | null
     pullRequests: {totalCount: number}
     issues: {totalCount: number}
-    vulnerabilityAlerts?: {totalCount: number} | null
+    vulnerabilityAlerts?: {totalCount: number; nodes?: readonly unknown[] | null} | null
+  } | null
+}
+
+/**
+ * Response of REPO_RECENT_CURES_QUERY (rm-117). Structure is the same alert
+ * node shape as the OPEN drill-down plus pagination bookkeeping.
+ */
+interface GraphqlCuresResponse {
+  repository: {
+    vulnerabilityAlerts?: {
+      totalCount?: number | null
+      pageInfo?: {hasNextPage?: boolean | null; endCursor?: string | null} | null
+      nodes?: readonly unknown[] | null
+    } | null
   } | null
 }
 
@@ -315,6 +419,16 @@ export interface AggregatorDeps {
    * AGGREGATOR_REFRESH_CONCURRENCY (4). 1 restores the old serial walk.
    */
   readonly refreshConcurrency?: number
+  /**
+   * Recent-cures walk TTL in ms (rm-117): how often a repo's FIXED-tail walk
+   * runs. Defaults to SECURITY_CURES_REFRESH_MS (1h). Test-injectable.
+   */
+  readonly curesRefreshMs?: number
+  /**
+   * Page budget for one recent-cures walk (rm-117). Defaults to
+   * SECURITY_CURES_MAX_PAGES (5). Test-injectable.
+   */
+  readonly curesMaxPages?: number
   /**
    * A cycle still in flight after this long serves the stale banner even
    * though no newer cycle has run (stall watchdog). Defaults to 2× the
@@ -662,6 +776,112 @@ function extractFailingCheckDetails(target: GraphqlCommitTarget | null | undefin
 }
 
 /**
+ * Wire-tolerant number parse (rm-117): GitHub's schema declares EPSS
+ * percentage/percentile as String yet serializes bare JSON numbers today
+ * (verified live 2026-10-03); CVSS scores are Floats. Accept either a number
+ * or a numeric string; anything else degrades to null, never NaN.
+ */
+function numberOrNull(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return null
+}
+
+/**
+ * Parse one vulnerabilityAlert node into the display-safe
+ * SecurityAlertDetail (rm-117). Every field is null-tolerant — the live API
+ * omits/nulls liberally (no update PR, no CVE, no EPSS yet, withdrawn
+ * advisories, …) and the drill-down must render whatever arrived, never
+ * throw. Unknown input shapes degrade to nulls, not errors.
+ */
+function parseSecurityAlertNode(nodeRaw: unknown): SecurityAlertDetail {
+  // Narrowing the unknown boundary defensively: the node may be any JSON shape.
+  const node = (nodeRaw ?? {}) as {
+    state?: string | null
+    createdAt?: string | null
+    fixedAt?: string | null
+    dismissedAt?: string | null
+    autoDismissedAt?: string | null
+    dismissReason?: string | null
+    dependencyScope?: string | null
+    vulnerableManifestPath?: string | null
+    securityVulnerability?: {
+      firstPatchedVersion?: {identifier?: string | null} | null
+      vulnerableVersionRange?: string | null
+    } | null
+    dependabotUpdate?: {pullRequest?: {state?: string | null; url?: string | null} | null} | null
+    securityAdvisory?: {
+      ghsaId?: string | null
+      cveId?: string | null
+      severity?: string | null
+      classification?: string | null
+      withdrawnAt?: string | null
+      cvssSeverities?: {
+        cvssV3?: {score?: number | null; vectorString?: string | null} | null
+        cvssV4?: {score?: number | null; vectorString?: string | null} | null
+      } | null
+      epss?: {percentage?: number | null; percentile?: number | null} | null
+      cwes?: {nodes?: readonly {cweId?: string | null}[] | null} | null
+      identifiers?: readonly {type?: string | null; value?: string | null}[] | null
+    } | null
+  }
+  const advisory = node.securityAdvisory ?? {}
+  return {
+    state: node.state ?? null,
+    createdAt: node.createdAt ?? null,
+    fixedAt: node.fixedAt ?? null,
+    dismissedAt: node.dismissedAt ?? null,
+    autoDismissedAt: node.autoDismissedAt ?? null,
+    dismissReason: node.dismissReason ?? null,
+    dependencyScope: node.dependencyScope ?? null,
+    manifestPath: node.vulnerableManifestPath ?? null,
+    firstPatchedVersion: node.securityVulnerability?.firstPatchedVersion?.identifier ?? null,
+    vulnerableVersionRange: node.securityVulnerability?.vulnerableVersionRange ?? null,
+    updatePrState: node.dependabotUpdate?.pullRequest?.state ?? null,
+    updatePrUrl: node.dependabotUpdate?.pullRequest?.url ?? null,
+    severity: advisory.severity ?? null,
+    classification: advisory.classification ?? null,
+    withdrawnAt: advisory.withdrawnAt ?? null,
+    ghsaId: advisory.ghsaId ?? null,
+    cveId: advisory.cveId ?? null,
+    cvssV3Score: numberOrNull(advisory.cvssSeverities?.cvssV3?.score),
+    cvssV3Vector: advisory.cvssSeverities?.cvssV3?.vectorString ?? null,
+    cvssV4Score: numberOrNull(advisory.cvssSeverities?.cvssV4?.score),
+    cvssV4Vector: advisory.cvssSeverities?.cvssV4?.vectorString ?? null,
+    epssPercentage: numberOrNull(advisory.epss?.percentage),
+    epssPercentile: numberOrNull(advisory.epss?.percentile),
+    cwes: (advisory.cwes?.nodes ?? []).map(cwe => cwe?.cweId).filter((cweId): cweId is string => typeof cweId === 'string'),
+    identifiers: (advisory.identifiers ?? []).filter((ident): ident is {type: string; value: string} => typeof ident?.type === 'string' && typeof ident?.value === 'string'),
+  }
+}
+
+/**
+ * Extract the bounded OPEN-alert sample from a parsed repo response (rm-117).
+ * Returns null when the response carries no vulnerabilityAlerts block at all
+ * (the NO_ALERTS variant / permission-degraded path).
+ */
+function extractOpenAlerts(repo: NonNullable<GraphqlRepoResponse['repository']>): readonly SecurityAlertDetail[] | null {
+  const alerts = repo.vulnerabilityAlerts
+  if (alerts === null || alerts === undefined) return null
+  return (alerts.nodes ?? []).slice(0, SECURITY_OPEN_ALERTS_CAP).map(parseSecurityAlertNode)
+}
+
+/**
+ * Deterministic recent-cures ordering: newest cure first (fixedAt, falling
+ * back to createdAt when an alert was fixed before timestamps existed),
+ * tie-broken by GHSA id so the sample is stable across refreshes.
+ */
+export function compareAlertsByRecency(a: SecurityAlertDetail, b: SecurityAlertDetail): number {
+  const aTime = a.fixedAt ?? a.createdAt ?? ''
+  const bTime = b.fixedAt ?? b.createdAt ?? ''
+  if (aTime !== bTime) return aTime < bTime ? 1 : -1
+  return (a.ghsaId ?? '').localeCompare(b.ghsaId ?? '')
+}
+
+/**
  * Parse a GraphQL response into a RepoCiStatus, with openAlertCount from the response
  * (or null if the field is absent/null).
  */
@@ -675,7 +895,7 @@ export function parseRepoResponse(raw: unknown, fetchedAt: number, openAlertCoun
     // installation lost access. That is a degradation the operator must see,
     // so we fail visible (stale:true), matching the installation_id:null and
     // fetch-failure paths below. Serving a calm unknown here hid silent drift.
-    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, securityPosture: null, stale: true, fetchedAt}
   }
 
   const target = repo.defaultBranchRef?.target
@@ -697,7 +917,22 @@ export function parseRepoResponse(raw: unknown, fetchedAt: number, openAlertCoun
   // Use the provided openAlertCount (may be from the response or null if no-alerts variant)
   const alertCount = openAlertCount ?? (repo.vulnerabilityAlerts?.totalCount ?? null)
 
-  return {rollupState, failingChecks, failingCheckDetails, openPrCount, openIssueCount, openAlertCount: alertCount, stale: false, fetchedAt}
+  // rm-117: posture exists iff the alerts block did — null on the NO_ALERTS
+  // variant (permission parity: whole posture null, never half-populated).
+  // The cures half starts empty; the aggregator's walk attaches it after parse.
+  const openAlerts = extractOpenAlerts(repo)
+
+  return {
+    rollupState,
+    failingChecks,
+    failingCheckDetails,
+    openPrCount,
+    openIssueCount,
+    openAlertCount: alertCount,
+    securityPosture: openAlerts === null ? null : {openAlerts, recentCures: [], recentCureCount: null, curesFetchedAt: null},
+    stale: false,
+    fetchedAt,
+  }
 }
 
 async function fetchRepoStatus(
@@ -711,7 +946,7 @@ async function fetchRepoStatus(
   // installation_id must be present — if null, we cannot authenticate the query
   if (entry.installation_id === null) {
     logger.warning('No installation_id for repo; marking stale', safeRepoLogIdentity(entry))
-    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, securityPosture: null, stale: true, fetchedAt}
   }
 
   const installationId = entry.installation_id
@@ -748,12 +983,12 @@ async function fetchRepoStatus(
         return parseRepoResponse(raw, fetchedAt, null)
       } catch (retryError) {
         logger.warning('Per-repo GraphQL fetch failed (no-alerts retry); marking stale', safeRepoErrorContext(entry, retryError))
-        return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+        return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, securityPosture: null, stale: true, fetchedAt}
       }
     }
 
     logger.warning('Per-repo GraphQL fetch failed; marking stale', safeRepoErrorContext(entry, error))
-    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, securityPosture: null, stale: true, fetchedAt}
   }
 }
 
@@ -861,6 +1096,10 @@ export function createAggregator(
   const fetchDeadlineMs = deps.fetchDeadlineMs ?? AGGREGATOR_FETCH_DEADLINE_MS
   const refreshConcurrency = Math.max(1, deps.refreshConcurrency ?? AGGREGATOR_REFRESH_CONCURRENCY)
   const staleAfterMs = deps.staleAfterMs ?? DEFAULT_STALE_AFTER_MS
+  // rm-117 (this cycle): recent-cures walk budget. TTL defaults to once per
+  // hour per repo; tests inject smaller values.
+  const curesRefreshMs = deps.curesRefreshMs ?? SECURITY_CURES_REFRESH_MS
+  const curesMaxPages = deps.curesMaxPages ?? SECURITY_CURES_MAX_PAGES
 
   // Last-good snapshot (serves stale data when refresh fails)
   //
@@ -913,6 +1152,125 @@ export function createAggregator(
   // longer than the 60s interval, the next tick is skipped rather than piling
   // up concurrent refreshes that race on lastGoodSnapshot.
   let refreshing = false
+
+  /**
+   * rm-117 (this cycle): per-repo recent-cures walk state. In-memory by
+   * design — a cold start re-walks from page 1 (bounded pages per window,
+   * once per boot per repo) instead of persisting opaque GitHub cursors
+   * into the snapshot. Carried per repo: the last endCursor (steady state
+   * sits at the FIXED connection's tail), the last SUCCESS time (the TTL
+   * gate; mirrored into the row as curesFetchedAt), and the last ATTEMPT
+   * time (failed walks back off to the next TTL window instead of retrying
+   * every refresh minute).
+   */
+  interface CuresWalkState {
+    cursor: string | null
+    fetchedAt: number | null
+    lastAttemptAt: number
+  }
+  const curesWalkState = new Map<string, CuresWalkState>()
+
+  /**
+   * Walk REPO_RECENT_CURES_QUERY toward the tail of the FIXED connection
+   * (rm-117). GitHub offers no orderBy and ignores `last` (verified live
+   * 2026-10-03), so the newest cures are reachable only by paging `after:`
+   * cursors; TTL-gated + page-budgeted so steady state costs one request
+   * per repo per window. Returns the merged display sample (previous +
+   * newly collected, fixedAt-desc, capped) plus the authoritative lifetime
+   * FIXED count and the success timestamp. Every failure path keeps the
+   * previous sample with its original curesFetchedAt — cure staleness stays
+   * visible by age, never silently refreshed.
+   */
+  async function walkRecentCures(
+    entry: WorkingSetEntry,
+    installationId: number,
+    previous: SecurityPosture | null,
+    nowMs: number,
+  ): Promise<Pick<SecurityPosture, 'recentCures' | 'recentCureCount' | 'curesFetchedAt'>> {
+    const previousSample = previous === null ? [] : previous.recentCures
+    const state = curesWalkState.get(entry.node_id) ?? {cursor: null, fetchedAt: null, lastAttemptAt: 0}
+    const gatedOn = Math.max(state.fetchedAt ?? 0, state.lastAttemptAt)
+    if (nowMs - gatedOn < curesRefreshMs) {
+      return {
+        recentCures: previousSample,
+        recentCureCount: previous?.recentCureCount ?? null,
+        curesFetchedAt: previous?.curesFetchedAt ?? null,
+      }
+    }
+    state.lastAttemptAt = nowMs
+    curesWalkState.set(entry.node_id, state)
+
+    const collected: SecurityAlertDetail[] = []
+    let recentCureCount: number | null = null
+    let cursor = state.cursor
+    try {
+      for (let page = 0; page < curesMaxPages; page++) {
+        const vars: Record<string, unknown> = {owner: entry.owner, name: entry.name}
+        if (cursor !== null) vars.curesAfter = cursor
+        const raw = await withDeadline(
+          graphqlQueryForInstallation(installationId, REPO_RECENT_CURES_QUERY, vars),
+          fetchDeadlineMs,
+          'recent-cures walk page (repo identity withheld from deadline labels)',
+        )
+        const alerts = (raw as GraphqlCuresResponse | null)?.repository?.vulnerabilityAlerts ?? null
+        if (alerts === null) {
+          // repository/alerts missing: wrong-shape response — treat as a walk
+          // failure, keep the previous sample and its timestamp.
+          return {recentCures: previousSample, recentCureCount: previous?.recentCureCount ?? null, curesFetchedAt: previous?.curesFetchedAt ?? null}
+        }
+        if (typeof alerts.totalCount === 'number') recentCureCount = alerts.totalCount
+        const nodes = alerts.nodes ?? []
+        collected.push(...nodes.map(parseSecurityAlertNode))
+        const hasNextPage = alerts.pageInfo?.hasNextPage === true
+        const endCursor = typeof alerts.pageInfo?.endCursor === 'string' ? alerts.pageInfo.endCursor : null
+        if (!hasNextPage) {
+          // Tail reached. An empty tail page while we were mid-connection is
+          // normal at steady state (nothing new since the last window); an
+          // empty FIRST page with a carried cursor + a non-zero lifetime
+          // count means our cursor outlived the connection's ordering — reset
+          // so the next window re-anchors from page 1.
+          if (nodes.length === 0 && cursor !== null && (recentCureCount ?? 0) > 0) {
+            state.cursor = null
+          } else if (endCursor !== null) {
+            state.cursor = endCursor
+          }
+          break
+        }
+        if (endCursor === null) break // cannot continue without a cursor
+        cursor = endCursor
+        state.cursor = endCursor
+      }
+    } catch (error) {
+      // Permission or transport failure: keep the previous sample with its
+      // original curesFetchedAt; lastAttemptAt above backs off to the next
+      // TTL window. Never surface the repo identity in the error context.
+      logger.warning('Recent-cures walk failed; keeping previous cure sample', safeRepoErrorContext(entry, error))
+      return {recentCures: previousSample, recentCureCount: previous?.recentCureCount ?? null, curesFetchedAt: previous?.curesFetchedAt ?? null}
+    }
+
+    state.fetchedAt = nowMs
+    const merged = [...previousSample, ...collected]
+      .sort(compareAlertsByRecency)
+      .slice(0, SECURITY_RECENT_CURES_CAP)
+    return {recentCures: merged, recentCureCount, curesFetchedAt: nowMs}
+  }
+
+  /**
+   * Attach the cures walk's result to a just-fetched status (rm-117).
+   * Permission parity: when the main fetch degraded (posture null) the whole
+   * posture stays null — cures are dropped with it, never half-populated.
+   */
+  async function attachCures(
+    status: RepoCiStatus,
+    entry: WorkingSetEntry,
+    previous: SecurityPosture | null,
+    nowMs: number,
+  ): Promise<RepoCiStatus> {
+    if (status.securityPosture === null) return status
+    if (entry.installation_id === null) return status
+    const walked = await walkRecentCures(entry, entry.installation_id, previous, nowMs)
+    return {...status, securityPosture: {...status.securityPosture, ...walked}}
+  }
 
   /**
    * rm-156: stamp watchdog fields onto a snapshot write made from within a
@@ -1074,6 +1432,7 @@ export function createAggregator(
       openPrCount: 0,
       openIssueCount: 0,
       openAlertCount: null,
+      securityPosture: null,
       stale: true,
       // Review fix note: this stamp is the "never fetched, best effort"
       // placeholder for repos we have no prior data for. When the warm-empty
@@ -1205,6 +1564,12 @@ export function createAggregator(
     // fetchRepoStatus call is deadline-bounded internally, so every worker
     // slot is guaranteed to free up; Promise.all can never hang.
     const statuses: (RepoCiStatus | undefined)[] = Array.from({length: workingSet.length})
+    // rm-117: previous posture per repo, read from last-good BEFORE the walk
+    // starts (lastGoodSnapshot only turns over at the end of the cycle, so
+    // these reads stay stable while the workers run).
+    const previousPostureByNodeId = new Map(
+      (lastGoodSnapshot?.repos ?? []).map(repo => [repo.node_id, repo.status.securityPosture]),
+    )
     let nextIndex = 0
     const workerCount = Math.max(1, Math.min(refreshConcurrency, workingSet.length))
     const workers: Promise<void>[] = []
@@ -1217,7 +1582,8 @@ export function createAggregator(
             if (index >= workingSet.length) return
             const entry = workingSet[index]
             if (entry === undefined) continue
-            statuses[index] = await fetchRepoStatus(entry, graphqlQueryForInstallation, now, fetchDeadlineMs)
+            const status = await fetchRepoStatus(entry, graphqlQueryForInstallation, now, fetchDeadlineMs)
+            statuses[index] = await attachCures(status, entry, previousPostureByNodeId.get(entry.node_id) ?? null, now())
           }
         })(),
       )
@@ -1235,7 +1601,7 @@ export function createAggregator(
         // assigned before Promise.all resolves) and exists only to satisfy
         // noUncheckedIndexedAccess. failingCheckDetails required here too —
         // the drill-down sample is empty on an unfetched repo (rm-192).
-        status: statuses[index] ?? {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt: now()},
+        status: statuses[index] ?? {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, securityPosture: null, stale: true, fetchedAt: now()},
       })
     }
 
