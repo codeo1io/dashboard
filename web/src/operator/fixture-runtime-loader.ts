@@ -22,6 +22,9 @@ import {FIXTURE_OPERATOR_PREFIX} from './fixture-prefix.ts'
 
 export {FIXTURE_OPERATOR_PREFIX}
 
+/** rm-606: bound on the fixture-session fetch; mirrors the 10s browserFetch bound in subscribe.ts. */
+const FIXTURE_SESSION_FETCH_TIMEOUT_MS = 10_000
+
 export interface FixtureSession {
   readonly fixtureMode: true
   readonly fixtureSessionId: string
@@ -39,15 +42,26 @@ export interface FixtureRuntimeConfig {
  * Returns the fixture session on success, or null on failure.
  * Failure is silent — the caller maps it to 'unavailable'.
  *
+ * rm-606 (2026-10-04): the fetch is bounded by AbortSignal.timeout (10s,
+ * matching the browser-side browserFetch bound in subscribe.ts) so a hung
+ * dev fixture server can never wedge fixture detection — and therefore app
+ * mount — indefinitely. On abort the fetch rejects and maps to null here:
+ * fail-closed to the non-fixture runtime, never a hang. The timeout is a
+ * parameter only so tests can exercise the abort path quickly; production
+ * callers never pass it.
+ *
  * The session response contains {fixtureMode: true, fixtureSessionId, ...normalSessionFields}.
  * CSRF is NOT included here; public modules fetch it separately via /session/csrf.
  */
-export async function fetchFixtureSession(): Promise<FixtureSession | null> {
+export async function fetchFixtureSession(
+  timeoutMs: number = FIXTURE_SESSION_FETCH_TIMEOUT_MS,
+): Promise<FixtureSession | null> {
   try {
     const res = await globalThis.fetch(`${FIXTURE_OPERATOR_PREFIX}/session`, {
       credentials: 'include',
       redirect: 'error',
       headers: {'content-type': 'application/json'},
+      signal: AbortSignal.timeout(timeoutMs),
     })
     if (!res.ok) return null
     const data = await res.json() as unknown
