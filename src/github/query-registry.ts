@@ -48,8 +48,147 @@ export const REPO_STATUS_QUERY = `
       issues(states: OPEN) {
         totalCount
       }
-      vulnerabilityAlerts(states: OPEN) {
+      # rm-117 security-posture drill-down (this cycle): node-level OPEN alerts
+      # so the posture panel can render per-severity / per-EPSS histograms from
+      # the existing per-refresh fetch — zero extra requests when alerts are
+      # empty (the nodes array is the only added payload). first: 10 is the
+      # server-side page cap for this connection (verified live 2026-10-03:
+      # requesting more still returns 10; documented ceiling — openAlertCount's
+      # totalCount stays authoritative beyond the sample, rm-110 discipline).
+      vulnerabilityAlerts(states: OPEN, first: 10) {
         totalCount
+        nodes {
+          state
+          createdAt
+          fixedAt
+          dismissedAt
+          autoDismissedAt
+          dismissReason
+          dependencyScope
+          # manifest PATH only — never the lockfile-CONTENTS field
+          vulnerableManifestPath
+          securityVulnerability {
+            firstPatchedVersion {
+              identifier
+            }
+            vulnerableVersionRange
+          }
+          dependabotUpdate {
+            pullRequest {
+              state
+              url
+            }
+          }
+          securityAdvisory {
+            ghsaId
+            cveId
+            severity
+            classification
+            withdrawnAt
+            cvssSeverities {
+              cvssV3 {
+                score
+                vectorString
+              }
+              cvssV4 {
+                score
+                vectorString
+              }
+            }
+            epss {
+              percentage
+              percentile
+            }
+            cwes(first: 5) {
+              nodes {
+                cweId
+              }
+            }
+            identifiers {
+              type
+              value
+            }
+          }
+        }
+      }
+    }
+  }
+`
+
+/**
+ * rm-117 recent-cures walk template (this cycle). GitHub's
+ * vulnerabilityAlerts connection exposes NO orderBy and IGNORES `last`
+ * (both verified live 2026-10-03) — it pages ascending from the OLDEST
+ * alert, 10 nodes per page, so "recently cured" is reachable only by
+ * walking `after:` cursors to the tail. The aggregator walks this template
+ * TTL-gated (once per hour per repo, bounded pages per walk) carrying the
+ * last endCursor: steady state converges to the tail and costs one request
+ * per window; new cures append at the tail so the cursor stays valid.
+ *
+ * $curesAfter defaults to null so the canary's generic {owner, name}
+ * invocation (and a cold start) walks from page 1 unchanged.
+ */
+export const REPO_RECENT_CURES_QUERY = `
+  query RepoRecentCures($owner: String!, $name: String!, $curesAfter: String = null) {
+    repository(owner: $owner, name: $name) {
+      vulnerabilityAlerts(states: FIXED, first: 10, after: $curesAfter) {
+        totalCount
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          state
+          createdAt
+          fixedAt
+          dismissedAt
+          autoDismissedAt
+          dismissReason
+          dependencyScope
+          vulnerableManifestPath
+          securityVulnerability {
+            firstPatchedVersion {
+              identifier
+            }
+            vulnerableVersionRange
+          }
+          dependabotUpdate {
+            pullRequest {
+              state
+              url
+            }
+          }
+          securityAdvisory {
+            ghsaId
+            cveId
+            severity
+            classification
+            withdrawnAt
+            cvssSeverities {
+              cvssV3 {
+                score
+                vectorString
+              }
+              cvssV4 {
+                score
+                vectorString
+              }
+            }
+            epss {
+              percentage
+              percentile
+            }
+            cwes(first: 5) {
+              nodes {
+                cweId
+              }
+            }
+            identifiers {
+              type
+              value
+            }
+          }
+        }
       }
     }
   }
@@ -121,4 +260,5 @@ export interface RegisteredQueryTemplate {
 export const REPO_STATUS_QUERY_REGISTRY: readonly RegisteredQueryTemplate[] = [
   {name: 'REPO_STATUS_QUERY', query: REPO_STATUS_QUERY},
   {name: 'REPO_STATUS_QUERY_NO_ALERTS', query: REPO_STATUS_QUERY_NO_ALERTS},
+  {name: 'REPO_RECENT_CURES_QUERY', query: REPO_RECENT_CURES_QUERY},
 ]
