@@ -129,6 +129,7 @@ export async function fetchGitHubUserLogin(accessToken: string): Promise<string>
         Accept: 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28',
       },
+      redirect: 'error',
       signal: AbortSignal.timeout(GITHUB_FETCH_TIMEOUT_MS),
     })
   } catch {
