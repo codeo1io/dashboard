@@ -13,7 +13,12 @@ import {buildPushClient} from '../push/subscribe.ts'
 import {getNotificationCopy} from './notifications-copy.ts'
 import type {NotificationUiState} from './notifications-copy.ts'
 
-const DISMISS_SETTINGS_KEY = 'fro-bot-notifications-dismissed'
+/**
+ * Persisted one-way dismiss latch for the notifications settings card.
+ * Exported (rm-596) for the AppShell footer's re-entry affordance, which
+ * clears it — the KEY STRING is the storage contract and never changes.
+ */
+export const DISMISS_SETTINGS_KEY = 'fro-bot-notifications-dismissed'
 
 function readPushEnabledMeta(): boolean {
   if (typeof document === 'undefined') return false

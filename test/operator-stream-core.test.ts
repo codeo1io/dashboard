@@ -3367,6 +3367,75 @@ describe('buildApprovalClient — listRunApprovals', () => {
   })
 })
 
+describe('buildApprovalClient — wall-clock fetch bound (rm-594)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('every approval-surface fetch (refreshCsrf / decide POSTs / listRunApprovals) carries an AbortSignal', async () => {
+    const signals: (AbortSignal | null | undefined)[] = []
+    vi.stubGlobal('fetch', async (url: unknown, init?: RequestInit) => {
+      signals.push(init?.signal)
+      const path = String(url)
+      if (path.includes('/csrf')) {
+        return {ok: true, status: 200, json: async () => ({csrfToken: 'test-csrf-token'})}
+      }
+      if (path.includes('/decision')) {
+        return {ok: true, status: 200, json: async () => ({state: 'claimed'})}
+      }
+      return {ok: true, status: 200, json: async () => ({approvals: []})}
+    })
+    const client = buildApprovalClient()
+    expect((await client.refreshCsrf()).success).toBe(true)
+    expect((await client.decideRunApproval('run-001', 'req-001', 'once', 'idem-key-abc')).success).toBe(true)
+    expect((await client.listRunApprovals('run-001')).success).toBe(true)
+    // 5 calls = refreshCsrf(1) + decide's csrf(1) + decide POST(1) + list(1)… the
+    // exact count is not the contract; the contract is that EVERY call carried
+    // a live signal from browserFetch's feature-detected AbortSignal.timeout.
+    expect(signals.length).toBeGreaterThanOrEqual(4)
+    for (const signal of signals) {
+      expect(signal).toBeInstanceOf(AbortSignal)
+    }
+  })
+
+  it('a never-resolving refreshCsrf hits the bound and maps to a network error (not an eternal pending state)', async () => {
+    vi.stubGlobal('fetch', async (_input: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        const err = new Error('The operation was aborted')
+        err.name = 'AbortError'
+        reject(err)
+      })
+    }))
+    const client = buildApprovalClient()
+    const result = await client.refreshCsrf()
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error?.kind).toBe('network')
+    }
+  }, 15_000)
+
+  it('a never-resolving decide POST (csrf fetch healthy) hits the bound and maps to a network error — the operator is not stranded with every control disabled', async () => {
+    vi.stubGlobal('fetch', async (input: string, init?: RequestInit) => {
+      if (String(input).includes('/csrf')) {
+        return {ok: true, status: 200, json: async () => ({csrfToken: 'test-csrf-token'})}
+      }
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          const err = new Error('The operation was aborted')
+          err.name = 'AbortError'
+          reject(err)
+        })
+      })
+    })
+    const client = buildApprovalClient()
+    const result = await client.decideRunApproval('run-001', 'req-001', 'once', 'idem-key-abc')
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error?.kind).toBe('network')
+    }
+  }, 15_000)
+})
+
 describe('buildCancelClient — cancelRun', () => {
   afterEach(() => {
     vi.unstubAllGlobals()

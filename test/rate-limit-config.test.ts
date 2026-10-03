@@ -26,6 +26,7 @@ const ENV_KEYS = [
   'RATE_LIMIT_MAX_PUBLIC',
   'RATE_LIMIT_MAX_OPERATOR',
   'RATE_LIMIT_MAX_INGEST',
+  'RATE_LIMIT_MAX_KEYS',
   'RATE_LIMIT_TRUSTED_PROXY',
 ] as const
 
@@ -109,6 +110,31 @@ describe('rate-limit env config surface (rm-129 review fix)', () => {
     expect(await hit(app, long1)).not.toBe(429)
     expect(await hit(app, long2)).toBe(429)
     expect(await hit(app, within)).not.toBe(429)
+    resetRateLimitForTesting()
+  })
+
+  it('rm-286 valid override: RATE_LIMIT_MAX_KEYS=2 fails closed on the 3rd DISTINCT client', async () => {
+    process.env.RATE_LIMIT_MAX_KEYS = '2'
+    process.env.RATE_LIMIT_TRUSTED_PROXY = '1'
+    const {buildDashboardApp, resetRateLimitForTesting} = await importFreshServer()
+    const app = await buildDashboardApp({operatorLogin: 'octocat', cookieKey: TEST_KEY})
+    expect(await hit(app, '9.9.9.9')).not.toBe(429)
+    expect(await hit(app, '8.8.8.8')).not.toBe(429)
+    // Store at capacity (2 keys): the 3rd distinct client is denied — the
+    // admission cap's fail-closed surface, via the middleware's 429.
+    expect(await hit(app, '7.7.7.7')).toBe(429)
+    // An EXISTING key keeps its budget (admission never evicts hot keys).
+    expect(await hit(app, '9.9.9.9')).not.toBe(429)
+    resetRateLimitForTesting()
+  })
+
+  it('rm-286 invalid RATE_LIMIT_MAX_KEYS falls back to the default (not the invalid value)', async () => {
+    process.env.RATE_LIMIT_MAX_KEYS = '0' // invalid: must NOT become cap 0
+    const {buildDashboardApp, resetRateLimitForTesting} = await importFreshServer()
+    const app = await buildDashboardApp({operatorLogin: 'octocat', cookieKey: TEST_KEY})
+    // If the invalid value leaked through as a zero cap, this first request
+    // would 429; with the house fallback (10_000) it is admitted.
+    expect(await hit(app)).not.toBe(429)
     resetRateLimitForTesting()
   })
 })
