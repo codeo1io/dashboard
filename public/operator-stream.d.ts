@@ -21,6 +21,13 @@ export declare const MAX_SSE_BUFFER_BYTES: number
  * record boundary. The server reader carries the same pending-CR logic inline.
  */
 export declare function appendStreamChunk(buffer: string, decoded: string): string
+/**
+ * rm-510: append one decoded read() chunk to the stream buffer while keeping
+ * the byte count incremental (mirrors appendStreamChunkState in
+ * src/gateway/operator-sse-reader.ts, including the held-CR and lone high
+ * surrogate unstable-suffix handling).
+ */
+export declare function appendStreamChunkState(buffer: string, decoded: string, bufferBytes: number): {buffer: string; bufferBytes: number}
 export declare const MAX_OUTPUT_TEXT_CHARS: number
 export declare const MAX_APPROVAL_TOMBSTONES: number
 export declare const MAX_OPEN_APPROVALS: number

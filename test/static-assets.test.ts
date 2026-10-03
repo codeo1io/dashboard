@@ -221,6 +221,47 @@ describe('operator runtime JS caching policy (rm-478)', () => {
     expect((await res.text()).length).toBeGreaterThan(0)
   })
 
+  // rm-509: RFC 9110 §13.1.2 header forms — weak validators, comma lists and
+  // `*` must all revalidate to 304; non-matching forms in those same shapes
+  // must still serve the full asset.
+  it('a weak validator If-None-Match revalidates to 304 (rm-509)', async () => {
+    const app = await buildTestApp(false)
+    const first = await app.request('/static/operator-stream.js')
+    const etag = first.headers.get('etag') ?? ''
+    const revalidated = await app.request('/static/operator-stream.js', {
+      headers: {'If-None-Match': `W/${etag}`},
+    })
+    expect(revalidated.status).toBe(304)
+    expect(revalidated.headers.get('etag')).toBe(etag)
+    await expect(revalidated.text()).resolves.toBe('')
+  })
+
+  it('a comma-list If-None-Match containing the ETag revalidates to 304 (rm-509)', async () => {
+    const app = await buildTestApp(false)
+    const first = await app.request('/static/operator-stream.js')
+    const etag = first.headers.get('etag') ?? ''
+    const revalidated = await app.request('/static/operator-stream.js', {
+      headers: {'If-None-Match': `"stale-a", ${etag}, W/"stale-b"`},
+    })
+    expect(revalidated.status).toBe(304)
+  })
+
+  it('If-None-Match: * revalidates to 304 (rm-509)', async () => {
+    const app = await buildTestApp(false)
+    const revalidated = await app.request('/static/operator-stream.js', {headers: {'If-None-Match': '*'}})
+    expect(revalidated.status).toBe(304)
+  })
+
+  it('weak or listed non-matching If-None-Match still serves the full asset (200) (rm-509)', async () => {
+    const app = await buildTestApp(false)
+    for (const header of ['W/"stale"', '"stale-a", W/"stale-b"', 'not-a-validator']) {
+      const res = await app.request('/static/operator-stream.js', {headers: {'If-None-Match': header}})
+      expect(res.status, header).toBe(200)
+      expect(res.headers.get('cache-control'), header).toBe('no-cache')
+      expect((await res.text()).length, header).toBeGreaterThan(0)
+    }
+  })
+
   it('operator-launch.js and operator-run-index.js carry the same policy', async () => {
     const app = await buildTestApp(false)
     for (const asset of ['/static/operator-launch.js', '/static/operator-run-index.js']) {

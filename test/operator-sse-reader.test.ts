@@ -17,7 +17,7 @@ import type {Logger} from '../src/logger.ts'
 import fc from 'fast-check'
 import {describe, expect, it, vi} from 'vitest'
 import {FIXTURE_RUN_ID_FOR_TESTS, FIXTURE_SCENARIO_NAMES, serializeScenarioToSse} from '../src/gateway/operator-fixture-sse.ts'
-import {createOperatorSseReader, MAX_SSE_BUFFER_BYTES, parseSseChunk} from '../src/gateway/operator-sse-reader.ts'
+import {appendStreamChunkState, createOperatorSseReader, drainRecordState, MAX_SSE_BUFFER_BYTES, parseSseChunk} from '../src/gateway/operator-sse-reader.ts'
 
 function makeStreamBody(chunks: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder()
@@ -2285,5 +2285,120 @@ describe('fixture SSE scenarios — serializeScenarioToSse output format', () =>
 
   it('unknown scenario name throws a clear error', () => {
     expect(() => serializeScenarioToSse('not-a-real-scenario', FIXTURE_RUN_ID_FOR_TESTS)).toThrow()
+  })
+})
+
+describe('incremental buffer byte accounting (rm-510)', () => {
+  const oracleBytes = (text: string): number => new TextEncoder().encode(text).length
+
+  it('appendStreamChunkState + drainRecordState keep the byte count equal to the whole-buffer truth across random chunk and drain interleavings', () => {
+    const chunkArb = fc.array(
+      fc
+        .tuple(
+          fc.oneof(fc.string({unit: 'binary-ascii', maxLength: 12}), fc.string({unit: 'grapheme', maxLength: 8})),
+          fc.constantFrom('', '\r', '\n', '\r\n', '𝕏\n'),
+        )
+        .map(([piece, suffix]) => piece + suffix),
+      {maxLength: 24},
+    )
+    fc.assert(
+      fc.property(chunkArb, chunks => {
+        let buffer = ''
+        let bufferBytes = 0
+        for (const chunk of chunks) {
+          const appended = appendStreamChunkState(buffer, chunk, bufferBytes)
+          buffer = appended.buffer
+          bufferBytes = appended.bufferBytes
+          expect(bufferBytes, `after append of ${JSON.stringify(chunk)}`).toBe(oracleBytes(buffer))
+          for (let boundary = buffer.indexOf('\n\n'); boundary !== -1; boundary = buffer.indexOf('\n\n')) {
+            const drained = drainRecordState(buffer, boundary, bufferBytes)
+            expect(drained.record).toBe(buffer.slice(0, boundary))
+            buffer = drained.buffer
+            bufferBytes = drained.bufferBytes
+            expect(bufferBytes).toBe(oracleBytes(buffer))
+          }
+        }
+      }),
+      {numRuns: 400},
+    )
+  })
+
+  it('a hostile drip through the helper pair reassembles a long multibyte frame byte-exactly', () => {
+    const payload = `{"note":"${'𝕏'.repeat(400)}${'δ'.repeat(400)}"}`
+    const frame = `data: ${payload}\n\n`
+    const pieces: string[] = []
+    // 7-code-unit slices land mid-astral (splitting surrogate pairs) and
+    // mid-CRLF; the decoder stitching and the incremental count must both
+    // come out whole.
+    for (let i = 0; i < frame.length; i += 7) pieces.push(frame.slice(i, i + 7))
+    let buffer = ''
+    let bufferBytes = 0
+    const records: string[] = []
+    for (const piece of pieces) {
+      const appended = appendStreamChunkState(buffer, piece, bufferBytes)
+      buffer = appended.buffer
+      bufferBytes = appended.bufferBytes
+      expect(bufferBytes).toBe(oracleBytes(buffer))
+      let boundary = buffer.indexOf('\n\n')
+      while (boundary !== -1) {
+        const drained = drainRecordState(buffer, boundary, bufferBytes)
+        records.push(drained.record)
+        buffer = drained.buffer
+        bufferBytes = drained.bufferBytes
+        expect(bufferBytes).toBe(oracleBytes(buffer))
+        boundary = buffer.indexOf('\n\n')
+      }
+    }
+    expect(records).toEqual([`data: ${payload}`])
+    expect(buffer).toBe('')
+    expect(bufferBytes).toBe(0)
+  })
+
+  it('a real reader drip: byte-split stream at hostile offsets parses every frame exactly once', async () => {
+    const sseBytes = serializeScenarioToSse(FIXTURE_SCENARIO_NAMES.success, FIXTURE_RUN_ID_FOR_TESTS)
+    const bytes = new TextEncoder().encode(sseBytes)
+    // Split at 12 evenly spaced BYTE offsets — the cuts land inside CRLF
+    // pairs, between a CR and its LF, and mid-token, so the held-CR path and
+    // the incremental accounting are both on the hot path.
+    const offsets = Array.from({length: 12}, (_, i) => Math.floor((bytes.length * (i + 1)) / 13))
+    const byteChunks: Uint8Array[] = []
+    let prev = 0
+    for (const off of offsets) {
+      byteChunks.push(bytes.slice(prev, off))
+      prev = off
+    }
+    byteChunks.push(bytes.slice(prev))
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of byteChunks) controller.enqueue(chunk)
+        controller.close()
+      },
+    })
+    const response = new Response(body, {status: 200, headers: {'content-type': 'text/event-stream'}})
+    const {fetchImpl} = makeFakeFetch(response)
+    const reader = createOperatorSseReader({fetchImpl})
+
+    const events: RunStreamFrame[] = []
+    const errors: Error[] = []
+    let closed = false
+
+    await reader.open('/operator/runs/run-rm-510-drip/stream', {
+      onEvent: frame => events.push(frame),
+      onError: err => errors.push(err),
+      onClose: () => {
+        closed = true
+      },
+    })
+
+    expect(errors).toHaveLength(0)
+    expect(closed).toBe(true)
+    expect(events.filter(e => e.type === 'ready')).toHaveLength(1)
+    const statusFrames = events.filter(e => e.type === 'status')
+    expect(statusFrames.length).toBeGreaterThanOrEqual(2)
+    const terminalStatus = statusFrames.at(-1)
+    expect(terminalStatus?.type).toBe('status')
+    if (terminalStatus?.type === 'status') {
+      expect(terminalStatus.data.status).toBe('succeeded')
+    }
   })
 })

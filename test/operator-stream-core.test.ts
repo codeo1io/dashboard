@@ -16,6 +16,7 @@ import fc from 'fast-check'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {
   appendStreamChunk,
+  appendStreamChunkState,
   bootstrapOperatorStreams,
   buildApprovalClient,
   buildCancelClient,
@@ -43,6 +44,7 @@ import {
 } from '../public/operator-stream.js'
 import {OPERATOR_CONTRACT_VERSION, PHASE_TO_WEB_STATUS as VENDORED_PHASE_TO_WEB_STATUS} from '../src/gateway/operator-contract/index.ts'
 import {FIXTURE_RUN_ID_FOR_TESTS, FIXTURE_SCENARIO_NAMES, serializeScenarioToSse} from '../src/gateway/operator-fixture-sse.ts'
+import {appendStreamChunkState as serverAppendStreamChunkState} from '../src/gateway/operator-sse-reader.ts'
 
 const ACTIVE_STATUS = {
   runId: 'run-abc',
@@ -7434,5 +7436,41 @@ describe('connection lifecycle — stranded connections abort (rm-261)', () => {
     expect(signals[0]?.aborted).toBe(true) // response body cancelled, socket released
     expect(fetchCount).toBe(1) // backoff (1s) has not fired within the tick
     expect(noticeEl.dataset.connectionState).toBeTruthy()
+  })
+})
+
+describe('incremental buffer byte accounting twin (rm-510)', () => {
+  const oracleBytes = (text: string): number => new TextEncoder().encode(text).length
+
+  it('twin appendStreamChunkState agrees with the server reader helper on the same chunk sequences', () => {
+    const chunkArb = fc.array(
+      fc
+        .tuple(
+          fc.oneof(fc.string({unit: 'binary-ascii', maxLength: 12}), fc.string({unit: 'grapheme', maxLength: 8})),
+          fc.constantFrom('', '\r', '\n', '\r\n', '𝕏\n'),
+        )
+        .map(([piece, suffix]) => piece + suffix),
+      {maxLength: 24},
+    )
+    fc.assert(
+      fc.property(chunkArb, chunks => {
+        let serverBuffer = ''
+        let serverBytes = 0
+        let twinBuffer = ''
+        let twinBytes = 0
+        for (const chunk of chunks) {
+          const server = serverAppendStreamChunkState(serverBuffer, chunk, serverBytes)
+          const twin = appendStreamChunkState(twinBuffer, chunk, twinBytes)
+          expect(twin.buffer).toBe(server.buffer)
+          expect(twin.bufferBytes).toBe(server.bufferBytes)
+          serverBuffer = server.buffer
+          serverBytes = server.bufferBytes
+          twinBuffer = twin.buffer
+          twinBytes = twin.bufferBytes
+          expect(twinBytes).toBe(oracleBytes(twinBuffer))
+        }
+      }),
+      {numRuns: 300},
+    )
   })
 })
