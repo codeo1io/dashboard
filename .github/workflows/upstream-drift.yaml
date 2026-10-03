@@ -69,7 +69,11 @@ jobs:
             echo
             echo '### Upstream commits not yet absorbed (oldest first, first 15)'
             echo '```'
-            git log --oneline --reverse "origin/$DEFAULT_BRANCH..$UPSTREAM" | head -15
+            # rm-516: sed -n reads the whole stream, so its consumer cannot
+            # SIGPIPE git the way head -15's early exit can under set -o
+            # pipefail (exit 141 kills this step before the alert-issue draft
+            # and the intentional exit 1 below when drift output is large).
+            git log --oneline --reverse "origin/$DEFAULT_BRANCH..$UPSTREAM" | sed -n '1,15p'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
