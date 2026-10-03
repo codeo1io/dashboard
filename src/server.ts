@@ -30,6 +30,7 @@ import {getConnInfo} from '@hono/node-server/conninfo'
 import {serveStatic} from '@hono/node-server/serve-static'
 import {Octokit} from '@octokit/core'
 import {Hono, type Context} from 'hono'
+import {compress} from 'hono/compress'
 import {getCookie, setCookie} from 'hono/cookie'
 import {secureHeaders} from 'hono/secure-headers'
 import {fetchGitHubUserLogin, makeGitHubOAuthClient} from './auth/oauth.ts'
@@ -1064,7 +1065,16 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
         return null // missing/unreadable shell — keep the notFound fallback
       }
     }
-    app.get('/', async c => {
+    // rm-553: the SPA shell (both branches below) negotiates gzip — the
+    // injected-shell branch serves c.html() (no Content-Length mid-chain, so
+    // hono's default 1024-byte threshold does not gate it); the serveStatic
+    // fallback carries CL and is honestly threshold-gated (a 718-byte index.html
+    // stays identity). encoding pinned to 'gzip' — the only codec the fleet's
+    // clients need and the only one probed (brotli is not negotiated by hono's
+    // compress; deflate adds a second negotiated variant for zero benefit).
+    // No global compress(): SSE and API surfaces stay identity BY CONSTRUCTION
+    // (mount-point exclusion), never by condition.
+    app.get('/', compress({encoding: 'gzip'}), async c => {
       // rm-166 (cycle-10, landed as a rider on rm-172): the injected shell is
       // identity-reflecting (the push-enabled flag is operator-gated), so no
       // intermediary may cache it — same no-store posture as /api/monitoring.
@@ -1078,7 +1088,8 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       return c.html(spaShellCache.injected)
     })
   } else {
-    app.get('/', serveStatic({root: webDistRoot, path: 'index.html'}))
+    // rm-553: same gzip negotiation on the non-injected shell branch.
+    app.get('/', compress({encoding: 'gzip'}), serveStatic({root: webDistRoot, path: 'index.html'}))
   }
 
   // ── /operator and /operator/ → / redirect (unconditional, flag-independent) ──
@@ -1126,18 +1137,43 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       c.res = new Response(null, {status: 304, headers: c.res.headers})
     }
   }
+  // rm-553: hono's compress() weakens a strong ETag to W/"…" on every response
+  // it encodes, but rm-478's revalidation loop byte-compares the client's
+  // If-None-Match against the STRONG form — a weakened ETag would silently
+  // disable the 304 short-circuit for every gzip-capable client (i.e. every
+  // browser) and resurrect the ~150KB-per-launch refetch rm-478 cured. This
+  // middleware mounts OUTSIDE compress() so its post-processing runs last and
+  // restores the strong form on encoded 200s: the ETag basis (sha256 of the
+  // uncompressed file bytes) is unchanged, 304s keep the strong form and never
+  // carry Content-Encoding, and Vary: Accept-Encoding keeps caches from
+  // cross-serving the gzip and identity variants (the nginx strong-etag-over-
+  // gzip pattern).
+  const restoreStrongEtagAfterCompression = async (c: Context, next: () => Promise<void>): Promise<void> => {
+    await next()
+    if (c.res.status !== 200) return
+    const etag = c.res.headers.get('ETag')
+    if (c.res.headers.has('Content-Encoding') && etag?.startsWith('W/"')) {
+      c.res.headers.set('ETag', etag.slice(2))
+    }
+  }
   app.use(
     '/static/operator-stream.js',
+    restoreStrongEtagAfterCompression,
+    compress({encoding: 'gzip'}),
     operatorRuntimeCaching,
     serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}),
   )
   app.use(
     '/static/operator-launch.js',
+    restoreStrongEtagAfterCompression,
+    compress({encoding: 'gzip'}),
     operatorRuntimeCaching,
     serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}),
   )
   app.use(
     '/static/operator-run-index.js',
+    restoreStrongEtagAfterCompression,
+    compress({encoding: 'gzip'}),
     operatorRuntimeCaching,
     serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}),
   )
@@ -1153,7 +1189,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     // /static/ is in isPublicPath so unauthenticated browsers can load assets.
     // Note: operator-stream.js and operator-launch.js are already mounted above;
     // this catch-all additionally serves operator.css and any other static assets.
-    app.use('/static/*', serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}))
+    // rm-553: the catch-all shares the /static gzip seam (operator.css and any
+    // future text asset); the three operator-*.js mounts above carry the extra
+    // rm-478 ETag-preservation middleware, this mount has no ETag to preserve.
+    app.use('/static/*', compress({encoding: 'gzip'}), serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}))
   }
 
   // ── Fixture harness routes (DEV-ONLY) ─────────────────────────────────────
@@ -1166,8 +1205,13 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   }
 
   // ── SPA static asset serving ─────────────────────────────────────────────
-  app.use('/assets/*', serveStatic({root: webDistRoot}))
-  app.use('/icon-*', serveStatic({root: webDistRoot}))
+  // rm-553: both mounts negotiate gzip — the hashed /assets bundle
+  // (index-*.js 284,763 B → 83,915 B measured) and the 320KB icon SVGs are
+  // text and compress ~70%; hono's compressible-content-type filter keeps any
+  // future binary asset identity. No ETag is set on these mounts today, so no
+  // ETag-preservation middleware is needed here.
+  app.use('/assets/*', compress({encoding: 'gzip'}), serveStatic({root: webDistRoot}))
+  app.use('/icon-*', compress({encoding: 'gzip'}), serveStatic({root: webDistRoot}))
 
   // ── PWA manifest ─────────────────────────────────────────────────────────
   // serveStatic serves .webmanifest as application/octet-stream by default.

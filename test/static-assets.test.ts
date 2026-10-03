@@ -14,7 +14,10 @@ import {Buffer} from 'node:buffer'
 import {existsSync, readdirSync, statSync} from 'node:fs'
 import {join, resolve} from 'node:path'
 import process from 'node:process'
+import {gunzipSync} from 'node:zlib'
 import {afterEach, describe, expect, it} from 'vitest'
+import {FIXTURE_OPERATOR_PREFIX} from '../src/gateway/operator-fixture-routes.ts'
+import {FIXTURE_SCENARIO_NAMES} from '../src/gateway/operator-fixture-sse.ts'
 import {buildDashboardApp} from '../src/server.ts'
 import {SessionManager} from '../src/session.ts'
 
@@ -229,6 +232,187 @@ describe('operator runtime JS caching policy (rm-478)', () => {
       expect(res.headers.get('cache-control'), asset).toBe('no-cache')
       expect(res.headers.get('etag'), asset).toMatch(/^"[0-9a-f]{32}"$/)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-553 — serving-path compression (gzip at the serving seams)
+//
+// compress() is mounted ONLY at the serving seams (/, /assets/*, /icon-*,
+// /static/*) so SSE and API surfaces are excluded BY CONSTRUCTION. These tests
+// pin: gzip + Vary on a representative hashed asset, byte-exact round trip,
+// identity pass-through, rm-478's strong-ETag/304 loop preserved under gzip,
+// and the ABSENCE of Content-Encoding on the SSE route and API responses.
+// Cache-Control on /assets is deliberately NOT asserted — sibling rm-555
+// (immutable caching) owns that header; compression assertions stay
+// cache-control-agnostic so they survive either landing order.
+// ---------------------------------------------------------------------------
+
+describe('rm-553 — serving-path compression', () => {
+  /** Pick a hashed /assets JS entry large enough to clear the 1024-byte threshold. */
+  function pickHashedAsset(): string | null {
+    const dir = 'web/dist/assets'
+    if (!existsSync(dir)) return null
+    const entries = readdirSync(dir)
+      .filter(f => f.endsWith('.js'))
+      .filter(f => statSync(join(dir, f)).size >= 1024)
+      .sort((a, b) => statSync(join(dir, b)).size - statSync(join(dir, a)).size)
+    return entries[0] ? `/assets/${entries[0]}` : null
+  }
+
+  it('hashed /assets entry with Accept-Encoding: gzip → 200 + Content-Encoding: gzip + Vary: Accept-Encoding', async () => {
+    const asset = pickHashedAsset()
+    if (asset === null) return // no dist bundle in this environment
+    const app = await buildTestApp(true)
+    const res = await app.request(asset, {headers: {'accept-encoding': 'gzip'}})
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-encoding')).toBe('gzip')
+    expect(res.headers.get('vary')).toContain('Accept-Encoding')
+  })
+
+  it('hashed /assets entry with Accept-Encoding: identity → no Content-Encoding, Vary present', async () => {
+    const asset = pickHashedAsset()
+    if (asset === null) return
+    const app = await buildTestApp(true)
+    const res = await app.request(asset, {headers: {'accept-encoding': 'identity'}})
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-encoding')).toBeNull()
+    expect(res.headers.get('vary')).toContain('Accept-Encoding')
+  })
+
+  it('the gzip representation of a hashed /assets entry is byte-exact gunzip(identity)', async () => {
+    const asset = pickHashedAsset()
+    if (asset === null) return
+    const app = await buildTestApp(true)
+    const gzipped = await app.request(asset, {headers: {'accept-encoding': 'gzip'}})
+    const identity = await app.request(asset, {headers: {'accept-encoding': 'identity'}})
+    expect(gzipped.status).toBe(200)
+    expect(identity.status).toBe(200)
+    const decoded = gunzipSync(Buffer.from(await gzipped.arrayBuffer()))
+    expect(decoded.equals(Buffer.from(await identity.arrayBuffer()))).toBe(true)
+  })
+
+  it('the 320KB icon SVGs negotiate gzip (same SPA asset seam as /assets)', async () => {
+    const app = await buildTestApp(true)
+    const res = await app.request('/icon-192.svg', {headers: {'accept-encoding': 'gzip'}})
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-encoding')).toBe('gzip')
+    expect(res.headers.get('vary')).toContain('Accept-Encoding')
+    expect((await res.arrayBuffer()).byteLength).toBeGreaterThan(0)
+  })
+
+  it('authenticated / (injected shell) with gzip → compressed + Vary, payload intact after decode', async () => {
+    const app = await buildDashboardApp({
+      operatorLogin: TEST_OPERATOR,
+      cookieKey: TEST_KEY,
+      oauthClient: makeFakeOAuthClient(),
+      fetchUserLogin: async (_token: string) => TEST_OPERATOR,
+      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
+      operatorUiEnabled: false,
+      pushNotificationsEnabled: true,
+    })
+    const res = await app.request('/', {
+      headers: {cookie: `session=${makeSessionCookie()}`, 'accept-encoding': 'gzip'},
+    })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-encoding')).toBe('gzip')
+    expect(res.headers.get('vary')).toContain('Accept-Encoding')
+    expect(gunzipSync(Buffer.from(await res.arrayBuffer())).toString('utf8')).toContain('<div id="root">')
+  })
+
+  it('/static/operator-stream.js with gzip → Content-Encoding: gzip + Vary + STRONG etag (rm-478 basis preserved)', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/static/operator-stream.js', {headers: {'accept-encoding': 'gzip'}})
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-encoding')).toBe('gzip')
+    expect(res.headers.get('vary')).toContain('Accept-Encoding')
+    // rm-478: the strong (non-W/) content-hash ETag must survive compression —
+    // a W/ form would break the byte-exact If-None-Match compare below.
+    const etag = res.headers.get('etag')
+    expect(etag).toMatch(/^"[0-9a-f]{32}"$/)
+    expect(etag?.startsWith('W/')).toBe(false)
+  })
+
+  it('the gzip and identity representations of /static/operator-stream.js share the same strong ETag', async () => {
+    const app = await buildTestApp(false)
+    const gz = await app.request('/static/operator-stream.js', {headers: {'accept-encoding': 'gzip'}})
+    const id = await app.request('/static/operator-stream.js', {headers: {'accept-encoding': 'identity'}})
+    expect(gz.headers.get('etag')).toBe(id.headers.get('etag'))
+    expect(gz.headers.get('etag')).toMatch(/^"[0-9a-f]{32}"$/)
+  })
+
+  it('gzip client revalidation: If-None-Match on a compressed path → 304, strong ETag, NO Content-Encoding', async () => {
+    const app = await buildTestApp(false)
+    const first = await app.request('/static/operator-stream.js', {headers: {'accept-encoding': 'gzip'}})
+    const etag = first.headers.get('etag') ?? ''
+    expect(etag).toMatch(/^"[0-9a-f]{32}"$/) // the client caches the STRONG form
+    const revalidated = await app.request('/static/operator-stream.js', {
+      headers: {'accept-encoding': 'gzip', 'If-None-Match': etag},
+    })
+    expect(revalidated.status).toBe(304)
+    expect(revalidated.headers.get('etag')).toBe(etag)
+    expect(revalidated.headers.get('content-encoding')).toBeNull()
+    await expect(revalidated.text()).resolves.toBe('')
+  })
+
+  it('decoded /static/operator-stream.js gzip body is byte-identical to the identity body', async () => {
+    const app = await buildTestApp(false)
+    const gz = await app.request('/static/operator-stream.js', {headers: {'accept-encoding': 'gzip'}})
+    const id = await app.request('/static/operator-stream.js', {headers: {'accept-encoding': 'identity'}})
+    const decoded = gunzipSync(Buffer.from(await gz.arrayBuffer()))
+    expect(decoded.equals(Buffer.from(await id.arrayBuffer()))).toBe(true)
+  })
+
+  it('a HEAD request to a compressed seam carries no Content-Encoding (bodyless)', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/static/operator-stream.js', {method: 'HEAD', headers: {'accept-encoding': 'gzip'}})
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-encoding')).toBeNull()
+  })
+
+  it('API JSON route (/api/healthz) carries no Content-Encoding — no global compress (rm-553)', async () => {
+    const app = await buildTestApp(true)
+    const res = await app.request('/api/healthz', {headers: {'accept-encoding': 'gzip'}})
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-encoding')).toBeNull()
+  })
+
+  it('SSE fixture stream carries no Content-Encoding even with Accept-Encoding: gzip (mount-point exclusion)', async () => {
+    const app = await buildDashboardApp({
+      operatorLogin: TEST_OPERATOR,
+      cookieKey: TEST_KEY,
+      oauthClient: makeFakeOAuthClient(),
+      fetchUserLogin: async (_token: string) => TEST_OPERATOR,
+      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
+      operatorUiEnabled: false,
+      fixtureHarnessEnabled: true,
+      fixtureBindHost: '127.0.0.1',
+    })
+    const sessionRes = await app.request(`${FIXTURE_OPERATOR_PREFIX}/session`)
+    const {fixtureSessionId} = await sessionRes.json() as {fixtureSessionId: string}
+    const launchRes = await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs`, {
+      method: 'POST',
+      headers: {'content-type': 'application/json'},
+      body: JSON.stringify({
+        scenario: FIXTURE_SCENARIO_NAMES.success,
+        idempotencyKey: 'fixture-idem-key-rm553-sse-001',
+        fixtureSessionId,
+        csrfToken: 'fixture-csrf-placeholder',
+        repo: 'fixture-org/fixture-repo',
+        prompt: '[Fixture prompt]',
+      }),
+    })
+    expect(launchRes.status).toBe(200)
+    const {runId} = await launchRes.json() as {runId: string}
+    const streamRes = await app.request(
+      `${FIXTURE_OPERATOR_PREFIX}/runs/${runId}/stream?fixtureSessionId=${fixtureSessionId}`,
+      {headers: {'accept-encoding': 'gzip'}},
+    )
+    expect(streamRes.status).toBe(200)
+    expect(streamRes.headers.get('content-type') ?? '').toMatch(/text\/event-stream/)
+    expect(streamRes.headers.get('content-encoding')).toBeNull()
+    const body = await streamRes.text()
+    expect(body).toContain('event:')
   })
 })
 
