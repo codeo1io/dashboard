@@ -991,3 +991,35 @@ describe('rm-498 — % rejection compatibility (allowPercentInPath stays unset)'
     expect(offenders).toEqual([])
   })
 })
+
+// ---------------------------------------------------------------------------
+// rm-503 — immutable caching for the hashed /assets/* build output.
+// The unversioned policies stay pinned above (rm-478 no-cache assertions) and
+// in the shell suite ('/' → no-store); this block pins the hashed-output side.
+// ---------------------------------------------------------------------------
+
+describe('hashed build output caching policy (rm-503)', () => {
+  const webDistAssets = resolve(process.cwd(), 'web', 'dist', 'assets')
+  const built = existsSync(webDistAssets)
+
+  it.skipIf(!built)('a hashed /assets/* JS bundle is served immutable', async () => {
+    const app = await buildTestApp(false)
+    const hashedJs = readdirSync(webDistAssets).find(f => f.endsWith('.js'))
+    if (hashedJs === undefined) throw new Error('no hashed JS bundle in web/dist/assets')
+    const res = await app.request(`/assets/${hashedJs}`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toContain('javascript')
+    expect(res.headers.get('cache-control')).toBe(
+      'public, max-age=31536000, immutable',
+    )
+  })
+
+  it('a missing /assets/* path never carries the immutable policy', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/assets/definitely-not-built-999999.js')
+    expect(res.status).toBe(404)
+    expect(res.headers.get('cache-control')).not.toBe(
+      'public, max-age=31536000, immutable',
+    )
+  })
+})

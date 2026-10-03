@@ -1166,7 +1166,20 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   }
 
   // ── SPA static asset serving ─────────────────────────────────────────────
-  app.use('/assets/*', serveStatic({root: webDistRoot}))
+  // Hashed Vite output: filenames embed their content hash, so the bytes at a
+  // given /assets/* URL never change — safe (and correct) to cache immutably.
+  // Unversioned surfaces (the shell at /, the /static/operator-* files) keep
+  // their no-store / no-cache policies below and in operatorRuntimeCaching.
+  app.use(
+    '/assets/*',
+    async (c, next) => {
+      await next()
+      if (c.res.status === 200) {
+        c.res.headers.set('Cache-Control', 'public, max-age=31536000, immutable')
+      }
+    },
+    serveStatic({root: webDistRoot}),
+  )
   app.use('/icon-*', serveStatic({root: webDistRoot}))
 
   // ── PWA manifest ─────────────────────────────────────────────────────────

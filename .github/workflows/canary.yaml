@@ -45,14 +45,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # rm-280 (2026-10-01): the canary was born NOT zero-install. At that
       # point the script imported the production chain (scripts/graphql-canary.ts
       # → src/github/aggregator.ts → src/result.ts → bare npm specifier
       # @bfra.me/es/result), so without node_modules it died ~10s in with
       # ERR_MODULE_NOT_FOUND: the workflow's only run ever (36417620616, a
-      # 2026-09-28 dispatch) did exactly that, and the weekly cron had never
-      # produced a run. rm-280's acceptance offered install-vs-inline and chose
+      # 2026-09-28 SCHEDULED firing ~6h23m after the 05:23Z spec, FAILURE,
+      # pre-fix — NOT a workflow_dispatch; the weekly cron HAS fired once,
+      # pre-fix. The 2026-10-05 05:23Z firing is the first post-fix proof
+      # point (rm-504, 2026-10-03: corrected here — earlier revisions of this
+      # comment mislabeled 36417620616 as a dispatch and claimed the cron had
+      # never fired; the Actions API says event=schedule). rm-280's acceptance
+      # offered install-vs-inline and chose
       # INSTALL, via the same digest-pinned composite every Main job runs
       # (pnpm + Node 24 + cache: pnpm + `pnpm install --frozen-lockfile`).
       # rm-288 (2026-10-03, run 7ce48fe5 integrate) landed the sibling half:
