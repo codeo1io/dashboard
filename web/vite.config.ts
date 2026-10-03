@@ -17,7 +17,15 @@ export default defineConfig({
     VitePWA({
       // injectManifest ships our hand-written SW (web/src/sw.ts) — a
       // kill-switch that purges caches and unregisters itself. It performs no
-      // fetch routing and no caching; the emitted precache manifest is inert.
+      // fetch routing and no caching; the precache manifest is empty (below).
+      //
+      // rm-138 branch (a) — registration is OFF at build level: injectRegister
+      // is the single source of truth that nothing registers a SW, pinned by
+      // test/pwa-registration-guard.test.ts (no register-sw script tag, no
+      // registerSW.js in the output). The kill-switch still ships, so stranded
+      // clients keep receiving the self-uninstall update via the browser's own
+      // SW update check on navigation.
+      injectRegister: false,
       strategies: 'injectManifest',
       srcDir: 'src',
       filename: 'sw.ts',
@@ -29,29 +37,11 @@ export default defineConfig({
       // registerType omitted → defaults to 'prompt' (never silently reload).
 
       injectManifest: {
-        // Exclude the SW itself and the manifest from the precache list.
-        // The default globPatterns cover hashed JS/CSS/assets in web/dist.
-        globIgnores: [
-          '**/sw.js',
-          '**/manifest.webmanifest',
-          '**/registerSW.js',
-          '**/privacy.html',
-        ],
-
-        // Rewrite the precache manifest entry for index.html → '/' so the
-        // generated workbox manifest stays consistent with the server's '/'
-        // route (GET /index.html has no route and 404s). The deployed SW is a
-        // kill-switch (web/src/sw.ts) that purges caches, unregisters itself,
-        // and never precaches or serves — this transform only shapes the
-        // manifest the build emits.
-        manifestTransforms: [
-          (entries) => {
-            const manifest = entries.map((entry) =>
-              entry.url === 'index.html' ? {...entry, url: '/'} : entry,
-            )
-            return {manifest, warnings: []}
-          },
-        ],
+        // rm-138: the kill-switch consumes no precache entries, so the glob is
+        // deliberately empty — no asset list is shipped inside sw.js. The
+        // globIgnores/manifestTransforms that shaped the (never-consumed)
+        // manifest became moot with an empty glob and were removed.
+        globPatterns: [],
       },
     }),
   ],

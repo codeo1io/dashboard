@@ -329,6 +329,11 @@ function getDefaultSwRegistration(): Promise<MinimalServiceWorkerRegistration | 
  * finished activating is the transient 'sw-not-ready' one. A hung or failing
  * getRegistration() also reads as "no registration": it is only consulted after
  * the ready wait already timed out.
+ *
+ * rm-138 rider: while registration is pinned off in web/vite.config.ts
+ * (injectRegister: false), 'sw-unavailable' is the expected permanent outcome
+ * for fresh clients — not a degraded state to alert on. Reviving the push
+ * substrate (rm-249 / rm-106) would flip it back toward transient.
  */
 async function classifySwReadiness(
   deps: Pick<SubscribeDeps, 'getSwRegistration' | 'swReadyTimeoutMs'>,

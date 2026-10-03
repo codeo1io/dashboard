@@ -1,0 +1,14 @@
+# Single-operator review nudges (rm-640)
+#
+# This file is a convenience, NOT an approval gate: branch protection (rm-116)
+# is a separate concern and is deliberately not coupled to CODEOWNERS. The
+# repository has a single operator, and the operator authors the fleet's own
+# pull requests — GitHub does not auto-request review from the PR author, so
+# the auto-request behavior will not surface on those PRs by design (recorded
+# in the cycle batch doc). The entries below pin the security-invariant
+# surfaces so any future co-maintainer immediately sees ownership intent.
+/src/github/metadata.ts @marcusrbrown
+/src/gateway/ @marcusrbrown
+/.github/workflows/ @marcusrbrown
+/package.json @marcusrbrown
+/pnpm-lock.yaml @marcusrbrown

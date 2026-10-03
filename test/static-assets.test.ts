@@ -454,10 +454,11 @@ describe('PWA SW asset serving — /sw.js', () => {
 // ---------------------------------------------------------------------------
 // PWA SW asset serving — /registerSW.js
 // ---------------------------------------------------------------------------
-// NOTE: vite-plugin-pwa only emits registerSW.js when using auto-register mode.
-// Since the app uses useRegisterSW() in a component (ReloadPrompt), the
-// registration code is bundled into the main JS chunk and registerSW.js is NOT
-// emitted. The route remains in isPublicPath for forward-compatibility.
+// NOTE: registerSW.js is not emitted because web/vite.config.ts pins
+// injectRegister: false (rm-138 branch (a)): nothing registers a SW in this
+// deployment, and test/pwa-registration-guard.test.ts guards the built output
+// (no register-sw script tag, no registerSW.js). The route remains in
+// isPublicPath for forward-compatibility.
 
 describe('PWA SW asset serving — /registerSW.js', () => {
   it('GET /registerSW.js is in the public allowlist (no auth redirect)', async () => {
