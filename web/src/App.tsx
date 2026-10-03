@@ -3,6 +3,7 @@ import {AppShell} from './shell/AppShell.tsx'
 import {Operator} from './views/Operator.tsx'
 import {ListenerChannel} from './views/Listener.tsx'
 import {Monitoring} from './views/Monitoring.tsx'
+import {Security} from './views/Security.tsx'
 import {fetchListenerMessages} from './api/listener.ts'
 import {useBoundedPoll} from './hooks/useBoundedPoll.ts'
 import type {OperatorState} from './operator/state.ts'
@@ -56,7 +57,7 @@ export default function App() {
   const [fixtureState, setFixtureState] = useState<FixtureState | null>(null)
   const [fixtureDetectionSettled, setFixtureDetectionSettled] = useState(!import.meta.env.DEV)
   
-  const [currentView, setCurrentView] = useState<'operator' | 'listener' | 'monitoring'>('operator')
+  const [currentView, setCurrentView] = useState<'operator' | 'listener' | 'monitoring' | 'security'>('operator')
   const [unreadCount, setUnreadCount] = useState(0)
   /** rm-155: first failure reason of the current outage — surfaced once, cleared on recovery. */
   const [unreadPollError, setUnreadPollError] = useState<string | null>(null)
@@ -167,6 +168,10 @@ export default function App() {
       
       {currentView === 'monitoring' && (
         <Monitoring />
+      )}
+
+      {currentView === 'security' && (
+        <Security />
       )}
 
       {currentView === 'listener' && (

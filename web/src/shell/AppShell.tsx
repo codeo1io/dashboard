@@ -126,9 +126,9 @@ interface AppShellProps {
   /** Fixture-mode session id, appended as a query param by the push client. */
   pushFixtureSessionId?: string
   /** Current active view */
-  currentView?: 'operator' | 'listener' | 'monitoring'
+  currentView?: 'operator' | 'listener' | 'monitoring' | 'security'
   /** Navigation handler */
-  onNavigate?: (view: 'operator' | 'listener' | 'monitoring') => void
+  onNavigate?: (view: 'operator' | 'listener' | 'monitoring' | 'security') => void
   /** Global unread count for listener messages */
   listenerUnreadCount?: number
   /** rm-155: first failure reason of the current unread-poll outage (null when healthy) */
@@ -352,6 +352,24 @@ export function AppShell({
                 }}
               >
                 Repos
+              </button>
+              <button
+                type="button"
+                onClick={() => onNavigate?.('security')}
+                style={{
+                  minHeight: '32px',
+                  padding: 'var(--space-1) var(--space-3)',
+                  background: currentView === 'security' ? 'var(--color-surface-raised)' : 'transparent',
+                  color: currentView === 'security' ? 'var(--color-text)' : 'var(--color-text-muted)',
+                  border: 'none',
+                  borderRadius: 'var(--radius-md)',
+                  cursor: 'pointer',
+                  fontSize: 'var(--text-body-sm)',
+                  fontWeight: 600,
+                  transition: 'all var(--duration-fast) var(--ease-standard)'
+                }}
+              >
+                Security
               </button>
               <button
                 type="button"

@@ -26,6 +26,7 @@ import {fileURLToPath} from 'node:url'
 import {describe, expect, it} from 'vitest'
 
 import {
+  REPO_RECENT_CURES_QUERY,
   REPO_STATUS_QUERY,
   REPO_STATUS_QUERY_NO_ALERTS,
   REPO_STATUS_QUERY_REGISTRY,
@@ -65,27 +66,74 @@ describe('GraphQL query-shape guard (rm-177)', () => {
     }
   })
 
-  it('both templates agree on every field parseRepoResponse depends on', () => {
+  it('both STATUS templates agree on every field parseRepoResponse depends on', () => {
     // A field selected by exactly one template is how alertCount-null gaps
     // happen (vulnerabilityAlerts is the sanctioned exception — see
     // REPO_STATUS_QUERY_NO_ALERTS's doc comment). Compare every parameterized
     // selection in each template, ignoring the root operation line (whose
     // operation NAME legitimately differs between the two variants).
+    //
+    // rm-117 (this cycle): the primary now selects the node-level alert
+    // drill-down INSIDE vulnerabilityAlerts{...}. The drill-down fields live
+    // only inside that block, so the block is stripped from BOTH templates
+    // before comparing (balanced-brace removal of every `…:?
+    // vulnerabilityAlerts(…) {…}` subtree — including the recentCures alias
+    // shape used by the cures template), and the sanctioned exception is
+    // asserted explicitly as presence/absence instead of set arithmetic.
+    const stripAlertBlocks = (query: string): string => {
+      let out = ''
+      let i = 0
+      while (i < query.length) {
+        const hit = query.indexOf('vulnerabilityAlerts(', i)
+        if (hit === -1) {
+          out += query.slice(i)
+          break
+        }
+        out += query.slice(i, hit)
+        // skip the argument list
+        let depth = 0
+        let j = hit + 'vulnerabilityAlerts('.length - 1
+        for (; j < query.length; j++) {
+          if (query[j] === '(') depth++
+          else if (query[j] === ')') {
+            depth--
+            if (depth === 0) break
+          }
+        }
+        // the selection block follows `{…}` (balanced braces)
+        let braceDepth = 0
+        let k = j
+        for (; k < query.length; k++) {
+          if (query[k] === '{') braceDepth++
+          else if (query[k] === '}') {
+            braceDepth--
+            if (braceDepth === 0) break
+          }
+        }
+        i = k + 1
+      }
+      return out
+    }
     const fields = (query: string) =>
       new Set([...query.replace(/^\s*query\s+\w+/, '').matchAll(/([a-z]+\()/gi)].map(m => (m[1] ?? '').slice(0, -1)))
-    const a = fields(REPO_STATUS_QUERY)
-    const b = fields(REPO_STATUS_QUERY_NO_ALERTS)
+    const a = fields(stripAlertBlocks(REPO_STATUS_QUERY))
+    const b = fields(stripAlertBlocks(REPO_STATUS_QUERY_NO_ALERTS))
     const symmetricDiff = [...a].filter(f => !b.has(f)).concat([...b].filter(f => !a.has(f)))
-    expect(symmetricDiff).toEqual(['vulnerabilityAlerts'])
+    expect(symmetricDiff, 'status templates must agree outside the alerts block').toEqual([])
+    // …and the sanctioned exception itself, asserted explicitly:
+    expect(REPO_STATUS_QUERY.includes('vulnerabilityAlerts('), 'primary must select vulnerabilityAlerts').toBe(true)
+    expect(REPO_STATUS_QUERY_NO_ALERTS.includes('vulnerabilityAlerts'), 'NO_ALERTS must omit vulnerabilityAlerts entirely').toBe(false)
   })
 
   it('rm-225: the registry contains every exported template constant (completeness)', () => {
     // A template constant exported without a registry entry is exactly how
     // rm-177's blind spot happened: NO_ALERTS shipped live-destined but the
     // canary covered only the primary. Scan the module source for every
-    // exported REPO_STATUS_QUERY* template constant and demand the registry
-    // name it — a new template fails here until it is registered.
-    const exportedTemplates = [...registrySource.matchAll(/export const (REPO_STATUS_QUERY[A-Z_]*) = `/g)].map(
+    // exported REPO_* template constant and demand the registry name it — a
+    // new template fails here until it is registered. (rm-117: widened from
+    // REPO_STATUS_QUERY* to every exported REPO_* template when the cures
+    // walk template joined the registry.)
+    const exportedTemplates = [...registrySource.matchAll(/export const (REPO_[A-Z_]+) = `/g)].map(
       m => m[1] ?? '',
     )
     const registered = REPO_STATUS_QUERY_REGISTRY.map(entry => entry.name)
@@ -113,8 +161,12 @@ describe('GraphQL query-shape guard (rm-177)', () => {
     expect(directTemplateImports, 'canary must not import templates directly').toEqual([])
   })
 
-  it('rm-192: both templates select the failing-check drill-down (workflowRun + check-run nodes)', () => {
-    for (const [name, query] of Object.entries(QUERIES)) {
+  it('rm-192: both STATUS templates select the failing-check drill-down (workflowRun + check-run nodes)', () => {
+    // rm-117: scoped to the STATUS pair — the cures walk template selects
+    // only vulnerabilityAlerts (no CI fields) by design.
+    const statusTemplates = Object.entries(QUERIES).filter(([, query]) => query.includes('checkSuites'))
+    expect(statusTemplates.length, 'expected the two status templates').toBe(2)
+    for (const [name, query] of statusTemplates) {
       expect(query.includes('workflowRun {'), `${name}: missing workflowRun selection`).toBe(true)
       expect(query.includes('displayTitle'), `${name}: missing workflowRun.displayTitle`).toBe(true)
       expect(query.includes('runAttempt'), `${name}: missing workflowRun.runAttempt`).toBe(true)
@@ -135,5 +187,67 @@ describe('GraphQL query-shape guard (rm-177)', () => {
         `${name}: mutation root or keyword found — queries must stay read-only`,
       ).toBe(false)
     }
+  })
+
+  it('rm-117: the OPEN drill-down selects the posture panel fields inside vulnerabilityAlerts', () => {
+    // The drill-down must carry every field SecurityAlertDetail parses — a
+    // dropped selection silently nulls that column across the whole posture
+    // panel (nothing at runtime ever fails; the DTO just fills with nulls).
+    // Structural assertions only — full validation is the canary's job.
+    const required = [
+      'vulnerabilityAlerts(states: OPEN, first: 10)',
+      'totalCount',
+      'dismissReason',
+      'autoDismissedAt',
+      'dependencyScope',
+      'vulnerableManifestPath',
+      'firstPatchedVersion {',
+      'vulnerableVersionRange',
+      'dependabotUpdate {',
+      'pullRequest {',
+      'ghsaId',
+      'cveId',
+      'severity',
+      'classification',
+      'withdrawnAt',
+      'cvssSeverities {',
+      'cvssV3 {',
+      'cvssV4 {',
+      'vectorString',
+      'epss {',
+      'percentage',
+      'percentile',
+      'cwes(first: 5)',
+      'cweId',
+      'identifiers {',
+    ]
+    for (const selection of required) {
+      expect(REPO_STATUS_QUERY.includes(selection), `REPO_STATUS_QUERY missing: ${selection}`).toBe(true)
+    }
+    // The manifest PATH is the sanctioned manifest field — the lockfile
+    // CONTENTS field (vulnerableRequirements) must never appear: it can echo
+    // exact dependency lines, which is far more than a posture panel needs.
+    for (const [name, query] of Object.entries(QUERIES)) {
+      expect(query.includes('vulnerableRequirements'), `${name}: lockfile contents selected — PATH only`).toBe(false)
+    }
+  })
+
+  it('rm-117: the recent-cures walk template pages the FIXED tail, cursor-first and bounded', () => {
+    expect(REPO_RECENT_CURES_QUERY.includes('states: FIXED, first: 10, after: $curesAfter'), 'FIXED slice must page by cursor').toBe(true)
+    // The default-null cursor is what lets the canary's generic {owner,name}
+    // call and a cold-start walk both run without extra machinery.
+    expect(REPO_RECENT_CURES_QUERY.includes('$curesAfter: String = null'), 'cursor variable must default to null').toBe(true)
+    // The walk's pagination contract — without pageInfo the walk cannot
+    // advance or know it reached the tail.
+    expect(REPO_RECENT_CURES_QUERY.includes('pageInfo {'), 'walk needs pageInfo').toBe(true)
+    expect(REPO_RECENT_CURES_QUERY.includes('hasNextPage'), 'walk needs hasNextPage').toBe(true)
+    expect(REPO_RECENT_CURES_QUERY.includes('endCursor'), 'walk needs endCursor').toBe(true)
+    expect(REPO_RECENT_CURES_QUERY.includes('totalCount'), 'walk needs the authoritative lifetime count').toBe(true)
+    // Page size must match the aggregator's SECURITY_CURES_MAX_PAGES budget
+    // math (10 nodes/page; documented server-side page cap).
+    expect(REPO_RECENT_CURES_QUERY.includes('first: 10'), 'walk page size must stay at 10').toBe(true)
+    // Never the OPEN slice here — the OPEN drill-down rides the per-refresh
+    // status query (zero extra requests when alerts are empty).
+    expect(REPO_RECENT_CURES_QUERY.includes('states: OPEN'), 'OPEN drill-down belongs to the status query').toBe(false)
   })
 })

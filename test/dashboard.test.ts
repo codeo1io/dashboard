@@ -59,6 +59,8 @@ function makeRepo(overrides: Partial<DashboardRepo> = {}): DashboardRepo {
       openPrCount: 0,
       openIssueCount: 0,
       openAlertCount: null,
+      // rm-117: posture null = not populated in this fixture (no alerts).
+      securityPosture: null,
       stale: false,
       fetchedAt: 1_700_000_000_000,
     },
@@ -213,6 +215,7 @@ describe('/api/monitoring — BFF aggregation endpoint', () => {
           openPrCount: 0,
           openIssueCount: 0,
           openAlertCount: null,
+          securityPosture: null,
           stale: false,
           fetchedAt: 1_700_000_000_000,
         },

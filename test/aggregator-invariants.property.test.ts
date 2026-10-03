@@ -54,6 +54,11 @@ const statusArb = (fetchedAt: number): fc.Arbitrary<RepoCiStatus> =>
   fc.record({
     rollupState: fc.constantFrom('green', 'red', 'pending', 'unknown'),
     failingChecks: fc.nat({max: 12}),
+    // rm-117: the security-posture drill-down is derived display data the
+    // invariants below never branch on — generated as a constant null rather
+    // than paying for a nested alert generator (the walk has its own
+    // targeted tests in aggregator.test.ts).
+    securityPosture: fc.constant(null),
     // rm-192: the drill-down sample is generated independently of the count
     // (the count stays authoritative — details are additive metadata).
     failingCheckDetails: fc.array(
@@ -188,6 +193,7 @@ describe('aggregator parseRepoResponse invariants (rm-144)', () => {
             openPrCount: 0,
             openIssueCount: 0,
             openAlertCount: null,
+            securityPosture: null,
             stale: true,
             fetchedAt,
           })

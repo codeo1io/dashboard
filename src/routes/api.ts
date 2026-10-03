@@ -1,4 +1,4 @@
-import type {AggregatorSnapshot, DashboardRepo, FailingCheckDetail, RepoCiStatus} from '../github/aggregator.ts'
+import type {AggregatorSnapshot, DashboardRepo, FailingCheckDetail, RepoCiStatus, SecurityAlertDetail} from '../github/aggregator.ts'
 import {Hono} from 'hono'
 import {COLD_START_SNAPSHOT} from '../github/aggregator.ts'
 
@@ -81,6 +81,114 @@ function toMonitoringDto(snapshot: AggregatorSnapshot): MonitoringDto {
 }
 
 /**
+ * One security alert as emitted to the SPA — a 1:1 display-safe projection
+ * of the aggregator's SecurityAlertDetail (rm-117). Only explicitly mapped
+ * fields ride the wire (same whitelist discipline as the monitoring DTO);
+ * the aggregation payload is identical for OPEN drill-downs and cures.
+ */
+interface SecurityAlertDto {
+  readonly state: string | null
+  readonly createdAt: string | null
+  readonly fixedAt: string | null
+  readonly dismissedAt: string | null
+  readonly autoDismissedAt: string | null
+  readonly dismissReason: string | null
+  readonly dependencyScope: string | null
+  readonly manifestPath: string | null
+  readonly firstPatchedVersion: string | null
+  readonly vulnerableVersionRange: string | null
+  readonly updatePrState: string | null
+  readonly updatePrUrl: string | null
+  readonly severity: string | null
+  readonly classification: string | null
+  readonly withdrawnAt: string | null
+  readonly ghsaId: string | null
+  readonly cveId: string | null
+  readonly cvssV3Score: number | null
+  readonly cvssV3Vector: string | null
+  readonly cvssV4Score: number | null
+  readonly cvssV4Vector: string | null
+  readonly epssPercentage: number | null
+  readonly epssPercentile: number | null
+  readonly cwes: readonly string[]
+  readonly identifiers: readonly {readonly type: string; readonly value: string}[]
+}
+
+function toSecurityAlertDto(alert: SecurityAlertDetail): SecurityAlertDto {
+  return {
+    state: alert.state,
+    createdAt: alert.createdAt,
+    fixedAt: alert.fixedAt,
+    dismissedAt: alert.dismissedAt,
+    autoDismissedAt: alert.autoDismissedAt,
+    dismissReason: alert.dismissReason,
+    dependencyScope: alert.dependencyScope,
+    manifestPath: alert.manifestPath,
+    firstPatchedVersion: alert.firstPatchedVersion,
+    vulnerableVersionRange: alert.vulnerableVersionRange,
+    updatePrState: alert.updatePrState,
+    updatePrUrl: alert.updatePrUrl,
+    severity: alert.severity,
+    classification: alert.classification,
+    withdrawnAt: alert.withdrawnAt,
+    ghsaId: alert.ghsaId,
+    cveId: alert.cveId,
+    cvssV3Score: alert.cvssV3Score,
+    cvssV3Vector: alert.cvssV3Vector,
+    cvssV4Score: alert.cvssV4Score,
+    cvssV4Vector: alert.cvssV4Vector,
+    epssPercentage: alert.epssPercentage,
+    epssPercentile: alert.epssPercentile,
+    cwes: alert.cwes,
+    identifiers: alert.identifiers,
+  }
+}
+
+interface SecurityRepoDto {
+  readonly full_name: string
+  readonly stale: boolean
+  readonly openAlertCount: number | null
+  /** null = permission-degraded (token lacks the alerts scope): the whole posture is absent, never half-populated */
+  readonly posture: {
+    readonly openAlerts: readonly SecurityAlertDto[]
+    readonly recentCures: readonly SecurityAlertDto[]
+    readonly recentCureCount: number | null
+    readonly curesFetchedAt: number | null
+  } | null
+}
+
+interface SecurityDto {
+  readonly repos: readonly SecurityRepoDto[]
+  readonly staleBanner: boolean
+  readonly refreshedAt: number | null
+}
+
+function toSecurityRepoDto(repo: DashboardRepo): SecurityRepoDto {
+  return {
+    full_name: repo.full_name,
+    stale: repo.status.stale,
+    openAlertCount: repo.status.openAlertCount,
+    posture:
+      repo.status.securityPosture === null
+        ? null
+        : {
+            openAlerts: repo.status.securityPosture.openAlerts.map(toSecurityAlertDto),
+            recentCures: repo.status.securityPosture.recentCures.map(toSecurityAlertDto),
+            recentCureCount: repo.status.securityPosture.recentCureCount,
+            curesFetchedAt: repo.status.securityPosture.curesFetchedAt,
+          },
+  }
+}
+
+function toSecurityDto(snapshot: AggregatorSnapshot): SecurityDto {
+  return {
+    repos: snapshot.repos.map(toSecurityRepoDto),
+    staleBanner: snapshot.staleBanner,
+    refreshedAt: snapshot.refreshedAt,
+  }
+}
+
+/**
  * Builds the API router.
  *
  * @param getSnapshot - Optional snapshot provider. When absent, returns an empty snapshot.
@@ -123,6 +231,29 @@ export function buildApiRouter(getSnapshot?: SnapshotProvider): Hono {
     const snapshot = getSnapshot === undefined ? COLD_START_SNAPSHOT : getSnapshot()
     c.header('Cache-Control', 'no-store')
     return c.json(toMonitoringDto(snapshot))
+  })
+
+  /**
+   * BFF aggregation endpoint for the SPA security-posture view (rm-117).
+   *
+   * Returns a MINIMIZED client DTO — only the security fields the posture
+   * UI needs: per-repo open-alert drill-down (severity / CVSS / EPSS / CWEs /
+   * identifiers / manifest PATH / cure-PR state) plus the recent-cures
+   * sample that makes the cured-alert story visible. Internal fields
+   * (node_id, owner, name, discovery_channel, fetchedAt, rollup/CI fields)
+   * are NEVER emitted here — /api/monitoring stays the CI view's DTO.
+   *
+   * Security invariants (same contract as /api/monitoring):
+   * - Cache-Control: no-store — posture data must never be cached by intermediaries.
+   * - Behind auth — the auth middleware in server.ts denies unauthenticated requests.
+   * - The DTO mapper is the final whitelist: only explicitly mapped fields are emitted.
+   * - Permission-degraded repos surface posture:null — the view renders the
+   *   degraded notice, never half-populated posture data.
+   */
+  api.get('/security', c => {
+    const snapshot = getSnapshot === undefined ? COLD_START_SNAPSHOT : getSnapshot()
+    c.header('Cache-Control', 'no-store')
+    return c.json(toSecurityDto(snapshot))
   })
 
   return api
