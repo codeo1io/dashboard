@@ -10,6 +10,8 @@ import {mkdirSync} from 'node:fs'
 import {dirname} from 'node:path'
 import {DatabaseSync} from 'node:sqlite'
 
+import {logger} from '../logger.ts'
+
 export interface ListenerStore {
   insert: (input: IngestMessage) => {id: string; receivedAt: string}
   list: (opts: {unreadOnly?: boolean; limit?: number}) => MessagesResponse
@@ -40,7 +42,59 @@ const DEFAULT_LIST_LIMIT = 100
 const MIN_LIST_LIMIT = 1
 const MAX_LIST_LIMIT = 200
 
-function rowToMessage(row: MessageRow): ListenerMessage {
+/** Verdict of {@link parseLinksCell}: parsed links, or degraded-empty. */
+export interface LinksCellParse {
+  readonly links: readonly ListenerLink[]
+  /** True when the cell could not be trusted and `links` is a degraded empty list (rm-187). */
+  readonly degraded: boolean
+}
+
+/**
+ * rm-187: parse a persisted `links` cell defensively.
+ *
+ * The column is TEXT NOT NULL and only written via `JSON.stringify` output
+ * from validated ingest bodies, but schema drift, a truncated write, or a
+ * manual edit can put a corrupt cell in one row — and that single row must
+ * degrade ITSELF (empty links), never throw past the mapper and 500 the
+ * whole endpoint. Degrades on: non-JSON, empty string, non-array JSON, and
+ * arrays whose entries are not {label,url} string records (the same shape
+ * ingest validates — re-checked structurally here because contract.ts's
+ * `parseLinks` is not value-importable from this module without dragging the
+ * `@bfra.me/es` chain into the store's module graph; see src/result.ts).
+ *
+ * Pure seam, exported for direct unit tests: the SQL schema's NOT NULL makes
+ * the null/undefined variants unreachable through the database, so the seam
+ * is the only place they can be exercised.
+ */
+export function parseLinksCell(raw: string | null | undefined): LinksCellParse {
+  if (typeof raw !== 'string') return {links: [], degraded: true}
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return {links: [], degraded: true}
+  }
+  if (!Array.isArray(parsed)) return {links: [], degraded: true}
+
+  const links: ListenerLink[] = []
+  for (const entry of parsed) {
+    if (
+      typeof entry !== 'object' ||
+      entry === null ||
+      typeof (entry as {label?: unknown}).label !== 'string' ||
+      typeof (entry as {url?: unknown}).url !== 'string'
+    ) {
+      return {links: [], degraded: true}
+    }
+    links.push({label: (entry as {label: string}).label, url: (entry as {url: string}).url})
+  }
+  return {links, degraded: false}
+}
+
+function rowToMessage(row: MessageRow, noteDegradedLinks?: (id: string) => void): ListenerMessage {
+  const parsed = parseLinksCell(row.links)
+  if (parsed.degraded) noteDegradedLinks?.(row.id)
   return {
     id: row.id,
     source: row.source as ListenerMessage['source'],
@@ -48,7 +102,7 @@ function rowToMessage(row: MessageRow): ListenerMessage {
     severity: row.severity as ListenerMessage['severity'],
     title: row.title,
     body: row.body,
-    links: JSON.parse(row.links) as readonly ListenerLink[],
+    links: parsed.links,
     dedupeKey: row.dedupe_key,
     createdAt: row.created_at,
     receivedAt: row.received_at,
@@ -116,6 +170,22 @@ export function createListenerStore(dbPath: string): ListenerStore {
   // operator the list is a truncated view.
   let prunedTotal = 0
 
+  // rm-187-class visibility: ids of rows whose links cell failed to parse at
+  // least once in this process. Deduped by id so polling list() can neither
+  // inflate the count nor spam the log — same observability shape as
+  // prunedTotal (rm-244). A degraded row keeps its other fields and is still
+  // served (degradation, never an outage).
+  const degradedLinksIds = new Set<string>()
+
+  function noteDegradedLinks(id: string): void {
+    if (degradedLinksIds.has(id)) return
+    degradedLinksIds.add(id)
+    logger.warning('listener message degraded: links cell failed to parse; serving empty links', {
+      messageId: id,
+      degradedLinksCount: degradedLinksIds.size,
+    })
+  }
+
   function insert(input: IngestMessage): {id: string; receivedAt: string} {
     const receivedAt = new Date().toISOString()
     const linksJson = JSON.stringify(input.links)
@@ -170,9 +240,10 @@ export function createListenerStore(dbPath: string): ListenerStore {
     const unreadCountRow = countUnreadStmt.get() as unknown as {n: number}
 
     return {
-      messages: rows.map(rowToMessage),
+      messages: rows.map(row => rowToMessage(row, noteDegradedLinks)),
       unreadCount: unreadCountRow.n,
       prunedCount: prunedTotal,
+      degradedLinksCount: degradedLinksIds.size,
     }
   }
 

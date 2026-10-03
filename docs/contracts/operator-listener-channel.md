@@ -160,7 +160,8 @@ Response:
     }
   ],
   "unreadCount": 3,
-  "prunedCount": 2
+  "prunedCount": 2,
+  "degradedLinksCount": 0
 }
 ```
 
@@ -168,6 +169,13 @@ Response:
 policy (500 rows / 30 days) since the store was created — cumulative for the
 process lifetime, count only, no content. The `messages` list above is a
 truncated view; `prunedCount` is the operator's signal that it is.
+
+`degradedLinksCount` (rm-187): messages currently served with a degraded
+(unparseable) `links` cell — the row is served with `links: []` and its other
+fields intact, the endpoint still returns 200 with the healthy rows, and the
+server logs one warning per affected row id. Process-lifetime count of
+affected ids, deduped by id; polling cannot inflate it. `0` when absent
+(older server).
 
 ## Ack — `POST /api/listener/messages/:id/ack` and `POST /api/listener/ack-all`
 

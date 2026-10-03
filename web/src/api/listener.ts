@@ -26,6 +26,8 @@ export interface ListenerMessagesResponse {
   readonly prunedCount: number
   /** Messages present in the response but dropped CLIENT-SIDE because they failed the parse contract (rm-243 drift signal). */
   readonly droppedCount: number
+  /** Rows whose links cell was corrupt server-side and degraded to an empty list (rm-187). Absent on older servers. */
+  readonly degradedLinksCount?: number
 }
 
 export type FetchListenerResult =

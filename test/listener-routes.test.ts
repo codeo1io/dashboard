@@ -4,7 +4,11 @@
 import type {ListenerStore} from '../src/listener/store.ts'
 import {Buffer} from 'node:buffer'
 import {createHmac} from 'node:crypto'
+import {mkdtempSync, rmSync} from 'node:fs'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
 import process from 'node:process'
+import {DatabaseSync} from 'node:sqlite'
 import {beforeEach, describe, expect, it} from 'vitest'
 import {createListenerStore} from '../src/listener/store.ts'
 import {deriveAckCsrfToken} from '../src/routes/listener.ts'
@@ -437,5 +441,70 @@ describe('operator listener channel routes', () => {
       headers: {cookie: sessionCookieHeader()},
     })
     expect(res.status).toBe(404)
+  })
+
+  // rm-187: one row with a corrupt links cell must degrade THAT row (empty
+  // links, other fields intact) — the endpoint 200s with the healthy rows
+  // instead of 500ing on JSON.parse. Corruption is seeded through a second
+  // SQLite connection to a FILE-backed store (the store API cannot write a
+  // bad cell by design; :memory: cannot be reached from a second connection).
+  it('rm-187: corrupt links cell → GET /api/listener/messages 200s with healthy rows + degraded row present', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'listener-rm187-routes-'))
+    const dbPath = join(dir, 'messages.db')
+    const fileStore = createListenerStore(dbPath)
+    try {
+      const app = await buildTestApp({listenerStore: fileStore, listenerIngestKey: INGEST_KEY})
+
+      const firstRes = await app.request('/api/listener/ingest', {
+        method: 'POST',
+        headers: ingestHeaders(VALID_BODY),
+        body: VALID_BODY,
+      })
+      expect(firstRes.status).toBe(202)
+      const first = (await firstRes.json()) as {id: string}
+
+      const secondBody = JSON.stringify({
+        source: 'infra',
+        kind: 'deploy-health',
+        severity: 'critical',
+        title: 'Escalation with links',
+        body: 'link-bearing message for the rm-187 seeded-corruption test.',
+        links: [{label: 'workflow run', url: 'https://github.com/codeo1io/dashboard/actions/runs/1'}],
+        createdAt: '2026-07-11T12:05:00Z',
+      })
+      const secondRes = await app.request('/api/listener/ingest', {
+        method: 'POST',
+        headers: ingestHeaders(secondBody),
+        body: secondBody,
+      })
+      expect(secondRes.status).toBe(202)
+
+      const db = new DatabaseSync(dbPath)
+      db.prepare('UPDATE messages SET links = ? WHERE id = ?').run('{"truncated', first.id)
+      db.close()
+
+      const getRes = await app.request('/api/listener/messages', {
+        headers: {cookie: sessionCookieHeader()},
+      })
+      expect(getRes.status).toBe(200) // the acceptance: healthy rows still served
+      const getJson = (await getRes.json()) as {
+        messages: {id: string; title: string; links: {label: string; url: string}[]}[]
+        unreadCount: number
+        degradedLinksCount: number
+      }
+      expect(getJson.messages).toHaveLength(2)
+      const degraded = getJson.messages.find(m => m.id === first.id)
+      const healthy = getJson.messages.find(m => m.title === 'Escalation with links')
+      expect(degraded?.links).toEqual([]) // degraded to empty, row present
+      expect(degraded?.title).toBe('Autoheal restarted gateway') // other fields intact
+      expect(healthy?.links).toEqual([
+        {label: 'workflow run', url: 'https://github.com/codeo1io/dashboard/actions/runs/1'},
+      ])
+      expect(getJson.degradedLinksCount).toBe(1) // observable, rm-187
+      expect(getJson.unreadCount).toBe(2)
+    } finally {
+      fileStore.close()
+      rmSync(dir, {recursive: true, force: true})
+    }
   })
 })
