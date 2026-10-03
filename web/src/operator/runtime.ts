@@ -272,35 +272,74 @@ export function createActiveStreamOwner(): {
   }
 }
 
-async function defaultRuntimeLoader(opts?: {
+/** Stream-module surface the runtime loader consumes (public/operator-stream.js). */
+export interface OperatorStreamModule {
+  bootstrapOperatorStreams?: (opts?: {endpointBase?: string; fixtureSessionId?: string}) => void
+  resetBootstrapState?: () => void
+  initOperatorStream?: (opts: {
+    runId: string
+    statusEl?: Element | null
+    noticeEl?: Element | null
+    outputEl?: Element | null
+    coalescedEl?: Element | null
+    approvalsEl?: Element | null
+    badgeEl?: Element | null
+    reasonEl?: Element | null
+    cancelEl?: Element | null
+    endpointBase?: string
+    fixtureSessionId?: string
+  }) => {close(): void}
+}
+
+/** Run-index-module surface the runtime loader consumes (public/operator-run-index.js). */
+export interface OperatorRunIndexModule {
+  initOperatorRunIndex?: (opts?: {
+    endpointBase?: string
+    fixtureSessionId?: string
+    onSelectRun?: (runId: string) => void
+    restoreRunId?: string
+    onRestoreRun?: (runId: string, card: Element, status: string) => void
+    onRestoreMiss?: () => void
+    onAuthRequired?: () => void
+  }) => Promise<void>
+  resetRunIndexState?: () => void
+  markRunStreamAttached?: (runId: string) => void
+  markCardExpandedForLaunch?: (runId: string) => void
+}
+
+/** Launch-module surface the runtime loader consumes (public/operator-launch.js). */
+export interface OperatorLaunchModule {
+  initOperatorLaunch?: (opts?: {endpointBase?: string; getScenario?: () => string; fixtureSessionId?: string; onRunLaunched?: (runId: string, card: HTMLElement) => void}) => Promise<void>
+  resetLaunchState?: () => void
+}
+
+/**
+ * rm-619: injectable module-loading seam for the default runtime loader. Every
+ * loader gets its module handles through these three functions; production uses
+ * the dynamic /static/ imports, tests inject contract twins so the loader's
+ * post-bootstrap failure path is observable without a built bundle.
+ */
+export interface OperatorRuntimeModuleLoaders {
+  loadStreamMod?: () => Promise<OperatorStreamModule>
+  loadRunIndexMod?: () => Promise<OperatorRunIndexModule>
+  loadLaunchMod?: () => Promise<OperatorLaunchModule>
+}
+
+export async function defaultRuntimeLoader(opts?: {
   endpointBase?: string
   fixtureSessionId?: string
   getScenario?: () => string
   onSelectRun?: (runId: string) => void
   onRunLaunched?: (runId: string, card: HTMLElement) => void
   onStateChange?: (state: OperatorState) => void
-}): Promise<() => void> {
+}, moduleLoaders?: OperatorRuntimeModuleLoaders): Promise<() => void> {
   // rm-283: active-stream ownership is INSTANCE-scoped — one owner per loader
   // call (one per runtime instance), never module-shared, so a stale StrictMode
   // cleanup cannot close another instance's stream. See createActiveStreamOwner.
   const streamOwner = createActiveStreamOwner()
-  const streamMod = await import(/* @vite-ignore */ _streamSpecifier) as {
-    bootstrapOperatorStreams?: (opts?: {endpointBase?: string; fixtureSessionId?: string}) => void
-    resetBootstrapState?: () => void
-    initOperatorStream?: (opts: {
-      runId: string
-      statusEl?: Element | null
-      noticeEl?: Element | null
-      outputEl?: Element | null
-      coalescedEl?: Element | null
-      approvalsEl?: Element | null
-      badgeEl?: Element | null
-      reasonEl?: Element | null
-      cancelEl?: Element | null
-      endpointBase?: string
-      fixtureSessionId?: string
-    }) => {close(): void}
-  }
+  const streamMod = await (moduleLoaders?.loadStreamMod !== undefined
+    ? moduleLoaders.loadStreamMod()
+    : import(/* @vite-ignore */ _streamSpecifier)) as OperatorStreamModule
   if (typeof streamMod.resetBootstrapState === 'function') {
     streamMod.resetBootstrapState()
   }
@@ -311,26 +350,40 @@ async function defaultRuntimeLoader(opts?: {
     streamMod.bootstrapOperatorStreams(streamOpts)
   }
 
-  const runIndexMod = await import(/* @vite-ignore */ _runIndexSpecifier) as {
-    initOperatorRunIndex?: (opts?: {
-      endpointBase?: string
-      fixtureSessionId?: string
-      onSelectRun?: (runId: string) => void
-      restoreRunId?: string
-      onRestoreRun?: (runId: string, card: Element, status: string) => void
-      onRestoreMiss?: () => void
-      onAuthRequired?: () => void
-    }) => Promise<void>
-    resetRunIndexState?: () => void
-    markRunStreamAttached?: (runId: string) => void
-    markCardExpandedForLaunch?: (runId: string) => void
+  let runIndexMod: OperatorRunIndexModule | undefined
+  let launchMod: OperatorLaunchModule | undefined
+
+  runIndexMod = await (moduleLoaders?.loadRunIndexMod !== undefined
+    ? moduleLoaders.loadRunIndexMod()
+    : import(/* @vite-ignore */ _runIndexSpecifier)) as OperatorRunIndexModule
+
+  launchMod = await (moduleLoaders?.loadLaunchMod !== undefined
+    ? moduleLoaders.loadLaunchMod()
+    : import(/* @vite-ignore */ _launchSpecifier)) as OperatorLaunchModule
+
+  // rm-619: everything from here on runs AFTER bootstrapOperatorStreams has
+  // installed module state (per-card stream handles, the pagehide listener, and
+  // the _bootstrapCalled wedge in public/operator-stream.js). Any rejection in
+  // that window must run the SAME teardown the success-path cleanup closure
+  // runs — otherwise the failed instance leaves state its own cleanup() can
+  // never touch (the closure below is only RETURNED on success) and the stream
+  // module holds its listener/handles until some future runtime mounts or the
+  // page unloads. Order preserved from the original closure.
+  const _teardownPartialBoot = (): void => {
+    // Close the stream handle owned by THIS runtime instance on cleanup.
+    streamOwner.close()
+    if (typeof streamMod.resetBootstrapState === 'function') {
+      streamMod.resetBootstrapState()
+    }
+    if (typeof launchMod?.resetLaunchState === 'function') {
+      launchMod.resetLaunchState()
+    }
+    if (typeof runIndexMod?.resetRunIndexState === 'function') {
+      runIndexMod.resetRunIndexState()
+    }
   }
 
-  const launchMod = await import(/* @vite-ignore */ _launchSpecifier) as {
-    initOperatorLaunch?: (opts?: {endpointBase?: string; getScenario?: () => string; fixtureSessionId?: string; onRunLaunched?: (runId: string, card: HTMLElement) => void}) => Promise<void>
-    resetLaunchState?: () => void
-  }
-
+  try {
   function _attachStream(runId: string, statusEl: Element | null, noticeEl: Element | null): void {
     // Release any stream THIS instance already owns before attaching. attach()
     // would close it too, but closing up front preserves the original semantics
@@ -359,7 +412,7 @@ async function defaultRuntimeLoader(opts?: {
         fixtureSessionId: opts?.fixtureSessionId,
       })
       streamOwner.attach(handle, runId)
-      if (typeof runIndexMod.markRunStreamAttached === 'function') {
+      if (typeof runIndexMod?.markRunStreamAttached === 'function') {
         runIndexMod.markRunStreamAttached(runId)
       }
     } catch {
@@ -448,15 +501,15 @@ async function defaultRuntimeLoader(opts?: {
     // A launched run's card must present as already-expanded/observed the moment
     // its stream attaches — otherwise the operator's first click on it is
     // misread by onSelectRun as "collapse the active stream" instead of "expand."
-    if (typeof runIndexMod.markCardExpandedForLaunch === 'function') {
+    if (typeof runIndexMod?.markCardExpandedForLaunch === 'function') {
       runIndexMod.markCardExpandedForLaunch(runId)
     }
   }
 
-  if (typeof runIndexMod.resetRunIndexState === 'function') {
+  if (runIndexMod !== undefined && typeof runIndexMod.resetRunIndexState === 'function') {
     runIndexMod.resetRunIndexState()
   }
-  if (typeof runIndexMod.initOperatorRunIndex === 'function') {
+  if (runIndexMod !== undefined && typeof runIndexMod.initOperatorRunIndex === 'function') {
     // The hash is actually read HERE, synchronously, before initOperatorRunIndex is
     // called — it is only consulted (as restoreRunId) after that function's internal
     // /operator/runs fetch resolves. So a user click that attaches a stream during
@@ -474,28 +527,22 @@ async function defaultRuntimeLoader(opts?: {
     await runIndexMod.initOperatorRunIndex(runIndexOpts)
   }
 
-  if (typeof launchMod.resetLaunchState === 'function') {
+  if (launchMod !== undefined && typeof launchMod.resetLaunchState === 'function') {
     launchMod.resetLaunchState()
   }
-  if (typeof launchMod.initOperatorLaunch === 'function') {
+  if (launchMod !== undefined && typeof launchMod.initOperatorLaunch === 'function') {
     const launchOpts = opts?.endpointBase !== undefined
       ? {endpointBase: opts.endpointBase, getScenario: opts.getScenario, fixtureSessionId: opts.fixtureSessionId, onRunLaunched}
       : {onRunLaunched}
     await launchMod.initOperatorLaunch(launchOpts)
   }
+  } catch (err) {
+    _teardownPartialBoot()
+    throw err
+  }
 
   return () => {
-    // Close the stream handle owned by THIS runtime instance on cleanup.
-    streamOwner.close()
-    if (typeof streamMod.resetBootstrapState === 'function') {
-      streamMod.resetBootstrapState()
-    }
-    if (typeof launchMod.resetLaunchState === 'function') {
-      launchMod.resetLaunchState()
-    }
-    if (typeof runIndexMod.resetRunIndexState === 'function') {
-      runIndexMod.resetRunIndexState()
-    }
+    _teardownPartialBoot()
   }
 }
 
