@@ -45,6 +45,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # rm-280 (2026-10-01): the canary was born NOT zero-install. At that
       # point the script imported the production chain (scripts/graphql-canary.ts
