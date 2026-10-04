@@ -9,6 +9,14 @@
 // Constants
 // ---------------------------------------------------------------------------
 
+/**
+ * Validate a dynamic path ID (runId, requestId) before it is embedded in a
+ * URL — mirrors src/gateway/operator-client.ts validateDynamicId and
+ * web/src/operator/validate-dynamic-id.ts (kept in sync manually; pinned by
+ * test/validate-dynamic-id-parity.test.ts, rm-595).
+ */
+export declare function validateDynamicId(id: string): boolean
+
 export declare const PINNED_CONTRACT_VERSION: string
 export declare const RETRY_BASE_MS: number
 export declare const RETRY_FACTOR: number

@@ -146,6 +146,17 @@ const RATE_LIMIT_MAX_PER_CLASS: Record<RateLimitClass, number> = {
 }
 
 /**
+ * Hard cap on distinct keys (unique client addresses) in the in-memory
+ * rate-limit store — a resource-exhaustion guard for the per-path-class
+ * keying surface: a sustained flood of unique addresses (spoofable first
+ * XFF hop when the proxy is trusted) would otherwise grow `rateLimitMap`
+ * without bound. At capacity the store first sweeps stale windows; if it is
+ * still full, admission fails CLOSED — a new key gets a 429 — trading a
+ * moment of availability for a bounded memory footprint (rm-286).
+ */
+const RATE_LIMIT_MAX_KEYS = envIntOrDefault('RATE_LIMIT_MAX_KEYS', 10_000)
+
+/**
  * Default for the trusted-proxy opt-in: RATE_LIMIT_TRUSTED_PROXY in
  * {1,true,yes} (case-insensitive). Off unless explicitly enabled.
  */
@@ -251,6 +262,30 @@ function sweepRateLimitMap(now: number): void {
 }
 
 /**
+ * Store size accessor — test/observability only (no production callers).
+ */
+export function rateLimitStoreSize(): number {
+  return rateLimitMap.size
+}
+
+/**
+ * Admission control for a NEW store key (rm-286). Below capacity: admit. At
+ * capacity: sweep stale windows once; if the store is STILL full, fail closed
+ * (log + deny). Existing keys are never evicted by this path — only stale
+ * windows are, so a hot key keeps its budget regardless of churn.
+ */
+function admitRateLimitKey(now: number): boolean {
+  if (rateLimitMap.size < RATE_LIMIT_MAX_KEYS) return true
+  sweepRateLimitMap(now)
+  if (rateLimitMap.size < RATE_LIMIT_MAX_KEYS) return true
+  logger.warning('Rate limit store at key capacity — failing closed', {
+    keys: rateLimitMap.size,
+    cap: RATE_LIMIT_MAX_KEYS,
+  })
+  return false
+}
+
+/**
  * Check rate limit for the given IP.
  * Accepts an optional `now` for testability (defaults to Date.now()).
  * Returns true if the request is allowed, false if rate-limited.
@@ -264,7 +299,14 @@ export function checkRateLimit(ip: string, now: number = Date.now(), pathClass?:
 
   let entry = rateLimitMap.get(ip)
 
-  if (entry === undefined || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
+  // rm-286 admission control: only a NEW key grows the store, so only the
+  // new-key branch is capacity-gated; an expired window reuses the existing
+  // slot (store size unchanged).
+  if (entry === undefined) {
+    if (!admitRateLimitKey(now)) return false
+    entry = {windowStart: now, counts: {public: 0, operator: 0, ingest: 0}}
+    rateLimitMap.set(ip, entry)
+  } else if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
     entry = {windowStart: now, counts: {public: 0, operator: 0, ingest: 0}}
     rateLimitMap.set(ip, entry)
   }

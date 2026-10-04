@@ -16,10 +16,10 @@
 import {type ReactNode, useCallback, useEffect, useRef, useState} from 'react'
 import {triggerLogoutAbort} from '../push/logout-abort.ts'
 import {buildPushClient, unsubscribeOptOut} from '../push/subscribe.ts'
-import {InstallPrompt} from '../pwa/InstallPrompt.tsx'
+import {DISMISS_KEY as INSTALL_DISMISS_KEY, InstallPrompt} from '../pwa/InstallPrompt.tsx'
 import {ReloadPrompt} from '../pwa/ReloadPrompt.tsx'
 import {purgeOperatorCache} from '../pwa/logout-purge.ts'
-import {Notifications} from '../views/Notifications.tsx'
+import {DISMISS_SETTINGS_KEY as NOTIFICATIONS_DISMISS_KEY, Notifications} from '../views/Notifications.tsx'
 
 /**
  * Best-effort push teardown on logout. Runs local `unsubscribe()` + Gateway
@@ -153,6 +153,12 @@ export function AppShell({
 }: AppShellProps) {
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
   const [loggingOut, setLoggingOut] = useState(false)
+  // rm-596 re-entry nonces: bumping one remounts that dismissable surface so
+  // it re-reads its (now-cleared) localStorage latch and re-enters its state
+  // machine at not-requested. Per-surface so restoring the notifications card
+  // never discards a captured (not-dismissed) beforeinstallprompt event.
+  const [notificationsRestoreNonce, setNotificationsRestoreNonce] = useState(0)
+  const [installRestoreNonce, setInstallRestoreNonce] = useState(0)
   const logoutInFlight = useRef(false)
 
   useEffect(() => {
@@ -162,6 +168,26 @@ export function AppShell({
 
   const toggleTheme = useCallback(() => {
     setTheme((t) => (t === 'dark' ? 'light' : 'dark'))
+  }, [])
+
+  /**
+   * rm-596 re-entry for the one-way dismiss latches. Clearing the persisted
+   * keys alone cannot resurrect the cards — both surfaces read their latch
+   * in a useState initializer — so each CLEARED key also bumps its remount
+   * nonce. Only keys that were actually set are touched: a no-op click (or
+   * a notifications-only restore) must not remount InstallPrompt, which
+   * would discard its captured beforeinstallprompt event.
+   */
+  const handleRestoreDismissedCards = useCallback(() => {
+    if (typeof window === 'undefined') return
+    if (window.localStorage.getItem(NOTIFICATIONS_DISMISS_KEY) !== null) {
+      window.localStorage.removeItem(NOTIFICATIONS_DISMISS_KEY)
+      setNotificationsRestoreNonce((nonce) => nonce + 1)
+    }
+    if (window.localStorage.getItem(INSTALL_DISMISS_KEY) !== null) {
+      window.localStorage.removeItem(INSTALL_DISMISS_KEY)
+      setInstallRestoreNonce((nonce) => nonce + 1)
+    }
   }, [])
 
   /**
@@ -446,7 +472,7 @@ export function AppShell({
             </div>
 
             <div style={{display: 'flex', alignItems: 'center', gap: 'var(--space-2)'}}>
-              <InstallPrompt />
+              <InstallPrompt key={`install-restore-${installRestoreNonce}`} />
               <button
                 type="button"
                 aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
@@ -510,6 +536,7 @@ export function AppShell({
         className="sm:px-6 md:px-8 lg:px-10"
       >
         <Notifications
+          key={`notifications-restore-${notificationsRestoreNonce}`}
           pushEndpointBase={pushEndpointBase}
           pushConfigReady={pushConfigReady}
           pushFixtureSessionId={pushFixtureSessionId}
@@ -529,14 +556,29 @@ export function AppShell({
         }}
         className="sm:px-6 md:px-8 lg:px-10"
       >
-        <a
-          href="/privacy"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex min-h-11 items-center text-label text-text-muted underline underline-offset-4 transition-colors duration-fast hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-        >
-          Privacy
-        </a>
+        <div className="flex flex-wrap items-center gap-4">
+          <a
+            href="/privacy"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex min-h-11 items-center text-label text-text-muted underline underline-offset-4 transition-colors duration-fast hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            Privacy
+          </a>
+          {/* rm-596: the way back for the one-way dismiss latches (notifications
+              card + install prompt). Always rendered, not conditional on a
+              latch being set: the dismissal happens inside the children, so a
+              visibility check here would go stale exactly when it matters
+              (storage events do not fire in the same tab). */}
+          <button
+            type="button"
+            data-testid="restore-dismissed-cards"
+            onClick={handleRestoreDismissedCards}
+            className="inline-flex min-h-11 items-center text-label text-text-muted underline underline-offset-4 transition-colors duration-fast hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent cursor-pointer border-none bg-transparent p-0"
+          >
+            Restore notifications
+          </button>
+        </div>
       </footer>
 
       <ReloadPrompt />

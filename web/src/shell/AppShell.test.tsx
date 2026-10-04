@@ -166,6 +166,61 @@ describe('AppShell', () => {
     expect(screen.getByRole('link', {name: 'Privacy'})).toBeInTheDocument()
   })
 
+  it('rm-596: the footer restore affordance renders beside Privacy (always, not only when a latch is set)', () => {
+    render(<AppShell>content</AppShell>)
+
+    expect(screen.getByRole('link', {name: 'Privacy'})).toBeInTheDocument()
+    expect(screen.getByRole('button', {name: 'Restore notifications'})).toBeInTheDocument()
+  })
+
+  it('rm-596: restore clears BOTH dismiss latches and re-enters the notifications card state machine', () => {
+    // The card only renders when the push-enabled meta tag is present.
+    const meta = document.createElement('meta')
+    meta.setAttribute('name', 'push-enabled')
+    meta.setAttribute('content', 'true')
+    document.head.appendChild(meta)
+    window.localStorage.setItem('fro-bot-notifications-dismissed', '1')
+    window.localStorage.setItem('fro-bot-install-dismissed', '1')
+
+    try {
+      render(<AppShell>content</AppShell>)
+
+      // Latched: the app's only push surface is hidden.
+      expect(screen.queryByTestId('notifications-settings')).toBeNull()
+
+      fireEvent.click(screen.getByRole('button', {name: 'Restore notifications'}))
+
+      // BOTH keys cleared — the install latch rides the same affordance.
+      expect(window.localStorage.getItem('fro-bot-notifications-dismissed')).toBeNull()
+      expect(window.localStorage.getItem('fro-bot-install-dismissed')).toBeNull()
+      // …and the card is visible again (remount re-reads the cleared latch
+      // and re-enters the state machine at not-requested).
+      expect(screen.getByTestId('notifications-settings')).toBeInTheDocument()
+    } finally {
+      meta.remove()
+    }
+  })
+
+  it('rm-596: restore is a safe no-op when nothing was dismissed (card stays visible, keys stay absent)', () => {
+    const meta = document.createElement('meta')
+    meta.setAttribute('name', 'push-enabled')
+    meta.setAttribute('content', 'true')
+    document.head.appendChild(meta)
+
+    try {
+      render(<AppShell>content</AppShell>)
+      expect(screen.getByTestId('notifications-settings')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', {name: 'Restore notifications'}))
+
+      expect(screen.getByTestId('notifications-settings')).toBeInTheDocument()
+      expect(window.localStorage.getItem('fro-bot-notifications-dismissed')).toBeNull()
+      expect(window.localStorage.getItem('fro-bot-install-dismissed')).toBeNull()
+    } finally {
+      meta.remove()
+    }
+  })
+
   it('renders primary navigation landmark', () => {
     render(<AppShell>content</AppShell>)
     expect(screen.getByRole('navigation', {name: /primary navigation/i})).toBeInTheDocument()
