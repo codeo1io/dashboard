@@ -26,11 +26,16 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {
   createOperatorRuntime,
+  defaultRuntimeLoader,
   discoverCardStreamTargets,
   MAX_HASH_ID_LENGTH,
   sanitizeRunIdFromHash,
+  type OperatorLaunchModule,
+  type OperatorRunIndexModule,
   type OperatorRuntimeHandle,
+  type OperatorRuntimeModuleLoaders,
   type OperatorRuntimeOptions,
+  type OperatorStreamModule,
 } from './runtime.ts'
 
 // ---------------------------------------------------------------------------
@@ -1089,5 +1094,124 @@ describe('URL-hash restore — expand sets hash, remount restores', () => {
     expect(window.location.hash).toBe('#run-hash-2')
     card.click()
     expect(window.location.hash).toBe('')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// defaultRuntimeLoader — rm-619 partial-boot teardown
+// ---------------------------------------------------------------------------
+
+describe('defaultRuntimeLoader rm-619 partial-boot teardown', () => {
+  afterEach(() => {
+    document.body.innerHTML = ''
+    vi.restoreAllMocks()
+  })
+
+  /**
+   * Contract twin of public/operator-stream.js's bootstrap state (verified
+   * against the real module): bootstrapOperatorStreams is idempotent via a
+   * module-scoped _bootstrapCalled wedge and registers one pagehide listener;
+   * resetBootstrapState() is the only way back (closes handles, removes the
+   * listener, clears the wedge). Note the real loader ALSO calls resetBootstrapState
+   * at the start of every invocation, so a LATER remount heals state — the rm-619
+   * defect is that a FAILED instance's own cleanup() is a no-op (the cleanup
+   * closure is only returned on success), so bootstrapped state persists until
+   * some future mount or page unload.
+   */
+  function makeContractStreamMod() {
+    let wedged = false
+    const pagehideListeners = new Set<() => void>()
+    const mod: OperatorStreamModule = {
+      bootstrapOperatorStreams: vi.fn(() => {
+        if (wedged) return
+        wedged = true
+        const listener = (): void => {}
+        pagehideListeners.add(listener)
+        globalThis.addEventListener('pagehide', listener)
+      }),
+      resetBootstrapState: vi.fn(() => {
+        wedged = false
+        for (const listener of pagehideListeners) {
+          globalThis.removeEventListener('pagehide', listener)
+        }
+        pagehideListeners.clear()
+      }),
+      initOperatorStream: vi.fn(() => ({close: vi.fn()})),
+    }
+    return {mod, isWedged: () => wedged, listenerCount: () => pagehideListeners.size}
+  }
+
+  it('a rejected post-bootstrap stage tears down the bootstrapped stream state (failed instance is self-cleaning)', async () => {
+    const streamMod = makeContractStreamMod()
+    const runIndexReset = vi.fn()
+    const launchReset = vi.fn()
+    const runIndexMod: OperatorRunIndexModule = {
+      initOperatorRunIndex: vi.fn().mockRejectedValue(new Error('run-index init rejected')),
+      resetRunIndexState: runIndexReset,
+    }
+    const launchMod: OperatorLaunchModule = {resetLaunchState: launchReset}
+
+    await expect(defaultRuntimeLoader(undefined, {
+      loadStreamMod: async () => streamMod.mod,
+      loadRunIndexMod: async () => runIndexMod,
+      loadLaunchMod: async () => launchMod,
+    })).rejects.toThrow('run-index init rejected')
+
+    // rm-619 acceptance: on rejection the loader runs the SAME teardown the
+    // cleanup closure runs — bootstrap reset (handles + pagehide listener +
+    // wedge) plus both module-state resets. Red on the unfixed loader: the
+    // wedge stays set, the listener stays attached, launch reset never runs
+    // (pre-init runIndex reset DID run before the rejection).
+    expect(streamMod.isWedged()).toBe(false)
+    expect(streamMod.listenerCount()).toBe(0)
+    expect(streamMod.mod.resetBootstrapState).toHaveBeenCalledTimes(2) // 1 pre-boot + 1 teardown
+    expect(runIndexReset).toHaveBeenCalledTimes(2) // 1 pre-init + 1 teardown
+    expect(launchReset).toHaveBeenCalledTimes(1) // pre-init reset is never reached; teardown only
+  })
+
+  it('a remount after a failed boot still re-bootstraps (healing path preserved)', async () => {
+    const streamMod = makeContractStreamMod()
+    const failing: OperatorRuntimeModuleLoaders = {
+      loadStreamMod: async () => streamMod.mod,
+      loadRunIndexMod: async () => ({initOperatorRunIndex: vi.fn().mockRejectedValue(new Error('boom'))}),
+      loadLaunchMod: async () => ({}),
+    }
+    await expect(defaultRuntimeLoader(undefined, failing)).rejects.toThrow('boom')
+
+    const healing: OperatorRuntimeModuleLoaders = {
+      loadStreamMod: async () => streamMod.mod,
+      loadRunIndexMod: async () => ({initOperatorRunIndex: vi.fn().mockResolvedValue(undefined)}),
+      loadLaunchMod: async () => ({initOperatorLaunch: vi.fn().mockResolvedValue(undefined)}),
+    }
+    const cleanup = await defaultRuntimeLoader(undefined, healing)
+
+    // Bootstrap was EFFECTIVE both times (second mount's pre-boot reset cleared
+    // whatever the first mount left; the fix must not regress this healing).
+    expect(streamMod.mod.bootstrapOperatorStreams).toHaveBeenCalledTimes(2)
+    expect(streamMod.isWedged()).toBe(true)
+    expect(streamMod.listenerCount()).toBe(1)
+    cleanup()
+    expect(streamMod.listenerCount()).toBe(0)
+    expect(streamMod.isWedged()).toBe(false)
+  })
+
+  it('happy path: cleanup closure tears down exactly as before (byte-stable behavior)', async () => {
+    const streamMod = makeContractStreamMod()
+    const runIndexReset = vi.fn()
+    const launchReset = vi.fn()
+    const cleanup = await defaultRuntimeLoader(undefined, {
+      loadStreamMod: async () => streamMod.mod,
+      loadRunIndexMod: async () => ({initOperatorRunIndex: vi.fn().mockResolvedValue(undefined), resetRunIndexState: runIndexReset}),
+      loadLaunchMod: async () => ({initOperatorLaunch: vi.fn().mockResolvedValue(undefined), resetLaunchState: launchReset}),
+    })
+    expect(streamMod.isWedged()).toBe(true)
+    expect(streamMod.listenerCount()).toBe(1)
+    expect(runIndexReset).toHaveBeenCalledTimes(1) // pre-init reset
+    expect(launchReset).toHaveBeenCalledTimes(1) // pre-init reset
+    cleanup()
+    expect(streamMod.mod.resetBootstrapState).toHaveBeenCalledTimes(2) // 1 pre-boot + 1 closure
+    expect(runIndexReset).toHaveBeenCalledTimes(2)
+    expect(launchReset).toHaveBeenCalledTimes(2)
+    expect(streamMod.listenerCount()).toBe(0)
   })
 })
