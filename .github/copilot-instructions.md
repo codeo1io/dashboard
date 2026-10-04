@@ -1,9 +1,11 @@
 # Copilot instructions
 
-Read-only Fro Bot monitoring dashboard: a single Hono + JSX SSR Node 24 process, no
-build step, native TypeScript. It is an authenticated single-operator view of Fro Bot's
-cross-repo footprint. `AGENTS.md` is the canonical context; this file mirrors the
-load-bearing rules for code suggestions.
+Read-only Fro Bot monitoring dashboard. Two parts in one repo: a Node 24 native-TS
+Hono server (`src/`, strip-only, no backend build step) that serves the API + GitHub
+OAuth, and a Vite + React 19 + Tailwind v4 PWA client (`web/`, built via
+`pnpm build:web` → `web/dist`, served at `/`). It is an authenticated single-operator
+view of Fro Bot's cross-repo footprint. `AGENTS.md` is the canonical context; this
+file mirrors the load-bearing rules for code suggestions.
 
 ## Security invariants — never generate code that violates these
 
@@ -25,8 +27,10 @@ load-bearing rules for code suggestions.
 
 ## Conventions
 
-- pnpm; Node 24 native TS (strip-only): no enums, namespaces, parameter properties, or TS
-  import aliases (`erasableSyntaxOnly` lint enforces this).
+- pnpm. The server (`src/`, `test/`, `scripts/`) is Node 24 native TS (strip-only): no
+  enums, namespaces, parameter properties, or TS import aliases (`erasableSyntaxOnly`
+  lint enforces this). The client (`web/`) is a full-TS Vite + React 19 workspace with
+  its own `web/tsconfig.json` — excluded from the strip-only lint.
 - `as unknown as X` for Octokit boundary casts; never `any`.
 - `Result<T, E>` error-return shape for the app client.
 - Operator (Gateway) auth and the dashboard session cookie are separate credential
