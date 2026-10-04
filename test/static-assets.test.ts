@@ -8,6 +8,8 @@
  * - PWA SW assets: /sw.js + /registerSW.js served with correct MIME + no-cache, public pre-auth
  * - PWA manifest: /manifest.webmanifest served as application/manifest+json, public pre-auth
  * - CSP on /sw.js: no page CSP applied (workers don't inherit page CSP)
+ * - rm-555: hashed /assets/* → immutable; every unversioned static (icons,
+ *   manifest, /privacy, shell variant, /static/* catch-all) → explicit no-cache
  */
 import type {GitHubOAuthClient} from '../src/auth/oauth.ts'
 import {Buffer} from 'node:buffer'
@@ -228,6 +230,111 @@ describe('operator runtime JS caching policy (rm-478)', () => {
       expect(res.status, asset).toBe(200)
       expect(res.headers.get('cache-control'), asset).toBe('no-cache')
       expect(res.headers.get('etag'), asset).toMatch(/^"[0-9a-f]{32}"$/)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-555 — explicit caching policies for every static surface
+//
+// Two directions, one per surface class:
+// - versioned: hashed /assets/* output is immutable (the vite [name]-[hash]
+//   config means the bytes at a URL never change — the filename IS the
+//   validator), set on 200s only and never on errors;
+// - unversioned: icons, /manifest.webmanifest, /privacy, the uninjected
+//   shell variant, and the flag-gated /static/* catch-all all serve bytes
+//   that can change at a stable URL — explicit 'no-cache', never immutable
+//   and never policy-null (a null policy lets RFC 9111 §4.2.2 heuristic
+//   caching store the response anyway).
+// Guard rails: /static/operator-*.js keeps rm-478's ETag-bearing no-cache
+// (pinned above); /sw.js + /registerSW.js keep their stricter
+// no-cache,no-store,must-revalidate policy (pinned in the PWA section).
+// ---------------------------------------------------------------------------
+
+describe('static caching policies (rm-555)', () => {
+  it('GET /assets/<hashed>.js carries Cache-Control: public, max-age=31536000, immutable', async () => {
+    const app = await buildTestApp(false)
+    const fs = await import('node:fs/promises')
+    const jsFile = (await fs.readdir('web/dist/assets')).find(f => f.endsWith('.js'))
+    expect(jsFile).toBeTruthy()
+    const res = await app.request(`/assets/${jsFile}`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, immutable')
+  })
+
+  it('GET /assets/<hashed>.css carries the same immutable policy', async () => {
+    const app = await buildTestApp(false)
+    const fs = await import('node:fs/promises')
+    const cssFile = (await fs.readdir('web/dist/assets')).find(f => f.endsWith('.css'))
+    expect(cssFile).toBeTruthy()
+    const res = await app.request(`/assets/${cssFile}`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, immutable')
+  })
+
+  it('a missing /assets/* hash (404) never carries an immutable directive', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/assets/definitely-not-built-999999.js')
+    expect(res.status).toBe(404)
+    expect(res.headers.get('cache-control') ?? '').not.toContain('immutable')
+  })
+
+  it('immutable assets carry no ETag — the filename is the validator', async () => {
+    const app = await buildTestApp(false)
+    const fs = await import('node:fs/promises')
+    const jsFile = (await fs.readdir('web/dist/assets')).find(f => f.endsWith('.js'))
+    expect(jsFile).toBeTruthy()
+    const res = await app.request(`/assets/${jsFile}`)
+    expect(res.headers.get('etag')).toBeNull()
+  })
+
+  it('unversioned statics — /icon-*, /manifest.webmanifest, /privacy — are explicit no-cache', async () => {
+    const app = await buildTestApp(false)
+    for (const path of ['/icon-192.svg', '/manifest.webmanifest', '/privacy']) {
+      const res = await app.request(path)
+      expect(res.status, path).toBe(200)
+      expect(res.headers.get('cache-control'), path).toBe('no-cache')
+    }
+  })
+
+  it('the manifest keeps its application/manifest+json content-type beside the policy', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/manifest.webmanifest')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('application/manifest+json; charset=UTF-8')
+  })
+
+  it('the uninjected shell variant (push off) is no-cache — it references deploy-time /assets hashes', async () => {
+    // buildTestApp(false) leaves pushNotificationsEnabled off too, which
+    // selects the serveStatic variant; the INJECTED variant (push on) is
+    // pinned no-store in operator-ui.test.ts (rm-166).
+    const app = await buildTestApp(false)
+    const res = await authedGet(app, '/')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-cache')
+  })
+
+  it('the flag-gated /static/* catch-all (operator.css) is no-cache', async () => {
+    const app = await buildTestApp(true)
+    const res = await app.request('/static/operator.css')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-cache')
+  })
+
+  it('guard rail — rm-478 surfaces are unchanged: operator-stream.js keeps ETag-bearing no-cache', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/static/operator-stream.js')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-cache')
+    expect(res.headers.get('etag')).toMatch(/^"[0-9a-f]{32}"$/)
+  })
+
+  it('guard rail — /sw.js and /registerSW.js keep their stricter update policy', async () => {
+    const app = await buildTestApp(false)
+    for (const path of ['/sw.js', '/registerSW.js']) {
+      const res = await app.request(path)
+      expect(res.status, path).toBe(200)
+      expect(res.headers.get('cache-control'), path).toContain('no-store')
     }
   })
 })

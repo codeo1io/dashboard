@@ -63,6 +63,7 @@ client changes). The test suite rebuilds the client automatically via `pretest`.
 - `GET /privacy` — public privacy policy for the push/listener surfaces.
 - `GET /auth/login` · `GET /auth/callback` · `POST /auth/logout` — GitHub OAuth session flow.
 - `/manifest.webmanifest`, `/sw.js` — PWA manifest and service worker.
+- Statics cache policies (rm-555) — hashed `/assets/*` bundles are served `Cache-Control: public, max-age=31536000, immutable` (vite's `[name]-[hash]` filenames make the URL itself the validator, so deploy rollover is immediate via the no-store/no-cache shell); every unversioned static (`/icon-*`, `/manifest.webmanifest`, `/privacy`, the shell, `/static/*` public files) is `no-cache`; `/sw.js` + `/registerSW.js` keep `no-cache, no-store, must-revalidate` so SW updates are always detected.
 
 ## Configuration
 

@@ -1038,6 +1038,34 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   // Serve the React SPA at /. index.html requires a session; shell assets are public.
   // When pushNotificationsEnabled, inject a <meta name="push-enabled" content="true">
   // tag so the SPA can render the push consent surface without a separate flag fetch.
+  //
+  // rm-555: explicit caching policies for the static surfaces (cycle-1 batch B1).
+  // Two policies, one per surface class:
+  // - hashed /assets/* output → immutable (bytes at a URL never change);
+  // - every UNVERSIONED static → 'no-cache' (bytes at a stable URL change
+  //   across deploys, so they must never be immutable and must never fall
+  //   to RFC 9111 §4.2.2 heuristic caching, which today's policy-null
+  //   responses allow). serveStatic adds no validators on these mounts, so
+  // 'no-cache' degenerates to refetch-every-time — identical bytes on the
+  // wire as today, but explicit and intermediary-proof. Only set when the
+  // header is absent so a co-registered policy (operatorRuntimeCaching's
+  // ETag-bearing 'no-cache' on /static/operator-*.js) always wins.
+  const unversionedCachePolicy = async (c: Context, next: () => Promise<void>): Promise<void> => {
+    await next()
+    if (!c.res.headers.has('cache-control')) {
+      c.res.headers.set('Cache-Control', 'no-cache')
+    }
+  }
+  // Hashed output: set on 200s only — a 404 for a dead hash (or any error)
+  // must never carry an immutable directive. No ETag is added: the filename
+  // IS the validator (any content change mints a new URL via the vite hash
+  // config), so a conditional request can never hit a changed representation.
+  const hashedAssetImmutablePolicy = async (c: Context, next: () => Promise<void>): Promise<void> => {
+    await next()
+    if (c.res.status === 200) {
+      c.res.headers.set('Cache-Control', 'public, max-age=31536000, immutable')
+    }
+  }
   if (pushNotificationsEnabled) {
     // Serve the SPA shell inline (not via serveStatic) so the injected body's
     // length is computed correctly. Post-processing a streamed serveStatic
@@ -1078,7 +1106,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       return c.html(spaShellCache.injected)
     })
   } else {
-    app.get('/', serveStatic({root: webDistRoot, path: 'index.html'}))
+    // rm-555: the uninjected shell variant still references /assets/* hashes
+    // that change at every deploy — same never-immutable class as the icons
+    // below (the INJECTED variant above is no-store, rm-166).
+    app.get('/', unversionedCachePolicy, serveStatic({root: webDistRoot, path: 'index.html'}))
   }
 
   // ── /operator and /operator/ → / redirect (unconditional, flag-independent) ──
@@ -1153,7 +1184,12 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     // /static/ is in isPublicPath so unauthenticated browsers can load assets.
     // Note: operator-stream.js and operator-launch.js are already mounted above;
     // this catch-all additionally serves operator.css and any other static assets.
-    app.use('/static/*', serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}))
+    // rm-555: the catch-all serves unversioned public/ files (operator.css,
+    // future additions) — explicit revalidation so nothing under /static/
+    // can fall to heuristic caching. The three /static/operator-*.js mounts
+    // above carry their own ETag-bearing 'no-cache' via operatorRuntimeCaching
+    // and never reach this middleware (they short-circuit the chain first).
+    app.use('/static/*', unversionedCachePolicy, serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}))
   }
 
   // ── Fixture harness routes (DEV-ONLY) ─────────────────────────────────────
@@ -1166,8 +1202,19 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   }
 
   // ── SPA static asset serving ─────────────────────────────────────────────
-  app.use('/assets/*', serveStatic({root: webDistRoot}))
-  app.use('/icon-*', serveStatic({root: webDistRoot}))
+  // rm-555: every /assets/* filename is content-hashed BY CONFIG
+  // (web/vite.config.ts pins entry/chunk/assetFileNames to
+  // assets/[name]-[hash]…), so the bytes at a given URL never change and the
+  // response is representation-safe to cache immutable (RFC 8246) — before
+  // this, returning operators re-downloaded ~285 KB of JS+CSS on every visit
+  // on heuristic caching alone. Deploy rollover stays immediate: the shell
+  // that references the hashes is no-store (injected) / no-cache (variant).
+  // Reconcile note: sibling salvage commit 4cc4f80a carries this same wrapper
+  // as rm-503 — first landing wins, zero content divergence.
+  app.use('/assets/*', hashedAssetImmutablePolicy, serveStatic({root: webDistRoot}))
+  // rm-555: icons are unversioned stable-URL files (icon-192.svg, icon-512.svg)
+  // whose bytes can change with a deploy — explicit revalidation, never immutable.
+  app.use('/icon-*', unversionedCachePolicy, serveStatic({root: webDistRoot}))
 
   // ── PWA manifest ─────────────────────────────────────────────────────────
   // serveStatic serves .webmanifest as application/octet-stream by default.
@@ -1177,7 +1224,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     await next()
     c.res.headers.set('content-type', 'application/manifest+json; charset=UTF-8')
   })
-  app.use('/manifest.webmanifest', serveStatic({root: webDistRoot}))
+  // rm-555: the manifest is unversioned — an explicit revalidation policy
+  // beside the content-type override above (PWA installers must not pin a
+  // stale manifest).
+  app.use('/manifest.webmanifest', unversionedCachePolicy, serveStatic({root: webDistRoot}))
 
   // ── PWA service worker + registration helper ──────────────────────────────
   // /sw.js and /registerSW.js must be served at root scope so the SW covers the
@@ -1199,8 +1249,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   // the service worker's precache exclusion correct (see sw.ts). NOTE: unlike
   // upstream, this fork's service worker is a cacheless SW-off switch that
   // never serves navigations, so no SW denylist exemption is needed here.
-  app.get('/privacy', serveStatic({root: webDistRoot, path: 'privacy.html'}))
-  app.get('/privacy/', serveStatic({root: webDistRoot, path: 'privacy.html'}))
+  // rm-555: /privacy is an unversioned stable-URL document — explicit
+  // revalidation policy (policy pages must refresh promptly after edits).
+  app.get('/privacy', unversionedCachePolicy, serveStatic({root: webDistRoot, path: 'privacy.html'}))
+  app.get('/privacy/', unversionedCachePolicy, serveStatic({root: webDistRoot, path: 'privacy.html'}))
 
   // ── RFC 9116 security contact ────────────────────────────────────────────────
   // Served inline (not via serveStatic) so it carries no dependency on the SPA
