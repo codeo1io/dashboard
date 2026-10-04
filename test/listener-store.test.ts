@@ -168,4 +168,48 @@ describe('listener store', () => {
   it('close does not throw', () => {
     expect(() => store.close()).not.toThrow()
   })
+
+  it('rm-107: stats() reports live depth — empty store is all zeros with no oldest row', () => {
+    expect(store.stats()).toEqual({totalMessages: 0, unreadCount: 0, prunedTotal: 0, oldestReceivedAt: null})
+  })
+
+  it('rm-107: stats() tracks inserts, acks, and the oldest RETAINED row', () => {
+    store.insert(makeMessage({dedupeKey: 's1', title: 'first'}))
+    store.insert(makeMessage({dedupeKey: 's2', title: 'second'}))
+    const third = store.insert(makeMessage({dedupeKey: 's3', title: 'third'}))
+    store.ack(third.id)
+
+    const view = store.stats()
+    expect(view.totalMessages).toBe(3)
+    expect(view.unreadCount).toBe(2)
+    expect(view.prunedTotal).toBe(0)
+    // Oldest RETAINED row in received_at order — not the newest, not the acked one.
+    const receivedAt = new Date(view.oldestReceivedAt ?? '').toISOString()
+    expect(view.oldestReceivedAt).toBe(receivedAt) // parseable ISO round-trip
+    expect(new Date(receivedAt).getTime()).toBeLessThanOrEqual(new Date(third.receivedAt).getTime())
+  })
+
+  it('rm-107: stats() counts retention evictions — overflow and age both feed prunedTotal', () => {
+    for (let i = 0; i < 505; i++) {
+      store.insert(makeMessage({dedupeKey: `stats-overflow-${i}`, title: `overflow-${i}`}))
+    }
+    const overflowView = store.stats()
+    expect(overflowView.totalMessages).toBe(500) // retention cap
+    expect(overflowView.prunedTotal).toBe(5) // overflow evictions counted
+    expect(overflowView.oldestReceivedAt).not.toBe(null)
+
+    // Age eviction (same clock-jump shape as the rm-244 case above).
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-01T00:00:00Z'))
+    const other = createListenerStore(':memory:')
+    other.insert(makeMessage({dedupeKey: 'stats-ancient', title: 'ancient message'}))
+    vi.setSystemTime(new Date('2026-09-25T00:00:00Z'))
+    other.insert(makeMessage({dedupeKey: 'stats-fresh', title: 'fresh message'}))
+    const ageView = other.stats()
+    vi.useRealTimers()
+    expect(ageView.totalMessages).toBe(1)
+    expect(ageView.prunedTotal).toBe(1)
+    expect(ageView.unreadCount).toBe(1)
+    other.close()
+  })
 })

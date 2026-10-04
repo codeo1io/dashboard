@@ -30,6 +30,9 @@ import type {MetadataError, MetadataReader, MetadataResult} from './metadata.ts'
 
 import {logger, sanitizeErrorMessage, type LogContext} from '../logger.ts'
 import {isErr, isOk} from '../result.ts'
+// rm-107: compose-side status feed (src/status/compose.ts imports this
+// module's types only — the value import points one way, so no cycle).
+import {recordRefreshFailure} from '../status/compose.ts'
 import {deriveDatabaseId, redactedDatabaseIdIn} from './metadata.ts'
 import {
   REPO_STATUS_QUERY,
@@ -914,6 +917,16 @@ export function createAggregator(
   // up concurrent refreshes that race on lastGoodSnapshot.
   let refreshing = false
 
+  // rm-107 (2026-10-04): process-local latch — an attempt ran past the
+  // watchdog ceiling before the first successful refresh. Consulted by
+  // getSnapshot()'s emit-time keying ONLY while refreshedAt is null (cold
+  // start, or a boot bridge seeded from a never-refreshed persisted
+  // snapshot), where data age cannot key degradation. Never cleared: once a
+  // refresh succeeds, refreshedAt is non-null for the rest of the process
+  // lifetime and the latch stops participating. Same process-local honesty
+  // as the store's prunedTotal counter — a restart legitimately resets it.
+  let overCeilingBeforeFirstSuccess = false
+
   /**
    * rm-156: stamp watchdog fields onto a snapshot write made from within a
    * refresh cycle — duration is measured from the cycle's wall-clock start
@@ -921,12 +934,23 @@ export function createAggregator(
    * made outside any cycle (boot repair, belt-and-braces stale marks) carry
    * no fresh measurement: a cold-start literal reports null/not-degraded,
    * and last-good carries preserves its original stamps via spread.
+   *
+   * rm-107 (2026-10-04): the write-time verdict alone is NON-MONOTONE across
+   * a worsening outage — a hung over-ceiling cycle stamps degraded:true and
+   * the next cycle failing in milliseconds stamps degraded:false while the
+   * served data keeps aging. getSnapshot() re-keys degradation at EMIT time
+   * (last attempt's duration ‖ served-data age ‖ the cold-start latch this
+   * function sets); this write keeps recording THIS attempt's own verdict
+   * for persistence and diagnostics.
    */
   function watchdogStamp<T extends Omit<AggregatorSnapshot, 'refreshDurationMs' | 'refreshDegraded'>>(snapshot: T): AggregatorSnapshot {
     if (cycleStartedAt === null) {
       return {...snapshot, refreshDurationMs: null, refreshDegraded: false}
     }
     const refreshDurationMs = now() - cycleStartedAt
+    if (refreshDurationMs > watchdogCeilingMs) {
+      overCeilingBeforeFirstSuccess = true
+    }
     return {...snapshot, refreshDurationMs, refreshDegraded: refreshDurationMs > watchdogCeilingMs}
   }
 
@@ -1006,6 +1030,14 @@ export function createAggregator(
           ? metadataResult.message
           : sanitizeErrorMessage(metadataResult.error.message),
       })
+      // rm-107: feed the /api/monitoring system block's failure ring (the
+      // sanitized message is the same one this log line already trusts).
+      recordRefreshFailure(
+        'metadata',
+        metadataResult instanceof DeadlineExceededError
+          ? metadataResult.message
+          : sanitizeErrorMessage(metadataResult.error.message),
+      )
 
       if (lastGoodSnapshot === null) {
         // Cold start with no cache — serve empty with banner
@@ -1042,6 +1074,8 @@ export function createAggregator(
       logger.warning('Installation enumeration timed out; using empty install set — snapshot will be incomplete', {
         error: enumerateResult.message,
       })
+      // rm-107: feed the system-status failure ring.
+      recordRefreshFailure('refresh', `installation enumeration timed out: ${enumerateResult.message}`)
     } else if (isOk(enumerateResult)) {
       installRepos = enumerateResult.data.repos
       enumerationIncomplete = enumerateResult.data.failedInstallationIds.length
@@ -1051,6 +1085,8 @@ export function createAggregator(
       logger.warning('Installation enumeration failed; using empty install set — snapshot will be incomplete', {
         error: sanitizeErrorMessage(String((enumerateResult as {error: unknown}).error)),
       })
+      // rm-107: feed the system-status failure ring.
+      recordRefreshFailure('refresh', `installation enumeration failed: ${sanitizeErrorMessage(String((enumerateResult as {error: unknown}).error))}`)
     }
 
     // 3. Build working set — DENYLIST-BEFORE-QUERY applied here
@@ -1141,6 +1177,9 @@ export function createAggregator(
           enumerationIncomplete,
           driftCount,
         })
+        // rm-107: feed the system-status failure ring — the warm-empty
+        // guard is a fail-visible path (the channel yielded nothing).
+        recordRefreshFailure('refresh', 'empty working set — serving last-good under stale banner')
         // Review fix (independent review P3, 2026-09-25): a repo can sit in
         // last-good AND surface as an absence entry this cycle (installation
         // enumeration loss + resolver failure). Without dedup it renders
@@ -1281,6 +1320,16 @@ export function createAggregator(
         error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
       })
       markSnapshotStale()
+      // rm-107: a cycle that ran past the ceiling and still THREW counts as
+      // over-ceiling-before-first-success — markSnapshotStale's literal is
+      // unstamped, so this latch is the only record when no successful write
+      // ever carried a duration (cold start under a hung-then-dead outage).
+      if (cycleStartedAt !== null && now() - cycleStartedAt > watchdogCeilingMs) {
+        overCeilingBeforeFirstSuccess = true
+      }
+      // rm-107: feed the system-status failure ring (same sanitized message
+      // the log line carries).
+      recordRefreshFailure('refresh', sanitizeErrorMessage(error instanceof Error ? error.message : String(error)))
     } finally {
       refreshing = false
       cycleStartedAt = null
@@ -1294,9 +1343,35 @@ export function createAggregator(
    * would present "authoritatively verified empty" while the very first walk
    * is still running.
    */
+  /**
+   * rm-107 (2026-10-04): emit-time degradation keying — THE monotone fix.
+   * watchdogStamp's write-time verdict reflects only the LAST attempt's
+   * duration, so it can improve (true → false) while the outage worsens
+   * (hung over-ceiling cycle, then a milliseconds-fast network-dead cycle).
+   * Re-keyed here at every read:
+   *   - duration: the last attempt ran past the ceiling (rm-156's signal,
+   *     preserved — a slow-but-successful walk still reads degraded), OR
+   *   - age: the SERVED data is older than the ceiling — grows monotonically
+   *     until the next successful refresh, so any degradation stays set for
+   *     the whole outage, OR
+   *   - cold latch: no refresh has ever succeeded in this process
+   *     (refreshedAt is null, age cannot key) and an attempt already ran
+   *     past the ceiling.
+   * A successful refresh is the only event that clears all three (fresh
+   * refreshedAt, fresh under-ceiling duration) — so degraded never improves
+   * between two emits that span no success.
+   */
+  function emitDegraded(snapshot: AggregatorSnapshot): AggregatorSnapshot {
+    const durationOver = snapshot.refreshDurationMs !== null && snapshot.refreshDurationMs > watchdogCeilingMs
+    const ageOver = snapshot.refreshedAt !== null && now() - snapshot.refreshedAt > watchdogCeilingMs
+    const coldLatch = snapshot.refreshedAt === null && overCeilingBeforeFirstSuccess
+    const degraded = durationOver || ageOver || coldLatch
+    return degraded === snapshot.refreshDegraded ? snapshot : {...snapshot, refreshDegraded: degraded}
+  }
+
   function getSnapshot(): AggregatorSnapshot {
     if (lastGoodSnapshot === null) {
-      return {repos: [], staleBanner: true, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}
+      return emitDegraded({repos: [], staleBanner: true, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false})
     }
     // Stall watchdog: while a cycle is in flight longer than staleAfterMs
     // (default 2× the refresh interval), the served snapshot carries the
@@ -1305,9 +1380,9 @@ export function createAggregator(
     // deadlines above this window is bounded anyway; the watchdog is the
     // belt to that braces.)
     if (cycleStartedAt !== null && now() - cycleStartedAt > staleAfterMs) {
-      return {...lastGoodSnapshot, staleBanner: true}
+      return emitDegraded({...lastGoodSnapshot, staleBanner: true})
     }
-    return lastGoodSnapshot
+    return emitDegraded(lastGoodSnapshot)
   }
 
   /**

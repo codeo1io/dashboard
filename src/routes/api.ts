@@ -1,6 +1,9 @@
 import type {AggregatorSnapshot, DashboardRepo, FailingCheckDetail, RepoCiStatus} from '../github/aggregator.ts'
 import {Hono} from 'hono'
 import {COLD_START_SNAPSHOT} from '../github/aggregator.ts'
+// rm-107: system-block composer for /api/monitoring (the compose module
+// references aggregator types only — one-way value import, no cycle).
+import {composeSystemStatus, type SystemStatus} from '../status/compose.ts'
 
 /** Injectable snapshot provider — returns the current aggregator snapshot. */
 export type SnapshotProvider = () => AggregatorSnapshot
@@ -122,7 +125,16 @@ export function buildApiRouter(getSnapshot?: SnapshotProvider): Hono {
   api.get('/monitoring', c => {
     const snapshot = getSnapshot === undefined ? COLD_START_SNAPSHOT : getSnapshot()
     c.header('Cache-Control', 'no-store')
-    return c.json(toMonitoringDto(snapshot))
+    // rm-107: the minimized DTO keeps carrying exactly its whitelisted
+    // aggregator fields; the system block (snapshot freshness, rate-limit
+    // counters, listener-store depth, recent refresh failures) is composed
+    // BESIDE it from the process-level registry. composeSystemStatus is
+    // additive-only: it deepens no repo field, and its detail strings are
+    // sanitized at the aggregator seam and truncated at the compose seam.
+    return c.json<MonitoringDto & {system: SystemStatus}>({
+      ...toMonitoringDto(snapshot),
+      system: composeSystemStatus(snapshot),
+    })
   })
 
   return api

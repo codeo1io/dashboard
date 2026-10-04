@@ -21,6 +21,13 @@ import process from 'node:process'
 import {afterEach, describe, expect, it, vi} from 'vitest'
 import {buildDashboardApp} from '../src/server.ts'
 import {SessionManager} from '../src/session.ts'
+// rm-107: registry feeds observed by the /api/monitoring system-block tests.
+import {
+  recordRateLimitEvent,
+  recordRefreshFailure,
+  registerListenerStoreStatusSource,
+  resetSystemStatusForTests,
+} from '../src/status/compose.ts'
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -456,6 +463,72 @@ describe('/api/monitoring — BFF aggregation endpoint', () => {
       expect(monitoringBody.repos[0]?.full_name).toBe('fro-bot/shared-source')
       expect(statusBody.repos[0]?.full_name).toBe('fro-bot/shared-source')
       expect(monitoringBody.refreshedAt).toBe(statusBody.refreshedAt)
+    })
+  })
+  describe('rm-107: system block — process health composed beside the DTO', () => {
+    afterEach(() => {
+      resetSystemStatusForTests()
+    })
+
+    it('authed GET /api/monitoring carries the composed system block', async () => {
+      recordRefreshFailure('refresh', 'route-test marker', 1_700_000_000_000)
+      recordRateLimitEvent({secondary: false, retryAfterSeconds: 60, at: 1_700_000_000_001})
+      const app = await buildTestApp(makeSnapshot({repos: [], refreshedAt: 1_700_000_000_000}))
+      const res = await authedGet(app, '/api/monitoring')
+
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as {system: Record<string, unknown>}
+      expect(Object.keys(body)).toContain('system')
+      const system = body.system
+      if (system === undefined) return
+      expect(system.composedAt).toBeTypeOf('number')
+      const snapshotBlock = system.snapshot as Record<string, unknown>
+      expect(snapshotBlock.refreshedAt).toBe(1_700_000_000_000)
+      expect(snapshotBlock.ageMs).toBeTypeOf('number')
+      expect(snapshotBlock.staleBanner).toBeTypeOf('boolean')
+      const rateLimit = system.rateLimit as Record<string, unknown>
+      expect(rateLimit.primaryCount).toBe(1)
+      expect(rateLimit.secondaryCount).toBe(0)
+      expect(rateLimit.lastRetryAfterSeconds).toBe(60)
+      const failures = system.lastRefreshFailures as {phase: string; detail: string}[]
+      expect(failures.map(f => f.phase)).toContain('refresh')
+      expect(failures.some(f => f.detail.includes('route-test marker'))).toBe(true)
+      // buildTestApp wires no listener store → explicit null, never a throw
+      expect(system.listenerStore).toBe(null)
+    })
+
+    it('a registered listener store surfaces live depth in the system block', async () => {
+      let depth: {totalMessages: number; unreadCount: number; prunedTotal: number; oldestReceivedAt: string | null} = {
+        totalMessages: 7,
+        unreadCount: 2,
+        prunedTotal: 1,
+        oldestReceivedAt: '2026-10-04T00:00:00.000Z',
+      }
+      registerListenerStoreStatusSource({stats: () => depth})
+      const app = await buildTestApp(makeSnapshot({repos: [], refreshedAt: null}))
+      const res = await authedGet(app, '/api/monitoring')
+
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as {system: {listenerStore: Record<string, unknown> | null}}
+      expect(body.system?.listenerStore?.totalMessages).toBe(7)
+      expect(body.system?.listenerStore?.unreadCount).toBe(2)
+      // …and the block reads the source LIVE, not at registration time
+      depth = {totalMessages: 9, unreadCount: 0, prunedTotal: 3, oldestReceivedAt: null}
+      const second = await authedGet(app, '/api/monitoring')
+      const secondBody = (await second.json()) as {system: {listenerStore: Record<string, unknown> | null}}
+      expect(secondBody.system?.listenerStore?.totalMessages).toBe(9)
+    })
+
+    it('system block detail strings are length-bounded even if a feed misbehaves', async () => {
+      recordRefreshFailure('metadata', 'x'.repeat(500), 1_700_000_000_000)
+      const app = await buildTestApp(makeSnapshot({repos: [], refreshedAt: null}))
+      const res = await authedGet(app, '/api/monitoring')
+
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as {system: {lastRefreshFailures: {detail: string}[]}}
+      const detail = body.system?.lastRefreshFailures?.[0]?.detail
+      expect(detail).toBeDefined()
+      expect(detail?.length).toBeLessThanOrEqual(160)
     })
   })
 })

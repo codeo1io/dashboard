@@ -74,5 +74,66 @@ describe('monitoring API', () => {
       const res = await fetchMonitoring()
       expect(res).toEqual({ ok: false, reason: 'contract-drift' })
     })
+
+    // rm-107: the system block is OPTIONAL at the wire, STRICT when present.
+    const makeSystem = (overrides: Record<string, unknown> = {}) => ({
+      composedAt: 1_700_000_000_000,
+      snapshot: {refreshedAt: 1_700_000_000_000, ageMs: 5_000, staleBanner: true, refreshDurationMs: 1_200, refreshDegraded: true},
+      rateLimit: {primaryCount: 2, secondaryCount: 1, lastEventAt: 1_700_000_000_001, lastRetryAfterSeconds: 60},
+      listenerStore: {totalMessages: 3, unreadCount: 1, prunedTotal: 4, oldestEventAgeSeconds: 7200},
+      lastRefreshFailures: [{phase: 'refresh', at: 1_700_000_000_002, detail: 'upstream wedged'}],
+      ...overrides,
+    })
+
+    it('rm-107: parses a well-formed system block through', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(
+        new Response(JSON.stringify({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, system: makeSystem()}), { status: 200 }),
+      )
+      const res = await fetchMonitoring()
+      expect(res.ok).toBe(true)
+      if (!res.ok) return
+      expect(res.data.system?.composedAt).toBe(1_700_000_000_000)
+      expect(res.data.system?.snapshot.refreshDegraded).toBe(true)
+      expect(res.data.system?.snapshot.staleBanner).toBe(true)
+      expect(res.data.system?.rateLimit.primaryCount).toBe(2)
+      expect(res.data.system?.listenerStore?.oldestEventAgeSeconds).toBe(7200)
+      expect(res.data.system?.lastRefreshFailures[0]?.detail).toBe('upstream wedged')
+    })
+
+    it('rm-107: an ABSENT system block still parses (older payload tolerated)', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(
+        new Response(JSON.stringify({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null}), { status: 200 }),
+      )
+      const res = await fetchMonitoring()
+      expect(res.ok).toBe(true)
+      if (!res.ok) return
+      expect(res.data.system).toBeUndefined()
+    })
+
+    it('rm-107: listenerStore null (no store in this process) parses as null, not drift', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(
+        new Response(JSON.stringify({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, system: makeSystem({listenerStore: null})}), { status: 200 }),
+      )
+      const res = await fetchMonitoring()
+      expect(res.ok).toBe(true)
+      if (!res.ok) return
+      expect(res.data.system?.listenerStore).toBe(null)
+    })
+
+    it('rm-107: a MALFORMED system block fails closed as contract-drift — never renders as healthy', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(
+        new Response(JSON.stringify({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, system: makeSystem({rateLimit: {primaryCount: 'many'}})}), { status: 200 }),
+      )
+      const res = await fetchMonitoring()
+      expect(res).toEqual({ ok: false, reason: 'contract-drift' })
+    })
+
+    it('rm-107: a system block whose snapshot sub-shape is wrong fails closed', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(
+        new Response(JSON.stringify({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, system: makeSystem({snapshot: {refreshedAt: null, ageMs: null}})}), { status: 200 }),
+      )
+      const res = await fetchMonitoring()
+      expect(res).toEqual({ ok: false, reason: 'contract-drift' })
+    })
   })
 })

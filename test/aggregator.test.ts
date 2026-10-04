@@ -21,6 +21,8 @@ import {createAggregator} from '../src/github/aggregator.ts'
 import {FetchInstallationsError} from '../src/github/installations.ts'
 import {MetadataTransportError, MetadataUnavailableError} from '../src/github/metadata.ts'
 import {err, ok} from '../src/result.ts'
+// rm-107: compose is imported to observe the failure ring this batch feeds.
+import {composeSystemStatus, resetSystemStatusForTests} from '../src/status/compose.ts'
 
 // ---------------------------------------------------------------------------
 // Fixtures + helpers
@@ -2990,6 +2992,166 @@ describe('aggregator — refresh watchdog (rm-156)', () => {
     expect(snap.staleBanner).toBe(true)
     expect(snap.refreshDurationMs).toBe(60)
     expect(snap.refreshDegraded).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-107 — emit-time degradation keying: monotone across a worsening outage
+// (write-time verdicts alone flip true→false while the outage worsens)
+// ---------------------------------------------------------------------------
+
+describe('aggregator — refresh watchdog monotone (rm-107)', () => {
+  it('THE monotone bug: hung over-ceiling success → fast fail-closed cycle keeps degraded=true (age keys it)', async () => {
+    const repo = makeRepo({node_id: 'NODE_MONO1', owner: 'org', name: 'repo-mono1'})
+    let t = 10_000
+    const readMetadata = vi.fn()
+      .mockResolvedValueOnce(ok(makeMetadataResult({publicRepos: [makePublicRepo({node_id: 'NODE_MONO1', owner: 'org', name: 'repo-mono1'})]})))
+      .mockResolvedValue(err(new MetadataUnavailableError('data branch missing (fast fail)')))
+    const deps = makeDeps({
+      now: () => t,
+      watchdogCeilingMs: 50,
+      readMetadata,
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      graphqlQueryForInstallation: vi.fn().mockImplementation(async () => {
+        t += 60 // hung call — cycle duration 60 > ceiling 50
+        return makeGraphqlResponse()
+      }),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    expect(agg.getSnapshot().refreshDegraded).toBe(true) // rm-156 base signal
+
+    // The outage WORSENS: the data ages past the ceiling and the next attempt
+    // fails closed in milliseconds. The fail-closed write re-stamps with THIS
+    // cycle's duration (0ms → degraded:false at write time) — the old
+    // monotone hole. Emit-time keying must keep degraded=true.
+    t += 120
+    await agg.refresh()
+    const degraded = agg.getSnapshot()
+    expect(degraded.staleBanner).toBe(true)
+    expect(degraded.refreshDurationMs).toBe(0) // the fast attempt's own verdict — recorded
+    expect(degraded.refreshDegraded).toBe(true) // …but the SERVED verdict stays degraded (age 120 > 50)
+
+    // And it never improves between two emits with no successful refresh in between
+    t += 1_000
+    expect(agg.getSnapshot().refreshDegraded).toBe(true)
+  })
+
+  it('thrown-cycle variant: fast-throwing cycle after a hung over-ceiling success still serves degraded', async () => {
+    const repo = makeRepo({node_id: 'NODE_MONO2', owner: 'org', name: 'repo-mono2'})
+    let t = 10_000
+    const graphql = vi.fn().mockImplementation(async () => {
+      t += 60
+      return makeGraphqlResponse()
+    })
+    // Per-repo graphql failures are contained per-repo (rm-112); the OUTER
+    // catch — the belt-and-braces path this test exercises — is reached via
+    // a thrown enumeration (e.g. the app client blowing up before any
+    // deadline conversion).
+    const enumerate = vi.fn()
+      .mockResolvedValueOnce(makeEnumerateResult([repo]))
+      .mockRejectedValueOnce(new Error('network refused instantly'))
+    const deps = makeDeps({
+      now: () => t,
+      watchdogCeilingMs: 50,
+      enumerate,
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({publicRepos: [makePublicRepo({node_id: 'NODE_MONO2', owner: 'org', name: 'repo-mono2'})]}))),
+      graphqlQueryForInstallation: graphql,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    expect(agg.getSnapshot().refreshDegraded).toBe(true)
+
+    t += 120
+    await agg.refresh() // thrown cycle: contained — logged, stale-marked, ring-fed
+    expect(agg.getSnapshot().staleBanner).toBe(true)
+    expect(agg.getSnapshot().refreshDegraded).toBe(true)
+  })
+
+  it('degradation heals EXACTLY on success: fresh under-ceiling refresh clears degraded (and the age key)', async () => {
+    const repo = makeRepo({node_id: 'NODE_MONO3', owner: 'org', name: 'repo-mono3'})
+    let t = 10_000
+    const graphql = vi.fn()
+      .mockImplementationOnce(async () => {
+        t += 60
+        return makeGraphqlResponse()
+      })
+      .mockImplementation(async () => {
+        t += 5
+        return makeGraphqlResponse()
+      })
+    const enumerate = vi.fn()
+      .mockResolvedValueOnce(makeEnumerateResult([repo]))
+      .mockRejectedValueOnce(new Error('network refused instantly'))
+      .mockResolvedValue(makeEnumerateResult([repo]))
+    const deps = makeDeps({
+      now: () => t,
+      watchdogCeilingMs: 50,
+      enumerate,
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({publicRepos: [makePublicRepo({node_id: 'NODE_MONO3', owner: 'org', name: 'repo-mono3'})]}))),
+      graphqlQueryForInstallation: graphql,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    expect(agg.getSnapshot().refreshDegraded).toBe(true)
+    t += 120
+    await agg.refresh() // thrown cycle: contained
+    expect(agg.getSnapshot().refreshDegraded).toBe(true)
+
+    // Recovery: fast successful walk — fresh refreshedAt, duration 5 < 50
+    await agg.refresh()
+    const healed = agg.getSnapshot()
+    expect(healed.staleBanner).toBe(false)
+    expect(healed.refreshDurationMs).toBe(5)
+    expect(healed.refreshDegraded).toBe(false)
+  })
+
+  it('cold start: served snapshot degrades once an attempt ran past the ceiling with no success ever', async () => {
+    let t = 1_000
+    const deps = makeDeps({
+      now: () => t,
+      watchdogCeilingMs: 50,
+      enumerate: vi.fn().mockImplementation(async () => {
+        t += 80
+        throw new Error('upstream wedged then refused')
+      }),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({publicRepos: [makePublicRepo({node_id: 'NODE_MONO4', owner: 'org', name: 'repo-mono4'})]}))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse()),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    expect(agg.getSnapshot().refreshDegraded).toBe(false) // nothing attempted yet
+    await agg.refresh()
+    const cold = agg.getSnapshot()
+    expect(cold.staleBanner).toBe(true)
+    expect(cold.refreshedAt).toBe(null)
+    expect(cold.refreshDegraded).toBe(true) // cold latch: attempt ran 80 > 50, no success ever
+  })
+
+  it('rm-107: refresh failures feed the system-status ring (refresh + metadata phases)', async () => {
+    resetSystemStatusForTests()
+    const deps = makeDeps({
+      watchdogCeilingMs: 50_000,
+      enumerate: vi.fn().mockRejectedValueOnce(new Error('ring feed marker: thrown cycle')),
+      readMetadata: vi.fn()
+        .mockResolvedValueOnce(err(new MetadataUnavailableError('ring feed marker: metadata down')))
+        .mockResolvedValue(ok(makeMetadataResult({publicRepos: [makePublicRepo({node_id: 'NODE_FEED', owner: 'org', name: 'repo-feed'})]}))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse()),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh() // metadata fail-closed — resolves, records phase 'metadata'
+    await agg.refresh() // enumeration throws — outer catch records phase 'refresh'
+
+    const view = composeSystemStatus({refreshedAt: null, staleBanner: true, refreshDurationMs: null, refreshDegraded: false})
+    const phases = view.lastRefreshFailures.map(failure => failure.phase)
+    expect(phases).toContain('metadata')
+    expect(phases).toContain('refresh')
+    expect(view.lastRefreshFailures.some(failure => failure.detail.includes('ring feed marker: metadata down'))).toBe(true)
+    expect(view.lastRefreshFailures.some(failure => failure.detail.includes('ring feed marker: thrown cycle'))).toBe(true)
   })
 })
 

@@ -9,6 +9,9 @@ import {randomUUID} from 'node:crypto'
 import {mkdirSync} from 'node:fs'
 import {dirname} from 'node:path'
 import {DatabaseSync} from 'node:sqlite'
+// rm-107: system-status registration (src/status/compose.ts references this
+// module's types only — the value import points one way, so no cycle).
+import {registerListenerStoreStatusSource, unregisterListenerStoreStatusSource} from '../status/compose.ts'
 
 export interface ListenerStore {
   insert: (input: IngestMessage) => {id: string; receivedAt: string}
@@ -17,6 +20,22 @@ export interface ListenerStore {
   ackAll: () => number
   prune: () => void
   close: () => void
+  /** rm-107: process depth for the /api/monitoring system block (see {@link ListenerStoreStats}). */
+  stats: () => ListenerStoreStats
+}
+
+/**
+ * rm-107: process-local depth snapshot consumed by the system-status
+ * composer (src/status/compose.ts reads this shape STRUCTURALLY via its own
+ * ListenerStoreStatusSource interface — the composer never imports a store
+ * instance, only the registry). Same process-local honesty as prunedTotal:
+ * counts describe THIS process, a restart legitimately resets them.
+ */
+export interface ListenerStoreStats {
+  readonly totalMessages: number
+  readonly unreadCount: number
+  readonly prunedTotal: number
+  readonly oldestReceivedAt: string | null
 }
 
 /** Raw row shape as read back from `node:sqlite`. */
@@ -107,6 +126,7 @@ export function createListenerStore(dbPath: string): ListenerStore {
     )
   `)
   const pruneAgeStmt = db.prepare('DELETE FROM messages WHERE received_at < ?')
+  const oldestReceivedAtStmt = db.prepare('SELECT received_at FROM messages ORDER BY received_at ASC LIMIT 1')
 
   // rm-244-class visibility: cumulative count of messages evicted by the
   // retention policy since the store was created. In-memory by design — it
@@ -201,9 +221,47 @@ export function createListenerStore(dbPath: string): ListenerStore {
     prunedTotal += Number(ageResult.changes)
   }
 
-  function close(): void {
+  /**
+   * rm-107: depth snapshot for the system-status surface. Reuses the existing
+   * count statements (same SQL, no new query shape) plus one ordered LIMIT 1
+   * probe for the oldest retained row — 500-row cap keeps all three O(1)-ish
+   * and the operator surface is rate-limited anyway.
+   */
+  function stats(): ListenerStoreStats {
+    const totalRow = pruneCountStmt.get() as unknown as {n: number}
+    const unreadRow = countUnreadStmt.get() as unknown as {n: number}
+    const oldestRow = oldestReceivedAtStmt.get() as unknown as {received_at: string} | undefined
+    return {
+      totalMessages: totalRow.n,
+      unreadCount: unreadRow.n,
+      prunedTotal,
+      oldestReceivedAt: oldestRow?.received_at ?? null,
+    }
+  }
+
+  function close(this: void, store: ListenerStore): void {
+    // rm-107: unregister from the status composer BEFORE closing the handle —
+    // a composing /api/monitoring read after this must see "no store"
+    // (null block), never a throwing stats() on a closed database.
+    unregisterListenerStoreStatusSource(store)
     db.close()
   }
 
-  return {insert, list, ack, ackAll, prune, close}
+  const store: ListenerStore = {
+    insert,
+    list,
+    ack,
+    ackAll,
+    prune,
+    close: () => close(store),
+    stats,
+  }
+  // rm-107: self-register with the process-level status composer. server.ts
+  // (the store's creator) is deliberately untouched — it is this cycle's
+  // most contested seam — so the store attaches itself where the route can
+  // read it. Last-registered-wins is the documented registry contract
+  // (production creates exactly one store; tests reset via
+  // resetSystemStatusForTests in src/status/compose.ts).
+  registerListenerStoreStatusSource(store)
+  return store
 }

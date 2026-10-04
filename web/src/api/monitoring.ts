@@ -30,12 +30,42 @@ export interface MonitoringRepo {
   readonly status: MonitoringRepoStatus
 }
 
+export interface MonitoringSystemStatus {
+  readonly composedAt: number
+  readonly snapshot: {
+    readonly refreshedAt: number | null
+    readonly ageMs: number | null
+    readonly staleBanner: boolean
+    readonly refreshDurationMs: number | null
+    readonly refreshDegraded: boolean
+  }
+  readonly rateLimit: {
+    readonly primaryCount: number
+    readonly secondaryCount: number
+    readonly lastEventAt: number | null
+    readonly lastRetryAfterSeconds: number | null
+  }
+  readonly listenerStore: {
+    readonly totalMessages: number
+    readonly unreadCount: number
+    readonly prunedTotal: number
+    readonly oldestEventAgeSeconds: number | null
+  } | null
+  readonly lastRefreshFailures: readonly {readonly phase: string; readonly at: number; readonly detail: string}[]
+}
+
 export interface MonitoringData {
   readonly repos: readonly MonitoringRepo[]
   readonly staleBanner: boolean
   readonly driftCount: number
   readonly enumerationIncomplete: number | null
   readonly refreshedAt: number | null
+  /**
+   * rm-107: server-composed system block (snapshot freshness, rate-limit
+   * counters, listener-store depth, recent refresh failures). Optional at the
+   * seam — an older payload without it still parses, the view hides the strip.
+   */
+  readonly system?: MonitoringSystemStatus
 }
 
 export type FetchMonitoringResult =
@@ -44,6 +74,77 @@ export type FetchMonitoringResult =
 
 function isPlainObject(val: unknown): val is Record<string, unknown> {
   return typeof val === 'object' && val !== null && !Array.isArray(val)
+}
+
+const isNumberOrNull = (val: unknown): val is number | null => val === null || typeof val === 'number'
+
+/**
+ * rm-107: strict parse of the /api/monitoring `system` block.
+ *
+ * Optional-field discipline: ABSENT → undefined (older payload tolerated);
+ * PRESENT but malformed → undefined, which fetchMonitoring turns into a
+ * contract-drift failure — a half-parsed system block must never render as
+ * "system healthy". Nested optionality: `listenerStore: null` is the
+ * server's explicit "no store in this process" (never a drift).
+ */
+function parseSystemStatus(raw: unknown): MonitoringSystemStatus | undefined {
+  if (!isPlainObject(raw)) return undefined
+  const {composedAt, snapshot, rateLimit, listenerStore, lastRefreshFailures} = raw
+  if (typeof composedAt !== 'number') return undefined
+  if (!isPlainObject(snapshot) || !isPlainObject(rateLimit) || !Array.isArray(lastRefreshFailures)) return undefined
+  if (!isNumberOrNull(snapshot.refreshedAt) || !isNumberOrNull(snapshot.ageMs)) return undefined
+  if (typeof snapshot.staleBanner !== 'boolean' || !isNumberOrNull(snapshot.refreshDurationMs)) return undefined
+  if (typeof snapshot.refreshDegraded !== 'boolean') return undefined
+  if (
+    typeof rateLimit.primaryCount !== 'number' ||
+    typeof rateLimit.secondaryCount !== 'number' ||
+    !isNumberOrNull(rateLimit.lastEventAt) ||
+    !isNumberOrNull(rateLimit.lastRetryAfterSeconds)
+  ) {
+    return undefined
+  }
+  let store: MonitoringSystemStatus['listenerStore'] = null
+  if (listenerStore !== null && listenerStore !== undefined) {
+    if (!isPlainObject(listenerStore)) return undefined
+    if (
+      typeof listenerStore.totalMessages !== 'number' ||
+      typeof listenerStore.unreadCount !== 'number' ||
+      typeof listenerStore.prunedTotal !== 'number' ||
+      !isNumberOrNull(listenerStore.oldestEventAgeSeconds)
+    ) {
+      return undefined
+    }
+    store = {
+      totalMessages: listenerStore.totalMessages,
+      unreadCount: listenerStore.unreadCount,
+      prunedTotal: listenerStore.prunedTotal,
+      oldestEventAgeSeconds: listenerStore.oldestEventAgeSeconds,
+    }
+  }
+  const failures: {phase: string; at: number; detail: string}[] = []
+  for (const entry of lastRefreshFailures) {
+    if (!isPlainObject(entry)) return undefined
+    if (typeof entry.phase !== 'string' || typeof entry.at !== 'number' || typeof entry.detail !== 'string') return undefined
+    failures.push({phase: entry.phase, at: entry.at, detail: entry.detail})
+  }
+  return {
+    composedAt,
+    snapshot: {
+      refreshedAt: snapshot.refreshedAt,
+      ageMs: snapshot.ageMs,
+      staleBanner: snapshot.staleBanner,
+      refreshDurationMs: snapshot.refreshDurationMs,
+      refreshDegraded: snapshot.refreshDegraded,
+    },
+    rateLimit: {
+      primaryCount: rateLimit.primaryCount,
+      secondaryCount: rateLimit.secondaryCount,
+      lastEventAt: rateLimit.lastEventAt,
+      lastRetryAfterSeconds: rateLimit.lastRetryAfterSeconds,
+    },
+    listenerStore: store,
+    lastRefreshFailures: failures,
+  }
 }
 
 function parseFailingCheckDetail(item: unknown): FailingCheckDetail | null {
@@ -137,6 +238,11 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
     if (data.refreshedAt !== null && typeof data.refreshedAt !== 'number') {
       return {ok: false, reason: 'contract-drift'}
     }
+    // rm-107: the system block is optional at the wire, strict when present.
+    const system = parseSystemStatus(data.system)
+    if (data.system !== undefined && system === undefined) {
+      return {ok: false, reason: 'contract-drift'}
+    }
 
     const repos: MonitoringRepo[] = []
     for (const item of data.repos) {
@@ -153,6 +259,7 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
         driftCount: data.driftCount,
         enumerationIncomplete: data.enumerationIncomplete,
         refreshedAt: data.refreshedAt,
+        ...(system === undefined ? {} : {system}),
       },
     }
   } catch (err) {

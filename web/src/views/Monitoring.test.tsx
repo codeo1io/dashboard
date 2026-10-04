@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
 import { Monitoring, MONITORING_FETCH_TIMEOUT_MS } from './Monitoring.tsx'
 import * as monitoringApi from '../api/monitoring.ts'
-import type { MonitoringData, MonitoringRepo, MonitoringRepoStatus } from '../api/monitoring.ts'
+import type { MonitoringData, MonitoringRepo, MonitoringRepoStatus, MonitoringSystemStatus } from '../api/monitoring.ts'
 
 vi.mock('../api/monitoring.ts')
 
@@ -245,5 +245,97 @@ describe('Monitoring (rm-192 red-repo drill-down)', () => {
       unmount()
       expect(capturedSignal!.aborted).toBe(true)
     })
+  })
+})
+
+
+describe('Monitoring — system status strip (rm-107)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValue({
+      ok: true,
+      data: makeData()
+    })
+  })
+
+  afterEach(() => {
+    vi.runOnlyPendingTimers()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  const makeSystem = (overrides: Record<string, unknown> = {}): MonitoringSystemStatus => ({
+    composedAt: 1_700_000_000_000,
+    snapshot: {refreshedAt: 1_700_000_000_000, ageMs: 5_000, staleBanner: false, refreshDurationMs: 1_200, refreshDegraded: false},
+    rateLimit: {primaryCount: 2, secondaryCount: 1, lastEventAt: 1_700_000_000_001, lastRetryAfterSeconds: 60},
+    listenerStore: {totalMessages: 3, unreadCount: 1, prunedTotal: 4, oldestEventAgeSeconds: 7200},
+    lastRefreshFailures: [],
+    ...overrides,
+  }) as MonitoringSystemStatus
+
+  async function renderWith(data: MonitoringData) {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({ok: true, data})
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+  }
+
+  it('renders the strip with age, rate limits, store depth, and the degraded marker when degraded', async () => {
+    await renderWith(
+      makeData({
+        system: makeSystem({
+          snapshot: {refreshedAt: 1_700_000_000_000, ageMs: 65_000, staleBanner: true, refreshDurationMs: 1_200, refreshDegraded: true},
+        }),
+      }),
+    )
+    expect(screen.getByTestId('monitoring-system-strip')).toBeInTheDocument()
+    expect(screen.getByTestId('monitoring-system-degraded')).toBeInTheDocument()
+    expect(screen.getByTestId('monitoring-system-stale')).toBeInTheDocument()
+    expect(screen.getByTestId('monitoring-system-age')).toHaveTextContent('Data age 1m ago')
+    expect(screen.getByTestId('monitoring-system-ratelimits')).toHaveTextContent('Rate limits: 2 primary / 1 secondary (last retry-after 60s)')
+    expect(screen.getByTestId('monitoring-system-store')).toHaveTextContent('Listener store: 3 messages / 1 unread / 4 pruned this process')
+    expect(screen.queryByTestId('monitoring-system-failures')).not.toBeInTheDocument()
+  })
+
+  it('renders failure entries (top 3, then a +N more line) from the ring', async () => {
+    await renderWith(
+      makeData({
+        system: makeSystem({
+          lastRefreshFailures: [
+            {phase: 'refresh', at: 1, detail: 'first failure'},
+            {phase: 'metadata', at: 2, detail: 'second failure'},
+            {phase: 'refresh', at: 3, detail: 'third failure'},
+            {phase: 'refresh', at: 4, detail: 'fourth failure'},
+          ],
+        }),
+      }),
+    )
+    const entries = screen.getAllByTestId('monitoring-system-failure')
+    expect(entries).toHaveLength(3)
+    expect(entries[0]).toHaveTextContent('refresh: first failure')
+    expect(entries[1]).toHaveTextContent('metadata: second failure')
+    expect(screen.getByText('+1 more (see server logs)')).toBeInTheDocument()
+  })
+
+  it('renders the not-mounted store line when listenerStore is null', async () => {
+    await renderWith(makeData({system: makeSystem({listenerStore: null})}))
+    expect(screen.getByTestId('monitoring-system-store')).toHaveTextContent('Listener store: not mounted')
+  })
+
+  it('renders NO strip when the payload carries no system block (older payload)', async () => {
+    await renderWith(makeData({}))
+    expect(screen.queryByTestId('monitoring-system-strip')).not.toBeInTheDocument()
+  })
+
+  it('renders never refreshed age label when the process has no successful refresh yet', async () => {
+    await renderWith(
+      makeData({
+        system: makeSystem({
+          snapshot: {refreshedAt: null, ageMs: null, staleBanner: true, refreshDurationMs: null, refreshDegraded: true},
+        }),
+      }),
+    )
+    expect(screen.getByTestId('monitoring-system-age')).toHaveTextContent('Data age never refreshed')
   })
 })

@@ -19,6 +19,10 @@ import {retry} from '@octokit/plugin-retry'
 import {throttling} from '@octokit/plugin-throttling'
 
 import {logger, sanitizeErrorMessage} from '../logger.ts'
+// rm-107: compose-side rate-limit counter feed (src/status/compose.ts
+// references this module's types only — the value import points one way,
+// so no cycle).
+import {recordRateLimitEvent} from '../status/compose.ts'
 
 // ---------------------------------------------------------------------------
 // Throttled + retrying Octokit class
@@ -93,6 +97,15 @@ export interface AppClientOptions {
   readonly requestTimeoutMs?: number
   /** Override the GitHub API base URL. Production leaves this unset (api.github.com); tests point it at a local fixture server. */
   readonly baseUrl?: string
+  /**
+   * rm-107: rate-limit event sink for the /api/monitoring system block.
+   * Receives one event per primary/secondary rate-limit hit this client
+   * sees (counters + last-event metadata, no URLs or tokens). Production
+   * leaves this unset — events flow to the process-level compose registry
+   * (src/status/compose.ts); tests inject their own sink to assert wiring
+   * without polluting the registry.
+   */
+  readonly onRateLimitEvent?: (event: {secondary: boolean; retryAfterSeconds: number}) => void
 }
 
 export interface DashboardAppClient {
@@ -130,6 +143,11 @@ export interface DashboardAppClient {
 export function createDashboardAppClient(options: AppClientOptions): DashboardAppClient {
   const {appId, privateKey, requestTimeoutMs, baseUrl} = options
   const timeoutMs = requestTimeoutMs ?? GITHUB_REQUEST_TIMEOUT_MS
+  // rm-107: default the rate-limit event sink to the process-level compose
+  // registry (src/status/compose.ts). An injected override fully REPLACES it
+  // — tests stay isolated from the shared registry, production needs no
+  // wiring (the client self-feeds, server.ts is untouched).
+  const emitRateLimitEvent = options.onRateLimitEvent ?? recordRateLimitEvent
 
   const octokit = new ThrottledOctokit({
     authStrategy: createAppAuth,
@@ -149,10 +167,12 @@ export function createDashboardAppClient(options: AppClientOptions): DashboardAp
     throttle: {
       onRateLimit: (retryAfter: number, opts: Record<string, unknown>, _octokit: unknown, retryCount: number) => {
         logger.warning('GitHub rate limit hit', {retryAfter, url: opts.url, retryCount})
+        emitRateLimitEvent({secondary: false, retryAfterSeconds: retryAfter})
         return retryCount < 2
       },
       onSecondaryRateLimit: (retryAfter: number, opts: Record<string, unknown>, _octokit: unknown) => {
         logger.warning('GitHub secondary rate limit hit', {retryAfter, url: opts.url})
+        emitRateLimitEvent({secondary: true, retryAfterSeconds: retryAfter})
         return false
       },
     },

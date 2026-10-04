@@ -1,5 +1,5 @@
 import {useState} from 'react'
-import {fetchMonitoring, type FetchMonitoringResult, type MonitoringData, type MonitoringRepo} from '../api/monitoring.ts'
+import {fetchMonitoring, type FetchMonitoringResult, type MonitoringData, type MonitoringRepo, type MonitoringSystemStatus} from '../api/monitoring.ts'
 import {useBoundedPoll} from '../hooks/useBoundedPoll.ts'
 
 type ViewState =
@@ -88,6 +88,66 @@ export function Monitoring() {
   )
 }
 
+function systemAgeLabel(ageMs: number | null): string {
+  if (ageMs === null) return 'never refreshed'
+  if (ageMs < 1_000) return 'under 1s ago'
+  if (ageMs < 60_000) return `${Math.floor(ageMs / 1_000)}s ago`
+  if (ageMs < 3_600_000) return `${Math.floor(ageMs / 60_000)}m ago`
+  return `${Math.floor(ageMs / 3_600_000)}h ago`
+}
+
+/**
+ * rm-107: one-line operator truth about the serving pipeline — snapshot
+ * freshness, degradation, rate-limit pressure, listener depth and the most
+ * recent refresh failures. Renders ONLY from the server-composed system
+ * block (ageMs is server-computed — never re-derived from the client clock);
+ * absent block (older payload) renders nothing.
+ */
+function SystemStatusStrip({system}: {system: MonitoringSystemStatus | undefined}) {
+  if (system === undefined) return null
+  const failures = system.lastRefreshFailures.slice(0, 3)
+  const hiddenFailures = system.lastRefreshFailures.length - failures.length
+  return (
+    <section data-testid="monitoring-system-strip" className="operator-empty-state" role="status" style={{alignItems: 'flex-start'}}>
+      <p className="operator-empty-title" style={{fontSize: '0.95rem'}}>
+        System status
+        {system.snapshot.refreshDegraded ? (
+          <span data-testid="monitoring-system-degraded" style={{color: 'var(--status-error)'}}>
+            {' '}- refresh pipeline degraded
+          </span>
+        ) : null}
+      </p>
+      <p className="operator-empty-desc" style={{display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)'}}>
+        <span data-testid="monitoring-system-age">Data age {systemAgeLabel(system.snapshot.ageMs)}</span>
+        {system.snapshot.staleBanner ? <span data-testid="monitoring-system-stale">stale banner on</span> : null}
+        <span data-testid="monitoring-system-ratelimits">
+          Rate limits: {system.rateLimit.primaryCount} primary / {system.rateLimit.secondaryCount} secondary
+          {system.rateLimit.lastRetryAfterSeconds !== null ? ` (last retry-after ${system.rateLimit.lastRetryAfterSeconds}s)` : ''}
+        </span>
+        {system.listenerStore !== null ? (
+          <span data-testid="monitoring-system-store">
+            Listener store: {system.listenerStore.totalMessages} messages / {system.listenerStore.unreadCount} unread
+            {system.listenerStore.prunedTotal > 0 ? ` / ${system.listenerStore.prunedTotal} pruned this process` : ''}
+            {system.listenerStore.oldestEventAgeSeconds !== null ? ` / oldest ${systemAgeLabel(system.listenerStore.oldestEventAgeSeconds * 1_000)}` : ''}
+          </span>
+        ) : (
+          <span data-testid="monitoring-system-store">Listener store: not mounted</span>
+        )}
+      </p>
+      {failures.length > 0 ? (
+        <ul data-testid="monitoring-system-failures" className="operator-empty-desc" style={{marginTop: 0, listStyle: 'disc inside'}}>
+          {failures.map(failure => (
+            <li key={`${failure.phase}-${failure.at}`} data-testid="monitoring-system-failure">
+              {failure.phase}: {failure.detail}
+            </li>
+          ))}
+          {hiddenFailures > 0 ? <li>+{hiddenFailures} more (see server logs)</li> : null}
+        </ul>
+      ) : null}
+    </section>
+  )
+}
+
 function MonitoringBoard({data}: {data: MonitoringData}) {
   const redRepos = data.repos.filter(repo => repo.status.rollupState === 'red' || repo.status.failingChecks > 0)
   const remaining = data.repos.length - redRepos.length
@@ -100,6 +160,8 @@ function MonitoringBoard({data}: {data: MonitoringData}) {
           Data is stale — showing the last known state. Counts may be outdated.
         </div>
       )}
+
+      <SystemStatusStrip system={data.system} />
 
       {redRepos.length === 0 ? (
         <div data-testid="monitoring-all-clear" className="operator-empty-state">
