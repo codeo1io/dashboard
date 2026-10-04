@@ -21,6 +21,7 @@
 import {createHash} from 'node:crypto'
 import process from 'node:process'
 
+import {collectDeprecationFindings, WATCHED_QUERY_TYPES} from '../src/github/query-deprecation.ts'
 import {REPO_STATUS_QUERY_REGISTRY} from '../src/github/query-registry.ts'
 
 const rawRepository = process.env.GITHUB_REPOSITORY ?? ''
@@ -99,6 +100,43 @@ async function main(): Promise<void> {
   console.log(`canary: target ${owner}/${name} — ${REPO_STATUS_QUERY_REGISTRY.length} registered template(s)`)
   for (const entry of REPO_STATUS_QUERY_REGISTRY) {
     await runTemplate(token, entry)
+  }
+
+  // rm-624: deprecation watch. Executing green (above) proves the queries
+  // run TODAY; this proves GitHub has not yet deprecated a name they
+  // reference — the earliest signal before an eventual field removal breaks
+  // the aggregator. Introspection is read-only metadata and batches the five
+  // watched types at 2 __type fields per query (GitHub's live cap). The
+  // watch module takes an injected fetch, so bind the token here the same
+  // way runTemplate does (it must not read the token itself).
+  const authedFetch: typeof fetch = async (url, init) =>
+    fetch(url, {
+      ...(init ?? {}),
+      headers: {
+        ...(init?.headers ?? {}),
+        authorization: `Bearer ${token}`,
+        'user-agent': 'dashboard-graphql-canary',
+      },
+    })
+  try {
+    const findings = await collectDeprecationFindings(authedFetch, REPO_STATUS_QUERY_REGISTRY)
+    if (findings.length > 0) {
+      for (const finding of findings) {
+        console.error(
+          `canary: deprecation — ${finding.type}.${finding.field} is deprecated` +
+          `${finding.reason === null ? '' : ` ("${finding.reason}")`}` +
+          ` and the name is referenced by: ${finding.referencedBy.join(', ')}`,
+        )
+      }
+      console.error('canary: deprecation watch FAILED — a registered template references a name GitHub has deprecated (rm-624)')
+      process.exit(1)
+    }
+    console.log(
+      `canary: deprecation watch OK — ${WATCHED_QUERY_TYPES.length} watched type(s), zero deprecated names referenced (rm-624)`,
+    )
+  } catch (error) {
+    console.error(`canary: deprecation watch could not introspect — ${error instanceof Error ? error.message : String(error)}`)
+    process.exit(1)
   }
 }
 

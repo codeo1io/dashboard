@@ -1,5 +1,9 @@
-import type {IngestMessage} from '../src/listener/contract.ts'
-import {beforeEach, describe, expect, it, vi} from 'vitest'
+import type {IngestMessage, ListenerLink} from '../src/listener/contract.ts'
+import {mkdtempSync, rmSync} from 'node:fs'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
+import {DatabaseSync} from 'node:sqlite'
+import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {createListenerStore, type ListenerStore} from '../src/listener/store.ts'
 
 function makeMessage(overrides: Partial<IngestMessage> = {}): IngestMessage {
@@ -167,5 +171,116 @@ describe('listener store', () => {
 
   it('close does not throw', () => {
     expect(() => store.close()).not.toThrow()
+  })
+})
+
+// rm-187: the links column is TEXT NOT NULL and only ever written via
+// JSON.stringify, but schema drift, a truncated write, or a manual edit can
+// put a corrupt cell in one row — and that single row must degrade ITSELF
+// (empty links, other fields intact), never 500 the whole endpoint. These
+// tests seed corruption through a SECOND connection to the same file-backed
+// database (the store API has no way to write a bad cell, by design) and were
+// written RED against the unguarded `JSON.parse(row.links)` at
+// src/listener/store.ts:51.
+describe('listener store — guarded links cell (rm-187)', () => {
+  let dir: string
+  let dbPath: string
+  let fileStore: ListenerStore
+
+  /** Corrupts one row's links cell through a second SQLite connection. */
+  function corruptLinksCell(messageId: string, value: string): void {
+    const db = new DatabaseSync(dbPath)
+    db.prepare('UPDATE messages SET links = ? WHERE id = ?').run(value, messageId)
+    db.close()
+  }
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'listener-rm187-'))
+    dbPath = join(dir, 'messages.db')
+    fileStore = createListenerStore(dbPath)
+  })
+
+  afterEach(() => {
+    fileStore.close()
+    rmSync(dir, {recursive: true, force: true})
+  })
+
+  it('a non-JSON links cell degrades to an empty list and never throws; healthy rows stay intact', () => {
+    const bad = fileStore.insert(makeMessage({dedupeKey: 'corrupt-1', title: 'corrupt row'}))
+    const good = fileStore.insert(
+      makeMessage({
+        dedupeKey: 'healthy-1',
+        title: 'healthy row',
+        links: [{label: 'workflow run', url: 'https://github.com/x/y/actions/runs/1'}],
+      }),
+    )
+    corruptLinksCell(bad.id, '{"truncated')
+
+    const {messages, unreadCount} = fileStore.list({})
+
+    expect(messages).toHaveLength(2)
+    const degraded = messages.find(m => m.id === bad.id)
+    const healthy = messages.find(m => m.id === good.id)
+    expect(degraded?.links).toEqual([]) // degraded data, not a throw
+    expect(degraded?.title).toBe('corrupt row') // other row fields intact
+    expect(healthy?.links).toEqual([{label: 'workflow run', url: 'https://github.com/x/y/actions/runs/1'}])
+    expect(unreadCount).toBe(2) // both rows still counted
+  })
+
+  it('an empty-string links cell degrades the same way', () => {
+    const {id} = fileStore.insert(makeMessage({dedupeKey: 'empty-cell'}))
+    corruptLinksCell(id, '')
+
+    const {messages} = fileStore.list({})
+    expect(messages[0]?.links).toEqual([])
+  })
+
+  it('a non-array JSON links cell degrades the same way (valid JSON, wrong shape)', () => {
+    const {id} = fileStore.insert(makeMessage({dedupeKey: 'object-cell'}))
+    corruptLinksCell(id, '{"label":"x","url":"https://x"}')
+
+    const {messages} = fileStore.list({})
+    expect(messages[0]?.links).toEqual([])
+  })
+
+  it('a JSON array of non-link entries degrades the same way (wrong element shape)', () => {
+    const {id} = fileStore.insert(makeMessage({dedupeKey: 'junk-elements'}))
+    corruptLinksCell(id, '[1,2,3]')
+
+    const {messages} = fileStore.list({})
+    expect(messages[0]?.links).toEqual([])
+  })
+
+  it('degradation is observable: degradedLinksCount counts affected rows once, not once per read', () => {
+    const bad = fileStore.insert(makeMessage({dedupeKey: 'counted-once'}))
+    corruptLinksCell(bad.id, 'not json at all')
+
+    expect(fileStore.list({}).degradedLinksCount).toBe(1)
+    expect(fileStore.list({}).degradedLinksCount).toBe(1) // polling must not inflate the count
+    expect(fileStore.list({unreadOnly: true}).degradedLinksCount).toBe(1)
+
+    const healthy = createListenerStore(join(dir, 'fresh.db'))
+    expect(healthy.list({}).degradedLinksCount).toBe(0) // healthy store: zero
+    healthy.close()
+  })
+
+  it('parseLinksCell seam: null/undefined variants (SQL-unreachable — column is NOT NULL) degrade, valid cells pass through', async () => {
+    const {parseLinksCell} = await import('../src/listener/store.ts')
+    expect(parseLinksCell(null).degraded).toBe(true)
+    expect(parseLinksCell(undefined).degraded).toBe(true)
+    expect(parseLinksCell('').degraded).toBe(true)
+    expect(parseLinksCell('{bad').degraded).toBe(true)
+    expect(parseLinksCell('null').degraded).toBe(true)
+    expect(parseLinksCell('{"a":1}').degraded).toBe(true)
+    expect(parseLinksCell('[1]').degraded).toBe(true)
+
+    const okEmpty = parseLinksCell('[]')
+    expect(okEmpty.degraded).toBe(false)
+    expect(okEmpty.links).toEqual([])
+
+    const links: readonly ListenerLink[] = [{label: 'run', url: 'https://github.com/a/b'}]
+    const okLinks = parseLinksCell(JSON.stringify(links))
+    expect(okLinks.degraded).toBe(false)
+    expect(okLinks.links).toEqual(links)
   })
 })

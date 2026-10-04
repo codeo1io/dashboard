@@ -46,6 +46,14 @@ export interface MessagesResponse {
    * to see that). Count only; no message content survives eviction.
    */
   readonly prunedCount: number
+  /**
+   * Messages currently served with a degraded (unparseable) links cell — the
+   * row is served with `links: []` and its other fields intact, and the
+   * server logs one warning per affected row (rm-187: silent data loss must
+   * be observable). Process-lifetime high-water count of affected row ids,
+   * deduped by id; a poll cannot inflate it.
+   */
+  readonly degradedLinksCount: number
 }
 
 const KIND_RE = /^[a-z0-9-]{1,64}$/
