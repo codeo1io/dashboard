@@ -74,6 +74,22 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
 
     // Store state in a short-TTL HttpOnly cookie scoped to /auth (only read on /auth/callback).
     // CSRF check compares query param state vs cookie state (exact match).
+    //
+    // Secure attribution (rm-604, decision-of-record 2026-10-04, branch (b)):
+    // trust BOTH the request scheme AND x-forwarded-proto — deliberately
+    // header-trusting, deliberately NOT env-gated. This is a single-operator
+    // dashboard deployed behind a TLS-terminating reverse proxy: without XFP
+    // trust, the proxy deployment silently loses the Secure flag. The
+    // asymmetry vs rm-129 (RATE_LIMIT_TRUSTED_PROXY must be opt-in because
+    // XFF-based rate-limit keying is client-spoofable when the proxy merely
+    // APPENDS) is intentional: here a spoofed 'x-forwarded-proto: https' from
+    // a plain-HTTP direct client can only ADD Secure to a cookie that is
+    // already HttpOnly + SameSite=Lax — it cannot strip protection or mint
+    // auth; the attack requires a MITM who could already read the response.
+    // Behind an appending proxy the residual risk is accepted: the worst
+    // outcome is a Secure cookie over that same already-intercepted hop.
+    // Deployment requirement documented in README (Configuration): use an
+    // OVERWRITING proxy or serve direct TLS.
     setCookie(c, STATE_COOKIE_NAME, state, {
       httpOnly: true,
       secure: c.req.url.startsWith('https://') || c.req.header('x-forwarded-proto') === 'https',
@@ -149,6 +165,13 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
     }
 
     // Issue session cookie
+    //
+    // Secure attribution mirrors the /auth/login state cookie exactly (same
+    // rm-604 branch-(b) decision-of-record — see the /login comment above):
+    // request scheme OR x-forwarded-proto === 'https'. The two sites MUST NOT
+    // drift apart: a proxy deployment where the session cookie loses Secure
+    // while the state cookie kept it would ship the long-lived credential
+    // over the plaintext hop while only protecting the short-TTL one.
     const sessionValue = sessionManager.sign(login)
     setCookie(c, SESSION_COOKIE_NAME, sessionValue, {
       httpOnly: true,

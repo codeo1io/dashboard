@@ -16,6 +16,12 @@ jobs:
     # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
     # at the rm-139 Node-26 window (2026-10-28).
     runs-on: ubuntu-24.04
+    # rm-603 (2026-10-04): bounded so a wedged analysis can never hold a runner
+    # indefinitely. Sized from the last 30 successful runs (gh api): typical
+    # 30-38s, worst observed 474s (7.9m) — 15 gives ~1.9x headroom over the
+    # worst and matches visual.yaml's 15-minute ceiling, the nearest house
+    # precedent for a scheduled single-job analysis workflow.
+    timeout-minutes: 15
     permissions:
       contents: read
       security-events: write

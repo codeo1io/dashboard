@@ -14,6 +14,12 @@ jobs:
     # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
     # at the rm-139 Node-26 window (2026-10-28).
     runs-on: ubuntu-24.04
+    # rm-603 (2026-10-04): bounded so a wedged review can never hold a runner
+    # indefinitely. Sized from the last 30 successful runs (gh api): typical
+    # 6-10s, worst observed 275s (4.6m) — 10 gives ~2.2x headroom over the
+    # worst and matches the audit/canary/base-drift/upstream-drift 10-minute
+    # house ceiling for single-step scheduled checks.
+    timeout-minutes: 10
     steps:
       - name: Dependency Review
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
