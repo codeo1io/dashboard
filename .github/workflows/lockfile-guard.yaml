@@ -1,0 +1,62 @@
+# Wall-family armor (2026-10-05, run cfa9f94b cycle 3 unfreeze batch B4;
+# content-adopted from sibling run 3570419605cb's uncommitted B4, which
+# itself content-adopted from run a2def4ce34dc; on main the wall's ledger
+# anchor is rm-285): the
+# 3-second lockfile-consistency gate — the missing pre-install check that
+# would have caught the 2026-10-04 1e1e2f5 break at merge time (an upstream
+# merge rode upstream's pnpm-lock.yaml in against the fork's
+# pnpm-workspace.yaml floors; every install-bearing workflow then died ~1 min
+# into Setup with ERR_PNPM_LOCKFILE_CONFIG_MISMATCH and 4 of 5 push workflows
+# sat red on main for hours).
+#
+# `pnpm install --frozen-lockfile --lockfile-only` resolves and validates the
+# lockfile WITHOUT installing node_modules: ~1 s on the cured tree (933 ms
+# measured 2026-10-05) and red with the exact CONFIG_MISMATCH on divergence
+# (reproduced on the pre-cure blob the same day). It must run BEFORE any real
+# install — a vitest-based guard is chicken-and-egg (the tests need the very
+# install this gate protects), and the setup composite cannot host it (its
+# whole job is to run the install). pnpm comes from package.json's
+# packageManager field via pnpm/action-setup — the same single pin source the
+# composite uses; no Node pin is needed because no project code executes.
+# The job is also the required-check context the rm-116 ruleset keys on:
+# keep the 'Lockfile Guard' name stable if this file is ever edited.
+name: Lockfile Guard
+
+on:
+  pull_request:
+    branches: [main, 'conductor/ci-base-**']
+    types: [opened, ready_for_review, reopened, synchronize]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  lockfile-guard:
+    name: Lockfile Guard
+    # rm-188-era pin (2026-09-25): ubuntu-24.04, not ubuntu-latest — ubuntu-26.04
+    # images are published while the alias still maps to 24.04; re-evaluate at
+    # the rm-139 Node-26 window (2026-10-28).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: ⤵ Checkout Branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm (version from packageManager)
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+      # The gate itself. Runs before any install by construction — nothing
+      # above installs. See the file header for why it cannot live in the
+      # setup composite or behind vitest.
+      - name: 🔒 Lockfile consistency
+        run: pnpm install --frozen-lockfile --lockfile-only
+        shell: bash -Eeuo pipefail {0}
