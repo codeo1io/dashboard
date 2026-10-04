@@ -22,5 +22,5 @@
     "isolatedModules": true,
     "skipLibCheck": true
   },
-  "include": ["src", "vite.config.ts", "vitest.config.ts", "../test/operator-runtime.test.ts"]
+  "include": ["src", "vite.config.ts", "vitest.config.ts", "../test/operator-runtime.test.ts", "../test/operator-launch-submit.test.ts"]
 }

@@ -59,6 +59,36 @@ export interface LaunchClient {
  *
  * Returns true if the item is valid, false otherwise.
  */
+/**
+ * rm-628/rm-629: the extracted submit flow (the body of initOperatorLaunch's
+ * listener). All init-time closure state is injected via `deps` so jsdom
+ * tests drive the exact production path — the staleness guard after the
+ * submitLaunch await and the module-minted AbortController registration —
+ * without mounting initOperatorLaunch (whose /static/ dynamic stream import
+ * cannot resolve outside a browser).
+ *
+ * DOM members are structurally opaque (unknown) so this hand-maintained
+ * declaration stays DOM-lib-free — the root tsconfig has no DOM lib.
+ */
+export interface RunLaunchSubmitDeps {
+  readonly client: LaunchClient
+  readonly launchForm: unknown
+  readonly launchError: unknown
+  readonly runIndexList: unknown
+  readonly sharedNoticeEl: unknown
+  readonly onRunLaunched: ((runId: string, card: unknown) => void) | undefined
+  readonly myGeneration: number
+  readonly abortController: {readonly signal: {readonly aborted: boolean}} | undefined
+  readonly opts: unknown
+}
+
+/**
+ * Execute one launch submit. Guards every post-await DOM mutation behind the
+ * generation staleness check (rm-628) and registers the module-minted submit
+ * AbortController so resetLaunchState() aborts the in-flight POST (rm-629).
+ */
+export declare function runLaunchSubmit(deps: RunLaunchSubmitDeps): Promise<void>
+
 export declare function validateRepoItem(item: unknown): boolean
 
 /**

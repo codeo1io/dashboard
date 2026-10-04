@@ -691,3 +691,66 @@ describe('Notifications Component', () => {
     })
   })
 })
+
+describe('storage denial (rm-630)', () => {
+  // Local copies of the meta-tag helpers: the originals are scoped to the
+  // first describe block in this file.
+  let metaTag: HTMLMetaElement | null = null
+  const addMetaTag = () => {
+    metaTag = document.createElement('meta')
+    metaTag.setAttribute('name', 'push-enabled')
+    metaTag.setAttribute('content', 'true')
+    document.head.appendChild(metaTag)
+  }
+  const removeMetaTag = () => {
+    if (metaTag && metaTag.parentNode) {
+      metaTag.parentNode.removeChild(metaTag)
+    }
+    metaTag = null
+  }
+
+  const poisonLocalStorage = (): (() => void) => {
+    const original = Object.getOwnPropertyDescriptor(window, 'localStorage')
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('localStorage is denied', 'SecurityError')
+      },
+    })
+    return () => {
+      if (original) Object.defineProperty(window, 'localStorage', original)
+      else Reflect.deleteProperty(window, 'localStorage')
+    }
+  }
+
+  it('survives a throwing localStorage at the initializer: settings card renders undismissed', async () => {
+    addMetaTag()
+    const restore = poisonLocalStorage()
+    try {
+      await act(async () => {
+        render(<Notifications />)
+      })
+      // The dismissal latch reads as "no stored value" under denial — the card
+      // must render (not crash, not pre-dismiss).
+      expect(screen.getByTestId('notifications-settings')).toBeInTheDocument()
+    } finally {
+      restore()
+      removeMetaTag()
+    }
+  })
+
+  it('dismiss still works under storage denial (best-effort persistence, no throw)', async () => {
+    addMetaTag()
+    const restore = poisonLocalStorage()
+    try {
+      await act(async () => {
+        render(<Notifications />)
+      })
+      fireEvent.click(screen.getByTestId('notifications-card-dismiss'))
+      expect(screen.queryByTestId('notifications-settings')).toBeNull()
+    } finally {
+      restore()
+      removeMetaTag()
+    }
+  })
+})
