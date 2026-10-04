@@ -32,13 +32,23 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --prod
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
-# 2026-09-20: in-image libpcre2-8-0 patch retired — the pinned base digest
-# (0e0ff40, upstream #492) ships libpcre2-8-0 10.42-1+deb12u1, so the fix is
-# absorbed at the base. History: docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md
+# 2026-10-04: in-image libpcre2-8-0 patch RE-INTRODUCED (rm-634 class) — the
+# Release trivy gate enforces CVE-2026-103111 (fixed in 10.42-1+deb12u2), but
+# the pinned digest (0e0ff40) still ships deb12u1: the 2026-09-20 retirement
+# assumed the fix was absorbed at the base, and the tag has not been republished
+# since. Retire this again only when a digest carrying >= deb12u2 can be pinned.
+# History: docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md
 
 FROM node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6
 
 WORKDIR /app
+
+# CVE-2026-103111: upgrade the vulnerable base package in-image (root context
+# required — USER node comes later). --only-upgrade never pulls a new package;
+# lists are dropped afterwards to keep the layer lean.
+RUN apt-get update \
+      && apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0 \
+      && rm -rf /var/lib/apt/lists/*
 
 
 # Copy only the production dependency tree. Package manifests and package-manager
