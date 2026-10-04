@@ -886,6 +886,77 @@ describe('runReconcileSweep', () => {
     expect(result.uiState).not.toBe('subscribed')
   })
 
+  it('rm-600 seam: key-version skew (current v2 vs metadata v1, matching endpoint hash) -> stale_key -> resubscribe', async () => {
+    // The production scenario rm-600 wires: the Gateway rotated its VAPID
+    // key. The browser subscription is live and its endpoint hash matches,
+    // but the metadata still records the OLD keyVersion. With
+    // getCurrentKeyVersion supplied (rm-600: Notifications.tsx now sources it
+    // from the vapid-key cache), derivePushHandoffState must classify
+    // stale_key and reconcile must return the resubscribe action — without
+    // the supplier this row is unreachable and the sweep reports 'subscribed'
+    // with action 'none' forever.
+    const subscription = fakeSubscription('https://push.example/known')
+    const hash = await import('./endpoint-hash.ts').then(m => m.endpointHash(subscription.endpoint))
+    const metadata: PushSubscriptionMetadata = {
+      endpointHash: hash,
+      keyVersion: 'v1',
+      active: true,
+      createdAt: '2026-07-08T00:00:00.000Z',
+      updatedAt: '2026-07-08T00:00:00.000Z',
+    }
+    const pushClient = fakePushClient({
+      getPushSubscriptionMetadata: vi.fn().mockResolvedValue(ok({pushDisabled: false, metadata})),
+    })
+
+    // Skew: the current key version moved past what the subscription was
+    // minted with.
+    const result = await runReconcileSweep(
+      {
+        getLocalSubscription: () => Promise.resolve(subscription),
+        getPermission: () => 'granted',
+        pushClient,
+        getCurrentKeyVersion: () => 'v2',
+        now: () => 1_000_000,
+      },
+      cache,
+    )
+
+    expect(result.action).toBe('resubscribe')
+    expect(result.uiState).toBe('subscribed')
+  })
+
+  it('rm-600 seam: same sweep with getCurrentKeyVersion absent (pre-rm-600 production state) -> subscribed, action none — pins why the wiring is load-bearing', async () => {
+    const subscription = fakeSubscription('https://push.example/known')
+    const hash = await import('./endpoint-hash.ts').then(m => m.endpointHash(subscription.endpoint))
+    const metadata: PushSubscriptionMetadata = {
+      endpointHash: hash,
+      keyVersion: 'v1',
+      active: true,
+      createdAt: '2026-07-08T00:00:00.000Z',
+      updatedAt: '2026-07-08T00:00:00.000Z',
+    }
+    const pushClient = fakePushClient({
+      getPushSubscriptionMetadata: vi.fn().mockResolvedValue(ok({pushDisabled: false, metadata})),
+    })
+
+    // No getCurrentKeyVersion supplier: current key version is unknown, so
+    // the identical skew above classifies as subscribed/none. This is the
+    // exact defect rm-600 fixes at the Notifications.tsx call site — the
+    // seam stays fail-open, the supplier is what was missing.
+    const result = await runReconcileSweep(
+      {
+        getLocalSubscription: () => Promise.resolve(subscription),
+        getPermission: () => 'granted',
+        pushClient,
+        now: () => 1_000_000,
+      },
+      cache,
+    )
+
+    expect(result.action).toBe('none')
+    expect(result.uiState).toBe('subscribed')
+  })
+
   it('regression: fresh load, granted permission, no local subscription, non-matching Gateway metadata -> no auto-register, no Gateway unsubscribe call', async () => {
     // The production incident: hard reload, permission already granted from
     // a prior session, no local PushSubscription, Gateway metadata present

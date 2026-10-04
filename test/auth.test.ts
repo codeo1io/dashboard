@@ -54,6 +54,32 @@ function extractCookieValue(header: string): string {
   return header.split(';')[0]?.split('=').slice(1).join('=') ?? ''
 }
 
+// Helper: cookie attribute tokens (lowercased, name=value segment dropped) — rm-604 pins
+function cookieAttributes(header: string | undefined): string[] {
+  return (header ?? '').split(';').map(part => part.trim().toLowerCase()).slice(1)
+}
+
+/** rm-604: full login+callback flow on ONE topology; returns both responses. */
+async function runOAuthFlow(
+  app: Awaited<ReturnType<typeof buildTestApp>>,
+  loginRequest: () => Response | Promise<Response>,
+  callbackHeaders: Record<string, string>,
+  /** Origin prefix for the callback request ('' = relative/plain http) — must match the login topology. */
+  callbackUrlPrefix = '',
+): Promise<{loginRes: Response; callbackRes: Response}> {
+  const loginRes = await loginRequest()
+  const stateCookieValue = extractCookieValue(getSetCookie(loginRes, 'oauth_state') ?? '')
+  const location = loginRes.headers.get('location') ?? ''
+  const stateParam = new URL(location).searchParams.get('state') ?? ''
+  const callbackRes = await app.request(
+    `${callbackUrlPrefix}/auth/callback?code=fake-code&state=${stateParam}`,
+    {
+      headers: {cookie: `oauth_state=${stateCookieValue}`, ...callbackHeaders},
+    },
+  )
+  return {loginRes, callbackRes}
+}
+
 describe('auth middleware', () => {
   describe('/healthz is public', () => {
     it('GET /api/healthz returns 200 without auth', async () => {
@@ -263,6 +289,60 @@ describe('OAuth flow', () => {
       const res = await app.request('/auth/login')
       const stateCookie = getSetCookie(res, 'oauth_state')
       expect(stateCookie?.toLowerCase()).toContain('path=/auth')
+    })
+  })
+
+  // rm-604 (2026-10-04): first direct pins of the Secure-attribution rule at
+  // BOTH cookie sites. Decision-of-record branch (b): the rule stays
+  // header-trusting (url https OR x-forwarded-proto === 'https') so
+  // TLS-terminating-proxy deployments keep Secure without an env flag; the
+  // asymmetry vs rm-129's opt-in RATE_LIMIT_TRUSTED_PROXY is deliberate and
+  // documented in src/routes/auth.ts + README. These tests pin the matrix
+  // so the two sites cannot drift apart silently.
+  describe('cookie Secure attribution — three deployment topologies (rm-604)', () => {
+    it('proxy-terminated TLS: plain-HTTP origin + x-forwarded-proto: https → Secure on BOTH cookie sites', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat', githubLogin: 'octocat'})
+      const {loginRes, callbackRes} = await runOAuthFlow(
+        app,
+        async () => app.request('/auth/login', {headers: {'x-forwarded-proto': 'https'}}),
+        {'x-forwarded-proto': 'https'},
+      )
+
+      expect(cookieAttributes(getSetCookie(loginRes, 'oauth_state'))).toContain('secure')
+      expect(callbackRes.status).toBe(302)
+      expect(cookieAttributes(getSetCookie(callbackRes, 'session'))).toContain('secure')
+    })
+
+    it('direct TLS: https:// request URL, no XFP header → Secure on BOTH cookie sites', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat', githubLogin: 'octocat'})
+      const {loginRes, callbackRes} = await runOAuthFlow(
+        app,
+        async () => app.request('https://dashboard.example/auth/login'),
+        {},
+        'https://dashboard.example',
+      )
+
+      expect(cookieAttributes(getSetCookie(loginRes, 'oauth_state'))).toContain('secure')
+      expect(callbackRes.status).toBe(302)
+      expect(cookieAttributes(getSetCookie(callbackRes, 'session'))).toContain('secure')
+    })
+
+    it('plain HTTP, no XFP → NOT Secure on either site (Secure would break cookie delivery); XFP: http is exactly-not-https → NOT Secure', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat', githubLogin: 'octocat'})
+      const {loginRes, callbackRes} = await runOAuthFlow(
+        app,
+        async () => app.request('/auth/login'),
+        {},
+      )
+
+      expect(cookieAttributes(getSetCookie(loginRes, 'oauth_state'))).not.toContain('secure')
+      expect(callbackRes.status).toBe(302)
+      expect(cookieAttributes(getSetCookie(callbackRes, 'session'))).not.toContain('secure')
+
+      // The XFP rule is an exact 'https' match — a proxy forwarding an
+      // plaintext hop as 'http' must not mark the cookie Secure.
+      const xfpHttpLogin = await app.request('/auth/login', {headers: {'x-forwarded-proto': 'http'}})
+      expect(cookieAttributes(getSetCookie(xfpHttpLogin, 'oauth_state'))).not.toContain('secure')
     })
   })
 
