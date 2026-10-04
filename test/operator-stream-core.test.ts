@@ -3522,13 +3522,16 @@ describe('buildCancelClient — cancelRun', () => {
     }
   }, 15_000)
 
-  it('error: HTTP 400 triggers exactly ONE retry with the SAME idempotency key', async () => {
+  it('error: HTTP 400 triggers exactly ONE retry with a REFRESHED CSRF token and the SAME idempotency key', async () => {
     const fetchCalls: {url: string; init: RequestInit}[] = []
-    let callCount = 0
+    let cancelCallCount = 0
     vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
       fetchCalls.push({url, init})
-      callCount++
-      if (callCount === 1) {
+      if (typeof url === 'string' && url.includes('/csrf')) {
+        return {ok: true, status: 200, json: async () => ({csrfToken: 'refreshed-csrf-token'})}
+      }
+      cancelCallCount++
+      if (cancelCallCount === 1) {
         return {ok: false, status: 400, json: async () => ({})}
       }
       return {ok: true, status: 200, json: async () => ({ok: true, runId: 'run-001', phase: 'CANCELLED'})}
@@ -3536,13 +3539,17 @@ describe('buildCancelClient — cancelRun', () => {
     const client = buildCancelClient()
     const result = await client.cancelRun('run-001', 'idem-key-abc', 'csrf-token-abc')
     expect(result.success).toBe(true)
-    expect(fetchCalls).toHaveLength(2)
-    const idemKeys = fetchCalls.map(c => (c.init?.headers as Record<string, string>)['idempotency-key'])
+    // one CSRF refresh + exactly two cancel POSTs
+    expect(fetchCalls).toHaveLength(3)
+    const cancelCalls = fetchCalls.filter(c => typeof c.url === 'string' && !(c.url).includes('/csrf'))
+    expect(cancelCalls).toHaveLength(2)
+    const idemKeys = cancelCalls.map(c => (c.init?.headers as Record<string, string>)['idempotency-key'])
     expect(idemKeys[0]).toBe('idem-key-abc')
     expect(idemKeys[1]).toBe('idem-key-abc')
-    const csrfTokens = fetchCalls.map(c => (c.init?.headers as Record<string, string>)['x-csrf-token'])
+    const csrfTokens = cancelCalls.map(c => (c.init?.headers as Record<string, string>)['x-csrf-token'])
     expect(csrfTokens[0]).toBe('csrf-token-abc')
-    expect(csrfTokens[1]).toBe('csrf-token-abc')
+    expect(csrfTokens[1]).toBe('refreshed-csrf-token')
+    expect(csrfTokens[0]).not.toBe(csrfTokens[1])
   })
 
   it('error: persistent 400 (both attempts) returns the http/400 result once', async () => {
@@ -3560,6 +3567,9 @@ describe('buildCancelClient — cancelRun', () => {
         expect(result.error.status).toBe(400)
       }
     }
+    // no retry loop: with a persistent 400 the refresh itself fails (both the
+    // cancel POST and the CSRF fetch return 400) and the client stops after
+    // exactly two fetches — never a third call
     expect(fetchCalls).toHaveLength(2)
   })
 

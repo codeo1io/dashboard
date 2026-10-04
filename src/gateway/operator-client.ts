@@ -229,6 +229,18 @@ export interface OperatorClient {
   readonly getCurrentSession: () => Promise<Result<SessionDto, GatewayClientError>>
   readonly refreshCsrf: () => Promise<Result<CsrfDto, GatewayClientError>>
   readonly listRepos: () => Promise<Result<RepoSummary[], GatewayClientError>>
+  /**
+   * POST /operator/runs — launch a run. CSRF-protected + idempotency-key.
+   * NO server-side CSRF-400 retry: this client POSTs once and surfaces the
+   * raw failure, so a 400 reaches the caller immediately. Consumers that
+   * want the refresh-then-resend behavior own it themselves — the browser
+   * twin (public/operator-launch.js submitLaunch) implements exactly that:
+   * refresh CSRF once, re-POST with the fresh token and the SAME idempotency
+   * key. Retained asymmetry vs decideRunApproval/subscribePush/unsubscribePush
+   * is deliberate (declined by rm-485: zero non-test callers of this method,
+   * so a retry here would be unexercisable dead code — see that ledger entry).
+   * Contract 1.4.0.
+   */
   readonly launchRun: (req: LaunchRunRequest) => Promise<Result<LaunchRunResponse, GatewayClientError>>
   readonly getRunSnapshot: (runId: string) => Promise<Result<RunSnapshotDto, GatewayClientError>>
   readonly connectRunStream: (

@@ -116,6 +116,65 @@ client address (`X-Forwarded-For`) instead of the proxy's own address.
 
 ---
 
+## Upgrading the gateway past v0.116.0 (rm-254)
+
+The commands above assume the deployed topology as it is today. `fro-bot/agent`
+v0.116.0 changes three behaviors an operator must know **before** upgrading, and
+none of them show up in this runbook's earlier sections:
+
+- **Gateway and workspace images move together.** The workspace agent now runs
+  as its own unprivileged `10001:10001` account, separate from the root-owned
+  service that holds credentials and controls clones. Deployments must upgrade
+  **or roll back** the gateway and workspace images as a pair — a mixed pair is
+  a partially-initialized state, not a degraded-but-working one. Existing
+  root-owned checkouts are migrated at startup with restart tracking, so expect
+  restart churn on first boot after the upgrade.
+- **The control API requires the gateway's bearer token on every route except
+  `/healthz` and `/readyz`.** Requests without the correct token are rejected
+  before their bodies are read. The token is shared with the OpenCode proxy;
+  readiness stays public for container health checks.
+- **A control-API `401` is an operator-actionable workspace-unavailable error**,
+  not an operator-credential failure. When reading logs after an upgrade, a
+  burst of `401`s on workspace routes means the workspace image/token side of
+  the pair is wrong — do not chase operator auth.
+
+v0.117.0 adds two more log-reading changes: gateway runs bring each checkout up
+  to date with the remote default branch before a session (with a
+  permission-checked Discord recovery flow for checkouts that cannot safely
+  advance), and startup failures now exit with status 1 and **generic** stderr —
+do not expect exception details in gateway logs at v0.117.0+.
+
+### Pre-upgrade checklist
+
+1. **Contract support before the pin.** This dashboard mirrors the gateway's
+   operator contract at `src/gateway/operator-contract/version.ts`; the target
+   gateway version's contract must be at or below that mirror (tracked by
+   rm-252) before any pin moves. Upstream contract floors by tag:
+   v0.116.0 → 1.7.0, v0.117.0+ → 1.8.0.
+2. **Deploy the pair via the infra CLI** (`bunx @marcusrbrown/infra gateway
+   deploy`) so both images land in one deployment, and expect the workspace
+   restart churn from checkout migration.
+3. **Post-deploy**: `gateway status`, then exercise operator sign-in and confirm
+   `auth.callback.success` audit events follow their `auth.start` events (see
+   *Reading logs effectively*), and that a workspace run starts without `401`s.
+4. **Rollback is the same rule in reverse**: both images, together — never roll
+   back the gateway alone to "keep auth working" while the workspace stays new.
+
+### Pin parity (verified 2026-10-04)
+
+| Surface | Version | Where |
+| --- | --- | --- |
+| Deployed gateway | v0.114.1 (trusted-proxies floor, PR #1651) | droplet `/opt/gateway/deploy` |
+| Dashboard operator-contract mirror | 1.6.0 | `src/gateway/operator-contract/version.ts` |
+| `fro-bot.yaml` action pin | v0.115.1 @ `930ffc9` | `.github/workflows/fro-bot.yaml:340` (workflow `disabled_manually` fork-side) |
+| Upstream tip | v0.117.1 (2026-09-30), contract 1.8.0 | `fro-bot/agent` releases |
+
+The dashboard mirror (1.6.0) does **not** yet support the v0.116.0 contract
+floor (1.7.0) — that gap, not this runbook, is what currently gates any gateway
+upgrade past v0.115.x.
+
+---
+
 ## Traps
 
 **Wrong remote user.** `ssh "$GATEWAY_HOST"` uses your local username. With several keys in your

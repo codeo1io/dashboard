@@ -1262,7 +1262,7 @@ function parseOperatorCancelResponse(input) {
  *   receives only the static route template and a coarse HTTP status.
  * - Validates runId with the dynamic-id validator BEFORE any fetch.
  * - Rejects blank csrfToken/idempotencyKey before any fetch.
- * - One retry only on HTTP 400, reusing the SAME idempotency key.
+ * - One CSRF-400 retry with a refreshed token and the SAME idempotency key.
  * - No request body is sent.
  *
  * @param {object} [opts] - Optional configuration.
@@ -1333,7 +1333,8 @@ export function buildCancelClient(opts) {
    *   {success: false, error: {kind: 'network'}}  — transport failure
    *   {success: false, error: {kind: 'protocol'}}  — malformed 200 body
    *
-   * One CSRF-400 retry reusing the SAME idempotency key (mirrors decideRunApproval).
+   * One CSRF-400 retry with a refreshed CSRF token and the SAME idempotency
+   * key (mirrors decideRunApproval and browser submitLaunch).
    */
   async function cancelRun(runId, idempotencyKey, csrfToken) {
     if (!validateDynamicId(runId)) {
@@ -1365,10 +1366,20 @@ export function buildCancelClient(opts) {
       return {success: false, error: {kind: 'network'}}
     }
 
-    // One retry only on HTTP 400, reusing the SAME idempotency key and init.
+    // CSRF-400 retry: refresh CSRF once and re-POST with the FRESH token and
+    // the SAME idempotency key (mirrors decideRunApproval and browser submitLaunch).
     if (res.status === 400) {
+      const retrycsrfResult = await refreshCsrf()
+      if (!retrycsrfResult.success) {
+        return retrycsrfResult.error.kind === 'http'
+          ? {success: false, error: {kind: 'http', status: retrycsrfResult.error.status}}
+          : {success: false, error: {kind: 'network'}}
+      }
       try {
-        res = await browserFetch(path, init)
+        res = await browserFetch(path, {
+          ...init,
+          headers: {...init.headers, 'x-csrf-token': retrycsrfResult.data.csrfToken},
+        })
       } catch {
         logger?.error('operator-cancel-client: network error', {route: ROUTE_TEMPLATE})
         return {success: false, error: {kind: 'network'}}
