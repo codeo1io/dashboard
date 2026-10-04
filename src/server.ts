@@ -688,6 +688,12 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   app.use(
     '*',
     secureHeaders({
+      // rm-613: HSTS max-age ramped 180d → 1y (OWASP/MDN posture; this domain has
+      // served HSTS continuously since this middleware landed, so the ramp-up
+      // rationale has expired). Preload is DELIBERATELY DECLINED: this repo serves
+      // behind a reverse proxy and preload submission is a deployment-owner
+      // decision — do not add the `preload` token here.
+      strictTransportSecurity: 'max-age=31536000; includeSubDomains',
       contentSecurityPolicy: {
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'"],
