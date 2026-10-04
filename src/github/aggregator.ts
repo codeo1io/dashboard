@@ -446,6 +446,14 @@ function buildWorkingSet(
   // For each publicRepo, look up the matching install repo to get installation_id.
   // If no match, installation_id is null (will be resolved later or skipped).
   const unionByNodeId = new Map<string, WorkingSetEntry>()
+  // rm-633: format-independent admission index, built with the SAME conservative
+  // derivation rm-255 uses for the auth-context join below — a metadata
+  // node_id recorded in the legacy base64 format derives its stable
+  // databaseId; a new-format metadata node_id derives null (and needs no
+  // fallback: within one format, node_id identity is exact). This index is
+  // what the install loop's dual-key admission consults so a format-skewed
+  // twin of an already-admitted metadata repo cannot re-enter the union.
+  const unionByDatabaseId = new Set<number>()
   for (const pub of publicRepos) {
     // *** DENYLIST CHECK — publicRepos should never contain redacted entries,
     // but we double-check here for defense-in-depth. rm-161: symmetric — a
@@ -477,6 +485,9 @@ function buildWorkingSet(
       (derivedDatabaseId === null ? undefined : installByDatabaseId.get(derivedDatabaseId))
     const installationId = installRepo?.installation_id ?? null
 
+    if (derivedDatabaseId !== null) {
+      unionByDatabaseId.add(derivedDatabaseId)
+    }
     unionByNodeId.set(pub.node_id, {
       node_id: pub.node_id,
       owner: pub.owner,
@@ -504,7 +515,17 @@ function buildWorkingSet(
       continue
     }
 
-    if (!unionByNodeId.has(repo.node_id)) {
+    // rm-633: dual-key admission, mirroring the dual-key denylist above and
+    // rm-255's skew reasoning. An install repo whose node_id is absent from
+    // the union but whose database_id IS in the metadata-derived index is the
+    // SAME repo already admitted from metadata under the other node_id format
+    // — admitting it again would double the row in the working set, walk it
+    // twice per refresh, and inflate driftCount with a repo that IS in public
+    // metadata (violating the driftCount contract). The realistic skew is
+    // legacy metadata vs new-format installation (metadata is the stale side),
+    // which is exactly the direction the conservative derivation covers; the
+    // reverse skew would require the live installation API to regress formats.
+    if (!unionByNodeId.has(repo.node_id) && !unionByDatabaseId.has(repo.database_id)) {
       // Installation-only repo: use generic 'discovered' label
       unionByNodeId.set(repo.node_id, {
         node_id: repo.node_id,

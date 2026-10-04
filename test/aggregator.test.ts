@@ -668,7 +668,7 @@ describe('aggregator — edge cases', () => {
     await agg.refresh()
     const snap = agg.getSnapshot()
 
-    expect(snap.repos).toHaveLength(2) // metadata entry + install-only twin — the documented skew drift
+    expect(snap.repos).toHaveLength(1) // rm-633: the format-skewed install twin collapses into the metadata row (dual-key admission)
     const metadataEntry = snap.repos.find(repo => repo.node_id === legacyNodeId)
     expect(metadataEntry?.owner).toBe('org')
     expect(metadataEntry?.name).toBe('skew-repo')
@@ -679,6 +679,38 @@ describe('aggregator — edge cases', () => {
     // installation token — no per-refresh App-JWT resolver round-trip.
     expect(metadataEntry?.status.stale).toBe(false)
     expect(queryMock.mock.calls.some(call => call[0] === 77)).toBe(true)
+  })
+
+  it('rm-633: format-skew twin never double-counts — one row, driftCount 0, single per-repo query', async () => {
+    // Regression absorb of the baefaefb prove-drift-doublecount repro: the
+    // same repository seen as a legacy-base64 metadata node_id (derives
+    // databaseId 1869154) and a new-format `R_` install node_id. Pre-rm-633
+    // the install loop admitted it twice (channels 'collab' + 'discovered'),
+    // driftCount read 1 for a repo that IS in public metadata (contract
+    // violation at AggregatorSnapshot.driftCount), and the per-repo walk ran
+    // 2× every refresh. Dual-key admission collapses it to one row.
+    const legacyNodeId = 'MDEwOlJlcG9zaXRvcnkxODY5MTU0' // decodes to databaseId 1869154
+    const repo = makeRepo({node_id: 'R_kgDOGexample00', database_id: 1869154, owner: 'codeo1io', name: 'example', installation_id: 42})
+    const queryMock = vi.fn().mockResolvedValue(makeGraphqlResponse())
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      graphqlQueryForInstallation: queryMock,
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: legacyNodeId, owner: 'codeo1io', name: 'example', discovery_channel: 'collab'})],
+      }))),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos).toHaveLength(1)
+    expect(snap.driftCount).toBe(0) // the repo IS in public metadata — never drift
+    expect(snap.repos[0]?.node_id).toBe(legacyNodeId) // metadata row wins (authoritative channel label)
+    expect(snap.repos[0]?.discovery_channel).toBe('collab')
+    expect(snap.repos[0]?.status.stale).toBe(false) // rm-255 join resolved the auth context
+    expect(queryMock).toHaveBeenCalledTimes(1) // no second walk for the collapsed twin
+    expect(queryMock.mock.calls[0]?.[0]).toBe(42)
   })
 
   it('security alerts null when vulnerabilityAlerts is absent from response', async () => {
