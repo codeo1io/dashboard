@@ -1035,6 +1035,19 @@ function backoffDelay(attempt) {
  * @param {string} [opts.fixtureSessionId] - Fixture session ID (fixture mode only).
  * @returns {object} An object with refreshCsrf(), decideRunApproval(), and listRunApprovals() methods.
  */
+
+// rm-594: wall-clock bound on every approval-surface fetch (refreshCsrf, decide
+// POST incl. the CSRF-400 retry re-fetch, listRunApprovals) — a hung fetch must
+// not leave the control stuck pending forever: the in-flight state disables
+// every control, so a decide that never resolves strands the operator with no
+// in-page recovery short of reload. 10s parity with CANCEL_FETCH_TIMEOUT_MS in
+// buildCancelClient (same file, same fetch class); the feature-detect mirrors
+// its load-bearing guard — environments without AbortSignal.timeout keep the
+// unbounded behavior rather than breaking. The idempotency key in makeInit is
+// the safety seam making client-side bounding safe: a timed-out decide can be
+// retried by the operator without double-application (mirrors launch pattern).
+const APPROVAL_FETCH_TIMEOUT_MS = 10_000
+
 export function buildApprovalClient(opts) {
   const endpointBase = opts?.endpointBase ?? '/operator'
   const fixtureSessionId = opts?.fixtureSessionId
@@ -1046,11 +1059,15 @@ export function buildApprovalClient(opts) {
       ? url
       : `${url}${url.includes('?') ? '&' : '?'}fixtureSessionId=${encodeURIComponent(fixtureSessionId)}`
 
+  // Shared fetch wrapper: credentials + redirect policy on every call, plus a
+  // wall-clock bound via a feature-detected AbortSignal.timeout signal (rm-594
+  // — see APPROVAL_FETCH_TIMEOUT_MS above).
   const browserFetch = (input, init) =>
     globalThis.fetch(input, {
       ...init,
       credentials: 'include',
       redirect: 'error',
+      signal: typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(APPROVAL_FETCH_TIMEOUT_MS) : undefined,
     })
 
   async function refreshCsrf() {
@@ -1186,7 +1203,10 @@ export function buildApprovalClient(opts) {
  *
  * Does NOT log the raw ID value — callers must use the error code only.
  */
-function validateDynamicId(id) {
+// Exported (rm-595) so the server-tree parity suite can pin this copy
+// against the other two — exporting a standalone ES-module symbol is inert
+// for the browser bundle (nothing imports it there).
+export function validateDynamicId(id) {
   if (id.trim() === '') return false
   if (id.includes('/') || id.includes('\\')) return false
   if (/%(?:2f|5c)/i.test(id)) return false
