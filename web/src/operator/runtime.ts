@@ -135,26 +135,6 @@ export interface OperatorRuntimeHandle {
 }
 
 /**
- * Mint a fresh unique idempotency key for a mutation.
- *
- * Uses crypto.randomUUID() with a fallback for environments that lack it.
- * Keys are memory-only — never persisted, logged, or shared across mutations.
- *
- * Exported for direct testing.
- */
-export function mintRuntimeIdempotencyKey(): string {
-  if (
-    globalThis.crypto !== undefined &&
-    typeof (globalThis.crypto as {randomUUID?: () => string}).randomUUID === 'function'
-  ) {
-    return (globalThis.crypto as {randomUUID: () => string}).randomUUID()
-  }
-  const ts = Date.now().toString(36)
-  const rand = Math.random().toString(36).slice(2)
-  return `${ts}-${rand}`
-}
-
-/**
  * Classify a repo-list error into a canonical operator state.
  *
  * Never returns "No repositories available" — that string is reserved for the

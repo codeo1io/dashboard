@@ -154,31 +154,6 @@ describe('createOperatorRuntime — lifecycle cleanup', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Idempotency key: fresh per mutation
-// ---------------------------------------------------------------------------
-
-describe('createOperatorRuntime — idempotency key freshness', () => {
-  afterEach(() => {
-    document.body.innerHTML = ''
-  })
-
-  it('mintRuntimeIdempotencyKey returns unique non-empty strings', async () => {
-    const {mintRuntimeIdempotencyKey} = await import('./runtime.ts')
-    const key1 = mintRuntimeIdempotencyKey()
-    const key2 = mintRuntimeIdempotencyKey()
-    expect(typeof key1).toBe('string')
-    expect(key1.length).toBeGreaterThan(0)
-    expect(key1).not.toBe(key2)
-  })
-
-  it('mintRuntimeIdempotencyKey never returns the same key twice in sequence', async () => {
-    const {mintRuntimeIdempotencyKey} = await import('./runtime.ts')
-    const keys = new Set(Array.from({length: 20}, () => mintRuntimeIdempotencyKey()))
-    expect(keys.size).toBe(20)
-  })
-})
-
-// ---------------------------------------------------------------------------
 // Security: no sensitive logging
 // ---------------------------------------------------------------------------
 

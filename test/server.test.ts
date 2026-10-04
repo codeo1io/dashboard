@@ -419,6 +419,18 @@ describe('CSP pinned directives', () => {
     expect(csp).toContain("img-src 'self' data:")
   })
 
+  it('HSTS is pinned at the 1-year max-age with includeSubDomains (rm-613)', async () => {
+    const res = await app.request('/api/healthz')
+    const hsts = res.headers.get('strict-transport-security') ?? ''
+    expect(hsts).toBe('max-age=31536000; includeSubDomains')
+  })
+
+  it('HSTS must NOT carry the preload token (declined disposition, rm-613)', async () => {
+    const res = await app.request('/api/healthz')
+    const hsts = res.headers.get('strict-transport-security') ?? ''
+    expect(hsts).not.toContain('preload')
+  })
+
   it("CSP contains font-src 'self'", async () => {
     const res = await app.request('/api/healthz')
     const csp = res.headers.get('content-security-policy') ?? ''
