@@ -6,7 +6,7 @@
 import type {GitHubOAuthClient} from '../src/auth/oauth.ts'
 import {Buffer} from 'node:buffer'
 import {createHmac} from 'node:crypto'
-import {describe, expect, it} from 'vitest'
+import {describe, expect, it, vi} from 'vitest'
 import {fetchGitHubUserLogin, makeGitHubOAuthClient} from '../src/auth/oauth.ts'
 import {sanitizeErrorMessage} from '../src/logger.ts'
 import {deriveLogoutCsrfToken} from '../src/routes/auth.ts'
@@ -1064,6 +1064,132 @@ describe('rm-269 — static assets consume no rate-limit budget (docstring truth
         `${path} should not consume a rate-limit budget (got 429)`,
       ).toBe(true)
     }
+  })
+})
+
+describe('rm-560 — sampled denial logging (first per ip+class, then 60s summaries)', () => {
+  it('a same-window burst of denials from one key emits exactly one warn line (acceptance: ≤2/window)', async () => {
+    const {checkRateLimit, resetRateLimitForTesting} = await import('../src/server.ts')
+    resetRateLimitForTesting()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      // Exhaust the 'unknown' key (app.request() has no conn info), then
+      // drive 8 further denials through the middleware — pre-rm-560 this
+      // emitted one warn line per denial (assess probe: 4 denials → 4 lines).
+      const now = Date.now()
+      for (let i = 0; i < 60; i++) checkRateLimit('unknown', now)
+      const app = await buildTestApp({operatorLogin: 'octocat'})
+      for (let i = 0; i < 8; i++) {
+        const res = await app.request('/operator')
+        expect(res.status).toBe(429)
+      }
+      const lines = warn.mock.calls
+        .map(([line]) => String(line))
+        .filter(line => line.includes('Rate limit exceeded'))
+      expect(lines.length).toBe(1)
+      expect(lines[0]).toContain('first denial')
+      expect(lines[0]).toContain('"pathClass":"operator"')
+      expect(lines[0]).toContain('"path":"/operator"')
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('sampleRateLimitDenial: repeats are silent; ≥60s later exactly one class-only summary resets the interval', async () => {
+    const {resetRateLimitForTesting, sampleRateLimitDenial} = await import('../src/server.ts')
+    resetRateLimitForTesting()
+    const ip = `rm560-unit-${Date.now()}`
+
+    const first = sampleRateLimitDenial(ip, 'operator', '/operator/runs', 1_000)
+    expect(first?.kind).toBe('first')
+    expect(first?.context.pathClass).toBe('operator')
+    expect(first?.context.path).toBe('/operator/runs')
+
+    // In-window repeats — same or different path — emit nothing.
+    expect(sampleRateLimitDenial(ip, 'operator', '/operator/runs', 1_001)).toBeNull()
+    expect(sampleRateLimitDenial(ip, 'operator', '/operator/runs/abc', 1_002)).toBeNull()
+
+    // A second class earns its own first-denial line; still no summary.
+    const second = sampleRateLimitDenial(ip, 'public', '/auth/login', 1_500)
+    expect(second?.kind).toBe('first')
+    expect(second?.context.pathClass).toBe('public')
+    expect(sampleRateLimitDenial(ip, 'operator', '/operator/runs', 5_000)).toBeNull()
+
+    // ≥60s after the interval anchor: ONE summary carrying class-only fields.
+    const summary = sampleRateLimitDenial(ip, 'operator', '/operator/runs', 61_500)
+    expect(summary?.kind).toBe('summary')
+    expect(summary?.context).toMatchObject({
+      ip,
+      deniedCount: 6,
+      distinctPathCount: 3,
+      topPathClass: 'operator',
+    })
+    expect(summary?.context).not.toHaveProperty('path') // rm-560: summaries drop the raw path
+    expect(summary?.context).not.toHaveProperty('pathClass')
+
+    // Interval reset: the next denial starts a fresh silent accumulation.
+    expect(sampleRateLimitDenial(ip, 'operator', '/operator/runs', 62_000)).toBeNull()
+    // …and a different key's first denial is independent.
+    const other = sampleRateLimitDenial(`${ip}-b`, 'operator', '/operator', 1_000)
+    expect(other?.kind).toBe('first')
+  })
+
+  it('rm-560 nit: logged ip and path fields are length-capped (no 16KB pathname on the line)', async () => {
+    const {resetRateLimitForTesting, sampleRateLimitDenial} = await import('../src/server.ts')
+    resetRateLimitForTesting()
+    const record = sampleRateLimitDenial(`${'a'.repeat(300)}@x`, 'operator', `/${'p'.repeat(20_000)}`, 1_000)
+    expect(record?.kind).toBe('first')
+    expect(record?.context.ip?.length).toBeLessThanOrEqual(64)
+    expect(record?.context.path?.length).toBeLessThanOrEqual(129) // 128 cap + ellipsis marker
+    expect(record?.context.path?.endsWith('…')).toBe(true)
+  })
+
+  it('rm-560 review-fix (81824cf7 P3): the distinct-path SET stops collecting at its 256 budget', async () => {
+    const {resetRateLimitForTesting, sampleRateLimitDenial} = await import('../src/server.ts')
+    resetRateLimitForTesting()
+    const ip = `rm560-cap-${Date.now()}`
+
+    // 300 distinct denied paths in one window from one key/class: the first is
+    // the first-denial line, the rest are silent — but the collector used to
+    // keep every distinct path string, growing O(denials) per key/interval.
+    expect(sampleRateLimitDenial(ip, 'public', '/rm560-cap/0', 1_000)?.kind).toBe('first')
+    for (let i = 1; i < 300; i++) {
+      expect(sampleRateLimitDenial(ip, 'public', `/rm560-cap/${i}`, 1_000 + i)).toBeNull()
+    }
+
+    // ≥60s after the anchor: the summary's distinctPathCount is CAPPED at the
+    // 256 budget (uncapped would report 300), while deniedCount keeps counting.
+    const summary = sampleRateLimitDenial(ip, 'public', '/rm560-cap/0', 61_000)
+    expect(summary?.kind).toBe('summary')
+    expect(summary?.context).toMatchObject({
+      ip,
+      deniedCount: 301,
+      distinctPathCount: 256,
+      topPathClass: 'public',
+    })
+  })
+})
+
+describe('429 Retry-After (RFC 9110 §10.2.7) — window-remaining; RateLimit-* deliberately excluded', () => {
+  it('a denied request carries Retry-After seconds in [1, 60] and no RateLimit-* headers', async () => {
+    const {checkRateLimit, resetRateLimitForTesting} = await import('../src/server.ts')
+    resetRateLimitForTesting()
+    const now = Date.now()
+    for (let i = 0; i < 60; i++) checkRateLimit('unknown', now)
+    const app = await buildTestApp({operatorLogin: 'octocat'})
+    const res = await app.request('/operator')
+    expect(res.status).toBe(429)
+    expect(await res.text()).toBe('Too Many Requests')
+    const retryAfter = res.headers.get('retry-after')
+    expect(retryAfter).not.toBeNull()
+    const seconds = Number(retryAfter)
+    expect(Number.isInteger(seconds)).toBe(true)
+    expect(seconds).toBeGreaterThanOrEqual(1)
+    expect(seconds).toBeLessThanOrEqual(60)
+    // C5 decline pin: the RateLimit-* draft family stays OUT (draft-11 expires 2026-11-24).
+    expect(res.headers.get('ratelimit-limit')).toBeNull()
+    expect(res.headers.get('ratelimit-remaining')).toBeNull()
+    expect(res.headers.get('ratelimit-reset')).toBeNull()
   })
 })
 

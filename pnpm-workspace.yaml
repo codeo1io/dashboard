@@ -66,6 +66,13 @@ overrides:
   # gate (.github/workflows/audit.yaml, rm-278) going red on any 7.x means a
   # NEWLY indexed advisory BY DESIGN and the undici 8 + jsdom 30 migration
   # rides rm-271's majors window. undici is dev-transitive via jsdom.
+  # (2026-10-04, run 845265c83109 cycle:2 B1 / rm-548 durable half): jsdom
+  # 30.1.1 landed manually and depends on undici ^8 — OUTSIDE this undici@7
+  # selector — so it resolved to undici 8.11.2, dev-scope with jsdom the
+  # sole consumer (fresh lockfile grep: NO undici 7.x instance remains; the
+  # selector is dormant until some future range re-enters 7.x). rm-271's
+  # majors window still owns any prod-scope undici-8 question; this floor
+  # stays as the audit gate's 7.x tripwire.
   undici@7: '>=7.30.0 <8.0.0'
 
 shamefullyHoist: true

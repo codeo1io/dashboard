@@ -146,6 +146,37 @@ const RATE_LIMIT_MAX_PER_CLASS: Record<RateLimitClass, number> = {
 }
 
 /**
+ * rm-560: sampled rate-limit denial logging state (one entry per limiter
+ * ip-key). The deny branch used to warn on EVERY denial — a live 2026-10-03
+ * probe (RATE_LIMIT_MAX_PUBLIC=4) produced exactly 4 warn lines for 4
+ * denials, i.e. up to ~180 warn lines/min from one abusive client at default
+ * budgets, burying genuine operator warnings and swelling log storage. The
+ * sampled shape (peer practice: nginx limit_req_log_level, Envoy's
+ * rate-limited emission) is: one first-denial line per (ip-key, path-class)
+ * carrying identity fields, then at most ONE interval summary per
+ * RATE_LIMIT_DENIAL_SUMMARY_MS with class-only fields (no raw paths).
+ */
+interface RateLimitDenialSampleEntry {
+  /** Anchor of the current summary interval; reset when a summary is emitted. */
+  windowStart: number
+  deniedCount: number
+  distinctPaths: Set<string>
+  classCounts: Record<RateLimitClass, number>
+  /** Classes whose first denial has already been logged in this entry's life. */
+  loggedClasses: Set<RateLimitClass>
+}
+
+const rateLimitDenialLogMap = new Map<string, RateLimitDenialSampleEntry>()
+const RATE_LIMIT_DENIAL_SUMMARY_MS = 60_000
+/** rm-560 nit: a crafted ~16KB pathname (or token key) must not ride a log line. */
+const RATE_LIMIT_LOG_PATH_CAP = 128
+const RATE_LIMIT_LOG_IP_CAP = 64
+// Denials are unbounded by design, so the distinct-path SET is capped: beyond
+// this budget the sampler keeps counting totals but stops collecting path
+// strings (bounded per-key memory; distinctPathCount reads as capped-at-budget).
+const RATE_LIMIT_LOG_DISTINCT_PATH_CAP = 256
+
+/**
  * Default for the trusted-proxy opt-in: RATE_LIMIT_TRUSTED_PROXY in
  * {1,true,yes} (case-insensitive). Off unless explicitly enabled.
  */
@@ -204,6 +235,7 @@ const EVICT_STALE_AGE = 2 * RATE_LIMIT_WINDOW_MS
  */
 export function resetRateLimitForTesting(): void {
   rateLimitMap.clear()
+  rateLimitDenialLogMap.clear()
   rateLimitCallCount = 0
 }
 
@@ -248,6 +280,14 @@ function sweepRateLimitMap(now: number): void {
       rateLimitMap.delete(key)
     }
   }
+  // rm-560: sweep the denial-sampling entries on the same cadence so the
+  // log map stays bounded exactly like the limiter map (a quiet key's
+  // first-denial eligibility also resets after 2× window of silence).
+  for (const [key, entry] of rateLimitDenialLogMap) {
+    if (now - entry.windowStart > EVICT_STALE_AGE) {
+      rateLimitDenialLogMap.delete(key)
+    }
+  }
 }
 
 /**
@@ -280,6 +320,115 @@ export function checkRateLimit(ip: string, now: number = Date.now(), pathClass?:
 
   current.counts[pathClass]++
   return current.counts[pathClass] <= RATE_LIMIT_MAX_PER_CLASS[pathClass]
+}
+
+/** A sampled denial-log line to emit (rm-560); the middleware owns the logger call. */
+export interface RateLimitDenialLogRecord {
+  readonly kind: 'first' | 'summary'
+  readonly message: string
+  readonly context: {
+    readonly ip: string
+    /** Present on 'first' records; the 'summary' carries topPathClass instead. */
+    readonly pathClass?: RateLimitClass
+    readonly path?: string
+    readonly deniedCount?: number
+    readonly distinctPathCount?: number
+    readonly topPathClass?: RateLimitClass
+  }
+}
+
+function topRateLimitClass(counts: Record<RateLimitClass, number>): RateLimitClass {
+  let top: RateLimitClass = RATE_LIMIT_CLASSES[0]
+  for (const cls of RATE_LIMIT_CLASSES) {
+    if (counts[cls] > counts[top]) top = cls
+  }
+  return top
+}
+
+/**
+ * rm-560: record a limiter denial against the sampling state and return the
+ * log record to emit, if any. Returns a 'first' record for the first denial
+ * of a (ip-key, path-class) pair, a single 'summary' record once
+ * RATE_LIMIT_DENIAL_SUMMARY_MS has elapsed since the interval anchor (then
+ * resets the interval), and null for every in-interval repeat — steady state
+ * is zero per-denial lines. Context field names deliberately avoid
+ * logger.ts's sensitive-substring list (no 'key'/'auth'/… — they would be
+ * [REDACTED]); values are length-capped (ip like the limiter's own XFF cap,
+ * path with an ellipsis marker), and the summary carries class-only fields
+ * (no raw path). Exported for direct unit tests of the interval logic via
+ * injected `now`.
+ */
+export function sampleRateLimitDenial(
+  ip: string,
+  pathClass: RateLimitClass,
+  path: string,
+  now: number = Date.now(),
+): RateLimitDenialLogRecord | null {
+  const cappedIp = ip.slice(0, RATE_LIMIT_LOG_IP_CAP)
+  const cappedPath =
+    path.length > RATE_LIMIT_LOG_PATH_CAP ? `${path.slice(0, RATE_LIMIT_LOG_PATH_CAP)}…` : path
+  let entry = rateLimitDenialLogMap.get(cappedIp)
+  if (entry === undefined) {
+    entry = {
+      windowStart: now,
+      deniedCount: 0,
+      distinctPaths: new Set(),
+      classCounts: {public: 0, operator: 0, ingest: 0},
+      loggedClasses: new Set(),
+    }
+    rateLimitDenialLogMap.set(cappedIp, entry)
+  }
+  entry.deniedCount++
+  // Cap the collected set (review 81824cf7 P3): a sustained attacker varying
+  // paths grows this set O(denials) per key/interval otherwise.
+  if (entry.distinctPaths.size < RATE_LIMIT_LOG_DISTINCT_PATH_CAP) {
+    entry.distinctPaths.add(cappedPath)
+  }
+  entry.classCounts[pathClass]++
+
+  if (!entry.loggedClasses.has(pathClass)) {
+    entry.loggedClasses.add(pathClass)
+    return {
+      kind: 'first',
+      message: 'Rate limit exceeded — first denial (sampled, rm-560)',
+      context: {ip: cappedIp, pathClass, path: cappedPath},
+    }
+  }
+  if (now - entry.windowStart >= RATE_LIMIT_DENIAL_SUMMARY_MS) {
+    const record: RateLimitDenialLogRecord = {
+      kind: 'summary',
+      message: 'Rate limit exceeded — interval summary (sampled, rm-560)',
+      context: {
+        ip: cappedIp,
+        deniedCount: entry.deniedCount,
+        distinctPathCount: entry.distinctPaths.size,
+        topPathClass: topRateLimitClass(entry.classCounts),
+      },
+    }
+    // Reset the accumulation window after emitting the summary.
+    entry.windowStart = now
+    entry.deniedCount = 0
+    entry.distinctPaths.clear()
+    entry.classCounts = {public: 0, operator: 0, ingest: 0}
+    return record
+  }
+  return null
+}
+
+/**
+ * rm-560 (B3 half): seconds until this key's current fixed window rolls over
+ * — the Retry-After value for a 429 (RFC 9110 §10.2.7 delay-seconds, the
+ * client's earliest sane retry). Clamped to >=1: a window about to expire
+ * still warrants a 1s pause, and 0 would tell an abusive client to retry
+ * immediately. RateLimit-* draft headers are deliberately NOT added
+ * (research C5 decline: draft-11, expiring 2026-11-24 — not a standard
+ * contract worth pinning).
+ */
+export function rateLimitRetryAfterSeconds(ip: string, now: number = Date.now()): number {
+  const entry = rateLimitMap.get(ip)
+  if (entry === undefined) return 1
+  const remainingMs = entry.windowStart + RATE_LIMIT_WINDOW_MS - now
+  return Math.max(1, Math.ceil(remainingMs / 1000))
 }
 
 /**
@@ -751,9 +900,18 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
         if (firstHop !== undefined && firstHop !== '') ip = firstHop.slice(0, 64)
       }
 
-      if (!checkRateLimit(ip, Date.now(), classifyRateLimitPath(path))) {
-        logger.warning('Rate limit exceeded', {ip, path})
-        return c.text('Too Many Requests', 429)
+      const now = Date.now()
+      const pathClass = classifyRateLimitPath(path)
+      if (!checkRateLimit(ip, now, pathClass)) {
+        // rm-560: sampled denial logging — first denial per (ip-key,
+        // path-class) + at most one 60s interval summary (class-only fields).
+        const record = sampleRateLimitDenial(ip, pathClass, path, now)
+        if (record !== null) logger.warning(record.message, record.context)
+        // Retry-After (RFC 9110 §10.2.7): seconds until the fixed window
+        // rolls over — the earliest a compliant client should retry.
+        return c.text('Too Many Requests', 429, {
+          'Retry-After': String(rateLimitRetryAfterSeconds(ip, now)),
+        })
       }
     }
 
