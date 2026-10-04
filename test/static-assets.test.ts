@@ -131,6 +131,100 @@ describe('security headers — CSP', () => {
 })
 
 // ---------------------------------------------------------------------------
+// rm-557: Permissions-Policy deny-by-default — the last missing header of the
+// MDN/OWASP baseline set. secureHeaders applies app-wide, so one exact-value
+// pin plus presence checks across surface classes (public API, authed SPA
+// shell, static asset, redirect) is the whole guard.
+// ---------------------------------------------------------------------------
+
+/** Every denied directive serializes to `()` — insertion order is preserved. */
+const DENIED_PERMISSIONS = 'accelerometer=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()'
+
+describe('security headers — Permissions-Policy deny-by-default (rm-557)', () => {
+  it('Permissions-Policy is present with exactly the deny-all directive set (public API)', async () => {
+    const app = await buildTestApp(true)
+    const res = await app.request('/api/healthz')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('permissions-policy')).toBe(DENIED_PERMISSIONS)
+  })
+
+  it('Permissions-Policy is present on the authenticated SPA shell', async () => {
+    const app = await buildTestApp(true)
+    const res = await authedGet(app, '/')
+    expect(res.headers.get('permissions-policy')).toBe(DENIED_PERMISSIONS)
+  })
+
+  it('Permissions-Policy is present on static asset responses (PWA manifest)', async () => {
+    const app = await buildTestApp(true)
+    const res = await app.request('/manifest.webmanifest')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('permissions-policy')).toBe(DENIED_PERMISSIONS)
+  })
+
+  it('Permissions-Policy is present on redirects too (secureHeaders runs post-next)', async () => {
+    const app = await buildTestApp(true)
+    // Unauthenticated request to a protected API route → auth redirect; the
+    // header must ride along even on non-200 responses.
+    const res = await app.request('/api/monitoring')
+    expect(res.status).toBe(302)
+    expect(res.headers.get('permissions-policy')).toBe(DENIED_PERMISSIONS)
+  })
+
+  it('deny list stays representation-safe — no denied feature is used by the client', async () => {
+    // Mirror of the src/server.ts deny list (camelCase directive keys). The API
+    // names for each denied feature mirror the grep the rm-557 acceptance ran
+    // at implementation time — adopting a denied feature trips this before it
+    // breaks in production.
+    const featureApiPatterns: [string, RegExp][] = [
+      ['accelerometer', /DeviceMotionEvent|accelerometer/i],
+      ['camera', /getUserMedia|mediaDevices|enumerateDevices/i],
+      ['displayCapture', /getDisplayMedia/i],
+      ['geolocation', /geolocation/i],
+      ['gyroscope', /DeviceOrientationEvent|gyroscope/i],
+      ['magnetometer', /magnetometer/i],
+      ['microphone', /getUserMedia|mediaDevices|enumerateDevices/i],
+      ['payment', /PaymentRequest/i],
+      ['usb', /navigator\.usb|requestDevice/i],
+    ]
+    const fs = await import('node:fs/promises')
+    const path = await import('node:path')
+
+    async function collectClientFiles(dir: string): Promise<string[]> {
+      const out: string[] = []
+      let entries: string[] = []
+      try {
+        entries = await fs.readdir(dir)
+      } catch {
+        return out
+      }
+      for (const entry of entries) {
+        const full = path.join(dir, entry)
+        const st = await fs.stat(full)
+        if (st.isDirectory()) {
+          out.push(...(await collectClientFiles(full)))
+        } else if (/\.(?:ts|tsx|js)$/.test(entry)) {
+          out.push(full)
+        }
+      }
+      return out
+    }
+
+    for (const dir of ['web/src', 'public']) {
+      const files = await collectClientFiles(path.join(process.cwd(), dir))
+      for (const file of files) {
+        const text = await fs.readFile(file, 'utf8')
+        for (const [feature, pattern] of featureApiPatterns) {
+          expect(
+            text.match(pattern),
+            `${dir} uses a Permissions-Policy-denied feature (${feature}) — remove it from the deny list or stop using it: ${file}`,
+          ).toBeNull()
+        }
+      }
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Static asset serving tests
 // ---------------------------------------------------------------------------
 
