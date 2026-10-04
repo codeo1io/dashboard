@@ -11,10 +11,12 @@
  */
 import type {GitHubOAuthClient} from '../src/auth/oauth.ts'
 import {Buffer} from 'node:buffer'
-import {existsSync, readdirSync, statSync} from 'node:fs'
+import {existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync} from 'node:fs'
+import {tmpdir} from 'node:os'
 import {join, resolve} from 'node:path'
 import process from 'node:process'
-import {afterEach, describe, expect, it} from 'vitest'
+import {afterEach, describe, expect, it, vi} from 'vitest'
+import {logger} from '../src/logger.ts'
 import {buildDashboardApp} from '../src/server.ts'
 import {SessionManager} from '../src/session.ts'
 
@@ -989,5 +991,63 @@ describe('rm-498 — % rejection compatibility (allowPercentInPath stays unset)'
     const dist = resolve(repoRoot, 'web/dist')
     if (existsSync(dist)) walk(dist)
     expect(offenders).toEqual([])
+  })
+})
+
+describe('SPA shell cache — stale serve on transient reload failure (rm-609)', () => {
+  const buildApp = async (webDistRoot: string) =>
+    buildDashboardApp({
+      operatorLogin: TEST_OPERATOR,
+      cookieKey: TEST_KEY,
+      oauthClient: makeFakeOAuthClient(),
+      fetchUserLogin: async () => TEST_OPERATOR,
+      getSnapshot: () => ({
+        repos: [],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+        refreshDurationMs: null,
+        refreshDegraded: false,
+      }),
+      operatorUiEnabled: true,
+      webDistRoot,
+      pushNotificationsEnabled: true,
+    })
+
+  it('cold start with no readable shell keeps the documented 404', async () => {
+    const dist = mkdtempSync(join(tmpdir(), 'rm609-cold-'))
+    const app = await buildApp(dist)
+    const res = await app.request('/', {headers: {cookie: `session=${makeSessionCookie()}`}})
+    expect(res.status).toBe(404)
+    rmSync(dist, {recursive: true, force: true})
+  })
+
+  it('serves the stale cached shell when a TTL-expired reload fails transiently', async () => {
+    const dist = mkdtempSync(join(tmpdir(), 'rm609-stale-'))
+    writeFileSync(
+      join(dist, 'index.html'),
+      '<!doctype html><html><head><title>shell</title></head><body><div id="root"></div></body></html>',
+    )
+    const app = await buildApp(dist)
+    const headers = {cookie: `session=${makeSessionCookie()}`}
+    const first = await app.request('/', {headers})
+    expect(first.status).toBe(200)
+    const firstBody = await first.text()
+    expect(firstBody).toContain('push-enabled') // injected (push-gated) shell, not a raw passthrough
+
+    // Break the dist so the TTL-expired reload fails, then age out the cache
+    // window (SPA_SHELL_CACHE_TTL_MS = 5s).
+    rmSync(join(dist, 'index.html'))
+    const warnSpy = vi.spyOn(logger, 'warning')
+    await new Promise(resolve => setTimeout(resolve, 5_150))
+
+    const second = await app.request('/', {headers})
+    expect(second.status).toBe(200) // NOT the pre-rm-609 404
+    expect(await second.text()).toBe(firstBody) // byte-identical stale copy
+    const staleWarns = warnSpy.mock.calls.filter(args => String(args[0]).includes('stale cached shell'))
+    expect(staleWarns).toHaveLength(1) // one warn per reload-failure window
+    warnSpy.mockRestore()
+    rmSync(dist, {recursive: true, force: true})
   })
 })
