@@ -9,6 +9,7 @@
  * derived HMAC-style from the cookie key — mirroring the logout CSRF pattern
  * in routes/auth.ts).
  */
+import type {SessionDto} from '../gateway/operator-client.ts'
 import type {ListenerStore} from '../listener/store.ts'
 
 import {Buffer} from 'node:buffer'
@@ -31,6 +32,19 @@ export interface AckCsrfConfig {
   readonly cookieKey: Buffer
   /** Operator login bound into the token (operator-specific, like logout CSRF). */
   readonly operatorLogin: string
+}
+
+/**
+ * Per-request ack CSRF config resolver for gateway deployments (rm-644):
+ * given the request's validated gateway session, return the config — or null
+ * to fail closed when the session carries no usable login. Arctic deployments
+ * use the static {@link AckCsrfConfig} form.
+ */
+export type AckCsrfResolver = (gatewaySession: SessionDto) => AckCsrfConfig | null
+
+/** Context variables the listener routes read (set by server.ts auth middleware). */
+interface ListenerEnv {
+  Variables: {gatewaySession?: SessionDto | undefined}
 }
 
 /**
@@ -92,14 +106,28 @@ export interface ListenerRouterDeps {
   readonly ingestKey: string | null
   /**
    * CSRF config for the ack mutations. Null fails closed: mutations return
-   * 403 and the /csrf token endpoint returns 503. server.ts always supplies
-   * it whenever an operator session is in scope (auth active).
+   * 403 ('unavailable') and the /csrf token endpoint returns 503. Arctic
+   * deployments pass the static config (single configured operator); gateway
+   * deployments (rm-644) pass the resolver form, which binds the token to the
+   * request's validated gateway session login and fails closed when there is
+   * none.
    */
-  readonly ackCsrf: AckCsrfConfig | null
+  readonly ackCsrf: AckCsrfConfig | AckCsrfResolver | null
 }
 
-export function buildListenerRouter(deps: ListenerRouterDeps): Hono {
-  const router = new Hono()
+export function buildListenerRouter(deps: ListenerRouterDeps): Hono<ListenerEnv> {
+  const router = new Hono<ListenerEnv>()
+
+  // Resolve the ack CSRF config per request (rm-644): static form = Arctic
+  // operator login; resolver form = the request's validated gateway session
+  // login, failing closed when the request did not authenticate via the
+  // gateway.
+  const ackCsrfFor = (gatewaySession: SessionDto | undefined): AckCsrfConfig | null => {
+    if (typeof deps.ackCsrf === 'function') {
+      return gatewaySession === undefined ? null : deps.ackCsrf(gatewaySession)
+    }
+    return deps.ackCsrf
+  }
 
   router.post('/ingest', async c => {
     if (deps.ingestKey === null) {
@@ -153,16 +181,17 @@ export function buildListenerRouter(deps: ListenerRouterDeps): Hono {
   })
 
   router.get('/csrf', c => {
-    if (deps.ackCsrf === null) {
+    const config = ackCsrfFor(c.get('gatewaySession'))
+    if (config === null) {
       return c.json({error: 'csrf unavailable'}, 503)
     }
     // Token-bearing response: never cacheable (rm-263).
     c.header('Cache-Control', 'no-store')
-    return c.json({csrfToken: deriveAckCsrfToken(deps.ackCsrf)}, 200)
+    return c.json({csrfToken: deriveAckCsrfToken(config)}, 200)
   })
 
   router.post('/messages/:id/ack', c => {
-    const verdict = checkAckCsrf(c.req.header(ACK_CSRF_HEADER), deps.ackCsrf)
+    const verdict = checkAckCsrf(c.req.header(ACK_CSRF_HEADER), ackCsrfFor(c.get('gatewaySession')))
     if (verdict !== 'ok') {
       logger.warning(`listener ack rejected: csrf ${verdict}`)
       return c.json({error: `csrf ${verdict}`}, 403)
@@ -177,7 +206,7 @@ export function buildListenerRouter(deps: ListenerRouterDeps): Hono {
   })
 
   router.post('/ack-all', c => {
-    const verdict = checkAckCsrf(c.req.header(ACK_CSRF_HEADER), deps.ackCsrf)
+    const verdict = checkAckCsrf(c.req.header(ACK_CSRF_HEADER), ackCsrfFor(c.get('gatewaySession')))
     if (verdict !== 'ok') {
       logger.warning(`listener ack-all rejected: csrf ${verdict}`)
       return c.json({error: `csrf ${verdict}`}, 403)

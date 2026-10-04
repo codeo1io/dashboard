@@ -42,7 +42,7 @@ Compute secret presence in a tiny preceding job (a step-level `env` MAY read
 jobs:
   secret-gate:
     name: Fro Bot secret gate
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
     outputs:
@@ -85,10 +85,10 @@ above — never landed. origin/main shipped the same constraint fix at 916783f
 arms plus a skip-warning step (the release.yaml 886c28e pattern generalized;
 job-level `env` may read `secrets`, step-level `if:` may read `env`). Both
 forms satisfy the rule above — pick the needs-gate when the JOB body itself
-must branch, job-env + step-ifs when only steps do. Also note the example's
-`runs-on: self-hosted` reflects the 2026-09-20 policy; CI moved to
-GitHub-hosted runners on 2026-09-22 (d73fbe7), so a gate job written today
-uses `ubuntu-latest`.
+must branch, job-env + step-ifs when only steps do. The example's
+`runs-on: ubuntu-latest` reflects the hosted-runner policy in force since
+2026-09-22 (d73fbe7); on the doc's 2026-09-20 authoring date it was
+`self-hosted` (the fork's single runner at the time).
 
 ## Validation
 
