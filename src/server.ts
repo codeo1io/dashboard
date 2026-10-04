@@ -750,6 +750,28 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
         formAction: ["'self'"],
         frameAncestors: ["'none'"],
       },
+      // rm-557: Permissions-Policy deny-by-default. Hono's secureHeaders skips
+      // the header entirely for an empty policy object, and every other baseline
+      // header (CSP/HSTS/nosniff/Referrer-Policy/XFO/COOP/CORP/OAC) was already
+      // emitted — this closed the last gap in the MDN/OWASP baseline set.
+      // Deny list (each directive serializes to `()` — disabled everywhere):
+      //   accelerometer, camera, display-capture, geolocation, gyroscope,
+      //   magnetometer, microphone, payment, usb
+      // Verified safe for this client: grep over web/src + public + web/*.ts for
+      // every denied feature (getUserMedia/geolocation/clipboard/share/bluetooth/
+      // usb/vibrate/payment/EME/wake-lock/gamepad) is zero-hit; the PWA's Web
+      // Notifications usage is NOT policy-controlled and is unaffected.
+      permissionsPolicy: {
+        accelerometer: [],
+        camera: [],
+        displayCapture: [],
+        geolocation: [],
+        gyroscope: [],
+        magnetometer: [],
+        microphone: [],
+        payment: [],
+        usb: [],
+      },
     }),
   )
 

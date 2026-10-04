@@ -60,9 +60,15 @@ client changes). The test suite rebuilds the client automatically via `pretest`.
 - `GET /api/listener/messages` — operator listener-channel digest feed (authenticated; mounted only when the ingest store is configured).
 - `POST /api/listener/ingest` — gateway-to-dashboard message ingest, HMAC-signed via the listener ingest key (not operator-session auth).
 - `POST /api/listener/messages/:id/ack` · `POST /api/listener/ack-all` — digest acknowledgements (authenticated).
+- `GET /api/listener/csrf` — listener-ack CSRF token mint (authenticated; mounted only when the ingest store is configured).
 - `GET /privacy` — public privacy policy for the push/listener surfaces.
-- `GET /auth/login` · `GET /auth/callback` · `POST /auth/logout` — GitHub OAuth session flow.
+- `GET /auth/login` · `GET /auth/callback` · `POST /auth/logout` · `GET /auth/logout-csrf` — GitHub OAuth session flow; the last row mints the logout-form CSRF token.
+- `GET /.well-known/security.txt` — public RFC 9116 security contact.
 - `/manifest.webmanifest`, `/sw.js` — PWA manifest and service worker.
+
+Endpoint parity is guarded in both directions by `test/endpoint-parity-guard.test.ts` (rm-556):
+every live route must appear here (or on an explicit allowlist inside that test), and every row
+here must name a route the server actually mounts.
 
 ## Configuration
 

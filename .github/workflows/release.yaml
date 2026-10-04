@@ -156,6 +156,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # rm-558 review fix (independent_review 2026-10-04): the multi-arch
+      # build's only target-executed step — the final-stage prune RUN — runs
+      # on the arm64 target, and the ubuntu-24.04 runner image ships Docker /
+      # Buildx with NO qemu/binfmt handlers. Without this step the arm64
+      # target dies exec-format-error at that RUN (local builds only pass
+      # because this host has binfmt-registered qemu).
+      - name: 🐋 Set up QEMU (arm64 target emulation)
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
       - name: 🔧 Set up Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -166,7 +175,17 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
-          platforms: linux/amd64
+          # rm-558: multi-arch release. The Dockerfile's toolchain stages are
+          # FROM --platform=$BUILDPLATFORM (shared/cache-hit across targets); each
+          # target only re-COPYs the arch-independent artifacts and runs one ~1.2 s
+          # prune rm (the only target-executed step). Measured locally at
+          # 2026-10-04 (attempt 1599ea1e, delegate spool): shared toolchain build
+          # 1m51s; linux/arm64 target adds 4.9s warm — vs a fully-QEMU-emulated
+          # build of the pre-restructure Dockerfile whose single vite stage alone
+          # took 84s. Expect near-zero CI-time delta vs the amd64-only baseline; if
+          # the release run balloons, emulation of a toolchain stage crept into the
+          # stage list (check the Dockerfile header comment).
+          platforms: linux/amd64,linux/arm64
           tags: ghcr.io/${{ github.repository }}:ci-${{ github.run_id }}-${{ github.run_attempt }}
           # rm-105: registry-side supply-chain attestations. Provenance v1 ships
           # by default at mode=min; mode=max adds full materials/builder data and
