@@ -1,4 +1,21 @@
-FROM node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS builder
+# syntax=docker/dockerfile:1
+# rm-558: multi-arch (linux/amd64 + linux/arm64) with a zero-emulation stage
+# list. Every stage that RUNs a toolchain (corepack/pnpm/vite) is pinned to
+# BUILDPLATFORM so it executes natively for any --platform target. The
+# artifacts those stages produce (web/dist, node_modules) are
+# arch-independent: the runtime dependency graph is pure JS — a real --prod
+# install (pnpm-workspace.yaml present) yields 31 packages, zero .node
+# binaries — so nothing the final image runs differs per TARGETARCH. (The DEV
+# toolchain does carry cpu-gated optional deps, a second reason builders stay
+# BUILDPLATFORM-native.) The final stage carries the target arch and does
+# only cheap filesystem work: COPY plus one prune RUN — the only step that
+# executes on the target (a measured ~1.4 s rm under QEMU for arm64; RUN has no
+# --platform flag and COPY cannot express deletions, so this is the minimal
+# target-executed step the design allows — see the rm-558 CI-time note in
+# .github/workflows/release.yaml).
+ARG NODE_IMAGE=node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6
+
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS builder
 
 # Enable corepack for pnpm
 RUN corepack enable && corepack prepare pnpm@11.27.1 --activate
@@ -18,7 +35,7 @@ COPY web/ ./web/
 RUN pnpm build:web
 
 # ── Production dependency stage ───────────────────────────────────────────────
-FROM node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS prod-deps
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS prod-deps
 
 # Enable corepack for pnpm
 RUN corepack enable && corepack prepare pnpm@11.27.1 --activate
@@ -36,7 +53,7 @@ RUN pnpm install --frozen-lockfile --prod
 # (0e0ff40, upstream #492) ships libpcre2-8-0 10.42-1+deb12u1, so the fix is
 # absorbed at the base. History: docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md
 
-FROM node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6
+FROM ${NODE_IMAGE}
 
 WORKDIR /app
 
@@ -59,6 +76,7 @@ ENV NODE_ENV=production
 
 # Remove package-manager binaries, shims, and caches inherited from the Node base
 # image before handing the filesystem to the unprivileged runtime user.
+# rm-558: the only target-platform RUN in the file (see the header comment).
 RUN rm -rf \
       /usr/local/bin/npm \
       /usr/local/bin/npx \
