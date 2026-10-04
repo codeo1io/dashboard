@@ -19,6 +19,7 @@ import {buildPushClient, unsubscribeOptOut} from '../push/subscribe.ts'
 import {InstallPrompt} from '../pwa/InstallPrompt.tsx'
 import {ReloadPrompt} from '../pwa/ReloadPrompt.tsx'
 import {purgeOperatorCache} from '../pwa/logout-purge.ts'
+import {safeStorageGetItem, safeStorageSetItem} from '../storage/safe-storage.ts' // rm-630
 import {Notifications} from '../views/Notifications.tsx'
 
 /**
@@ -100,7 +101,8 @@ type Theme = 'dark' | 'light'
 
 function getInitialTheme(): Theme {
   if (typeof window === 'undefined') return 'dark'
-  const stored = window.localStorage.getItem('fro-bot-theme')
+  // rm-630: render-phase initializer — must not throw when storage is denied.
+  const stored = safeStorageGetItem('fro-bot-theme')
   if (stored === 'dark' || stored === 'light') return stored
   return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
 }
@@ -157,7 +159,8 @@ export function AppShell({
 
   useEffect(() => {
     applyTheme(theme)
-    window.localStorage.setItem('fro-bot-theme', theme)
+    // rm-630: best-effort persistence — never throw in the effect.
+    safeStorageSetItem('fro-bot-theme', theme)
   }, [theme])
 
   const toggleTheme = useCallback(() => {

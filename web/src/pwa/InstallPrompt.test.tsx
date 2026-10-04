@@ -111,3 +111,48 @@ describe('InstallPrompt', () => {
     expect(screen.queryByTestId('install-prompt')).toBeNull()
   })
 })
+
+describe('storage denial (rm-630)', () => {
+  const poisonLocalStorage = (): (() => void) => {
+    const original = Object.getOwnPropertyDescriptor(window, 'localStorage')
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('localStorage is denied', 'SecurityError')
+      },
+    })
+    return () => {
+      if (original) Object.defineProperty(window, 'localStorage', original)
+      else Reflect.deleteProperty(window, 'localStorage')
+    }
+  }
+
+  it('survives a throwing localStorage at the initializer: prompt shows undismissed', () => {
+    const restore = poisonLocalStorage()
+    try {
+      render(<InstallPrompt />)
+      const {event} = makeInstallPromptEvent()
+      act(() => {
+        window.dispatchEvent(event)
+      })
+      expect(screen.getByTestId('install-prompt')).toBeInTheDocument()
+    } finally {
+      restore()
+    }
+  })
+
+  it('dismiss still works under storage denial (best-effort persistence, no throw)', () => {
+    const restore = poisonLocalStorage()
+    try {
+      render(<InstallPrompt />)
+      const {event} = makeInstallPromptEvent()
+      act(() => {
+        window.dispatchEvent(event)
+      })
+      fireEvent.click(screen.getByTestId('install-prompt-dismiss'))
+      expect(screen.queryByTestId('install-prompt')).toBeNull()
+    } finally {
+      restore()
+    }
+  })
+})

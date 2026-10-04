@@ -101,20 +101,25 @@ export function mintIdempotencyKey() {
  * @param {object} client - An object with refreshCsrf() and launchRun() methods
  * @param {{repo: string, prompt: string}} params - Launch parameters
  * @param {string} idempotencyKey - The idempotency key to use (reused on retry)
+ * @param {AbortSignal} [signal] - rm-629: optional abort signal threaded through
+ *   every fetch of the submit (initial CSRF, the POST, and the 400-retry pair).
+ *   Aborting rejects the in-flight fetch so a superseded mount's POST never
+ *   resolves onto a stale DOM tail; clients that ignore the extra argument are
+ *   unaffected (backward compatible).
  * @returns {Promise<LaunchOutcome>} The launch outcome discriminated union.
  */
-export async function submitLaunch(client, params, idempotencyKey) {
+export async function submitLaunch(client, params, idempotencyKey, signal) {
   const {repo, prompt} = params
 
   // Step 1: Get initial CSRF token
-  const csrfResult = await client.refreshCsrf()
+  const csrfResult = await client.refreshCsrf(signal)
   if (!csrfResult.success) {
     return {kind: 'failure'}
   }
   const csrfToken = csrfResult.data.csrfToken
 
   // Step 2: Attempt launch
-  const launchResult = await client.launchRun({repo, prompt, csrfToken, idempotencyKey})
+  const launchResult = await client.launchRun({repo, prompt, csrfToken, idempotencyKey}, signal)
 
   if (launchResult.success) {
     return {kind: 'launched', runId: launchResult.data.runId}
@@ -134,7 +139,7 @@ export async function submitLaunch(client, params, idempotencyKey) {
 
   // 400 → refresh CSRF once and retry ONCE reusing the SAME idempotency key
   if (error.kind === 'http' && error.status === 400) {
-    const retrycsrfResult = await client.refreshCsrf()
+    const retrycsrfResult = await client.refreshCsrf(signal)
     if (!retrycsrfResult.success) {
       return {kind: 'failure'}
     }
@@ -145,7 +150,7 @@ export async function submitLaunch(client, params, idempotencyKey) {
       prompt,
       csrfToken: retryCsrfToken,
       idempotencyKey, // SAME key — dedupes a lost-response retry
-    })
+    }, signal)
 
     if (retryResult.success) {
       return {kind: 'launched', runId: retryResult.data.runId}
@@ -238,10 +243,11 @@ export function buildLaunchClient(opts) {
     })
 
   return {
-    async refreshCsrf() {
+    async refreshCsrf(signal) {
       try {
         const res = await browserFetch(`${endpointBase}/session/csrf`, {
           headers: {'content-type': 'application/json'},
+          signal,
         })
         if (!res.ok) return {success: false, error: {kind: 'http', status: res.status}}
         const data = await res.json()
@@ -275,7 +281,7 @@ export function buildLaunchClient(opts) {
       }
     },
 
-    async launchRun(req) {
+    async launchRun(req, signal) {
       if (!req.csrfToken || req.csrfToken.trim() === '') {
         return {success: false, error: {kind: 'validation', code: 'missing_csrf', message: 'CSRF token required'}}
       }
@@ -297,6 +303,7 @@ export function buildLaunchClient(opts) {
 
         const res = await browserFetch(`${endpointBase}/runs`, {
           method: 'POST',
+          signal,
           redirect: 'error',
           headers: {
             'content-type': 'application/json',
@@ -334,9 +341,17 @@ export function buildLaunchClient(opts) {
 // resetLaunchState() only aborts the controller if _launchListenerGeneration matches
 // the pre-increment generation — this prevents stale cleanup from aborting a listener
 // registered by a newer init that started after the stale reset.
+// _launchSubmitController (rm-629) is the AbortController for the in-flight launch
+// POST (refreshCsrf + launchRun + the one CSRF-retry fetch). Same ownership pattern:
+// resetLaunchState() aborts it only when _launchSubmitGeneration matches the
+// pre-increment generation, so a stale reset never aborts a newer mount's submit.
+// Aborting the POST makes a mid-submit re-init moot — the fetch rejects with
+// AbortError instead of resolving onto a superseded generation's DOM tail.
 let _launchGeneration = 0
 let _launchListenerController = null
 let _launchListenerGeneration = -1
+let _launchSubmitController = null
+let _launchSubmitGeneration = -1
 // Tracks the stream handle returned by initOperatorStream for launch-created runs.
 // resetLaunchState() closes this handle to prevent leaked connections/timers.
 let _launchStreamHandle = null
@@ -424,6 +439,245 @@ export function setLaunchStreamHandle(handle) {
   _launchStreamHandle = handle
 }
 
+// rm-628/rm-629: the submit flow as an exported function. All init-time closure
+// state is injected via `deps`, so jsdom tests (test/operator-launch-submit.test.ts)
+// drive the EXACT production path — including the staleness guard after the
+// submitLaunch await and the AbortController registration — without mounting
+// initOperatorLaunch (whose /static/ dynamic stream import cannot resolve outside
+// a browser). initOperatorLaunch's listener is now a thin wrapper.
+export async function runLaunchSubmit({
+  client,
+  launchForm,
+  launchError,
+  runIndexList,
+  sharedNoticeEl,
+  onRunLaunched,
+  myGeneration,
+  abortController,
+  opts,
+}) {
+  // Mutex guard — re-entry is impossible regardless of how submit is triggered,
+  // but only within the SAME mount: a lock held by a generation that is no
+  // longer current (its mount was torn down mid-submit, e.g. by resetLaunchState)
+  // is stale and must not block a fresh mount's submits.
+  if (_launching && _launchingGeneration === myGeneration) return
+  _launching = true
+  _launchingGeneration = myGeneration
+
+  // Pre-fetch validation: empty prompt
+  const formData = new FormData(launchForm)
+  const prompt = (formData.get('prompt') ?? '').toString().trim()
+  if (prompt === '') {
+    _launching = false
+    if (launchError !== null) {
+      launchError.textContent = 'Please enter a prompt before launching.'
+      launchError.hidden = false
+    }
+    return
+  }
+
+  // Get selected repo from the select element (rendered by picker) or fallback
+  const repoSelectEl = document.querySelector('#launch-repo-select')
+  const repo = repoSelectEl?.value ?? formData.get('repo')?.toString() ?? ''
+  if (repo === '') {
+    _launching = false
+    if (launchError !== null) {
+      launchError.textContent = 'Please select a repository.'
+      launchError.hidden = false
+    }
+    return
+  }
+
+  // Clear previous error
+  if (launchError !== null) {
+    launchError.textContent = ''
+    launchError.hidden = true
+  }
+
+  // Disable submit during in-flight request
+  const submitBtn = launchForm.querySelector('[type="submit"]')
+  if (submitBtn !== null) submitBtn.disabled = true
+
+  // Mint a fresh idempotency key for this submission
+  const idempotencyKey = mintIdempotencyKey()
+
+  // rm-629: dedicated AbortController for this submit's fetches. Registered in
+  // module state (with generation ownership) so resetLaunchState() can abort an
+  // in-flight POST on unmount/re-init instead of stranding it. Cleared in the
+  // finally below under the same ownership check. The signal is threaded through
+  // submitLaunch to every fetch of the submit (CSRF, POST, 400-retry pair).
+  const submitController = new AbortController()
+  _launchSubmitController = submitController
+  _launchSubmitGeneration = myGeneration
+
+  let outcome
+  try {
+    outcome = await submitLaunch(client, {repo, prompt}, idempotencyKey, submitController.signal)
+  } catch {
+    // rm-628: if a reset or newer init superseded this one while we were in
+    // flight, do not write failure copy into the live tree — bail silently;
+    // the finally below still releases what this generation owns.
+    if (isInitStale(abortController, myGeneration)) return
+    // Unexpected throw (e.g. mintIdempotencyKey or submitLaunch itself throws) —
+    // set generic failure copy so the form is never stuck.
+    if (launchError !== null) {
+      launchError.textContent = 'Launch failed. Please try again.'
+      launchError.hidden = false
+    }
+    return
+  } finally {
+    // Always re-enable the button and clear the mutex, even on throw — but only
+    // if this generation still owns the lock. If a stale generation somehow
+    // reached this finally (it shouldn't, since isInitStale-guarded code paths
+    // return earlier), it must not clear a newer generation's active lock.
+    if (submitBtn !== null) submitBtn.disabled = false
+    if (_launchingGeneration === myGeneration) {
+      _launching = false
+      _launchingGeneration = null
+    }
+    // rm-629: release this submit's controller registration under the same
+    // generation ownership rule — a stale finally must not clear a newer
+    // submit's controller.
+    if (_launchSubmitController === submitController && _launchSubmitGeneration === myGeneration) {
+      _launchSubmitController = null
+      _launchSubmitGeneration = -1
+    }
+  }
+
+  // rm-628: bail before ANY post-await mutation if this init is stale. A reset
+  // or newer init (remount/re-init mid-submit) owns the live tree now: inserting
+  // the optimistic card, resetting the form, dispatching 'launch-success', or
+  // attaching a stream from here would mutate the new instance's DOM with stale
+  // state — wiping a re-drafted prompt, closing the drawer and focus-stealing,
+  // and attaching an SSE stream the current runtime does not own (leaked
+  // connection + cross-instance DOM writes). The failure branches below are
+  // equally covered: no stale error copy reaches the live tree either.
+  if (isInitStale(abortController, myGeneration)) return
+
+  if (outcome.kind === 'launched') {
+    const {runId} = outcome
+
+    // Insert an optimistic pending card into the unified run-index list.
+    // Marked data-optimistic="true" so the run-index diff preserves it
+    // across a background refresh that hasn't indexed this run yet — preservation
+    // is tied to live stream state (this flag + the stream's own terminal
+    // resolution), not to a fetch cycle count. The diff clears this flag itself
+    // once the run appears in a fetched view.
+    if (runIndexList !== null) {
+      const card = document.createElement('div')
+      card.className = 'run-card'
+      card.tabIndex = 0
+      card.setAttribute('aria-label', 'New run, status: Pending')
+      card.dataset.testid = 'run-card'
+      card.dataset.runId = runId
+      card.dataset.optimistic = 'true'
+
+      // Same card anatomy as the run-index renderer.
+      const statusGroup = document.createElement('span')
+      statusGroup.className = 'run-status-group'
+      statusGroup.dataset.role = 'run-status-group'
+
+      const statusSpan = document.createElement('span')
+      statusSpan.className = 'run-status status-pending'
+      statusSpan.dataset.role = 'run-status'
+      statusSpan.textContent = 'Pending'
+      statusGroup.append(statusSpan)
+
+      const reasonSpan = document.createElement('span')
+      reasonSpan.className = 'run-reason'
+      reasonSpan.dataset.role = 'run-reason'
+      statusGroup.append(reasonSpan)
+
+      card.append(statusGroup)
+
+      // Hidden per-card substructure for the stream renderer.
+      const outputEl = document.createElement('div')
+      outputEl.dataset.role = 'run-output'
+      outputEl.hidden = true
+      card.append(outputEl)
+
+      const coalescedEl = document.createElement('div')
+      coalescedEl.dataset.role = 'run-output-coalesced'
+      coalescedEl.hidden = true
+      card.append(coalescedEl)
+
+      const approvalsEl = document.createElement('div')
+      approvalsEl.dataset.role = 'run-approvals'
+      approvalsEl.hidden = true
+      card.append(approvalsEl)
+
+      const badgeEl = document.createElement('span')
+      badgeEl.dataset.role = 'approval-badge'
+      badgeEl.hidden = true
+      card.append(badgeEl)
+
+      // Prepend — a fresh launch is the newest active run and belongs at the top
+      // of the unified list, ahead of the fetched cards.
+      if (runIndexList.firstChild !== undefined && runIndexList.firstChild !== null) {
+        runIndexList.insertBefore(card, runIndexList.firstChild)
+      } else {
+        runIndexList.append(card)
+      }
+
+      // Cap hygiene: evict the oldest terminal card if we're now over RUN_INDEX_CAP.
+      // Never evict the card we just inserted, and never evict the active-stream card.
+      const allCards = Array.from(runIndexList.children ?? [])
+      if (allCards.length > LAUNCH_RUN_INDEX_CAP) {
+        for (let i = allCards.length - 1; i >= 0; i--) {
+          const candidate = allCards[i]
+          if (candidate === card) continue
+          if (candidate.dataset.streamAttached === 'true') continue
+          const statusEl = candidate.querySelector?.('[data-role="run-status"]')
+          const className = statusEl?.className ?? ''
+          const isTerminal = ['status-succeeded', 'status-failed', 'status-cancelled'].some(c => className.includes(c))
+          if (isTerminal) {
+            candidate.remove()
+            break
+          }
+        }
+      }
+
+      if (typeof onRunLaunched === 'function') {
+        // Delegate stream attachment to the runtime seam (centralized ownership).
+        // The runtime seam will close any prior stream and attach the new one.
+        onRunLaunched(runId, card)
+      } else {
+        // Legacy path: no runtime callback — attach stream directly and store handle.
+        // (Local dynamic import: this function is module-scope, not an
+        // initOperatorLaunch closure — kept lazy so jsdom tests that always
+        // pass onRunLaunched never hit it.)
+        const statusEl = card.querySelector('[data-role="run-status"]')
+        const {initOperatorStream} = await import(streamModuleSpecifier())
+        const streamHandle = initOperatorStream({runId, statusEl, noticeEl: sharedNoticeEl, endpointBase: opts?.endpointBase, fixtureSessionId: opts?.fixtureSessionId})
+        setLaunchStreamHandle(streamHandle)
+      }
+    }
+
+    // Reset the form
+    launchForm.reset()
+
+    // Dispatch success event to the form so React components/drawers can react (e.g. close drawer and focus card)
+    launchForm.dispatchEvent(new CustomEvent('launch-success', {
+      bubbles: true,
+      detail: {runId},
+    }))
+  } else if (outcome.kind === 'not-found') {
+    if (launchError !== null) {
+      launchError.textContent = 'The selected repository is not available for launch.'
+      launchError.hidden = false
+    }
+  } else if (outcome.kind === 'rate-limited') {
+    if (launchError !== null) {
+      launchError.textContent = 'Too many launch requests. Please wait before trying again.'
+      launchError.hidden = false
+    }
+  } else if (launchError !== null) {
+    // failure — generic, no cause inference
+    launchError.textContent = 'Launch failed. Please try again.'
+    launchError.hidden = false
+  }
+}
+
 /**
  * Initialize the operator launch UI.
  *
@@ -456,7 +710,10 @@ export async function initOperatorLaunch(opts) {
   // initOperatorStream directly. This centralizes active-stream ownership in the runtime.
   const onRunLaunched = opts?.onRunLaunched
 
-  const {initOperatorStream} = await import(streamModuleSpecifier())
+  // Warm the stream module eagerly at init (also an init-race checkpoint —
+  // the staleness guard directly below covers the await). The launch module
+  // itself imports initOperatorStream lazily at its legacy call site.
+  await import(streamModuleSpecifier())
 
   // Guard: bail if a reset or newer init has superseded this one while we awaited.
   if (isInitStale(abortController, myGeneration)) return
@@ -551,193 +808,7 @@ export async function initOperatorLaunch(opts) {
 
     launchForm.addEventListener('submit', async event => {
       event.preventDefault()
-
-      // Mutex guard — re-entry is impossible regardless of how submit is triggered,
-      // but only within the SAME mount: a lock held by a generation that is no
-      // longer current (its mount was torn down mid-submit, e.g. by resetLaunchState)
-      // is stale and must not block a fresh mount's submits.
-      if (_launching && _launchingGeneration === myGeneration) return
-      _launching = true
-      _launchingGeneration = myGeneration
-
-      // Pre-fetch validation: empty prompt
-      const formData = new FormData(launchForm)
-      const prompt = (formData.get('prompt') ?? '').toString().trim()
-      if (prompt === '') {
-        _launching = false
-        if (launchError !== null) {
-          launchError.textContent = 'Please enter a prompt before launching.'
-          launchError.hidden = false
-        }
-        return
-      }
-
-      // Get selected repo from the select element (rendered by picker) or fallback
-      const repoSelectEl = document.querySelector('#launch-repo-select')
-      const repo = repoSelectEl?.value ?? formData.get('repo')?.toString() ?? ''
-      if (repo === '') {
-        _launching = false
-        if (launchError !== null) {
-          launchError.textContent = 'Please select a repository.'
-          launchError.hidden = false
-        }
-        return
-      }
-
-      // Clear previous error
-      if (launchError !== null) {
-        launchError.textContent = ''
-        launchError.hidden = true
-      }
-
-      // Disable submit during in-flight request
-      const submitBtn = launchForm.querySelector('[type="submit"]')
-      if (submitBtn !== null) submitBtn.disabled = true
-
-      // Mint a fresh idempotency key for this submission
-      const idempotencyKey = mintIdempotencyKey()
-
-      let outcome
-      try {
-        outcome = await submitLaunch(client, {repo, prompt}, idempotencyKey)
-      } catch {
-        // Unexpected throw (e.g. mintIdempotencyKey or submitLaunch itself throws) —
-        // set generic failure copy so the form is never stuck.
-        if (launchError !== null) {
-          launchError.textContent = 'Launch failed. Please try again.'
-          launchError.hidden = false
-        }
-        return
-      } finally {
-        // Always re-enable the button and clear the mutex, even on throw — but only
-        // if this generation still owns the lock. If a stale generation somehow
-        // reached this finally (it shouldn't, since isInitStale-guarded code paths
-        // return earlier), it must not clear a newer generation's active lock.
-        if (submitBtn !== null) submitBtn.disabled = false
-        if (_launchingGeneration === myGeneration) {
-          _launching = false
-          _launchingGeneration = null
-        }
-      }
-
-      if (outcome.kind === 'launched') {
-        const {runId} = outcome
-
-        // Insert an optimistic pending card into the unified run-index list.
-        // Marked data-optimistic="true" so the run-index diff preserves it
-        // across a background refresh that hasn't indexed this run yet — preservation
-        // is tied to live stream state (this flag + the stream's own terminal
-        // resolution), not to a fetch cycle count. The diff clears this flag itself
-        // once the run appears in a fetched view.
-        if (runIndexList !== null) {
-          const card = document.createElement('div')
-          card.className = 'run-card'
-          card.tabIndex = 0
-          card.setAttribute('aria-label', 'New run, status: Pending')
-          card.dataset.testid = 'run-card'
-          card.dataset.runId = runId
-          card.dataset.optimistic = 'true'
-
-          // Same card anatomy as the run-index renderer.
-          const statusGroup = document.createElement('span')
-          statusGroup.className = 'run-status-group'
-          statusGroup.dataset.role = 'run-status-group'
-
-          const statusSpan = document.createElement('span')
-          statusSpan.className = 'run-status status-pending'
-          statusSpan.dataset.role = 'run-status'
-          statusSpan.textContent = 'Pending'
-          statusGroup.append(statusSpan)
-
-          const reasonSpan = document.createElement('span')
-          reasonSpan.className = 'run-reason'
-          reasonSpan.dataset.role = 'run-reason'
-          statusGroup.append(reasonSpan)
-
-          card.append(statusGroup)
-
-          // Hidden per-card substructure for the stream renderer.
-          const outputEl = document.createElement('div')
-          outputEl.dataset.role = 'run-output'
-          outputEl.hidden = true
-          card.append(outputEl)
-
-          const coalescedEl = document.createElement('div')
-          coalescedEl.dataset.role = 'run-output-coalesced'
-          coalescedEl.hidden = true
-          card.append(coalescedEl)
-
-          const approvalsEl = document.createElement('div')
-          approvalsEl.dataset.role = 'run-approvals'
-          approvalsEl.hidden = true
-          card.append(approvalsEl)
-
-          const badgeEl = document.createElement('span')
-          badgeEl.dataset.role = 'approval-badge'
-          badgeEl.hidden = true
-          card.append(badgeEl)
-
-          // Prepend — a fresh launch is the newest active run and belongs at the top
-          // of the unified list, ahead of the fetched cards.
-          if (runIndexList.firstChild !== undefined && runIndexList.firstChild !== null) {
-            runIndexList.insertBefore(card, runIndexList.firstChild)
-          } else {
-            runIndexList.append(card)
-          }
-
-          // Cap hygiene: evict the oldest terminal card if we're now over RUN_INDEX_CAP.
-          // Never evict the card we just inserted, and never evict the active-stream card.
-          const allCards = Array.from(runIndexList.children ?? [])
-          if (allCards.length > LAUNCH_RUN_INDEX_CAP) {
-            for (let i = allCards.length - 1; i >= 0; i--) {
-              const candidate = allCards[i]
-              if (candidate === card) continue
-              if (candidate.dataset.streamAttached === 'true') continue
-              const statusEl = candidate.querySelector?.('[data-role="run-status"]')
-              const className = statusEl?.className ?? ''
-              const isTerminal = ['status-succeeded', 'status-failed', 'status-cancelled'].some(c => className.includes(c))
-              if (isTerminal) {
-                candidate.remove()
-                break
-              }
-            }
-          }
-
-          if (typeof onRunLaunched === 'function') {
-            // Delegate stream attachment to the runtime seam (centralized ownership).
-            // The runtime seam will close any prior stream and attach the new one.
-            onRunLaunched(runId, card)
-          } else {
-            // Legacy path: no runtime callback — attach stream directly and store handle.
-            const statusEl = card.querySelector('[data-role="run-status"]')
-            const streamHandle = initOperatorStream({runId, statusEl, noticeEl: sharedNoticeEl, endpointBase: opts?.endpointBase, fixtureSessionId: opts?.fixtureSessionId})
-            setLaunchStreamHandle(streamHandle)
-          }
-        }
-
-        // Reset the form
-        launchForm.reset()
-
-        // Dispatch success event to the form so React components/drawers can react (e.g. close drawer and focus card)
-        launchForm.dispatchEvent(new CustomEvent('launch-success', {
-          bubbles: true,
-          detail: {runId},
-        }))
-      } else if (outcome.kind === 'not-found') {
-        if (launchError !== null) {
-          launchError.textContent = 'The selected repository is not available for launch.'
-          launchError.hidden = false
-        }
-      } else if (outcome.kind === 'rate-limited') {
-        if (launchError !== null) {
-          launchError.textContent = 'Too many launch requests. Please wait before trying again.'
-          launchError.hidden = false
-        }
-      } else if (launchError !== null) {
-        // failure — generic, no cause inference
-        launchError.textContent = 'Launch failed. Please try again.'
-        launchError.hidden = false
-      }
+      await runLaunchSubmit({client, launchForm, launchError, runIndexList, sharedNoticeEl, onRunLaunched, myGeneration, abortController, opts})
     }, {signal: listenerController.signal})
   }
 }
@@ -766,6 +837,18 @@ export function resetLaunchState() {
     _launchListenerController.abort()
     _launchListenerController = null
     _launchListenerGeneration = -1
+  }
+  // rm-629: abort the in-flight launch POST under the same ownership rule. A
+  // mid-submit reset/re-init would otherwise leave the old POST running to
+  // completion while the new mount's mutex (deliberately non-blocking across
+  // mounts) admits a concurrent second submit with a fresh idempotency key —
+  // two server-side runs for one operator intent. Aborting makes the stale
+  // submit reject immediately; its catch sees the generation guard (rm-628) and
+  // never touches the live tree.
+  if (_launchSubmitController !== null && _launchSubmitGeneration === preIncrementGeneration) {
+    _launchSubmitController.abort()
+    _launchSubmitController = null
+    _launchSubmitGeneration = -1
   }
   // Close the launch-created stream handle to prevent leaked connections/timers.
   if (_launchStreamHandle !== null) {
@@ -803,7 +886,15 @@ if (typeof document !== 'undefined') {
       document.addEventListener('DOMContentLoaded', () => {
         _initOperatorLaunchOnce()
       })
-    } else {
+    } else if (
+      typeof document.querySelector === 'function' &&
+      document.querySelector('#launch-form') !== null
+    ) {
+      // rm-628 test surface: only auto-start when the page actually carries the
+      // launch form (the operator page). A bare import into a DOM-bearing test
+      // environment — or a page that merely links this script — otherwise runs a
+      // pointless init (whose eager stream-module warm-up import cannot resolve
+      // outside a real browser) and surfaces as an unhandled rejection.
       _initOperatorLaunchOnce()
     }
   }

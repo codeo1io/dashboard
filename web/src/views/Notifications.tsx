@@ -10,6 +10,7 @@ import {
 } from '../push/subscribe.ts'
 import type {MinimalServiceWorkerRegistration, ReconcileSweepCache} from '../push/subscribe.ts'
 import {buildPushClient} from '../push/subscribe.ts'
+import {safeStorageGetItem, safeStorageSetItem} from '../storage/safe-storage.ts' // rm-630
 import {getNotificationCopy} from './notifications-copy.ts'
 import type {NotificationUiState} from './notifications-copy.ts'
 
@@ -52,8 +53,8 @@ export function Notifications({
   const [currentUiState, setCurrentUiState] = useState<NotificationUiState>('not-requested')
   const [inFlight, setInFlight] = useState(false)
   const [isCardDismissed, setIsCardDismissed] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false
-    return window.localStorage.getItem(DISMISS_SETTINGS_KEY) === '1'
+    // rm-630: render-phase initializer — must not throw when storage is denied.
+    return safeStorageGetItem(DISMISS_SETTINGS_KEY) === '1'
   })
 
   const cacheRef = useRef<ReconcileSweepCache>(INITIAL_RECONCILE_SWEEP_CACHE)
@@ -335,9 +336,8 @@ export function Notifications({
 
   const handleDismissCard = () => {
     setIsCardDismissed(true)
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(DISMISS_SETTINGS_KEY, '1')
-    }
+    // rm-630: best-effort persistence — never throw in the handler.
+    safeStorageSetItem(DISMISS_SETTINGS_KEY, '1')
   }
 
   // Choose accent coloring and styling for container and labels

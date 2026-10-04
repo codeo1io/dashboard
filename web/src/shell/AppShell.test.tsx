@@ -517,3 +517,46 @@ describe('AppShell', () => {
     })
   })
 })
+
+describe('storage denial (rm-630)', () => {
+  const poisonLocalStorage = (): (() => void) => {
+    const original = Object.getOwnPropertyDescriptor(window, 'localStorage')
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('localStorage is denied', 'SecurityError')
+      },
+    })
+    return () => {
+      if (original) Object.defineProperty(window, 'localStorage', original)
+      else Reflect.deleteProperty(window, 'localStorage')
+    }
+  }
+
+  it('survives a throwing localStorage: renders with the system-preference theme and does not throw', () => {
+    stubMatchMedia(true)
+    const restore = poisonLocalStorage()
+    try {
+      render(<AppShell>content</AppShell>)
+      // Render survived; theme falls back to the system preference rather than
+      // escaping the initializer (rm-630's blank-page class).
+      expect(screen.getByText('content')).toBeInTheDocument()
+      expect(document.documentElement.dataset.theme).not.toBe('')
+    } finally {
+      restore()
+    }
+  })
+
+  it('theme toggle still works under storage denial (best-effort persistence, no throw)', () => {
+    stubMatchMedia(true)
+    const restore = poisonLocalStorage()
+    try {
+      render(<AppShell>content</AppShell>)
+      const before = document.documentElement.dataset.theme
+      fireEvent.click(screen.getByTestId('theme-toggle'))
+      expect(document.documentElement.dataset.theme).not.toBe(before)
+    } finally {
+      restore()
+    }
+  })
+})
