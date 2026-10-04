@@ -9,7 +9,10 @@
  * The control is hidden once the app is installed (appinstalled event) or
  * after the user has been prompted (to avoid re-prompting on the same session).
  * Dismiss state is persisted to localStorage so the prompt doesn't reappear
- * on reload after the user explicitly dismisses it.
+ * on reload after the user explicitly dismisses it. That persistence is
+ * DELIBERATE and stays one-way for the banner itself — the way back is the
+ * AppShell footer's "Restore notifications" affordance (rm-596), which
+ * clears this key and remounts the prompt surface.
  *
  * Browser-only: all window/document access is guarded for SSR safety.
  */
@@ -21,7 +24,12 @@ interface BeforeInstallPromptEvent extends Event {
   prompt(): Promise<void>
 }
 
-const DISMISS_KEY = 'fro-bot-install-dismissed'
+/**
+ * Persisted one-way dismiss latch. Exported (rm-596) for the AppShell
+ * footer's re-entry affordance, which clears it — the KEY STRING is the
+ * storage contract and never changes.
+ */
+export const DISMISS_KEY = 'fro-bot-install-dismissed'
 
 function isDismissed(): boolean {
   if (typeof window === 'undefined') return false
