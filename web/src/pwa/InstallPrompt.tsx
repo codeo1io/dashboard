@@ -15,6 +15,7 @@
  */
 
 import {useEffect, useState} from 'react'
+import {safeStorageGetItem, safeStorageSetItem} from '../storage/safe-storage.ts' // rm-630
 
 /** Minimal interface for the BeforeInstallPromptEvent (not in standard TS lib). */
 interface BeforeInstallPromptEvent extends Event {
@@ -24,8 +25,9 @@ interface BeforeInstallPromptEvent extends Event {
 const DISMISS_KEY = 'fro-bot-install-dismissed'
 
 function isDismissed(): boolean {
-  if (typeof window === 'undefined') return false
-  return window.localStorage.getItem(DISMISS_KEY) === '1'
+  // rm-630: render-phase initializer (called from useState) — must not throw
+  // when storage is denied.
+  return safeStorageGetItem(DISMISS_KEY) === '1'
 }
 
 export function InstallPrompt() {
@@ -66,9 +68,8 @@ export function InstallPrompt() {
 
   const handleDismiss = () => {
     setDismissed(true)
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(DISMISS_KEY, '1')
-    }
+    // rm-630: best-effort persistence — never throw in the handler.
+    safeStorageSetItem(DISMISS_KEY, '1')
   }
 
   return (
