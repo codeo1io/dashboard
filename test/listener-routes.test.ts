@@ -5,9 +5,10 @@ import type {ListenerStore} from '../src/listener/store.ts'
 import {Buffer} from 'node:buffer'
 import {createHmac} from 'node:crypto'
 import process from 'node:process'
+import {Hono} from 'hono'
 import {beforeEach, describe, expect, it} from 'vitest'
 import {createListenerStore} from '../src/listener/store.ts'
-import {deriveAckCsrfToken} from '../src/routes/listener.ts'
+import {buildListenerRouter, deriveAckCsrfToken} from '../src/routes/listener.ts'
 import {buildDashboardApp} from '../src/server.ts'
 import {SessionManager} from '../src/session.ts'
 
@@ -416,6 +417,89 @@ describe('operator listener channel routes', () => {
 
     const csrfRes = await router.request('/csrf')
     expect(csrfRes.status).toBe(503)
+  })
+
+  // ---------------------------------------------------------------------------
+  // ack CSRF (rm-641) — gateway deployments have no startup-constant operator
+  // identity: auth is delegated to the gateway, and the operator is whoever the
+  // gateway session middleware resolved for the request. The token must bind
+  // to THAT login. Wiring mirrors the real mount (server.ts): gateway session
+  // middleware in front, buildListenerRouter behind it.
+  // ---------------------------------------------------------------------------
+
+  function buildGatewayApp(login: string | undefined) {
+    const app = new Hono()
+    app.use('*', async (c, next) => {
+      if (login !== undefined) c.set('gatewaySession' as never, {login} as never)
+      await next()
+    })
+    app.route(
+      '/',
+      buildListenerRouter({
+        store,
+        ingestKey: null,
+        ackCsrf: {
+          cookieKey: TEST_KEY,
+          resolveOperatorLogin: c => (c.get('gatewaySession' as never) as {login: string} | undefined)?.login,
+        },
+      }),
+    )
+    return app
+  }
+
+  it('rm-641: gateway wiring derives the token from the RESOLVED session login', async () => {
+    const app = buildGatewayApp('gw-operator')
+
+    const csrfRes = await app.request('/csrf')
+    expect(csrfRes.status).toBe(200)
+    expect(csrfRes.headers.get('cache-control')).toBe('no-store') // rm-263
+    const json = (await csrfRes.json()) as {csrfToken: string}
+    expect(json.csrfToken).toBe(
+      deriveAckCsrfToken({cookieKey: TEST_KEY, operatorLogin: 'gw-operator'}),
+    )
+  })
+
+  it('rm-641: ack-all accepts a gateway-derived token; a different-login token is rejected', async () => {
+    // Seed one message through the ingest route of a full app sharing the store.
+    const seeder = await buildTestApp({listenerStore: store, listenerIngestKey: INGEST_KEY})
+    const seeded = await seeder.request('/api/listener/ingest', {
+      method: 'POST',
+      headers: ingestHeaders(VALID_BODY),
+      body: VALID_BODY,
+    })
+    expect(seeded.status).toBe(202)
+
+    const app = buildGatewayApp('gw-operator')
+
+    const ok = await app.request('/ack-all', {
+      method: 'POST',
+      headers: {'x-csrf-token': deriveAckCsrfToken({cookieKey: TEST_KEY, operatorLogin: 'gw-operator'})},
+    })
+    expect(ok.status).toBe(202)
+    const okJson = (await ok.json()) as {acked: number}
+    expect(okJson.acked).toBe(1)
+
+    // A token minted for a DIFFERENT login (another gateway operator) must not
+    // verify: the HMAC binds the identity, not just possession of the key.
+    const secondBody = JSON.stringify({...JSON.parse(VALID_BODY), title: 'second message'})
+    const seeder2 = await buildTestApp({listenerStore: store, listenerIngestKey: INGEST_KEY})
+    await seeder2.request('/api/listener/ingest', {
+      method: 'POST',
+      headers: ingestHeaders(secondBody),
+      body: secondBody,
+    })
+    const wrong = await app.request('/ack-all', {
+      method: 'POST',
+      headers: {'x-csrf-token': deriveAckCsrfToken({cookieKey: TEST_KEY, operatorLogin: 'other-operator'})},
+    })
+    expect(wrong.status).toBe(403)
+  })
+
+  it('rm-641: unresolved gateway session fails closed exactly like null wiring (503/403)', async () => {
+    const app = buildGatewayApp(undefined)
+
+    expect((await app.request('/csrf')).status).toBe(503)
+    expect((await app.request('/ack-all', {method: 'POST'})).status).toBe(403)
   })
 
   it('when no ingest key is configured, POST /api/listener/ingest → 404', async () => {

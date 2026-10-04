@@ -42,7 +42,7 @@ Compute secret presence in a tiny preceding job (a step-level `env` MAY read
 jobs:
   secret-gate:
     name: Fro Bot secret gate
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
     outputs:
@@ -68,27 +68,28 @@ and works for secrets, because the gate job itself has no `if:`.
 
 Trade-offs to account for:
 
-- The gate job is a real job: it queues on the runner (this fork has ONE
-  self-hosted runner, so jobs serialize), it appears in Check-Workflows
+- The gate job is a real job: it queues on the runner (when this doc was
+  written the fork had ONE self-hosted runner, so jobs serialized; CI has
+  since moved to GitHub-hosted runners — d73fbe7, 2026-09-22 — where the
+  gate still costs a queued job per trigger), it appears in Check-Workflows
   expectations, and it runs on every configured trigger (seconds each).
 - Keep it trivial — no checkout, no permissions (`permissions: {}`), small
   `timeout-minutes` so a stuck runner cannot hold a slot long.
 
-Shipped 2026-09-20 in fro-bot.yaml (run f4622d7e, rm-100a). Step-level token
-references (for example `token: ${{ secrets.FRO_BOT_PAT }}` inside a step)
-remain legal and were left untouched.
-
-Landing note (2026-09-24): run f4622d7e's branch — carrying the needs-gate
-above — never landed. origin/main shipped the same constraint fix at 916783f
-(twin cycle-2 run 270220e7) in the OTHER legal escape: job-level
-`env: HAS_FRO_BOT_PAT: ${{ secrets.FRO_BOT_PAT != '' }}` with per-step `if:`
-arms plus a skip-warning step (the release.yaml 886c28e pattern generalized;
-job-level `env` may read `secrets`, step-level `if:` may read `env`). Both
-forms satisfy the rule above — pick the needs-gate when the JOB body itself
-must branch, job-env + step-ifs when only steps do. Also note the example's
-`runs-on: self-hosted` reflects the 2026-09-20 policy; CI moved to
-GitHub-hosted runners on 2026-09-22 (d73fbe7), so a gate job written today
-uses `ubuntu-latest`.
+Landing note (truth-corrected 2026-09-24; consolidated 2026-10-04 when an
+artifact-named duplicate of this doc — `zz-conflict-lint-check.md` — rode the
+d34c15c4 upstream-absorb landing and was folded back here): the needs-gate
+form above was authored 2026-09-20 by run f4622d7e (rm-100a), whose landing
+was stranded. On main the same constraint was instead satisfied with the
+step-level variant this doc identifies as legal — job-level
+`env: HAS_FRO_BOT_PAT: ${{ secrets.FRO_BOT_PAT != '' }}` plus per-step
+`if: ... env.HAS_FRO_BOT_PAT == 'true'` and a warn-and-skip step
+(fro-bot.yaml, landed via run 270220e7 at 916783f/aa4ff9f) — which skips
+gracefully with a visible warning instead of consuming an extra gate job.
+Both forms satisfy the rule above: pick the needs-gate when a whole job (not
+just its steps) must be skipped, job-env + step-ifs when only steps do.
+Step-level token references (for example `token: ${{ secrets.FRO_BOT_PAT }}`
+inside a step) remain legal and are untouched in both forms.
 
 ## Validation
 

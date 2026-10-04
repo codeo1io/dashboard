@@ -13,7 +13,7 @@ import type {ListenerStore} from '../listener/store.ts'
 
 import {Buffer} from 'node:buffer'
 import {createHmac, timingSafeEqual} from 'node:crypto'
-import {Hono} from 'hono'
+import {Hono, type Context} from 'hono'
 import {parseIngestBody} from '../listener/contract.ts'
 import {verifyIngestSignature} from '../listener/ingest-auth.ts'
 import {logger} from '../logger.ts'
@@ -32,6 +32,31 @@ export interface AckCsrfConfig {
   /** Operator login bound into the token (operator-specific, like logout CSRF). */
   readonly operatorLogin: string
 }
+
+/**
+ * Gateway-branch CSRF wiring (rm-641): when auth is delegated to the gateway
+ * there is no startup-constant operator identity — the operator is whoever
+ * the gateway session middleware resolved for the request. The token then
+ * binds to a per-request login instead of a constant.
+ */
+export interface AckCsrfGatewayConfig {
+  /** Cookie signing key — same role as {@link AckCsrfConfig.cookieKey}. */
+  readonly cookieKey: Buffer
+  /**
+   * Reads the resolved operator login off the request context (server.ts
+   * sets `gatewaySession` before this router runs). Returning undefined or ''
+   * fails the route closed exactly like null wiring: token endpoint 503,
+   * mutations 403.
+   */
+  readonly resolveOperatorLogin: (c: Context) => string | undefined
+}
+
+/**
+ * Ack CSRF wiring accepted by {@link buildListenerRouter}: static identity
+ * (Arctic deployments), per-request identity (gateway deployments, rm-641),
+ * or null (no operator session material in scope — fail closed).
+ */
+export type AckCsrfWiring = AckCsrfConfig | AckCsrfGatewayConfig | null
 
 /**
  * Derives the listener-ack CSRF token for the current window: the first 32
@@ -95,7 +120,7 @@ export interface ListenerRouterDeps {
    * 403 and the /csrf token endpoint returns 503. server.ts always supplies
    * it whenever an operator session is in scope (auth active).
    */
-  readonly ackCsrf: AckCsrfConfig | null
+  readonly ackCsrf: AckCsrfWiring
 }
 
 export function buildListenerRouter(deps: ListenerRouterDeps): Hono {
@@ -152,17 +177,35 @@ export function buildListenerRouter(deps: ListenerRouterDeps): Hono {
     return c.json(response, 200)
   })
 
+  // rm-641: resolve the effective CSRF config per request — static for Arctic
+  // wiring, gateway-session-derived for gateway wiring, null when no identity
+  // resolved (fail closed, same verdicts as no wiring at all).
+  const ackConfigFor = (c: Context): AckCsrfConfig | null => {
+    const wiring = deps.ackCsrf
+    if (wiring === null) {
+      return null
+    }
+    if ('resolveOperatorLogin' in wiring) {
+      const login = wiring.resolveOperatorLogin(c)
+      return login !== undefined && login !== ''
+        ? {cookieKey: wiring.cookieKey, operatorLogin: login}
+        : null
+    }
+    return wiring
+  }
+
   router.get('/csrf', c => {
-    if (deps.ackCsrf === null) {
+    const config = ackConfigFor(c)
+    if (config === null) {
       return c.json({error: 'csrf unavailable'}, 503)
     }
     // Token-bearing response: never cacheable (rm-263).
     c.header('Cache-Control', 'no-store')
-    return c.json({csrfToken: deriveAckCsrfToken(deps.ackCsrf)}, 200)
+    return c.json({csrfToken: deriveAckCsrfToken(config)}, 200)
   })
 
   router.post('/messages/:id/ack', c => {
-    const verdict = checkAckCsrf(c.req.header(ACK_CSRF_HEADER), deps.ackCsrf)
+    const verdict = checkAckCsrf(c.req.header(ACK_CSRF_HEADER), ackConfigFor(c))
     if (verdict !== 'ok') {
       logger.warning(`listener ack rejected: csrf ${verdict}`)
       return c.json({error: `csrf ${verdict}`}, 403)
@@ -177,7 +220,7 @@ export function buildListenerRouter(deps: ListenerRouterDeps): Hono {
   })
 
   router.post('/ack-all', c => {
-    const verdict = checkAckCsrf(c.req.header(ACK_CSRF_HEADER), deps.ackCsrf)
+    const verdict = checkAckCsrf(c.req.header(ACK_CSRF_HEADER), ackConfigFor(c))
     if (verdict !== 'ok') {
       logger.warning(`listener ack-all rejected: csrf ${verdict}`)
       return c.json({error: `csrf ${verdict}`}, 403)

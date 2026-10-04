@@ -15,7 +15,9 @@ import {Buffer} from 'node:buffer'
 import {afterEach, describe, expect, it, vi} from 'vitest'
 import {createOperatorClient} from '../src/gateway/operator-client.ts'
 import {createOperatorServerFetch} from '../src/gateway/operator-server-fetch.ts'
+import {createListenerStore} from '../src/listener/store.ts'
 import {err, ok} from '../src/result.ts'
+import {deriveAckCsrfToken} from '../src/routes/listener.ts'
 import {buildDashboardApp} from '../src/server.ts'
 import {SessionManager} from '../src/session.ts'
 
@@ -993,5 +995,52 @@ describe('rm-127 gateway topology guard', () => {
     expect(res.status).toBe(502)
     expect(res.headers.get('location')).toBeNull()
     expect(await res.text()).toContain('reverse-proxied to the gateway')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// flag-ON: listener ack CSRF through the real wiring (rm-641)
+// ---------------------------------------------------------------------------
+
+describe('flag-ON: listener ack CSRF binds to the resolved gateway session (rm-641)', () => {
+  it('GET /api/listener/csrf → 200 with a token derived from the SessionDto login', async () => {
+    const {client} = makeFakeOperatorClient(async () => ok(VALID_SESSION))
+    const app = await buildDashboardApp({
+      // No operatorLogin: Arctic branch stays deny-all, gateway branch serves.
+      cookieKey: TEST_KEY,
+      gatewayOperatorSessionEnabled: true,
+      gatewayProxyAcknowledged: true,
+      operatorClient: client,
+      listenerStore: createListenerStore(':memory:'),
+    })
+
+    const res = await app.request('/api/listener/csrf', {
+      headers: {cookie: 'gateway_session=some-gateway-cookie-value'},
+    })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-store') // rm-263
+    const json = (await res.json()) as {csrfToken: string}
+    expect(json.csrfToken).toBe(
+      deriveAckCsrfToken({cookieKey: TEST_KEY, operatorLogin: VALID_SESSION.login}),
+    )
+  })
+
+  it('gateway wiring without cookieKey fails closed: csrf 503 even with a valid session', async () => {
+    // Defense in depth for direct buildDashboardApp callers: gateway arm
+    // demands key material, else the router gets null wiring (503/403),
+    // never an HMAC crash.
+    const {client} = makeFakeOperatorClient(async () => ok(VALID_SESSION))
+    const app = await buildDashboardApp({
+      // Deliberately NO cookieKey and NO operatorLogin.
+      gatewayOperatorSessionEnabled: true,
+      gatewayProxyAcknowledged: true,
+      operatorClient: client,
+      listenerStore: createListenerStore(':memory:'),
+    })
+
+    const res = await app.request('/api/listener/csrf', {
+      headers: {cookie: 'gateway_session=some-gateway-cookie-value'},
+    })
+    expect(res.status).toBe(503)
   })
 })

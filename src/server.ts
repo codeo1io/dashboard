@@ -1060,19 +1060,30 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       buildListenerRouter({
         store: opts.listenerStore,
         ingestKey: opts.listenerIngestKey ?? null,
-        // Ack CSRF is active whenever an operator session is in scope. Derive
-        // from the RESOLVED operatorLogin (opts with env fallback — see the
-        // resolution above), never raw opts: createDashboardServer and
-        // env-configured deployments pass no explicit operatorLogin, but auth
-        // is still active via DASHBOARD_OPERATOR_LOGIN, and the session cookie
-        // is always minted for the resolved login, so the CSRF HMAC must bind
-        // to the same identity. When auth is unconfigured, the middleware
-        // already denies every protected route (fail-closed), and the router's
-        // null config refuses mutations independently — belt and suspenders.
+        // Ack CSRF is active whenever an operator session is in scope. Arctic
+        // deployments bind the CSRF HMAC to the RESOLVED operatorLogin (opts
+        // with env fallback — see the resolution above), never raw opts:
+        // createDashboardServer and env-configured deployments pass no
+        // explicit operatorLogin, but auth is still active via
+        // DASHBOARD_OPERATOR_LOGIN, and the session cookie is always minted
+        // for the resolved login, so the CSRF HMAC must bind to the same
+        // identity. Gateway deployments (rm-641) have no startup-constant
+        // identity — the operator is whoever the gateway session middleware
+        // resolved — so the token binds to the per-request gatewaySession
+        // login instead. When auth is unconfigured, the middleware already
+        // denies every protected route (fail-closed), and the router's null
+        // wiring refuses mutations independently — belt and suspenders. The
+        // cookie-key guard keeps the gateway arm fail-closed (null wiring, not
+        // an HMAC crash) for direct buildDashboardApp callers that pass no key.
         ackCsrf:
           operatorLogin !== undefined && sessionManager !== undefined
             ? {cookieKey: opts?.cookieKey as Buffer, operatorLogin}
-            : null,
+            : gatewayOperatorSessionEnabled && opts?.cookieKey !== undefined
+              ? {
+                  cookieKey: opts.cookieKey,
+                  resolveOperatorLogin: c => (c.get('gatewaySession') as SessionDto | undefined)?.login,
+                }
+              : null,
       }),
     )
   }
