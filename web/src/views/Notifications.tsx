@@ -47,6 +47,12 @@ interface NotificationsProps {
   pushFixtureSessionId?: string
 }
 
+// rm-600: refresh cadence for the cached Gateway VAPID key version. Matches the
+// sweep's own DEFAULT_MIN_INTERVAL_MS floor in subscribe.ts (30s), so a sweep
+// adds at most one vapid-key GET alongside its metadata read — never one per
+// focus event.
+const VAPID_KEY_VERSION_REFRESH_MS = 30_000
+
 export function Notifications({
   pushEndpointBase,
   pushConfigReady,
@@ -70,6 +76,31 @@ export function Notifications({
     key: string
     client: ReturnType<typeof buildPushClient>
   } | null>(null)
+
+  // rm-600: cache of the Gateway's CURRENT VAPID key version, supplied to the
+  // reconcile sweep as getCurrentKeyVersion (subscribe.ts). Refreshed
+  // fire-and-forget at sweep cadence through the same push client the sweep
+  // uses. Fail-open by design: a missing or failed fetch leaves `undefined`,
+  // which derivePushHandoffState (reconcile.ts) treats as "unknown — never
+  // stale", so the cache can only ADD stale-key detection; it can never
+  // misclassify a live subscription. Reset together with the client (fixture
+  // switches rebuild the client under a new endpoint base).
+  const vapidKeyVersionRef = useRef<{
+    clientKey: string
+    version: string | undefined
+    lastRefreshedAt: number
+  } | null>(null)
+  if (
+    vapidKeyVersionRef.current === null ||
+    vapidKeyVersionRef.current.clientKey !== pushClientKey
+  ) {
+    vapidKeyVersionRef.current = {
+      clientKey: pushClientKey,
+      version: undefined,
+      lastRefreshedAt: 0,
+    }
+  }
+
   if (pushClientRef.current === null || pushClientRef.current.key !== pushClientKey) {
     pushClientRef.current = {
       key: pushClientKey,
@@ -99,10 +130,44 @@ export function Notifications({
       return
     }
 
+    // rm-600: refresh the cached current VAPID key version (rate-limited,
+    // fire-and-forget). The sweep below NEVER blocks on this fetch — it reads
+    // the last-known value synchronously, so a gateway key rotation is
+    // detected on the following sweep at the latest, and a hung vapid-key
+    // endpoint can only delay detection, never break the sweep.
+    const keyVersionCache = vapidKeyVersionRef.current
+    if (
+      keyVersionCache !== null &&
+      Date.now() - keyVersionCache.lastRefreshedAt >= VAPID_KEY_VERSION_REFRESH_MS
+    ) {
+      keyVersionCache.lastRefreshedAt = Date.now()
+      void pushClient.getVapidKey().then(
+        result => {
+          // Adopt only a successfully parsed key (push-disabled or failed
+          // reads leave the last-known value — fail-open).
+          if (
+            vapidKeyVersionRef.current === keyVersionCache &&
+            result.success &&
+            result.data.vapidKey !== undefined
+          ) {
+            keyVersionCache.version = result.data.vapidKey.keyVersion
+          }
+        },
+        () => {
+          // getVapidKey resolves (never rejects) in the real client; this
+          // arm only guards test doubles. Fail-open: no state change.
+        },
+      )
+    }
+
     const result = await runReconcileSweep(
       {
         getLocalSubscription: () =>
           navigator.serviceWorker.ready.then((r) => r.pushManager.getSubscription()),
+        // rm-600: the production supplier this dep was designed for but never
+        // had — without it, stale_key classification is unreachable and a
+        // rotated VAPID key leaves dead subscriptions marked "subscribed".
+        getCurrentKeyVersion: () => vapidKeyVersionRef.current?.version,
         pushClient,
       },
       cacheRef.current,

@@ -509,3 +509,55 @@ describe('App — fixture detection race: runtime must not mount before detectio
     await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2)) // guard released
   })
 })
+
+// ── rm-606: fixture-session fetch must be time-bounded ─────────────────────
+// The loader fetch previously had NO AbortSignal — a hung dev fixture server
+// wedged fixture detection (and therefore app mount) indefinitely. These
+// tests exercise the REAL loader (not the spies used above) with a stubbed
+// global fetch.
+
+describe('fetchFixtureSession time bound (rm-606)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('a hanging fixture endpoint aborts after the timeout and resolves null (fail-closed, no hang)', async () => {
+    // Never resolves on its own; rejects on abort exactly like the real
+    // fetch — which is what proves the loader actually PASSES the signal.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        (_url: string | URL | Request, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(init.signal?.reason))
+          }),
+      ),
+    )
+    const {fetchFixtureSession} = await import('./operator/fixture-runtime-loader.ts')
+
+    const startedAt = Date.now()
+    const result = await fetchFixtureSession(50) // production default is 10_000
+    const elapsed = Date.now() - startedAt
+
+    expect(result).toBeNull() // fail-closed to non-fixture runtime
+    expect(elapsed).toBeLessThan(5_000) // bounded well under any test timeout
+  })
+
+  it('success path is unaffected by the bound: a fast fixture endpoint still resolves the session', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({fixtureMode: true, fixtureSessionId: 'fixture-session-0001'}),
+          {status: 200, headers: {'content-type': 'application/json'}},
+        ),
+      ),
+    )
+    const {fetchFixtureSession} = await import('./operator/fixture-runtime-loader.ts')
+
+    const result = await fetchFixtureSession(5_000)
+
+    expect(result?.fixtureMode).toBe(true)
+    expect(result?.fixtureSessionId).toBe('fixture-session-0001')
+  })
+})

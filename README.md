@@ -70,6 +70,16 @@ Access is single-operator: GitHub OAuth authenticates the request and an exact, 
 login allowlist gates every non-public route. Sessions are HttpOnly, Secure, SameSite=Lax signed
 cookies; logout is CSRF-protected.
 
+The `Secure` attribute on the OAuth state and session cookies is set when the request URL is
+`https://` **or** the `x-forwarded-proto` request header is exactly `https` (rm-604). This makes
+TLS-terminating reverse proxies work without extra configuration, but it means the proxy must
+**overwrite** `x-forwarded-proto` with the real client-facing protocol — never merely append to
+it. Behind an appending proxy, a plain-HTTP client can send `x-forwarded-proto: https` itself;
+the only consequence is that its own already-insecure response cookies carry `Secure`, which
+cannot mint or weaken authentication (cookies are HttpOnly + SameSite=Lax and the session is
+HMAC-signed), but a proxy that appends should be reconfigured to overwrite. Serve direct TLS
+or use an overwriting proxy.
+
 The cookie-signing key (`DASHBOARD_COOKIE_KEY`, or a file via
 `DASHBOARD_COOKIE_KEY_FILE` defaulting to `/data/cookie.key`) must decode to
 at least 32 bytes and be canonically encoded: hex at 2 chars/byte, or padded

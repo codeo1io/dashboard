@@ -266,6 +266,13 @@ jobs:
     # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
     # at the rm-139 Node-26 window (2026-10-28).
     runs-on: ubuntu-24.04
+    # rm-603 (2026-10-04): bounded so a wedged agent run can never hold a runner
+    # indefinitely. This workflow is disabled_manually (no FRO_BOT_PAT), so its
+    # own history cannot size the cap: last pre-disable runs (2026-09-16..18)
+    # died in <=35s at input validation. Sized by role-analog instead — this is
+    # an agent-driven job like main.yaml's Conductor jobs (self-kill at 20;
+    # only the lint-validation job gets 35 for its poll window) — 20 minutes.
+    timeout-minutes: 20
     # 2026-09-19: this repo has no FRO_BOT_PAT secret configured, so the job's
     # token input is empty and every scheduled run fails at input validation
     # ("Input required and not supplied: token"). Skip scheduled runs until the

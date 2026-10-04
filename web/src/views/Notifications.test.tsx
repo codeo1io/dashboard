@@ -17,7 +17,16 @@ vi.mock('../push/capability.ts', () => ({
 
 vi.mock('../push/subscribe.ts', () => ({
   INITIAL_RECONCILE_SWEEP_CACHE: {},
-  buildPushClient: vi.fn().mockReturnValue({}),
+  // rm-600: the view now calls getVapidKey() at sweep cadence to keep the
+  // key-version cache fresh. Default stub is fail-open (push-disabled, no
+  // key) so existing tests are unaffected; the rm-600 wiring tests override
+  // it per-test with mockReturnValueOnce.
+  buildPushClient: vi.fn().mockReturnValue({
+    getVapidKey: vi.fn().mockResolvedValue({
+      success: true,
+      data: {pushDisabled: true, vapidKey: undefined},
+    }),
+  }),
   runReconcileSweep: vi.fn(),
   subscribeOptIn: vi.fn(),
   resubscribeStaleKey: vi.fn(),
@@ -688,6 +697,75 @@ describe('Notifications Component', () => {
     expect(postMessage).toHaveBeenCalledWith({
       type: 'MOCK_SYNTHETIC_PUSH',
       payload: {type: 'approval'},
+    })
+  })
+
+  describe('rm-600 — VAPID key-version cache wiring (getCurrentKeyVersion supplier)', () => {
+    const flush = () => act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    /** Trigger a second sweep through the same path production uses (focus). */
+    const triggerFocusSweep = () => act(async () => {
+      window.dispatchEvent(new Event('focus'))
+      // Sweep is debounced 250ms on focus/visibility coalescing.
+      await new Promise((resolve) => setTimeout(resolve, 320))
+    })
+
+    it('passes a getCurrentKeyVersion function into runReconcileSweep (production dep wiring)', async () => {
+      addMetaTag()
+      await act(async () => {
+        render(<Notifications />)
+      })
+
+      expect(runReconcileSweep).toHaveBeenCalledTimes(1)
+      const deps = vi.mocked(runReconcileSweep).mock.calls[0]?.[0]
+      expect(typeof deps?.getCurrentKeyVersion).toBe('function')
+      // Fail-open BEFORE the vapid-key fetch resolves: undefined, never a guess.
+      expect(deps?.getCurrentKeyVersion?.()).toBeUndefined()
+    })
+
+    it('sources the version from pushClient.getVapidKey() and serves it to the next sweep', async () => {
+      addMetaTag()
+      const getVapidKey = vi.fn().mockResolvedValue({
+        success: true,
+        data: {pushDisabled: false, vapidKey: {publicKey: 'BNc3xVwB', keyVersion: 'v2'}},
+      })
+      vi.mocked(buildPushClient).mockReturnValueOnce({getVapidKey} as never)
+
+      await act(async () => {
+        render(<Notifications />)
+      })
+      await flush()
+
+      // Second sweep through the production focus path.
+      await triggerFocusSweep()
+
+      expect(runReconcileSweep).toHaveBeenCalledTimes(2)
+      const secondDeps = vi.mocked(runReconcileSweep).mock.calls[1]?.[0]
+      expect(secondDeps?.getCurrentKeyVersion?.()).toBe('v2')
+
+      // Rate limit: two sweeps within one refresh window issue ONE vapid-key
+      // GET, not one per sweep.
+      expect(getVapidKey).toHaveBeenCalledTimes(1)
+    })
+
+    it('fail-open: a failed getVapidKey result leaves the supplier at undefined', async () => {
+      addMetaTag()
+      const getVapidKey = vi.fn().mockResolvedValue({
+        success: false,
+        error: {kind: 'network'},
+      })
+      vi.mocked(buildPushClient).mockReturnValueOnce({getVapidKey} as never)
+
+      await act(async () => {
+        render(<Notifications />)
+      })
+      await flush()
+      await triggerFocusSweep()
+
+      const secondDeps = vi.mocked(runReconcileSweep).mock.calls[1]?.[0]
+      expect(secondDeps?.getCurrentKeyVersion?.()).toBeUndefined()
     })
   })
 })
