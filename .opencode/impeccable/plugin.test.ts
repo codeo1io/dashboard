@@ -1,12 +1,19 @@
+import {existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync} from 'node:fs'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
+import process from 'node:process'
 import { describe, expect, it } from 'vitest'
 
 import {
   bareToolName,
   buildHookPayload,
+  createDefaultRunner,
   createHook,
   extractFeedbackText,
   extractTouchedPaths,
+  HOOK_SCRIPT_RELATIVE_PATH,
   isMutatingTool,
+  type DetectorRunner,
   type DetectorRunResult,
 } from './hook-bridge.ts'
 
@@ -203,6 +210,90 @@ describe('bridge (createHook)', () => {
     await expect(hook(makeInput(), output)).resolves.toBeUndefined()
     expect(output.output).toBe('ok')
   })
+
+  // rm-622: the timeout must not merely abandon the losing runner — it must
+  // hand the runner a cancellation signal (the default Bun runner kills its
+  // `node hook.mjs` process tree on it), and an abandoned runner settling
+  // after the race must never surface as an unhandled rejection or a late
+  // output mutation.
+  it('aborts the cancellation signal handed to the runner when the timeout wins (rm-622)', async () => {
+    const seenSignals: AbortSignal[] = []
+    const hook = createHook({
+      runDetector: (_payload, opts) => {
+        seenSignals.push(opts.signal)
+        // Never settles on its own: only the timeout can end this race.
+        return new Promise<DetectorRunResult>(() => {})
+      },
+      worktree: '/repo',
+      timeoutMs: 10,
+    })
+    const output = makeOutput()
+    await expect(hook(makeInput(), output)).resolves.toBeUndefined()
+    expect(output.output).toBe('ok') // no-op degrade behavior is unchanged
+    expect(seenSignals).toHaveLength(1)
+    expect(seenSignals[0]?.aborted).toBe(true)
+  })
+
+  it('never aborts the signal when the runner settles inside the timeout (rm-622)', async () => {
+    let signal: AbortSignal | undefined
+    const hook = createHook({
+      runDetector: (_payload, opts) => {
+        signal = opts.signal
+        return Promise.resolve<DetectorRunResult>({stdout: '', stderr: '', exitCode: 0})
+      },
+      worktree: '/repo',
+      timeoutMs: 1_000,
+    })
+    await expect(hook(makeInput(), makeOutput())).resolves.toBeUndefined()
+    expect(signal?.aborted).toBe(false)
+  })
+
+  it('drops a late resolve from the abandoned runner without touching output (rm-622)', async () => {
+    let resolveLate: (result: DetectorRunResult) => void = () => {}
+    const hook = createHook({
+      runDetector: () =>
+        new Promise<DetectorRunResult>((resolve) => {
+          resolveLate = resolve
+        }),
+      worktree: '/repo',
+      timeoutMs: 10,
+    })
+    const output = makeOutput()
+    await expect(hook(makeInput(), output)).resolves.toBeUndefined()
+    resolveLate({stdout: 'late', stderr: '', exitCode: 0})
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(output.output).toBe('ok')
+  })
+
+  it('cannot surface a late rejection from the abandoned runner as an unhandled rejection (rm-622)', async () => {
+    // The race site attaches handlers to the runner promise, so its late
+    // rejection is absorbed instead of reaching process-level unhandled
+    // reporting — this test pins that property (the shape a killed subprocess
+    // tree produces when the kill rejects the shell promise).
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason)
+    }
+    process.on('unhandledRejection', onUnhandled)
+    let rejectLate: (err: Error) => void = () => {}
+    const hook = createHook({
+      runDetector: () =>
+        new Promise<DetectorRunResult>((_resolve, reject) => {
+          rejectLate = reject
+        }),
+      worktree: '/repo',
+      timeoutMs: 10,
+    })
+    const output = makeOutput()
+    await expect(hook(makeInput(), output)).resolves.toBeUndefined()
+    rejectLate(new Error('killed detector subtree rejected after the timeout'))
+    // Drain microtasks + the immediate queue: Node reports an unhandled
+    // rejection only after a tick passes with no handler anywhere.
+    await new Promise((resolve) => setImmediate(resolve))
+    await new Promise((resolve) => setImmediate(resolve))
+    process.off('unhandledRejection', onUnhandled)
+    expect(unhandled).toEqual([])
+  })
 })
 
 describe('extractFeedbackText', () => {
@@ -313,3 +404,75 @@ describe('fail-loud', () => {
     expect(output2.output).toBe('ok')
   })
 })
+
+describe('createDefaultRunner (rm-622: abort kills the whole hook.mjs tree)', () => {
+  it('SIGKILLs hook.mjs AND its spawned child on abort, resolving kill-shaped', async () => {
+    const worktree = mkdtempSync(join(tmpdir(), 'rm-622-kill-'))
+    const scriptsDir = join(worktree, HOOK_SCRIPT_RELATIVE_PATH, '..')
+    mkdirSync(scriptsDir, {recursive: true})
+    const pidsFile = join(worktree, 'pids.json')
+    writeFileSync(
+      join(scriptsDir, 'hook.mjs'),
+      `import {spawn} from 'node:child_process'
+import {writeFileSync} from 'node:fs'
+const child = spawn('sleep', ['30'], {stdio: 'ignore'})
+writeFileSync(${JSON.stringify(pidsFile)}, JSON.stringify({hookPid: process.pid, childPid: child.pid}))
+setInterval(() => {}, 1 << 30)
+`,
+    )
+
+    const cancel = new AbortController()
+    const runner = createDefaultRunner()
+    const resultPromise = runner({} as unknown as Parameters<DetectorRunner>[0], {
+      worktree,
+      signal: cancel.signal,
+    })
+
+    // Wait for the fake hook to have actually spawned its child.
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (existsSync(pidsFile)) break
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    const {hookPid, childPid} = JSON.parse(readFileSync(pidsFile, 'utf8')) as {hookPid: number; childPid: number}
+
+    cancel.abort()
+    const result = await resultPromise
+    expect(result.exitCode).toBe(-1) // kill-shaped, never a rejection
+
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    expect(alive(hookPid), 'hook.mjs survived the abort').toBe(false)
+    expect(alive(childPid), 'hook.mjs child survived the abort — tree kill failed').toBe(false)
+  }, 20000)
+
+  it('returns stdout/exitCode and forwards the hook env on the clean path', async () => {
+    const worktree = mkdtempSync(join(tmpdir(), 'rm-622-clean-'))
+    const scriptsDir = join(worktree, HOOK_SCRIPT_RELATIVE_PATH, '..')
+    mkdirSync(scriptsDir, {recursive: true})
+    writeFileSync(
+      join(scriptsDir, 'hook.mjs'),
+      `process.stdout.write('quiet=' + process.env.IMPECCABLE_HOOK_QUIET + ' harness=' + process.env.IMPECCABLE_HOOK_HARNESS + ' depth=' + process.env.IMPECCABLE_HOOK_DEPTH)\nprocess.exit(0)\n`,
+    )
+
+    const cancel = new AbortController()
+    const result = await createDefaultRunner()({} as unknown as Parameters<DetectorRunner>[0], {
+      worktree,
+      signal: cancel.signal,
+    })
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('quiet=1')
+    expect(result.stdout).toContain('harness=claude')
+    // IMPECCABLE_HOOK_DEPTH must stay UNSET — hook.mjs treats any depth value
+    // as a re-entrancy signal and would no-op every scan.
+    expect(result.stdout).toContain('depth=undefined')
+    expect(cancel.signal.aborted).toBe(false)
+  })
+})
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}

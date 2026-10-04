@@ -14,6 +14,8 @@
  * must export ONLY the plugin factory. Everything else lives here.
  */
 
+import {spawn} from 'node:child_process'
+
 /**
  * The value `hook.mjs`'s `resolveHarness()` reads via the `IMPECCABLE_HOOK_HARNESS`
  * env override. Our payload is claude-shaped
@@ -126,10 +128,20 @@ export interface DetectorRunResult {
   exitCode: number
 }
 
-/** Injectable subprocess runner: given the hook payload and the worktree cwd, returns the detector's stdout/stderr/exitCode. */
+/**
+ * Injectable subprocess runner: given the hook payload and the worktree cwd,
+ * returns the detector's stdout/stderr/exitCode.
+ *
+ * rm-622: `signal` aborts exactly when the bridge's timeout wins the race —
+ * runners that own a subprocess tree (the default Bun runner spawning
+ * `node hook.mjs`) must kill it on abort so a slow design-check scan cannot
+ * strand a process subtree past the timeout. Runners that cannot be
+ * cancelled may ignore the signal; the bridge has already degraded to a
+ * no-op hook by then, so a still-pending runner promise is merely dropped.
+ */
 export type DetectorRunner = (
   payload: ReturnType<typeof buildHookPayload>,
-  opts: { worktree: string },
+  opts: { worktree: string; signal: AbortSignal },
 ) => Promise<DetectorRunResult>
 
 export interface CreateHookOptions {
@@ -140,10 +152,20 @@ export interface CreateHookOptions {
 
 const TIMEOUT_SENTINEL = Symbol('impeccable-hook-timeout')
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | typeof TIMEOUT_SENTINEL> {
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  onTimeout?: () => void,
+): Promise<T | typeof TIMEOUT_SENTINEL> {
   let timer: ReturnType<typeof setTimeout>
   const timeout = new Promise<typeof TIMEOUT_SENTINEL>((resolve) => {
-    timer = setTimeout(() => resolve(TIMEOUT_SENTINEL), timeoutMs)
+    timer = setTimeout(() => {
+      // rm-622: cancel the losing detector BEFORE reporting the sentinel, so
+      // the runner learns at timeout time (not a microtask later) and the
+      // default runner can kill its subprocess tree.
+      onTimeout?.()
+      resolve(TIMEOUT_SENTINEL)
+    }, timeoutMs)
   })
   try {
     return await Promise.race([promise, timeout])
@@ -190,6 +212,97 @@ export function extractFeedbackText(stdout: string): string {
 }
 
 /**
+ * Default runner: pipes the payload JSON to `hook.mjs` as a DETACHED
+ * process group (its own pgid) so rm-622 cancellation can SIGKILL the whole
+ * tree. Lives here — not plugin.ts — because it is plain `node:child_process`
+ * (Bun implements it at runtime, Node runs it in tests) and the kill-path
+ * semantics belong under CI. The OpenCode plugin loader treats every export
+ * of plugin.ts as a candidate plugin factory, which is why this cannot live
+ * there.
+ *
+ * rm-622 history: the pre-2026-10-04 runner spawned hook.mjs via the injected
+ * Bun `$` — whose ShellPromise exposes no cancellation handle at all
+ * (DECLARED type has no abort; live Bun 1.4.2 probe on 2026-10-04 also
+ * returned `undefined`), so a timed-out scan always stranded hook.mjs and
+ * its check subprocesses. The detached-group + `kill(-pid, SIGKILL)` shape is
+ * the fix: no feature detection, one signal, the entire subtree.
+ */
+export function createDefaultRunner(): DetectorRunner {
+  return (payload, opts) =>
+    new Promise<DetectorRunResult>((resolve) => {
+      const scriptPath = `${opts.worktree}/${HOOK_SCRIPT_RELATIVE_PATH}`
+      const child = spawn('node', [scriptPath], {
+        cwd: opts.worktree,
+        // Own process group ⇒ `kill(-pid)` reaches hook.mjs AND its check
+        // subprocesses; without it a kill could only reach the direct child
+        // and hook.mjs's children would orphan.
+        detached: true,
+        // Note: do NOT set IMPECCABLE_HOOK_DEPTH — hook.mjs treats any depth
+        // value as a re-entrancy signal and no-ops. The bridge runs hook.mjs
+        // as a plain subprocess (not a tool call), so it cannot re-trigger
+        // tool.execute.after; hook.mjs manages depth for its own child
+        // processes itself.
+        env: {
+          ...process.env,
+          IMPECCABLE_HOOK_HARNESS,
+          // Suppress hook.mjs's clean/pending acks — findings still emit
+          // (they return before the quiet check in hook-lib.mjs).
+          IMPECCABLE_HOOK_QUIET: '1',
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+
+      const killTree = () => {
+        if (child.pid === undefined) return
+        try {
+          // Negative pid = the process GROUP led by hook.mjs (detached above).
+          // Best-effort by design: an ESRCH just means the tree is already
+          // gone, and by abort time the bridge has already degraded the hook
+          // to a no-op, so nothing downstream consumes the runner result.
+          process.kill(-child.pid, 'SIGKILL')
+        } catch {
+          // already dead — nothing to clean up
+        }
+      }
+      opts.signal.addEventListener('abort', killTree)
+      // Belt-and-braces against an abort that fired before this listener was
+      // attached (unreachable today: the bridge creates the controller and
+      // calls the runner in the same synchronous stretch).
+      if (opts.signal.aborted) killTree()
+
+      let stdout = ''
+      let stderr = ''
+      child.stdout?.on('data', (chunk: Buffer) => {
+        stdout += chunk.toString()
+      })
+      child.stderr?.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString()
+      })
+      // EPIPE if the hook died before stdin drained — the close/error events
+      // below still settle the promise; the write itself must never throw.
+      child.stdin?.on('error', () => {})
+      child.stdin?.end(JSON.stringify(payload))
+
+      child.on('error', (error) => {
+        // Spawn-level failure (node missing, EACCES …) — kill-shaped, never a
+        // rejection: the bridge treats a nonzero exit loudly, and a thrown
+        // error here is what the old no-throw contract forbade.
+        resolve({stdout, stderr: `${stderr}${error.message}`, exitCode: -1})
+      })
+      child.on('close', (code, signal) => {
+        if (code === null) {
+          // Killed (signal) or never ran — normalize to -1 (not 0) so
+          // createHook's nonzero-exit fail-loud branch fires instead of
+          // silently treating a cancelled scan as a clean success.
+          resolve({stdout, stderr: stderr || `hook.mjs terminated by ${signal ?? 'unknown signal'}`, exitCode: -1})
+          return
+        }
+        resolve({stdout, stderr, exitCode: code})
+      })
+    })
+}
+
+/**
  * Builds the `tool.execute.after` handler, with the subprocess runner
  * injected so all logic here is testable under Node.
  */
@@ -228,7 +341,17 @@ export function createHook(options: CreateHookOptions) {
 
       let result: DetectorRunResult | typeof TIMEOUT_SENTINEL
       try {
-        result = await withTimeout(options.runDetector(payload, { worktree: options.worktree }), timeoutMs)
+        // rm-622: one cancellation controller per tool call. If the timeout
+        // wins, the signal aborts and the default runner kills its
+        // `node hook.mjs` process tree instead of stranding it for the rest
+        // of the scan; if the runner settles first, the timer clears and the
+        // signal never aborts.
+        const cancel = new AbortController()
+        result = await withTimeout(
+          options.runDetector(payload, { worktree: options.worktree, signal: cancel.signal }),
+          timeoutMs,
+          () => cancel.abort(),
+        )
       } catch (err) {
         warnOnce(`[impeccable] design hook bridge failed: ${err instanceof Error ? err.message : String(err)}`)
         return

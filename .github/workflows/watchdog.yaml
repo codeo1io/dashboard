@@ -1,0 +1,108 @@
+# rm-289 (landed 2026-10-04, run 7e6ab9da cycle:1 B2): scheduled-guard
+# watchdog. The repository's guard workflows fire weekly (audit, base-drift,
+# upstream-drift, canary, scorecard on Mondays; CodeQL on Wednesdays) and a
+# red conclusion on any of them was previously visible only to someone who
+# already went looking — the 2026-09-28 canary failure (run 6823819758) sat
+# unobserved. This workflow fires DAILY, queries each guard's latest
+# completed run via the Actions API, and turns any red conclusion into an
+# ::error:: annotation plus a red run. The red run is the alert.
+#
+# Channel precedence: (1) red run + annotation — authoritative; (2) a
+# deduplicated tracking issue — best-effort, only when a live has_issues probe
+# says issues are enabled (they are disabled on this fork, probed 2026-10-04;
+# the guarded pattern is inherited from base-drift.yaml's rm-123 lesson).
+# Full operator runbook: docs/runbooks/guard-watchdog.md.
+#
+# Dry-run: workflow_dispatch defaults to dry-run (report + exit 0) so the
+# first thing an operator dispatches can never page; the daily schedule
+# always runs live. Guard set + exclusions live in scripts/guard-watchdog.ts
+# and are enforced both ways by test/guard-watchdog.test.ts.
+name: Scheduled guard watchdog
+
+on:
+  schedule:
+    # Daily 08:47 UTC — after the Monday guard cluster (03:37 audit, 04:13
+    # base-drift, 05:17 upstream-drift, 05:23 canary, 06:27 scorecard) and
+    # CodeQL's Wednesday 07:31Z analyze, so the same-day verdicts are in.
+    # Off the hour per the house cron convention.
+    - cron: '47 8 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Dry run — report what the watchdog WOULD alert on and exit 0
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+concurrency:
+  group: guard-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Guard conclusions watch
+    # Pinned per the rm-188 convention (ubuntu-latest still maps to 24.04
+    # while 26.04 images are published); re-evaluate at the rm-139 Node-26
+    # window (2026-10-28).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Zero-install by design (the watchdog script imports node builtins
+      # only): setup-node alone, the same shape audit.yaml uses — NOT the
+      # .github/actions/setup composite, whose frozen pnpm install is
+      # heavyweight for a daily API-polling job.
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - name: Watch scheduled guard conclusions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Scheduled runs have no inputs.* — the expression collapses to
+          # '0' (live); dispatches carry the boolean input verbatim.
+          GUARD_WATCHDOG_DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+        run: node scripts/guard-watchdog.ts
+
+      # Best-effort secondary channel, exactly the base-drift.yaml guarded
+      # pattern: the ::error:: annotations and the red run above are the
+      # authoritative signal; issues are DISABLED on this fork
+      # (has_issues=false, live-probed 2026-10-04) and under set -euo
+      # pipefail an unguarded gh issue call would exit the step red with a
+      # misleading API error. Runs only when the watch step failed (live
+      # mode found red); the job still ends red either way.
+      - name: Open deduplicated tracking issue (best-effort)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          ISSUES_ENABLED="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.has_issues' 2>/dev/null || echo 'false')"
+          if [ "$ISSUES_ENABLED" != 'true' ]; then
+            echo '::warning::issues disabled on this repository — guard-red tracking issue skipped; the red run + ::error:: annotations are the alert (rm-289)'
+            exit 0
+          fi
+
+          gh label create guard-red --color D73A4A --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || true
+          OPEN="$(gh issue list --repo "$GITHUB_REPOSITORY" --label guard-red --state open --json number --jq 'length')"
+          if [ "$OPEN" = '0' ]; then
+            gh issue create \
+              --repo "$GITHUB_REPOSITORY" \
+              --label guard-red \
+              --title 'Scheduled guard failure detected (watchdog)' \
+              --body "The scheduled guard watchdog found at least one guard workflow whose latest completed run is red. See the triggering run's step summary for the per-guard verdict table and its ::error:: annotations for the exact runs.
+
+          This issue is deduplicated while open — close it only once every guard's latest completed run is green again." >/dev/null
+          else
+            echo "open guard-red issue already exists ($OPEN) — skipping creation"
+          fi
