@@ -21,6 +21,11 @@ jobs:
     # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
     # at the rm-139 Node-26 window (2026-10-28).
     runs-on: ubuntu-24.04
+    # rm-603 (2026-10-04): bounded so a wedged analysis can never hold a runner
+    # indefinitely. Sized from the last 30 successful runs (gh api): typical
+    # 69-142s, worst observed 565s (9.4m) — 20 gives ~2.1x headroom over the
+    # worst and matches main.yaml's CodeQL-era 20-minute job ceiling.
+    timeout-minutes: 20
     permissions:
       contents: read
       security-events: write
