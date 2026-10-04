@@ -112,3 +112,46 @@ describe('rate-limit env config surface (rm-129 review fix)', () => {
     resetRateLimitForTesting()
   })
 })
+
+describe('rm-602 — 429 contract: Retry-After + Cache-Control: no-store', () => {
+  it('a tripped budget emits both headers; Retry-After is a positive whole-second window remainder', async () => {
+    const {buildDashboardApp, resetRateLimitForTesting} = await importFreshServer()
+    const app = await buildDashboardApp({operatorLogin: 'octocat', cookieKey: TEST_KEY})
+    resetRateLimitForTesting()
+    let four29: Response | undefined
+    for (let i = 0; i < 61; i++) {
+      // /api/healthz is public class, default 60/min → the 61st hit trips.
+      const res = await app.request('/api/healthz')
+      if (res.status === 429) {
+        four29 = res
+        break // the trip point — nothing later is interesting
+      }
+    }
+    if (four29 === undefined) throw new Error('rate limit never tripped within 61 requests')
+    const retryAfter = Number(four29.headers.get('retry-after'))
+    expect(Number.isInteger(retryAfter)).toBe(true)
+    expect(retryAfter).toBeGreaterThanOrEqual(1)
+    expect(retryAfter).toBeLessThanOrEqual(60)
+    expect(four29.headers.get('cache-control')).toBe('no-store')
+    resetRateLimitForTesting()
+  })
+
+  it('rateLimitRetryAfterSeconds tracks the shared fixed window and floors at 1', async () => {
+    const {checkRateLimit, rateLimitRetryAfterSeconds, resetRateLimitForTesting} = await importFreshServer()
+    resetRateLimitForTesting()
+    const t0 = 1_000_000
+    for (let i = 0; i < 60; i++) {
+      expect(checkRateLimit('rm602-ip', t0 + i, 'operator')).toBe(true)
+    }
+    expect(checkRateLimit('rm602-ip', t0 + 100, 'operator')).toBe(false)
+    // Window opened at t0, 60 000 ms long: 100 ms in → 59.9 s → ceil 60.
+    expect(rateLimitRetryAfterSeconds('rm602-ip', t0 + 100)).toBe(60)
+    // 500 ms left → ceil 0.5 → floored at 1.
+    expect(rateLimitRetryAfterSeconds('rm602-ip', t0 + 59_500)).toBe(1)
+    // Window elapsed → floor, never 0.
+    expect(rateLimitRetryAfterSeconds('rm602-ip', t0 + 60_000)).toBe(1)
+    // No entry (swept between check and header) → same conservative floor.
+    expect(rateLimitRetryAfterSeconds('never-seen-ip', t0)).toBe(1)
+    resetRateLimitForTesting()
+  })
+})

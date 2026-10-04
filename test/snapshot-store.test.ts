@@ -9,7 +9,7 @@
 
 import type {AggregatorSnapshot, DashboardRepo, SnapshotStore} from '../src/github/aggregator.ts'
 
-import {mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs'
+import {existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {afterEach, describe, expect, it} from 'vitest'
@@ -114,6 +114,45 @@ describe('createFileSnapshotStore — load (fail-open)', () => {
     const {store, file} = makeStore()
     writeFileSync(file, JSON.stringify({...makeSnapshot(), driftCount: 0}) + ' '.repeat(1_048_577), 'utf8')
     expect(store.load()).toBeNull()
+  })
+
+  it('rm-604: astral-heavy payload within the UTF-16 limit but over the BYTE limit is rejected at persist and load', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'snapshot-store-rm604-'))
+    const file = join(dir, 'snapshot.json')
+    try {
+      const store = createFileSnapshotStore(file) as SnapshotStore
+      // '𝐀' (U+1D400) is ONE code point but TWO UTF-16 units and FOUR UTF-8
+      // bytes — the old .length guard undercounted it 2x. 524 000 of them:
+      // ≈1 048 000 UTF-16 units (inside the 1 048 576 bound the old guard
+      // measured) but ≈2 096 000 bytes (far outside what the bound means).
+      const astral = '𝐀'.repeat(524_000)
+      const oversizeBytes = {...makeSnapshot(), driftCount: 0}
+      oversizeBytes.repos = [{...makeRepoRow(), name: astral}]
+
+      // Persist-side guard: no file may appear (old guard happily wrote ~2 MB).
+      store.persist(oversizeBytes)
+      expect(existsSync(file)).toBe(false)
+
+      // Load-side guard: hand-place the oversize-bytes file; it must yield
+      // null even though its .length is inside the old bound.
+      writeFileSync(file, JSON.stringify(oversizeBytes), 'utf8')
+      expect(store.load()).toBeNull()
+    } finally {
+      rmSync(dir, {recursive: true, force: true})
+    }
+  })
+
+  it('rm-604 control: ASCII snapshots under the bound in both units round-trip unchanged', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'snapshot-store-rm604-ascii-'))
+    const file = join(dir, 'snapshot.json')
+    try {
+      const store = createFileSnapshotStore(file) as SnapshotStore
+      const snapshot = makeSnapshot() // ASCII: .length == byteLength, far under the bound
+      store.persist(snapshot)
+      expect(store.load()).toEqual(snapshot)
+    } finally {
+      rmSync(dir, {recursive: true, force: true})
+    }
   })
 
   it('persist is atomic — no .tmp residue after a clean write', () => {

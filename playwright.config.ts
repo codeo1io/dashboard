@@ -76,7 +76,14 @@ export default defineConfig({
     command: 'pnpm build:web:fixture && node src/server.ts',
     url: `${baseURL}/api/healthz`,
     timeout: 120_000,
-    reuseExistingServer: process.env.CI === undefined,
+    // rm-605: `pnpm dev` serves the PREBUILT web/dist (AGENTS.md), so a
+    // leftover dev server on the port silently serves a stale build — the
+    // visual gate would then green-lie about the current tree. Reuse is now
+    // opt-in: set PW_REUSE_SERVER=1 to attach to an already-running local
+    // server (e.g. while iterating on one spec); CI never reuses. The recipe
+    // for backgrounding + killing orphans lives in
+    // docs/solutions/workflow-issues/dev-server-hang-background-no-watch-kill-orphans-2026-06-25.md.
+    reuseExistingServer: process.env.CI === undefined && process.env.PW_REUSE_SERVER === '1',
     env: {
       NODE_ENV: 'development',
       DASHBOARD_HOST: '127.0.0.1',

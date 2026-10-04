@@ -153,6 +153,26 @@ const defaultRateLimitTrustedProxy = (): boolean =>
   ['1', 'true', 'yes'].includes((process.env.RATE_LIMIT_TRUSTED_PROXY ?? '').trim().toLowerCase())
 
 /**
+ * rm-601 — percent-decode a raw request pathname for gate/classification use.
+ * Hono's router decodes escapes when matching routes, so the raw URL's
+ * pathname and the route a request actually hits can differ; every pathname
+ * gate (isSensitive above, isPublicPath in the auth middleware below) and
+ * the rate-limit classifier run on the DECODED form so a percent-encoded
+ * variant of a sensitive path cannot dodge its class budget ('/%61uth/login'
+ * is '/auth/login' — live-proven 2026-10-04: 70 encoded hits consumed zero
+ * budget and drew zero 429s while the plain form throttled at 60/min).
+ * Malformed escapes fall back to the raw form — decoding is normalization,
+ * never a rejection vector, and never a throw.
+ */
+export function decodePathname(raw: string): string {
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return raw
+  }
+}
+
+/**
  * Classify a sensitive path into its rate-limit budget class.
  * Related to — but deliberately NOT identical to — the isPublicPath auth
  * allowlist defined in the middleware below; the two knowledge sets diverge
@@ -197,6 +217,20 @@ export function classifyRateLimitPath(path: string): RateLimitClass {
 let rateLimitCallCount = 0
 const EVICT_INTERVAL = 500 // sweep every 500 calls
 const EVICT_STALE_AGE = 2 * RATE_LIMIT_WINDOW_MS
+
+/**
+ * rm-602 — seconds until the caller's current fixed window resets, for the
+ * 429 Retry-After header. windowStart is shared per key (all class budgets
+ * reset together), so the answer is class-independent. Floored at 1: a
+ * client tripping the limit at the window edge still gets a positive,
+ * conservative hint, and a missing entry (state swept between check and
+ * header) degrades to the same floor instead of throwing.
+ */
+export function rateLimitRetryAfterSeconds(ip: string, now: number = Date.now()): number {
+  const entry = rateLimitMap.get(ip)
+  if (entry === undefined) return 1
+  return Math.max(1, Math.ceil((entry.windowStart + RATE_LIMIT_WINDOW_MS - now) / 1000))
+}
 
 /**
  * Reset the rate limiter state. Tests only — prevents bleed between test cases.
@@ -717,7 +751,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   // problem, not this middleware's.
   const rateLimitTrustedProxy = opts?.rateLimitTrustedProxy ?? defaultRateLimitTrustedProxy()
   app.use('*', async (c: Context, next) => {
-    const path = new URL(c.req.url).pathname
+    // rm-601: gate on the DECODED pathname (see decodePathname) — the router
+    // decodes escapes when matching, so a raw-pathname gate would let
+    // '/%61pi/status' sail past isSensitive while still hitting the real route.
+    const path = decodePathname(new URL(c.req.url).pathname)
     // rm-500 (2026-09-30): the logout pair joins the sensitive set — POST
     // /auth/logout runs a (bounded) body read and GET /auth/logout-csrf
     // mints an HMAC token, both on pre-auth public paths, so leaving them
@@ -753,6 +790,11 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
 
       if (!checkRateLimit(ip, Date.now(), classifyRateLimitPath(path))) {
         logger.warning('Rate limit exceeded', {ip, path})
+        // rm-602: a 429 is a contract, not just a status — tell well-behaved
+        // clients how long to back off (window-remaining ceil, floored at 1)
+        // and forbid intermediary caching of the rejection.
+        c.header('Retry-After', String(rateLimitRetryAfterSeconds(ip)))
+        c.header('Cache-Control', 'no-store')
         return c.text('Too Many Requests', 429)
       }
     }
@@ -813,7 +855,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   const gatewaySessionCache = opts?.gatewaySessionCache ?? createGatewaySessionCache()
 
   app.use('*', async (c: Context, next) => {
-    const path = new URL(c.req.url).pathname
+    // rm-601: same decoded-pathname discipline as the limiter above, so the
+    // auth allowlist and the rate-limit gate can never disagree on which
+    // route a request targets.
+    const path = decodePathname(new URL(c.req.url).pathname)
 
     if (gatewayOperatorSessionEnabled) {
       // ── GATEWAY BRANCH ────────────────────────────────────────────────────

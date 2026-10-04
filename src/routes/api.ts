@@ -91,6 +91,11 @@ export function buildApiRouter(getSnapshot?: SnapshotProvider): Hono {
   const api = new Hono()
 
   api.get('/healthz', c => {
+    // rm-603: the body is a constant ok-probe — intermediaries must not cache
+    // it (a stale ok:true masks outages and lies to probes). The repo
+    // convention (rm-263) puts no-store on token/content routes; the health
+    // probe is the one place a cache hit is actively harmful.
+    c.header('Cache-Control', 'no-store')
     return c.json({ok: true, lastFetch: null, rateLimit: null})
   })
 
