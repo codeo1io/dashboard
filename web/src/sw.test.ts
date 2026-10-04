@@ -47,8 +47,10 @@ describe('sw.js build output (kill-switch SW)', () => {
     // After injectManifest substitution the token is replaced with an array
     // literal; the raw token appearing would mean workbox never processed it.
     expect(content).not.toContain('self.__WB_MANIFEST')
-    // The injected precache manifest is present as an array literal...
-    expect(content).toMatch(/\[\{"revision":/)
+    // rm-138 branch (a): the precache glob is deliberately empty
+    // (web/vite.config.ts globPatterns: []), so the substitution site is an
+    // EMPTY array literal — the kill-switch ships no asset manifest.
+    expect(content).not.toMatch(/\[\{"revision":/)
   })
 
   it('GUARD: activate purges ALL caches — caches.keys() then delete per key', () => {
