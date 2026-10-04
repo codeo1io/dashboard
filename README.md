@@ -22,6 +22,7 @@ installations, plus an authenticated single-operator control surface. Installs a
 
 Security posture: the repo carries its own [OpenSSF Scorecard](https://securityscorecards.dev/viewer/?uri=github.com/codeo1io/dashboard)
 and names every by-design deviation in [docs/runbooks/security-posture.md](docs/runbooks/security-posture.md).
+To report a vulnerability privately, see [SECURITY.md](SECURITY.md).
 
 ### Stack
 
