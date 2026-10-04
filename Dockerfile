@@ -49,13 +49,23 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --prod
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
-# 2026-09-20: in-image libpcre2-8-0 patch retired — the pinned base digest
-# (0e0ff40, upstream #492) ships libpcre2-8-0 10.42-1+deb12u1, so the fix is
-# absorbed at the base. History: docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md
+# 2026-10-05 (rm-647, run 73d35a6ca2bd): the 2026-09-20 retirement below was
+# overtaken by CVE-2026-103111 — its fix is 10.42-1+deb12u2 and the pinned
+# base digest (0e0ff40, upstream #492) still ships deb12u1 with no rebuild
+# upstream (a digest re-pin is a dead end), so the runtime stage upgrades
+# the one package in-image (RUN below). History: docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md
 
 FROM ${NODE_IMAGE}
 
 WORKDIR /app
+
+# CVE-2026-103111 cure (rm-647): --only-upgrade + --no-install-recommends
+# upgrades the single Debian package; apt lists are dropped in the same RUN so
+# the layer stays minimal. Second target-platform RUN in the file (the rm-558
+# prune is the other) — apt/dpkg execute on the target arch: seconds native,
+# slower under QEMU for arm64.
+RUN apt-get update && apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0 \
+      && rm -rf /var/lib/apt/lists/*
 
 
 # Copy only the production dependency tree. Package manifests and package-manager
