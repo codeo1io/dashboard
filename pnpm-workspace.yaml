@@ -27,7 +27,7 @@ minimumReleaseAge: 1440
 # rider (rm-271's 2026-09-30 note).
 # vite@8.3.1 stays (both rider targets past maturity; the record remains dated).
 minimumReleaseAgeExclude:
-  - '@bfra.me/eslint-config@0.51.2 || 0.51.3 || 0.51.4 || 0.52.0 || 0.52.1 || 0.52.2'
+  - '@bfra.me/eslint-config@0.51.2 || 0.51.3 || 0.51.4 || 0.52.0 || 0.52.1 || 0.52.2 || 0.54.0'
   - '@bfra.me/tsconfig@0.13.2'
   - vite@8.3.1
 
