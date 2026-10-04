@@ -19,6 +19,7 @@ import type {GatewaySessionCache} from './gateway/session-cache.ts'
 import type {AggregatorSnapshot, SnapshotStore} from './github/aggregator.ts'
 import type {MetadataReader} from './github/metadata.ts'
 import type {ListenerStore} from './listener/store.ts'
+import type {AckCsrfConfig} from './routes/listener.ts'
 import {Buffer} from 'node:buffer'
 import {createHash} from 'node:crypto'
 import {existsSync, readFileSync, statSync} from 'node:fs'
@@ -617,7 +618,22 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   const devAutoLogin = devAutoLoginRequested
 
   if (devAutoLogin) {
-    logger.warning('DEV AUTO-LOGIN ENABLED — auth is bypassed; never use in production')
+    // Truth-first banner (rm-642): claim "bypassed" ONLY when the Arctic
+    // branch will actually mint a session for it. In gateway mode devAutoLogin
+    // is inert (the Arctic branch never runs), and with no configured operator
+    // the Arctic fail-closed 401 outranks the auto-sign — in both cases auth
+    // is NOT bypassed, and the old unconditional banner overstated it.
+    if (gatewayOperatorSessionEnabled) {
+      logger.warning(
+        'DEV AUTO-LOGIN requested but gateway operator-session mode is active — the Arctic bypass is inert; gateway session auth applies',
+      )
+    } else if (operatorLogin === undefined) {
+      logger.warning(
+        'DEV AUTO-LOGIN enabled but NO OPERATOR configured — Arctic fail-closed 401 outranks the bypass; protected routes will 401',
+      )
+    } else {
+      logger.warning('DEV AUTO-LOGIN ENABLED — auth is bypassed; never use in production')
+    }
   }
 
   // Resolve fixture harness flag — DEV-ONLY fixture route mount. Default OFF (fail-closed).
@@ -1069,18 +1085,33 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
         // to the same identity. When auth is unconfigured, the middleware
         // already denies every protected route (fail-closed), and the router's
         // null config refuses mutations independently — belt and suspenders.
+        //
+        // rm-644: gateway deployments have no Arctic session — the operator
+        // authenticates against fro-bot/agent (validated per request above into
+        // c.get('gatewaySession')). Bind the ack token to THAT login via the
+        // resolver form, failing closed on a blank login (mirroring the
+        // middleware's own blank-login deny). Without a cookie key there is no
+        // HMAC material, so gateway mode without one keeps the null (fail-closed)
+        // config.
         ackCsrf:
           operatorLogin !== undefined && sessionManager !== undefined
             ? {cookieKey: opts?.cookieKey as Buffer, operatorLogin}
-            : null,
+            : gatewayOperatorSessionEnabled && opts?.cookieKey !== undefined
+              ? (gatewaySession): AckCsrfConfig | null =>
+                  gatewaySession.login.trim() === ''
+                    ? null
+                    : {cookieKey: opts?.cookieKey as Buffer, operatorLogin: gatewaySession.login}
+              : null,
       }),
     )
   }
 
   // Serve the React SPA at /. index.html requires a session; shell assets are public.
   // When pushNotificationsEnabled, inject a <meta name="push-enabled" content="true">
-  // tag so the SPA can render the push consent surface without a separate flag fetch.
-  if (pushNotificationsEnabled) {
+  // tag so the SPA can render the push consent surface without a separate flag fetch;
+  // when devAutoLogin, inject a <meta name="dev-auto-login" content="true"> tag for the
+  // SPA's persistent dev-auth marker (rm-642) — same injected-config-meta pattern.
+  if (pushNotificationsEnabled || devAutoLogin) {
     // Serve the SPA shell inline (not via serveStatic) so the injected body's
     // length is computed correctly. Post-processing a streamed serveStatic
     // response leaves a stale Content-Length that truncates the injected HTML
@@ -1098,10 +1129,17 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     let spaShellCache: {injected: string; at: number} | null = null
     const loadSpaShell = async (): Promise<string | null> => {
       try {
-        const html = await readFile(indexHtmlPath, 'utf8')
-        return html.includes('<meta name="push-enabled"')
-          ? html
-          : html.replace('</head>', '<meta name="push-enabled" content="true"></head>')
+        let html = await readFile(indexHtmlPath, 'utf8')
+        if (pushNotificationsEnabled && !html.includes('<meta name="push-enabled"')) {
+          html = html.replace('</head>', '<meta name="push-enabled" content="true"></head>')
+        }
+        // rm-642: dev-auto-login flag — the SPA renders a persistent dev-auth
+        // marker from it, so dev/fixture boots carry an operator-visible
+        // bypass signal instead of none.
+        if (devAutoLogin && !html.includes('<meta name="dev-auto-login"')) {
+          html = html.replace('</head>', '<meta name="dev-auto-login" content="true"></head>')
+        }
+        return html
       } catch {
         return null // missing/unreadable shell — keep the notFound fallback
       }
