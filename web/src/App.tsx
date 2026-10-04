@@ -1,4 +1,5 @@
 import {useEffect, useState, useCallback, useRef} from 'react'
+import {ErrorBoundary} from './ErrorBoundary.tsx'
 import {AppShell} from './shell/AppShell.tsx'
 import {Operator} from './views/Operator.tsx'
 import {ListenerChannel} from './views/Listener.tsx'
@@ -155,23 +156,23 @@ export default function App() {
       listenerUnreadStaleSince={badgeStale ? lastGoodAt : null}
       listenerUnreadAuthExpired={authExpired}
     >
-      <div style={{ display: currentView === 'operator' ? 'block' : 'none' }}>
-        <Operator
-          state={fixtureDetectionSettled ? operatorState : 'loading'}
-          onRuntimeStateChange={setOperatorState}
-          fixtureMode={fixtureState?.fixtureMode}
-          fixtureEndpointBase={fixtureState?.fixtureEndpointBase}
-          fixtureSessionId={fixtureState?.fixtureSessionId}
-        />
-      </div>
-      
-      {currentView === 'monitoring' && (
-        <Monitoring />
-      )}
+      {/* rm-593: one boundary around the view router — a render throw in any
+          view is isolated to the content area while the shell/nav survive. */}
+      <ErrorBoundary>
+        <div style={{display: currentView === 'operator' ? 'block' : 'none'}}>
+          <Operator
+            state={fixtureDetectionSettled ? operatorState : 'loading'}
+            onRuntimeStateChange={setOperatorState}
+            fixtureMode={fixtureState?.fixtureMode}
+            fixtureEndpointBase={fixtureState?.fixtureEndpointBase}
+            fixtureSessionId={fixtureState?.fixtureSessionId}
+          />
+        </div>
 
-      {currentView === 'listener' && (
-        <ListenerChannel />
-      )}
+        {currentView === 'monitoring' && <Monitoring />}
+
+        {currentView === 'listener' && <ListenerChannel />}
+      </ErrorBoundary>
     </AppShell>
   )
 }

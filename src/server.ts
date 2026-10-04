@@ -702,6 +702,12 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
         formAction: ["'self'"],
         frameAncestors: ["'none'"],
       },
+      // rm-588: ship ONE deliberate framing policy. secureHeaders() defaults
+      // X-Frame-Options to SAMEORIGIN, which contradicts frame-ancestors
+      // 'none' above for agents that honor only the legacy header (older
+      // embedded webviews, some intermediaries) — a standing security-review
+      // flag. Both headers now agree: no framing.
+      xFrameOptions: 'DENY',
     }),
   )
 
@@ -1103,9 +1109,28 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   // content-hash ETag (recomputed only when mtime moves) lets browsers revalidate
   // cheaply; a matching If-None-Match short-circuits the transfer with a 304.
   const operatorRuntimeAssetCache = new Map<string, {etag: string; mtimeMs: number}>()
+  // rm-587: RFC 9110 §13.1.3 — If-None-Match carries a comma-separated list of
+  // entity tags (each optionally weak, `W/"…"`) or `*`; a revalidation is
+  // satisfied when ANY listed tag matches the current representation under
+  // weak comparison (the W/ prefix is ignored, RFC 9110 §8.8.3.2). The
+  // byte-exact comparison this replaced answered 200 to lists, weak tags and
+  // `*`, re-downloading the full asset for every such client (live probe
+  // 2026-10-04: exact→304, W/<etag>→200, list→200, *→200).
+  const ifNoneMatchSatisfied = (header: string | undefined, etag: string): boolean => {
+    if (header === undefined) return false
+    for (const rawTag of header.split(',')) {
+      const tag = rawTag.trim()
+      if (tag === '*') return true
+      const opaqueTag = tag.startsWith('W/') ? tag.slice(2) : tag
+      if (opaqueTag === etag) return true
+    }
+    return false
+  }
   const operatorRuntimeCaching = async (c: Context, next: () => Promise<void>): Promise<void | Response> => {
-    await next()
-    if (c.res.status !== 200) return
+    // rm-587: compute-then-serve — resolve the tag (one stat; the hash only
+    // recomputes when mtime moves) BEFORE serveStatic runs, so a satisfied
+    // revalidation answers 304 without ever transferring the body, and the
+    // stat/read work happens once per request.
     let etag: string | undefined
     try {
       const absolutePath = join('./public', c.req.path.replace(/^\/static\//, ''))
@@ -1118,13 +1143,18 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
         operatorRuntimeAssetCache.set(absolutePath, {etag, mtimeMs: stats.mtimeMs})
       }
     } catch {
-      return // unreadable file — serveStatic's own not-found path already ran
+      // Unreadable file — fall through so serveStatic's own not-found path
+      // answers visibly (fail-closed) instead of this middleware silently
+      // serving an unvalidated full-body miss.
+      return next()
     }
+    if (ifNoneMatchSatisfied(c.req.header('If-None-Match'), etag)) {
+      return c.body(null, 304, {'Cache-Control': 'no-cache', ETag: etag})
+    }
+    await next()
+    if (c.res.status !== 200) return
     c.res.headers.set('Cache-Control', 'no-cache')
     c.res.headers.set('ETag', etag)
-    if (c.req.header('If-None-Match') === etag) {
-      c.res = new Response(null, {status: 304, headers: c.res.headers})
-    }
   }
   app.use(
     '/static/operator-stream.js',

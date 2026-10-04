@@ -107,6 +107,21 @@ describe('security headers — CSP', () => {
     expect(csp).toContain("frame-ancestors 'none'")
   })
 
+  it('ships ONE framing policy: X-Frame-Options DENY alongside CSP frame-ancestors none (rm-588)', async () => {
+    // secureHeaders() defaults the legacy header to SAMEORIGIN, which
+    // contradicts frame-ancestors 'none' for agents honoring only the legacy
+    // header — assert the pair agrees across the shell, a public API surface,
+    // and a static asset.
+    const app = await buildTestApp(true)
+    const shell = await authedGet(app, '/')
+    const healthz = await app.request('/api/healthz')
+    const asset = await app.request('/static/operator-stream.js')
+    for (const [label, res] of [['/', shell], ['/api/healthz', healthz], ['/static/operator-stream.js', asset]] as const) {
+      expect(res.headers.get('x-frame-options'), label).toBe('DENY')
+      expect(res.headers.get('content-security-policy'), label).toContain("frame-ancestors 'none'")
+    }
+  })
+
   it("CSP contains connect-src 'self' (restricts XHR/fetch/WebSocket origins)", async () => {
     const app = await buildTestApp(true)
     const res = await app.request('/api/healthz')
@@ -218,6 +233,50 @@ describe('operator runtime JS caching policy (rm-478)', () => {
     const res = await app.request('/static/operator-stream.js', {headers: {'If-None-Match': '"stale"'}})
     expect(res.status).toBe(200)
     expect(res.headers.get('cache-control')).toBe('no-cache')
+    expect((await res.text()).length).toBeGreaterThan(0)
+  })
+
+  it('a list If-None-Match containing the tag answers 304 (RFC 9110 13.1.3)', async () => {
+    const app = await buildTestApp(false)
+    const first = await app.request('/static/operator-stream.js')
+    const etag = first.headers.get('etag') ?? ''
+    const revalidated = await app.request('/static/operator-stream.js', {
+      headers: {'If-None-Match': `"stale", ${etag}`},
+    })
+    expect(revalidated.status).toBe(304)
+    expect(revalidated.headers.get('etag')).toBe(etag)
+    expect(revalidated.headers.get('cache-control')).toBe('no-cache')
+    await expect(revalidated.text()).resolves.toBe('')
+  })
+
+  it('a weak validator (W/ prefix) answers 304 under weak comparison', async () => {
+    const app = await buildTestApp(false)
+    const first = await app.request('/static/operator-stream.js')
+    const etag = first.headers.get('etag') ?? ''
+    const revalidated = await app.request('/static/operator-stream.js', {
+      headers: {'If-None-Match': `W/${etag}`},
+    })
+    expect(revalidated.status).toBe(304)
+    expect(revalidated.headers.get('etag')).toBe(etag)
+    await expect(revalidated.text()).resolves.toBe('')
+  })
+
+  it('If-None-Match: * answers 304 for any current representation', async () => {
+    const app = await buildTestApp(false)
+    const revalidated = await app.request('/static/operator-stream.js', {
+      headers: {'If-None-Match': '*'},
+    })
+    expect(revalidated.status).toBe(304)
+    expect(revalidated.headers.get('etag')).toMatch(/^"[0-9a-f]{32}"$/)
+    await expect(revalidated.text()).resolves.toBe('')
+  })
+
+  it('a list with no matching tag (weak or strong) still serves 200', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/static/operator-stream.js', {
+      headers: {'If-None-Match': 'W/"stale", "other"'},
+    })
+    expect(res.status).toBe(200)
     expect((await res.text()).length).toBeGreaterThan(0)
   })
 
