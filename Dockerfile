@@ -8,11 +8,12 @@
 # binaries — so nothing the final image runs differs per TARGETARCH. (The DEV
 # toolchain does carry cpu-gated optional deps, a second reason builders stay
 # BUILDPLATFORM-native.) The final stage carries the target arch and does
-# only cheap filesystem work: COPY plus one prune RUN — the only step that
-# executes on the target (a measured ~1.4 s rm under QEMU for arm64; RUN has no
-# --platform flag and COPY cannot express deletions, so this is the minimal
-# target-executed step the design allows — see the rm-558 CI-time note in
-# .github/workflows/release.yaml).
+# only cheap filesystem work: COPY plus two RUNs — the only steps that
+# execute on the target (the rm-558 prune, a measured ~1.4 s rm under QEMU for
+# arm64, and the rm-669 base-package apt upgrades (libpcre2-8-0, perl-base),
+# seconds native / slower under QEMU; RUN has no --platform flag and COPY cannot express deletions or
+# package upgrades, so these are the minimal target-executed steps the design
+# allows — see the rm-558 CI-time note in .github/workflows/release.yaml).
 ARG NODE_IMAGE=node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6
 
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS builder
@@ -49,13 +50,27 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --prod
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
-# 2026-09-20: in-image libpcre2-8-0 patch retired — the pinned base digest
-# (0e0ff40, upstream #492) ships libpcre2-8-0 10.42-1+deb12u1, so the fix is
-# absorbed at the base. History: docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md
+# 2026-10-05 (rm-669, run 3570419605cb): the 2026-09-20 retirement below was
+# overtaken by CVE-2026-103111 — its fix is 10.42-1+deb12u2 and the pinned
+# base digest (0e0ff40, upstream #492) still ships deb12u1 with no rebuild
+# upstream (a digest re-pin is a dead end), so the runtime stage upgrades
+# base packages in-image (RUN below). 2026-10-05T14:5xZ: perl-base joined the
+# list — trivy DB churn surfaced seven fixed HIGH/CRITICALs on 5.36.0-7+deb12u3
+# (fix deb12u4) hours after the libpcre2-only ladder measured zero; the
+# upgrade path takes both. History: docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md
 
 FROM ${NODE_IMAGE}
 
 WORKDIR /app
+
+# CVE-2026-103111 + 2026-10-05 perl-base set cure (rm-669): --only-upgrade +
+# --no-install-recommends upgrades only the named Debian packages; apt lists
+# are dropped in the same RUN so the layer stays minimal. Second
+# target-platform RUN in the file (the rm-558 prune is the other) — apt/dpkg
+# execute on the target arch: seconds native, slower under QEMU for arm64.
+RUN apt-get update && apt-get install -y --no-install-recommends --only-upgrade \
+      libpcre2-8-0 perl-base \
+      && rm -rf /var/lib/apt/lists/*
 
 
 # Copy only the production dependency tree. Package manifests and package-manager
