@@ -118,15 +118,22 @@ Read-only dependency source repositories are available under
   post-merge emptiness check stands, because a candidate lineage's landing
   commit can still carry already-tracked breadcrumbs. Root mechanism + cure:
   `docs/solutions/workflow-issues/validation-clone-exclude-pathspec-drops-staged-breadcrumb-deletion-2026-09-24.md`.
-- Branch protection on `main` is a shell today: the protection object exists
-  but carries no required checks and does not enforce for admins (re-probed
-  2026-09-25; rm-116 tracks filling it with the Main job conclusions + CodeQL,
-  strict, admin-enforced). Nothing structurally blocks red-check merges until
-  rm-116 lands — verify the live object before relying on any protection
-  claim. Once checks are in force, if a hotfix must land while a required
-  check cannot run, the override path is: temporarily
-  `enforce_admins.enabled=false` via `gh api -X PUT
-  /repos/codeo1io/dashboard/branches/main/protection` with the full protection
-  body preserved, land, then re-enable enforcement in the same session — never
-  delete the protection object (recreating it drops the check list; a
-  body-less recreate produces exactly the current all-empty shell state).
+- Branch protection on `main`: the legacy `branches/main/protection` object
+  is an empty shell (no required checks, no admin enforcement; re-probed
+  2026-10-05) and is now RETIRED as the working surface — rm-116's fill rides
+  the rulesets API (no delete-and-recreate hazard; reads are unauthenticated-open
+  on this public repo, proven 2026-10-05),
+  and base-drift.yaml's ruleset-drift job watches persistence (a verified
+  fill has vanished before — the fourth such instance in rm-116's signals).
+  Nothing structurally blocks red-check merges until that ruleset is active
+  — verify live state before relying on any protection claim. Once checks
+  are in force, if a hotfix must land while a required check cannot run, the
+  override path is rulesets-native and audited: temporarily flip the
+  ruleset's enforcement to `evaluate` (`gh api -X PUT
+  /repos/codeo1io/dashboard/rulesets/<id>` with `'enforcement': 'evaluate'`),
+  land, then restore `active` in the same session — or grant the landing
+  actor a `bypass_actors` entry and revoke it after landing. Never delete
+  the ruleset (recreating it drops the required-check list) and never fall
+  back to the legacy protection object: its read/modify path needs admin
+  rights the automation does not hold, and a body-less recreate produces
+  exactly the all-empty shell state.

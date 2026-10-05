@@ -1,5 +1,9 @@
-# rm-179/rm-225 reality canary — weekly read-only proof that EVERY query
+# rm-179/rm-225 reality canary — daily read-only proof that EVERY query
 # template the aggregator ships is accepted by the real GitHub GraphQL API.
+# rm-650 (2026-10-05): weekly → daily — the 2026-10-04 lockfile break sat red
+# for ~12 h because the weekly layer had no run in the window; audit.yaml
+# (b528f707) went daily the same week for the same reason. The frozen-install
+# step below makes this the daily end-to-end sentinel for the rm-647 cure.
 #
 # Class guard, not a required check: this workflow exists because a live-syntax
 # error (rm-177: //-comments inside the templates) shipped for four days with
@@ -12,7 +16,7 @@ name: GraphQL canary
 
 on:
   schedule:
-    - cron: '23 5 * * 1' # Mondays 05:23 UTC — after the 04:13 base-drift check
+    - cron: '23 5 * * *' # Daily 05:23 UTC (rm-650, 2026-10-05: was Mondays — after the 04:13 weekly base-drift check)
   workflow_dispatch: {}
 
 permissions:

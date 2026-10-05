@@ -355,3 +355,64 @@ jobs:
           done <<< "$ACTIONS"
 
           echo 'report complete — action pins listed above; dependabot owns action bumps (rm-102)'
+
+  ruleset-drift:
+    # rm-116 (2026-10-05, cycle-3 B4): the vanish-class watcher. A required-check
+    # ruleset on main (filled post-landing by the cycle-3 B4 ops step — see
+    # docs/prioritization/2026-10-05-repository-maintenance-cycle-3-batch-run-a2def4ce34dc.md)
+    # must never silently disappear: the 2026-09-25 classic-protection fill (7
+    # checks, strict, admin-enforced, verified in-batch per its doc) was gone on
+    # the next probe — the fourth such instance in rm-116's signals. Codifies
+    # INVARIANTS, not exact equality, so the check list may widen (Release,
+    # CodeQL Analyze, visual) without touching this file: exactly one ACTIVE
+    # ruleset targeting main (refs/heads/main or the ~DEFAULT_BRANCH token), its
+    # required_status_checks include Lockfile Guard + the Main six, and no
+    # bypass actors (rulesets enforce admins unless bypassed — empty
+    # bypass_actors IS the "include administrators" invariant).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: 📜 Verify main ruleset invariants (rm-116)
+        run: |
+          set -euo pipefail
+
+          repo="${{ github.repository }}"
+          # Unauthenticated BY DESIGN (rm-116, 2026-10-05): the repo is public
+          # and GET /rulesets answers 200 without auth (proven 2026-10-05),
+          # while GITHUB_TOKEN has no 'rulesets' permission scope (actionlint
+          # 1.7.12 — the pinned CI gate — rejects the key outright) and the
+          # legacy branches/main/protection GET requires admin (401 without
+          # auth). One list + one detail call per weekly run is nowhere near
+          # the unauthenticated 60 req/h limit. If the unauthenticated view
+          # ever stops seeing the fill, THIS job reds — by design.
+          curl -fsSL "https://api.github.com/repos/${repo}/rulesets" -o rulesets.json
+          jq . rulesets.json
+
+          active_id="$(jq -r '[.[] | select(.target == "branch")
+            | select((((.conditions.ref_name.include // []) | index("refs/heads/main")) != null)
+                 or (((.conditions.ref_name.include // []) | index("~DEFAULT_BRANCH")) != null))
+            | select(.enforcement == "active")] | if length == 1 then .[0].id else empty end' rulesets.json)"
+
+          if [ -z "$active_id" ]; then
+            echo '::error::rm-116: expected exactly one ACTIVE branch ruleset targeting main' >&2
+            exit 1
+          fi
+
+          curl -fsSL "https://api.github.com/repos/${repo}/rulesets/${active_id}" -o ruleset.json
+          jq . ruleset.json
+
+          expected='["Lockfile Guard","Lint","Check Types","Test","Test Scripts Load","Design Check","Check Workflows"]'
+          verdict="$(jq --argjson expected "$expected" '
+            ([(.rules // [])[] | select(.type == "required_status_checks")
+               | (.parameters.required_status_checks // [])[] | .context]) as $have
+            | ([$expected[] | select((. as $e | ($have | index($e))) == null)]) as $missing
+            | if ($missing | length) > 0 then
+                {ok: false, why: ("missing required checks: " + ($missing | join(", "))), have: $have}
+              elif ((.bypass_actors // []) | length) > 0 then
+                {ok: false, why: "bypass_actors is non-empty — admins may bypass; the rm-116 invariant is no bypasses"}
+              else
+                {ok: true, why: "rm-116 invariants hold", have: $have}
+              end' ruleset.json)"
+
+          echo "$verdict" | jq .
+          echo "$verdict" | jq -e '.ok' > /dev/null

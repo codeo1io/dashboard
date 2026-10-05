@@ -32,11 +32,24 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --prod
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
-# 2026-09-20: in-image libpcre2-8-0 patch retired — the pinned base digest
-# (0e0ff40, upstream #492) ships libpcre2-8-0 10.42-1+deb12u1, so the fix is
-# absorbed at the base. History: docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md
+# rm-649 (2026-10-05, cycle-3 B3): the 2026-09-20 retirement of the in-image
+# patch was WRONG — 10.42-1+deb12u1 (what the pinned 0e0ff40 digest, upstream
+# #492, ships) is the vulnerable side of CVE-2026-103111 (HIGH; fixed in
+# 10.42-1+deb12u2), and the enforcing trivy step in release.yaml has kept
+# Release red on exactly that row. The digest cannot be bumped to a fixed
+# rebuild (24-slim tag frozen since 2026-09-19; base-drift.yaml watches it),
+# so the fix rides as the explicit upgrade below — the U1 recipe proven
+# trivy-clean in the 23a12d7599b5 lineage. Superseded (step removable) when
+# rm-139 moves the image to node:26-slim, which ships 10.46-1~deb13u2.
+# History: docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md
 
 FROM node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6
+
+# rm-649 (2026-10-05): past CVE-2026-103111 without touching anything else in
+# the base (--only-upgrade); lists removed to keep the layer lean.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0 \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
