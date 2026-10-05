@@ -8,11 +8,12 @@
 # binaries — so nothing the final image runs differs per TARGETARCH. (The DEV
 # toolchain does carry cpu-gated optional deps, a second reason builders stay
 # BUILDPLATFORM-native.) The final stage carries the target arch and does
-# only cheap filesystem work: COPY plus one prune RUN — the only step that
-# executes on the target (a measured ~1.4 s rm under QEMU for arm64; RUN has no
-# --platform flag and COPY cannot express deletions, so this is the minimal
-# target-executed step the design allows — see the rm-558 CI-time note in
-# .github/workflows/release.yaml).
+# only cheap target-executed work: COPY plus two RUNs — the libpcre2-8-0
+# security upgrade (CVE-2026-103111, added 2026-10-05) and the package-manager
+# prune (a measured ~1.4 s rm under QEMU for arm64; RUN has no --platform flag
+# and COPY cannot express deletions or package upgrades, so these are the
+# minimal target-executed steps the design allows — see the rm-558 CI-time
+# note in .github/workflows/release.yaml).
 ARG NODE_IMAGE=node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6
 
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS builder
@@ -49,14 +50,25 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --prod
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
-# 2026-09-20: in-image libpcre2-8-0 patch retired — the pinned base digest
-# (0e0ff40, upstream #492) ships libpcre2-8-0 10.42-1+deb12u1, so the fix is
-# absorbed at the base. History: docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md
+# 2026-10-05 (run 5e661558 cycle:1): REVERSED — this stage had retired the
+# in-image libpcre2-8-0 patch on 2026-09-20 believing the pinned base digest
+# (0e0ff40) absorbed the fix; it does not: the base ships 10.42-1+deb12u1,
+# which carries CVE-2026-103111 (HIGH; the fixed Debian revision is
+# 10.42-1+deb12u2), and Release's enforcing trivy step (release.yaml, exit 1
+# on unfixed HIGH/CRITICAL) measured 8 HIGH at the base image → 1 after the
+# strip (this CVE) → 0 after the upgrade RUN below. --only-upgrade makes the
+# layer a no-op once a future base digest ships deb12u2+. History:
+# docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md
 
 FROM ${NODE_IMAGE}
 
 WORKDIR /app
 
+# CVE-2026-103111 (HIGH): upgrade the base's libpcre2-8-0 (10.42-1+deb12u1)
+# to the deb12u2 security revision — the second of the final stage's two
+# target-executed RUNs (see the header). --no-install-recommends + the
+# apt-lists cleanup keep the layer from adding anything but the upgrade.
+RUN apt-get update && apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0 && rm -rf /var/lib/apt/lists/*
 
 # Copy only the production dependency tree. Package manifests and package-manager
 # state never enter the final image.

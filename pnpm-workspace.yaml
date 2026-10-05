@@ -12,6 +12,20 @@ allowBuilds:
 # first-party pins that sometimes need same-day adoption.
 minimumReleaseAge: 1440
 
+# rm-656 (2026-10-05, run 5e661558 cycle:1): pnpm 11.28.3 auto-installs when
+# a script runs against a stale tree and silently REWRITES pnpm-lock.yaml in
+# place (observed live 2026-10-05: a fresh clone's first `pnpm <script>`
+# dirtied the tracked lockfile and contaminated two audit/gate evidence
+# captures; A/B control at a stale-tree copy — research ecae3ba9
+# /tmp/vdb-ecae: with this key present a script run leaves the lockfile
+# byte-identical, without it the rewrite lands in ~12.3s). `pnpm config get
+# verify-deps-before-run` misleadingly prints undefined — THIS camelCase
+# pnpm-workspace.yaml key is the honored form. CI is unaffected: gates run
+# explicit frozen installs and this only governs `pnpm run`-family commands.
+# Revisit at the pnpm 12 bump (rm-140) — re-evaluate 12's default for this
+# behavior before carrying the pin forward.
+verifyDepsBeforeRun: false
+
 # rm-196 rider (2026-09-25): hono@4.13.9 and vite@8.3.1 are the rider targets
 # — an explicit, disclosed bypass of the rm-133 age gate, not a weakening of
 # it. Truth note (run 5ae8aaf72d8f, B3): at the rider merge (828a1e6,
