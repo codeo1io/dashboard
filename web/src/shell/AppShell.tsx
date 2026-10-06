@@ -14,27 +14,9 @@
  */
 
 import {type ReactNode, useCallback, useEffect, useRef, useState} from 'react'
-import {triggerLogoutAbort} from '../push/logout-abort.ts'
-import {buildPushClient, unsubscribeOptOut} from '../push/subscribe.ts'
 import {DISMISS_KEY as INSTALL_DISMISS_KEY, InstallPrompt} from '../pwa/InstallPrompt.tsx'
 import {ReloadPrompt} from '../pwa/ReloadPrompt.tsx'
 import {purgeOperatorCache} from '../pwa/logout-purge.ts'
-import {DISMISS_SETTINGS_KEY as NOTIFICATIONS_DISMISS_KEY, Notifications} from '../views/Notifications.tsx'
-
-/**
- * Best-effort push teardown on logout. Runs local `unsubscribe()` + Gateway
- * unsubscribe via `unsubscribeOptOut` — endpointless case is a no-op
- * (never persists the endpoint). Swallows all errors: Gateway session
- * inactivation on logout is the authoritative revocation path, so a
- * teardown failure must never block navigation to the login page.
- */
-function teardownPushOnLogout(): Promise<unknown> {
-  return unsubscribeOptOut({
-    getLocalSubscription: () =>
-      navigator.serviceWorker.ready.then((r) => r.pushManager.getSubscription()),
-    pushClient: buildPushClient(),
-  }).catch(() => undefined)
-}
 
 /**
  * Arctic (default) auth mode logout. The gateway operator surface is not
@@ -62,25 +44,20 @@ async function arcticLogout(): Promise<void> {
       return
     }
 
-    // Same best-effort push teardown discipline as the gateway branch:
-    // bounded by Promise.allSettled so it can never block navigation.
-    const [logoutSettled] = await Promise.allSettled([
-      fetch('/auth/logout', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: {'content-type': 'application/x-www-form-urlencoded'},
-        body: new URLSearchParams({csrf_token: csrfToken}).toString(),
-      }),
-      teardownPushOnLogout(),
-    ])
+    const logoutRes = await fetch('/auth/logout', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {'content-type': 'application/x-www-form-urlencoded'},
+      body: new URLSearchParams({csrf_token: csrfToken}).toString(),
+    })
 
     // The server answers the successful logout with a 302 to /auth/login;
     // fetch follows it, so any non-ok outcome is a real failure.
-    if (logoutSettled.status !== 'fulfilled' || !logoutSettled.value.ok) {
+    if (!logoutRes.ok) {
       redirectToLogin()
       return
     }
-    await logoutSettled.value.text().catch(() => undefined)
+    await logoutRes.text().catch(() => undefined)
   } catch {
     // Network error — fail closed.
   }
@@ -111,20 +88,6 @@ function applyTheme(theme: Theme): void {
 
 interface AppShellProps {
   children: ReactNode
-  /**
-   * Fixture-mode push endpoint base (e.g. '/__fixture/operator/push').
-   * Undefined in production — Notifications' push client then falls back
-   * to buildPushClient's default '/operator/push'.
-   */
-  pushEndpointBase?: string
-  /**
-   * Whether push config (endpoint base / fixture session) is settled and safe
-   * to sweep with. Undefined (existing callers/tests) is treated as ready —
-   * production always renders with this true on first render.
-   */
-  pushConfigReady?: boolean
-  /** Fixture-mode session id, appended as a query param by the push client. */
-  pushFixtureSessionId?: string
   /** Current active view */
   currentView?: 'operator' | 'listener' | 'monitoring'
   /** Navigation handler */
@@ -141,9 +104,6 @@ interface AppShellProps {
 
 export function AppShell({
   children,
-  pushEndpointBase,
-  pushConfigReady,
-  pushFixtureSessionId,
   currentView = 'operator',
   onNavigate,
   listenerUnreadCount = 0,
@@ -153,11 +113,9 @@ export function AppShell({
 }: AppShellProps) {
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
   const [loggingOut, setLoggingOut] = useState(false)
-  // rm-596 re-entry nonces: bumping one remounts that dismissable surface so
-  // it re-reads its (now-cleared) localStorage latch and re-enters its state
-  // machine at not-requested. Per-surface so restoring the notifications card
-  // never discards a captured (not-dismissed) beforeinstallprompt event.
-  const [notificationsRestoreNonce, setNotificationsRestoreNonce] = useState(0)
+  // rm-596 re-entry nonce: bumping it remounts the install prompt so it
+  // re-reads its (now-cleared) localStorage latch and can re-capture a
+  // beforeinstallprompt event.
   const [installRestoreNonce, setInstallRestoreNonce] = useState(0)
   const logoutInFlight = useRef(false)
 
@@ -171,19 +129,15 @@ export function AppShell({
   }, [])
 
   /**
-   * rm-596 re-entry for the one-way dismiss latches. Clearing the persisted
-   * keys alone cannot resurrect the cards — both surfaces read their latch
-   * in a useState initializer — so each CLEARED key also bumps its remount
-   * nonce. Only keys that were actually set are touched: a no-op click (or
-   * a notifications-only restore) must not remount InstallPrompt, which
-   * would discard its captured beforeinstallprompt event.
+   * rm-596 re-entry for the one-way dismiss latch. Clearing the persisted
+   * key alone cannot resurrect the card — it reads its latch in a useState
+   * initializer — so the CLEARED key also bumps its remount nonce. Only the
+   * key that is actually set is touched: a no-op click must not remount
+   * InstallPrompt, which would discard its captured beforeinstallprompt
+   * event.
    */
   const handleRestoreDismissedCards = useCallback(() => {
     if (typeof window === 'undefined') return
-    if (window.localStorage.getItem(NOTIFICATIONS_DISMISS_KEY) !== null) {
-      window.localStorage.removeItem(NOTIFICATIONS_DISMISS_KEY)
-      setNotificationsRestoreNonce((nonce) => nonce + 1)
-    }
     if (window.localStorage.getItem(INSTALL_DISMISS_KEY) !== null) {
       window.localStorage.removeItem(INSTALL_DISMISS_KEY)
       setInstallRestoreNonce((nonce) => nonce + 1)
@@ -204,11 +158,6 @@ export function AppShell({
     // Purge operator runtime caches before navigating away so a
     // logged-out user cannot see cached operator data offline.
     purgeOperatorCache()
-
-    // Abort any in-flight push subscribe (e.g. started from the Notifications
-    // surface) so it discards its result and never issues a dangling POST
-    // after the operator has logged out.
-    triggerLogoutAbort()
 
     try {
       const csrfRes = await fetch('/operator/session/csrf', {credentials: 'same-origin'})
@@ -233,25 +182,18 @@ export function AppShell({
         return
       }
 
-      // Best-effort push teardown runs in parallel with the logout POST.
-      // Bounded by Promise.allSettled: neither its failure nor a hang can
-      // block navigation — Gateway session inactivation on logout is the
-      // authoritative revocation path.
-      const [logoutSettled] = await Promise.allSettled([
-        fetch('/operator/auth/logout', {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: {'x-csrf-token': csrfToken},
-        }),
-        teardownPushOnLogout(),
-      ])
+      const logoutRes = await fetch('/operator/auth/logout', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {'x-csrf-token': csrfToken},
+      })
 
-      if (logoutSettled.status !== 'fulfilled' || !logoutSettled.value.ok) {
+      if (!logoutRes.ok) {
         redirectToLogin()
         return
       }
 
-      await logoutSettled.value.text().catch(() => undefined)
+      await logoutRes.text().catch(() => undefined)
       redirectToLogin()
     } catch {
       // Network error — fall back to login page.
@@ -535,12 +477,6 @@ export function AppShell({
         }}
         className="sm:px-6 md:px-8 lg:px-10"
       >
-        <Notifications
-          key={`notifications-restore-${notificationsRestoreNonce}`}
-          pushEndpointBase={pushEndpointBase}
-          pushConfigReady={pushConfigReady}
-          pushFixtureSessionId={pushFixtureSessionId}
-        />
         {children}
       </main>
 
@@ -565,18 +501,18 @@ export function AppShell({
           >
             Privacy
           </a>
-          {/* rm-596: the way back for the one-way dismiss latches (notifications
-              card + install prompt). Always rendered, not conditional on a
-              latch being set: the dismissal happens inside the children, so a
-              visibility check here would go stale exactly when it matters
-              (storage events do not fire in the same tab). */}
+          {/* rm-596: the way back for the one-way dismiss latch (install
+              prompt). Always rendered, not conditional on a latch being set:
+              the dismissal happens inside the child, so a visibility check
+              here would go stale exactly when it matters (storage events do
+              not fire in the same tab). */}
           <button
             type="button"
             data-testid="restore-dismissed-cards"
             onClick={handleRestoreDismissedCards}
             className="inline-flex min-h-11 items-center text-label text-text-muted underline underline-offset-4 transition-colors duration-fast hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent cursor-pointer border-none bg-transparent p-0"
           >
-            Restore notifications
+            Restore install prompt
           </button>
         </div>
       </footer>

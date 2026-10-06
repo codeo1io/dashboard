@@ -38,7 +38,6 @@ import {
   readGatewayOperatorOrigin,
   readGatewayOperatorSessionConfig,
   readOperatorUiConfig,
-  readPushNotificationsConfig,
 } from './gateway/operator-config.ts'
 import {readFixtureHarnessConfig} from './gateway/operator-fixture-config.ts'
 import {FIXTURE_OPERATOR_PREFIX} from './gateway/operator-fixture-routes.ts'
@@ -375,6 +374,7 @@ export interface DashboardAppConfig {
    * When false, /operator is not mounted — zero operator objects are constructed.
    */
   operatorUiEnabled?: boolean | undefined
+
   /**
    * Whether to use the gateway operator session for auth instead of Arctic.
    * If undefined, reads from DASHBOARD_GATEWAY_OPERATOR_SESSION_ENABLED env (default: false).
@@ -396,15 +396,6 @@ export interface DashboardAppConfig {
    * misroute guard in the gateway middleware branch).
    */
   gatewayProxyAcknowledged?: boolean | undefined
-  /**
-   * Whether the operator push-notifications consent surface is enabled.
-   * If undefined, reads from DASHBOARD_OPERATOR_PUSH_ENABLED env (default: false).
-   * When true, a `<meta name="push-enabled" content="true">` tag is injected
-   * into the `/` HTML response so the SPA can render the consent surface.
-   * The dashboard NEVER mounts /operator/push/* routes regardless of this flag —
-   * those are reverse-proxied to the Gateway (see the no-dashboard-proxy invariant).
-   */
-  pushNotificationsEnabled?: boolean | undefined
   /**
    * Injectable OperatorClient for the gateway auth branch.
    * If undefined, a real client is built per-request from the server-side fetch adapter.
@@ -569,13 +560,6 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       'producing an undiagnosable browser redirect loop on a standalone deployment.',
     )
   }
-
-  // Resolve push notifications flag — default OFF (fail-closed). Gates only the
-  // consent-surface meta tag; the dashboard never mounts /operator/push/* routes.
-  const pushNotificationsEnabled =
-    opts?.pushNotificationsEnabled === undefined
-      ? readPushNotificationsConfig().enabled
-      : opts.pushNotificationsEnabled
 
   // Resolve devAutoLogin — DEV-ONLY auth bypass. Default OFF (fail-closed).
   //
@@ -1106,50 +1090,44 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   }
 
   // Serve the React SPA at /. index.html requires a session; shell assets are public.
-  // When pushNotificationsEnabled, inject a <meta name="push-enabled" content="true">
-  // tag so the SPA can render the push consent surface without a separate flag fetch.
-  if (pushNotificationsEnabled) {
-    // Serve the SPA shell inline (not via serveStatic) so the injected body's
-    // length is computed correctly. Post-processing a streamed serveStatic
-    // response leaves a stale Content-Length that truncates the injected HTML
-    // and drops the <div id="root"> mount target. Reading + injecting + c.html()
-    // recomputes the length. Fall through to c.notFound() if the file is missing.
-    //
-    // rm-172: the shell is READ ASYNCHRONOUSLY ONCE and cached — this handler
-    // runs on every authenticated '/' request and must not pay synchronous
-    // file I/O each time (a blocking readFileSync on the hot path stalls the
-    // event loop under load). Cache flip bound: a rebuilt web/dist/index.html
-    // is picked up within SPA_SHELL_CACHE_TTL_MS of the next request (or at
-    // process restart) — strictly better than never, which was the previous
-    // serveStatic behavior for the injected variant.
-    const indexHtmlPath = join(webDistRoot, 'index.html')
-    let spaShellCache: {injected: string; at: number} | null = null
-    const loadSpaShell = async (): Promise<string | null> => {
-      try {
-        const html = await readFile(indexHtmlPath, 'utf8')
-        return html.includes('<meta name="push-enabled"')
-          ? html
-          : html.replace('</head>', '<meta name="push-enabled" content="true"></head>')
-      } catch {
-        return null // missing/unreadable shell — keep the notFound fallback
-      }
+  //
+  // Serve the SPA shell inline (not via serveStatic) so the served body's
+  // length is computed correctly — reading + c.html() recomputes the length
+  // and falls through to c.notFound() when the file is missing.
+  //
+  // rm-172: the shell is READ ASYNCHRONOUSLY ONCE and cached — this handler
+  // runs on every authenticated '/' request and must not pay synchronous
+  // file I/O each time (a blocking readFileSync on the hot path stalls the
+  // event loop under load). Cache flip bound: a rebuilt web/dist/index.html
+  // is picked up within SPA_SHELL_CACHE_TTL_MS of the next request (or at
+  // process restart) — strictly better than never, which was the previous
+  // serveStatic behavior.
+  //
+  // (The push-enabled meta-tag injection branch was removed with the client
+  // push receive half — see the rm-106/rm-249 riders in ROADMAP.md; the shell
+  // is now served as built.)
+  const indexHtmlPath = join(webDistRoot, 'index.html')
+  let spaShellCache: {shell: string; at: number} | null = null
+  const loadSpaShell = async (): Promise<string | null> => {
+    try {
+      return await readFile(indexHtmlPath, 'utf8')
+    } catch {
+      return null // missing/unreadable shell — keep the notFound fallback
     }
-    app.get('/', async c => {
-      // rm-166 (cycle-10, landed as a rider on rm-172): the injected shell is
-      // identity-reflecting (the push-enabled flag is operator-gated), so no
-      // intermediary may cache it — same no-store posture as /api/monitoring.
-      c.header('Cache-Control', 'no-store')
-      if (spaShellCache === null || Date.now() - spaShellCache.at >= SPA_SHELL_CACHE_TTL_MS) {
-        const injected = await loadSpaShell()
-        if (injected === null) return c.notFound()
-        spaShellCache = {injected, at: Date.now()}
-        return c.html(injected)
-      }
-      return c.html(spaShellCache.injected)
-    })
-  } else {
-    app.get('/', serveStatic({root: webDistRoot, path: 'index.html'}))
   }
+  app.get('/', async c => {
+    // rm-166 (cycle-10, landed as a rider on rm-172): the shell is served
+    // behind the operator session gate, so no intermediary may cache it —
+    // same no-store posture as /api/monitoring.
+    c.header('Cache-Control', 'no-store')
+    if (spaShellCache === null || Date.now() - spaShellCache.at >= SPA_SHELL_CACHE_TTL_MS) {
+      const shell = await loadSpaShell()
+      if (shell === null) return c.notFound()
+      spaShellCache = {shell, at: Date.now()}
+      return c.html(shell)
+    }
+    return c.html(spaShellCache.shell)
+  })
 
   // ── /operator and /operator/ → / redirect (unconditional, flag-independent) ──
   // / is the canonical operator launch route. Old /operator and /operator/ links

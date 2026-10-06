@@ -1,6 +1,5 @@
 import {fireEvent, render, screen} from '@testing-library/react'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
-import {getLogoutAbortSignal} from '../push/logout-abort.ts'
 import * as logoutPurgeModule from '../pwa/logout-purge.ts'
 import {AppShell} from './AppShell.tsx'
 
@@ -91,29 +90,6 @@ function spyOnPurgeOperatorCache() {
   return vi.spyOn(logoutPurgeModule, 'purgeOperatorCache').mockReturnValue(undefined)
 }
 
-function stubServiceWorker(getSubscription: () => Promise<unknown>) {
-  Object.defineProperty(navigator, 'serviceWorker', {
-    writable: true,
-    configurable: true,
-    value: {
-      ready: Promise.resolve({
-        pushManager: {getSubscription},
-      }),
-      controller: null,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    },
-  })
-}
-
-function fakePushSubscription(endpoint = 'https://push.example/abc') {
-  return {
-    endpoint,
-    toJSON: () => ({endpoint}),
-    unsubscribe: vi.fn().mockResolvedValue(true),
-  }
-}
-
 describe('AppShell', () => {
   beforeEach(() => {
     // Reset localStorage and data-theme before each test
@@ -151,74 +127,44 @@ describe('AppShell', () => {
     expect(screen.getByRole('link', {name: /fro bot dashboard home/i})).toBeInTheDocument()
   })
 
-  it('renders the persistent privacy link when push is disabled', () => {
+  it('renders the persistent privacy link', () => {
     render(<AppShell>content</AppShell>)
 
     expect(screen.getByRole('link', {name: 'Privacy'})).toHaveAttribute('href', '/privacy')
-  })
-
-  it('renders the persistent privacy link after the notification card is dismissed', () => {
-    window.localStorage.setItem('fro-bot-notifications-dismissed', '1')
-
-    render(<AppShell>content</AppShell>)
-
-    expect(screen.queryByTestId('notifications-settings')).toBeNull()
-    expect(screen.getByRole('link', {name: 'Privacy'})).toBeInTheDocument()
   })
 
   it('rm-596: the footer restore affordance renders beside Privacy (always, not only when a latch is set)', () => {
     render(<AppShell>content</AppShell>)
 
     expect(screen.getByRole('link', {name: 'Privacy'})).toBeInTheDocument()
-    expect(screen.getByRole('button', {name: 'Restore notifications'})).toBeInTheDocument()
+    expect(screen.getByRole('button', {name: 'Restore install prompt'})).toBeInTheDocument()
   })
 
-  it('rm-596: restore clears BOTH dismiss latches and re-enters the notifications card state machine', () => {
-    // The card only renders when the push-enabled meta tag is present.
-    const meta = document.createElement('meta')
-    meta.setAttribute('name', 'push-enabled')
-    meta.setAttribute('content', 'true')
-    document.head.appendChild(meta)
-    window.localStorage.setItem('fro-bot-notifications-dismissed', '1')
+  it('rm-596: restore clears the install dismiss latch and re-enters the install prompt state machine', () => {
+    // The prompt only renders when a beforeinstallprompt event has been
+    // captured AND the dismiss latch is clear.
     window.localStorage.setItem('fro-bot-install-dismissed', '1')
 
-    try {
-      render(<AppShell>content</AppShell>)
+    render(<AppShell>content</AppShell>)
 
-      // Latched: the app's only push surface is hidden.
-      expect(screen.queryByTestId('notifications-settings')).toBeNull()
+    // Latched: the install affordance is hidden.
+    expect(screen.queryByTestId('install-prompt')).toBeNull()
 
-      fireEvent.click(screen.getByRole('button', {name: 'Restore notifications'}))
+    fireEvent.click(screen.getByRole('button', {name: 'Restore install prompt'}))
 
-      // BOTH keys cleared — the install latch rides the same affordance.
-      expect(window.localStorage.getItem('fro-bot-notifications-dismissed')).toBeNull()
-      expect(window.localStorage.getItem('fro-bot-install-dismissed')).toBeNull()
-      // …and the card is visible again (remount re-reads the cleared latch
-      // and re-enters the state machine at not-requested).
-      expect(screen.getByTestId('notifications-settings')).toBeInTheDocument()
-    } finally {
-      meta.remove()
-    }
+    // The latch is cleared — the remounted prompt re-reads it and can
+    // re-enter the state machine when the browser offers the event again.
+    expect(window.localStorage.getItem('fro-bot-install-dismissed')).toBeNull()
+    fireEvent(window, new Event('beforeinstallprompt', {cancelable: true}))
+    expect(screen.getByTestId('install-prompt')).toBeInTheDocument()
   })
 
-  it('rm-596: restore is a safe no-op when nothing was dismissed (card stays visible, keys stay absent)', () => {
-    const meta = document.createElement('meta')
-    meta.setAttribute('name', 'push-enabled')
-    meta.setAttribute('content', 'true')
-    document.head.appendChild(meta)
+  it('rm-596: restore is a safe no-op when nothing was dismissed (no crash, key stays absent)', () => {
+    render(<AppShell>content</AppShell>)
 
-    try {
-      render(<AppShell>content</AppShell>)
-      expect(screen.getByTestId('notifications-settings')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', {name: 'Restore install prompt'}))
 
-      fireEvent.click(screen.getByRole('button', {name: 'Restore notifications'}))
-
-      expect(screen.getByTestId('notifications-settings')).toBeInTheDocument()
-      expect(window.localStorage.getItem('fro-bot-notifications-dismissed')).toBeNull()
-      expect(window.localStorage.getItem('fro-bot-install-dismissed')).toBeNull()
-    } finally {
-      meta.remove()
-    }
+    expect(window.localStorage.getItem('fro-bot-install-dismissed')).toBeNull()
   })
 
   it('renders primary navigation landmark', () => {
@@ -494,81 +440,5 @@ describe('AppShell', () => {
     })
 
     expect(findFetchCall(fetchMock, '/operator/auth/logout')).toBeUndefined()
-  })
-
-  describe('push teardown on logout', () => {
-    afterEach(() => {
-      Reflect.deleteProperty(navigator, 'serviceWorker')
-    })
-
-    it('logout calls local unsubscribe() + Gateway unsubscribe, then navigates', async () => {
-      spyOnPurgeOperatorCache()
-      const location = stubLocation()
-      const subscription = fakePushSubscription()
-      stubServiceWorker(() => Promise.resolve(subscription))
-      const fetchMock = mockLogoutFetch({csrf: csrfOkResponse, logout: logoutOkResponse})
-
-      render(<AppShell>content</AppShell>)
-      fireEvent.click(screen.getByTestId('logout-button'))
-
-      await vi.waitFor(() => {
-        expect(subscription.unsubscribe).toHaveBeenCalledTimes(1)
-      })
-
-      await vi.waitFor(() => {
-        // unsubscribeOptOut refetches CSRF for the Gateway unsubscribe POST,
-        // so there are two CSRF calls: one from handleLogout, one from
-        // unsubscribeOptOut's own refreshCsrf().
-        expect(countFetchCalls(fetchMock, '/operator/push/subscriptions/unsubscribe')).toBe(1)
-      })
-
-      await vi.waitFor(() => {
-        expect(location.href).toBe('/auth/login')
-      })
-    })
-
-    it('push teardown failure/timeout still completes logout and navigates', async () => {
-      spyOnPurgeOperatorCache()
-      const location = stubLocation()
-      stubServiceWorker(() => Promise.reject(new Error('sw teardown boom')))
-      mockLogoutFetch({csrf: csrfOkResponse, logout: logoutOkResponse})
-
-      render(<AppShell>content</AppShell>)
-      fireEvent.click(screen.getByTestId('logout-button'))
-
-      await vi.waitFor(() => {
-        expect(location.href).toBe('/auth/login')
-      })
-    })
-
-    it('endpointless case: no local subscription -> no Gateway unsubscribe call, still navigates', async () => {
-      spyOnPurgeOperatorCache()
-      const location = stubLocation()
-      stubServiceWorker(() => Promise.resolve(null))
-      const fetchMock = mockLogoutFetch({csrf: csrfOkResponse, logout: logoutOkResponse})
-
-      render(<AppShell>content</AppShell>)
-      fireEvent.click(screen.getByTestId('logout-button'))
-
-      await vi.waitFor(() => {
-        expect(location.href).toBe('/auth/login')
-      })
-
-      expect(findFetchCall(fetchMock, '/operator/push/subscriptions/unsubscribe')).toBeUndefined()
-    })
-
-    it('logout triggers the shared logout-abort signal so an in-flight subscribe discards its result', () => {
-      spyOnPurgeOperatorCache()
-      stubServiceWorker(() => Promise.resolve(null))
-      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network')))
-
-      render(<AppShell>content</AppShell>)
-      const signalBefore = getLogoutAbortSignal()
-      expect(signalBefore.aborted).toBe(false)
-
-      fireEvent.click(screen.getByTestId('logout-button'))
-
-      expect(signalBefore.aborted).toBe(true)
-    })
   })
 })
