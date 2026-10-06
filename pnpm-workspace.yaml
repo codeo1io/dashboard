@@ -86,21 +86,27 @@ overrides:
   # NEWLY indexed advisory BY DESIGN and the undici 8 + jsdom 30 migration
   # rides rm-271's majors window. undici is dev-transitive via jsdom.
   undici@7: '>=7.30.0 <8.0.0'
-  # GHSA-68fv-2mgg-jv7q (HIGH, vulnerable >=1.0.0 <1.2.2, patched 1.2.2
-  # published 2026-09-30T14:08Z) — source-map-js is dev-transitive along
-  # ~16 paths (@eslint/css-tree, the @tailwindcss/* chain, vite > postcss).
-  # Indexed by the advisory DB AFTER every recorded audit-0 of this batch
-  # (2026-10-05 era) — standing lesson: audit greens expire with the
-  # advisory DB, re-derive at every fold (review eb452afd finding, floors
-  # added 2026-10-06 by review repair fccd4229).
+  # 2026-10-06 — both floors below were minted by two converging lineages
+  # after the advisory DB moved overnight (the L3 time-varying-DB class the
+  # trivy perl-base wave proved the same cycle): landed run 5e661558's review
+  # repair fccd4229 (review eb452afd finding) and run 73d35a6ca2bd's review
+  # f83fb832 independently recorded the same floors; rm-276 convention —
+  # floor + GHSA rationale + re-resolve in the same change. Standing lesson:
+  # audit greens expire with the advisory DB — re-derive at every fold.
+  # source-map-js is dev-transitive along ~16 paths (@eslint/css-tree, the
+  # @tailwindcss/* chain, vite > postcss); GHSA-68fv-2mgg-jv7q is HIGH
+  # (event-loop DoS, vulnerable >=1.0.0 <1.2.2, patched 1.2.2 published
+  # 2026-09-30T14:08Z), indexed AFTER every recorded audit-0 of the
+  # 2026-10-05 era.
   source-map-js: '>=1.2.2 <2.0.0'
-  # GHSA-238p-pmpm-9mq7 (LOW, vulnerable >=0.11.0 <0.18.2) — katex is
-  # dev-transitive via @bfra.me/eslint-config > @eslint/markdown >
+  # katex is dev-transitive via @bfra.me/eslint-config > @eslint/markdown >
   # micromark-extension-math@3.1.0, which declares ^0.16.0 with no
-  # ^0.18-capable successor; this override deliberately forces the patched
-  # 0.18 line OUT OF the declared range — inert at lint time (this repo
-  # renders no math fences; the markdown plugin never evaluates them),
-  # same review fold as source-map-js above.
+  # ^0.18-capable successor; GHSA-238p-pmpm-9mq7 is LOW (vulnerable
+  # >=0.11.0 <0.18.2, patched 0.18.2, 2026-08-08). This override deliberately
+  # forces the patched 0.18 line OUT OF the declared range — an out-of-range
+  # force, verified inert at lint time (this repo renders no math fences; the
+  # markdown plugin never evaluates them; pnpm lint green on the forced
+  # resolution), same review fold as source-map-js above.
   katex: '>=0.18.2 <0.19.0'
 
 shamefullyHoist: true
