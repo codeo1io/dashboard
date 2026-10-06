@@ -8,7 +8,8 @@
 # binaries — so nothing the final image runs differs per TARGETARCH. (The DEV
 # toolchain does carry cpu-gated optional deps, a second reason builders stay
 # BUILDPLATFORM-native.) The final stage carries the target arch and does
-# only cheap filesystem work: COPY plus one prune RUN — the only step that
+# only cheap filesystem work: COPY plus one prune RUN plus (2026-10-05) the
+# --only-upgrade package heal — the only steps that
 # executes on the target (a measured ~1.4 s rm under QEMU for arm64; RUN has no
 # --platform flag and COPY cannot express deletions, so this is the minimal
 # target-executed step the design allows — see the rm-558 CI-time note in
@@ -18,7 +19,7 @@ ARG NODE_IMAGE=node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc3
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS builder
 
 # Enable corepack for pnpm
-RUN corepack enable && corepack prepare pnpm@11.28.3 --activate
+RUN corepack enable && corepack prepare pnpm@11.28.4 --activate
 
 WORKDIR /app
 
@@ -38,7 +39,7 @@ RUN pnpm build:web
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS prod-deps
 
 # Enable corepack for pnpm
-RUN corepack enable && corepack prepare pnpm@11.28.3 --activate
+RUN corepack enable && corepack prepare pnpm@11.28.4 --activate
 
 WORKDIR /app
 
@@ -49,11 +50,22 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --prod
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
-# 2026-09-20: in-image libpcre2-8-0 patch retired — the pinned base digest
-# (0e0ff40, upstream #492) ships libpcre2-8-0 10.42-1+deb12u1, so the fix is
-# absorbed at the base. History: docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md
+# 2026-10-05 (run cfa9f94b, unfreeze batch B3): the 2026-09-20 "absorbed at
+# the base" retirement was false — digest 0e0ff40 still ships libpcre2-8-0
+# 10.42-1+deb12u1 while the fix is 10.42-1+deb12u2 (CVE-2026-103111;
+# Perl's CVE-2026-103112 is analogous: perl-base 5.036.0-7+deb12u3 →
+# deb12u4), so the un-retired heal runs --only-upgrade — a fixed base skips
+# it harmlessly and the Enforce release step (trivy-action on the BUILT
+# image) stops firing on it. Verified 2026-10-05T16:0xZ by sibling run
+# 3570419605cb: dpkg reports deb12u2+deb12u4 after build, fresh-DB trivy
+# 0.72.0 HIGH/CRITICAL ignore-unfixed → 0 findings; re-verified by this run
+# at build time.
 
 FROM ${NODE_IMAGE}
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends --only-upgrade libpcre2-8-0 perl-base \
+ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -76,7 +88,8 @@ ENV NODE_ENV=production
 
 # Remove package-manager binaries, shims, and caches inherited from the Node base
 # image before handing the filesystem to the unprivileged runtime user.
-# rm-558: the only target-platform RUN in the file (see the header comment).
+# rm-558: still the only target-platform RUN in the file (the 2026-10-05
+# package heal above is arch-agnostic apt-get; see the header comment).
 RUN rm -rf \
       /usr/local/bin/npm \
       /usr/local/bin/npx \
