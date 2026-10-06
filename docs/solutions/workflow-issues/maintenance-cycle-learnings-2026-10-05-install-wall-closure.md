@@ -1,6 +1,6 @@
 ---
 module: dashboard
-tags: [`maintenance-cycle`, `ci`, `security`, `supply-chain`, `lint`, `roadmap`]
+tags: ['maintenance-cycle', 'ci', 'security', 'supply-chain', 'lint', 'roadmap']
 problem_type: workflow-issue
 ---
 
