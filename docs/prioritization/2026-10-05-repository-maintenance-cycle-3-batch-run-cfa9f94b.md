@@ -265,3 +265,29 @@ merely annotated. Full detail lives in ROADMAP.md (`rm-285` review_fix rider,
 5. **Dangling `# so` comment line (finding 5, repaired).**
    `pnpm-workspace.yaml` retirement-note comment re-joined into one
    well-formed sentence.
+
+## Fleet addendum (2026-10-06, run c5b7cd7d independent_review fix dd74c6a0)
+
+Rebased onto main's landed variant of this doc (blob `2675be1f`, 267 lines) by
+the c5b7cd7d review fix: the fleet's 165-line variant add/add-collided with
+this file in github_ci_validate's disposable-base apply (the same pre-push
+collision class as the lockfile-guard variant; see
+docs/solutions/workflow-issues/ephemeral-ci-route-prepush-workflow-byte-collision-2026-10-06.md).
+Dated corrections to the records above, verified live this fix:
+
+- PR #389 closed UNMERGED 2026-10-06T07:54:36Z; head ref
+  conductor/ci-6f0d063134 deleted. The claims at :179 ('still open as the
+  adoption source') and :199 ('sweep exclusion for PR #389 until adoption')
+  are historical. The cure content reached main via the cfa9f94b
+  conductor-landing (ac61ff3, 2026-10-06); PR #389's 11/11 record remains the
+  provenance anchor for the byte-adopted files (:256 handoff closed).
+- Fleet cycle-3 batches re-based onto main's current bytes at review-fix
+  time: `.github/workflows/lockfile-guard.yaml` byte-adopted as blob
+  `1ab27c9` (68-line variant; the earlier 58-line harmonization matched only
+  fe928ca and was dead against ac61ff3). Residual ship value for the fleet's
+  cycle-3 lineages is riders/records only — functional bytes are already on
+  main.
+- Live dependabot posture: 9 open (cycle assess, morning) → 5 open
+  (independent review 11:19Z) → 0 open (this fix) — floors deployed and
+  alerts dismissed. Recorded audit greens expire with the advisory DB; keep
+  re-deriving live at every gate (rm-278 rider governs).
