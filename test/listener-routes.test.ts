@@ -4,8 +4,12 @@
 import type {ListenerStore} from '../src/listener/store.ts'
 import {Buffer} from 'node:buffer'
 import {createHmac} from 'node:crypto'
+import {mkdtempSync} from 'node:fs'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
 import process from 'node:process'
-import {beforeEach, describe, expect, it} from 'vitest'
+import {DatabaseSync} from 'node:sqlite'
+import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {createListenerStore} from '../src/listener/store.ts'
 import {deriveAckCsrfToken} from '../src/routes/listener.ts'
 import {buildDashboardApp} from '../src/server.ts'
@@ -437,5 +441,67 @@ describe('operator listener channel routes', () => {
       headers: {cookie: sessionCookieHeader()},
     })
     expect(res.status).toBe(404)
+  })
+})
+
+describe('listener messages endpoint vs corrupt links cells (rm-187)', () => {
+  it('GET /api/listener/messages 200s with remaining rows intact when a links cell is corrupt', async () => {
+    // File-backed store so the sqlite surface can be corrupted in place the
+    // way an operator edit / schema drift / truncated write would; the app
+    // then reads the SAME file through a freshly reopened store.
+    const dir = mkdtempSync(join(tmpdir(), 'listener-routes-rm187-'))
+    const dbPath = join(dir, 'messages.db')
+    const seeded = createListenerStore(dbPath)
+    const healthy = seeded.insert({
+      source: 'infra',
+      kind: 'deploy-health',
+      severity: 'warning',
+      title: 'healthy row',
+      body: 'fine',
+      links: [{label: 'run', url: 'https://example.test/run/1'}],
+      dedupeKey: 'healthy-1',
+      createdAt: '2026-10-07T00:00:00Z',
+    })
+    const bad = seeded.insert({
+      source: 'infra',
+      kind: 'deploy-health',
+      severity: 'warning',
+      title: 'corrupt row',
+      body: 'links cell corrupted below',
+      links: [],
+      dedupeKey: 'corrupt-1',
+      createdAt: '2026-10-07T00:00:01Z',
+    })
+    seeded.close()
+
+    const db = new DatabaseSync(dbPath)
+    db.prepare('UPDATE messages SET links = ? WHERE id = ?').run('{"label": "unterminated', bad.id)
+    db.close()
+
+    const reopened = createListenerStore(dbPath)
+    const app = await buildTestApp({listenerStore: reopened, listenerIngestKey: INGEST_KEY})
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const res = await app.request('/api/listener/messages', {
+        headers: {cookie: sessionCookieHeader()},
+      })
+      expect(res.status).toBe(200)
+      const json = (await res.json()) as {
+        messages: {id: string; title: string; links: {label: string; url: string}[]}[]
+        unreadCount: number
+      }
+      expect(json.messages).toHaveLength(2)
+      const byTitle = new Map(json.messages.map(m => [m.title, m]))
+      expect(byTitle.get('healthy row')?.links).toEqual([{label: 'run', url: 'https://example.test/run/1'}])
+      expect(byTitle.get('healthy row')?.id).toBe(healthy.id)
+      expect(byTitle.get('corrupt row')?.links).toEqual([])
+      expect(byTitle.get('corrupt row')?.id).toBe(bad.id)
+      const degraded = warn.mock.calls.map(c => String(c[0])).filter(w => w.includes('corrupt links cell degraded'))
+      expect(degraded).toHaveLength(1)
+      expect(degraded[0]).toContain('rm-187')
+    } finally {
+      warn.mockRestore()
+      reopened.close()
+    }
   })
 })

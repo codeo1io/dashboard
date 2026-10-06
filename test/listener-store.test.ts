@@ -1,4 +1,8 @@
 import type {IngestMessage} from '../src/listener/contract.ts'
+import {mkdtempSync} from 'node:fs'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
+import {DatabaseSync} from 'node:sqlite'
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {createListenerStore, type ListenerStore} from '../src/listener/store.ts'
 
@@ -167,5 +171,57 @@ describe('listener store', () => {
 
   it('close does not throw', () => {
     expect(() => store.close()).not.toThrow()
+  })
+})
+
+describe('listener store links-cell degradation (rm-187)', () => {
+  it('a corrupt links cell degrades that row to empty links instead of throwing, and the degradation is logged', () => {
+    // File-backed so the sqlite surface can be corrupted in place the way an
+    // operator edit / schema drift / truncated write would.
+    const dir = mkdtempSync(join(tmpdir(), 'listener-store-rm187-'))
+    const dbPath = join(dir, 'messages.db')
+    const store = createListenerStore(dbPath)
+    const healthy = store.insert(makeMessage({
+      title: 'healthy row',
+      links: [{label: 'run', url: 'https://example.test/run/1'}],
+    }))
+    const trailingGarbage = store.insert(makeMessage({title: 'trailing garbage row', dedupeKey: 'bad-1'}))
+    const emptyCell = store.insert(makeMessage({title: 'empty cell row', dedupeKey: 'bad-2'}))
+    const nullLiteral = store.insert(makeMessage({title: 'null literal row', dedupeKey: 'bad-3'}))
+    const nonArray = store.insert(makeMessage({title: 'non-array row', dedupeKey: 'bad-4'}))
+    store.close()
+
+    const db = new DatabaseSync(dbPath)
+    const corrupt = db.prepare('UPDATE messages SET links = ? WHERE id = ?')
+    corrupt.run('{"label": "x"} trailing garbage', trailingGarbage.id)
+    corrupt.run('', emptyCell.id)
+    corrupt.run('null', nullLiteral.id)
+    corrupt.run('{"label": "not", "url": "an array"}', nonArray.id)
+    db.close()
+
+    const reopened = createListenerStore(dbPath)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      let listed: ReturnType<ListenerStore['list']> | undefined
+      expect(() => {
+        listed = reopened.list({})
+      }).not.toThrow()
+      if (listed === undefined) throw new Error('list() returned undefined')
+
+      expect(listed.messages).toHaveLength(5)
+      const byTitle = new Map(listed.messages.map(m => [m.title, m]))
+      expect(byTitle.get('healthy row')?.id).toBe(healthy.id)
+      expect(byTitle.get('healthy row')?.links).toEqual([{label: 'run', url: 'https://example.test/run/1'}])
+      for (const title of ['trailing garbage row', 'empty cell row', 'null literal row', 'non-array row']) {
+        expect(byTitle.get(title)?.links).toEqual([])
+      }
+
+      const degraded = warn.mock.calls.map(c => String(c[0])).filter(w => w.includes('corrupt links cell degraded'))
+      expect(degraded).toHaveLength(4)
+      for (const w of degraded) expect(w).toContain('rm-187')
+    } finally {
+      warn.mockRestore()
+      reopened.close()
+    }
   })
 })
