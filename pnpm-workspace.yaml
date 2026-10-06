@@ -67,5 +67,22 @@ overrides:
   # NEWLY indexed advisory BY DESIGN and the undici 8 + jsdom 30 migration
   # rides rm-271's majors window. undici is dev-transitive via jsdom.
   undici@7: '>=7.30.0 <8.0.0'
+  # 2026-10-06 (review f83fb832, run 73d35a6ca2bd independent_review): both
+  # floors below were added after the advisory DB moved overnight — the
+  # 2026-10-05 regen's recorded `pnpm audit --recursive` zero was true
+  # against that day's DB and false a day later (the L3 time-varying-DB
+  # class the trivy perl-base wave already proved this cycle); rm-276
+  # convention — floor + GHSA rationale + re-resolve in the same change.
+  # source-map-js is dev-transitive on 16 paths (@eslint/css-tree,
+  # @tailwindcss/*, vite>postcss); GHSA-68fv-2mgg-jv7q is HIGH (event-loop
+  # DoS, vulnerable >=1.0.0 <1.2.2), patched at 1.2.2 (2026-09-30).
+  source-map-js: '>=1.2.2 <2.0.0'
+  # katex is dev-transitive via @bfra.me/eslint-config>@eslint/markdown>
+  # micromark-extension-math@3.1.0; GHSA-238p-pmpm-9mq7 is LOW (vulnerable
+  # >=0.11.0 <0.18.2, patched 0.18.2, 2026-08-08). NOTE: micromark-
+  # extension-math@3.1.0 (latest) declares katex ^0.16.0, so this floor is
+  # an out-of-range force — verified inert at lint time (repo markdown
+  # has no math fences; pnpm lint green on the forced resolution).
+  katex: '>=0.18.2 <0.19.0'
 
 shamefullyHoist: true
