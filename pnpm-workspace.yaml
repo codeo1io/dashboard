@@ -12,6 +12,20 @@ allowBuilds:
 # first-party pins that sometimes need same-day adoption.
 minimumReleaseAge: 1440
 
+# rm-656 (2026-10-05, run 5e661558 cycle:1): pnpm 11.28.3 auto-installs when
+# a script runs against a stale tree and silently REWRITES pnpm-lock.yaml in
+# place (observed live 2026-10-05: a fresh clone's first `pnpm <script>`
+# dirtied the tracked lockfile and contaminated two audit/gate evidence
+# captures; A/B control at a stale-tree copy — research ecae3ba9
+# /tmp/vdb-ecae: with this key present a script run leaves the lockfile
+# byte-identical, without it the rewrite lands in ~12.3s). `pnpm config get
+# verify-deps-before-run` misleadingly prints undefined — THIS camelCase
+# pnpm-workspace.yaml key is the honored form. CI is unaffected: gates run
+# explicit frozen installs and this only governs `pnpm run`-family commands.
+# Revisit at the pnpm 12 bump (rm-140) — re-evaluate 12's default for this
+# behavior before carrying the pin forward.
+verifyDepsBeforeRun: false
+
 # rm-196 rider (2026-09-25): hono@4.13.9 and vite@8.3.1 are the rider targets
 # — an explicit, disclosed bypass of the rm-133 age gate, not a weakening of
 # it. Truth note (run 5ae8aaf72d8f, B3): at the rider merge (828a1e6,
@@ -25,6 +39,11 @@ minimumReleaseAge: 1440
 # HIGH alerts #29/#30 — both fast-uri, per the batch doc's live probes), so
 # the name was a dead bypass record; the retirement is rm-277's acceptance
 # rider (rm-271's 2026-09-30 note).
+# 2026-10-06 review fix note (F3, run 5e661558 attempt 7cca9ec3): the #29/#30
+# closure above was reverted 2026-10-04 by 1e1e2f5's stale-lockfile re-import
+# (rm-285's correction-of-record rider); this batch's floors lockfile re-closes
+# both on landing (batch doc watch item 4 — dependabot re-indexes the landed
+# blob).
 # vite@8.3.1 stays (both rider targets past maturity; the record remains dated).
 minimumReleaseAgeExclude:
   - '@bfra.me/eslint-config@0.51.2 || 0.51.3 || 0.51.4 || 0.52.0 || 0.52.1 || 0.52.2 || 0.54.0'
@@ -67,5 +86,21 @@ overrides:
   # NEWLY indexed advisory BY DESIGN and the undici 8 + jsdom 30 migration
   # rides rm-271's majors window. undici is dev-transitive via jsdom.
   undici@7: '>=7.30.0 <8.0.0'
+  # GHSA-68fv-2mgg-jv7q (HIGH, vulnerable >=1.0.0 <1.2.2, patched 1.2.2
+  # published 2026-09-30T14:08Z) — source-map-js is dev-transitive along
+  # ~16 paths (@eslint/css-tree, the @tailwindcss/* chain, vite > postcss).
+  # Indexed by the advisory DB AFTER every recorded audit-0 of this batch
+  # (2026-10-05 era) — standing lesson: audit greens expire with the
+  # advisory DB, re-derive at every fold (review eb452afd finding, floors
+  # added 2026-10-06 by review repair fccd4229).
+  source-map-js: '>=1.2.2 <2.0.0'
+  # GHSA-238p-pmpm-9mq7 (LOW, vulnerable >=0.11.0 <0.18.2) — katex is
+  # dev-transitive via @bfra.me/eslint-config > @eslint/markdown >
+  # micromark-extension-math@3.1.0, which declares ^0.16.0 with no
+  # ^0.18-capable successor; this override deliberately forces the patched
+  # 0.18 line OUT OF the declared range — inert at lint time (this repo
+  # renders no math fences; the markdown plugin never evaluates them),
+  # same review fold as source-map-js above.
+  katex: '>=0.18.2 <0.19.0'
 
 shamefullyHoist: true
