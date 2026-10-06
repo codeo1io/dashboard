@@ -93,3 +93,75 @@ describe('base-drift digest readback — workflow statics (rm-166)', () => {
     ).toBe(true)
   })
 })
+
+/**
+ * rm-708 (2026-10-08): the third readback fence class — an UNGUARDED
+ * early-exit-awk digest readback of a docker inspect command under
+ * `bash -Eeuo pipefail` (release.yaml runs `shell: bash -Eeuo pipefail {0}`).
+ *
+ * `| awk '/^Digest:/{print $2; exit}'` makes awk exit the instant it prints,
+ * SIGPIPE-ing the producer (docker/buildx) mid-write; pipefail then turns the
+ * pipeline into a step failure WITH the correct digest already extracted —
+ * exactly how Release went 7/8 red at '🏷️ Promote latest image tag'
+ * (runs 37574226127/37567189586, 2026-10-04..07). rm-166/178 fenced the
+ * manifest-inspect and buildx-template classes; this fences every workflow's
+ * early-exit class. `|| true`-guarded forms (base-drift.yaml:68/:81) stay
+ * legal by design: their step cannot fail on the readback, so early exit is
+ * harmless there. The cure is the END-block form — `awk '/^Digest:/{d=$2}
+ * END{print d}'` — which drains the pipe and prints only at EOF, preserving
+ * empty-output ⇒ extraction-error semantics.
+ */
+const INSPECT_TO_AWK = /(?:docker\s+manifest\s+inspect|docker\s+buildx\s+imagetools\s+inspect)[\s\S]{0,400}?awk\s+'([^']*)'/g
+
+function findUnguardedEarlyExitReadbacks(text: string): string[] {
+  const violations: string[] = []
+  for (const match of text.matchAll(INSPECT_TO_AWK)) {
+    const program = match[1] ?? ''
+    const earlyExit = /\bexit\b/.test(program) && !/\bEND\s*\{/.test(program)
+    if (!earlyExit) continue
+    const after = text.slice(match.index + match[0].length, match.index + match[0].length + 120)
+    if (/\|\|\s*true/.test(after)) continue // guarded — deliberately legal
+    violations.push(match[0].replaceAll(/\s+/g, ' ').slice(0, 200))
+  }
+  return violations
+}
+
+describe('digest readback — SIGPIPE fence (rm-708)', () => {
+  it('no workflow pipes a docker inspect into an UNGUARDED early-exit awk under pipefail', () => {
+    for (const {name, text} of readWorkflowFiles()) {
+      const violations = findUnguardedEarlyExitReadbacks(text)
+      expect(
+        violations,
+        `${name}: early-exit awk SIGPIPEs the inspect producer under -Eeuo pipefail (convert to the END-block form awk '/^Digest:/{d=$2} END{print d}' or ||-true guard it): ${violations.join(' || ')}`,
+      ).toEqual([])
+    }
+  })
+
+  it('release.yaml reads both digests with the END-block (SIGPIPE-free) awk form', () => {
+    const file = readWorkflowFiles().find(f => f.name === 'release.yaml')
+    expect(file, '.github/workflows/release.yaml must exist').toBeDefined()
+    const text = file?.text ?? ''
+    expect(
+      (text.match(/awk '\/\^Digest:\/\{d=\$2\} END\{print d\}'/g) ?? []).length,
+      'release.yaml must read both digests (:480 verify loop, :518 promote-latest) with the END-block awk',
+    ).toBe(2)
+    expect(
+      text,
+      'release.yaml must not read a digest with an early-exit awk (SIGPIPE under -Eeuo pipefail)',
+    ).not.toContain("awk '/^Digest:/{print $2; exit}'")
+  })
+
+  it('detector semantics: guarded, END-block, and non-inspect early-exit awks are legal; unguarded inspect readbacks are not', () => {
+    const unguarded = String.raw`got=$(docker buildx imagetools inspect \n  "ghcr.io/org/repo:latest" \n  | awk '/^Digest:/{print $2; exit}')`
+    expect(findUnguardedEarlyExitReadbacks(unguarded)).toHaveLength(1)
+    expect(findUnguardedEarlyExitReadbacks(`${unguarded} || true)`)).toHaveLength(0)
+    expect(
+      findUnguardedEarlyExitReadbacks(
+        "got=$(docker buildx imagetools inspect 'ghcr.io/org/repo:latest' | awk '/^Digest:/{d=$2} END{print d}')",
+      ),
+    ).toHaveLength(0)
+    expect(
+      findUnguardedEarlyExitReadbacks(String.raw`printf '%s\n' a b | awk '/a/{print; exit}'`),
+    ).toHaveLength(0)
+  })
+})

@@ -226,6 +226,63 @@ describe('aggregator — happy path: CI state mapping', () => {
     ])
   })
 
+  it('rm-709: blanks non-https details_url at the boundary (javascript:/data:/relative never reach a client)', async () => {
+    const repo = makeRepo({node_id: 'NODE_B9', owner: 'org', name: 'repo-b9'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_B9', owner: 'org', name: 'repo-b9'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({
+        rollupState: 'FAILURE',
+        failingChecks: 4,
+        checkSuites: [{
+          workflowRun: {displayTitle: 'CI · main', runAttempt: 1},
+          checkRuns: {
+            totalCount: 4,
+            nodes: [
+              {name: 'build', detailsUrl: 'https://github.com/org/repo-b9/actions/runs/9'},
+              {name: 'js', detailsUrl: 'javascript:alert(1)'},
+              {name: 'data', detailsUrl: 'data:text/html,hello'},
+              {name: 'rel', detailsUrl: '/org/repo-b9/actions/runs/9'},
+            ],
+          },
+        }],
+      })),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const status = agg.getSnapshot().repos[0]?.status
+
+    expect(status?.failingCheckDetails).toEqual([
+      {
+        workflowTitle: 'CI · main',
+        runAttempt: 1,
+        checkName: 'build',
+        detailsUrl: 'https://github.com/org/repo-b9/actions/runs/9',
+      },
+      {
+        workflowTitle: 'CI · main',
+        runAttempt: 1,
+        checkName: 'js',
+        detailsUrl: '',
+      },
+      {
+        workflowTitle: 'CI · main',
+        runAttempt: 1,
+        checkName: 'data',
+        detailsUrl: '',
+      },
+      {
+        workflowTitle: 'CI · main',
+        runAttempt: 1,
+        checkName: 'rel',
+        detailsUrl: '',
+      },
+    ])
+  })
+
   it('maps PENDING rollup to pending', async () => {
     const repo = makeRepo({node_id: 'NODE_C', owner: 'org', name: 'repo-c'})
     const deps = makeDeps({

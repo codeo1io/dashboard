@@ -74,5 +74,84 @@ describe('monitoring API', () => {
       const res = await fetchMonitoring()
       expect(res).toEqual({ ok: false, reason: 'contract-drift' })
     })
+
+    it('rm-709: a non-https detailsUrl is contract drift (https://-only mirror of the listener link filter)', async () => {
+      const mockData = {
+        repos: [
+          {
+            full_name: 'org/repo-a',
+            discovery_channel: 'installation',
+            status: {
+              rollupState: 'red',
+              failingChecks: 1,
+              failingCheckDetails: [
+                { workflowTitle: null, runAttempt: 1, checkName: 'build', detailsUrl: 'javascript:alert(1)' },
+              ],
+              openPrCount: 0,
+              openIssueCount: 0,
+              openAlertCount: null,
+              stale: false,
+            },
+          },
+        ],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+      const res = await fetchMonitoring()
+      expect(res).toEqual({ ok: false, reason: 'contract-drift' })
+    })
+
+    it("rm-709: keeps the empty detailsUrl as the legal no-link value", async () => {
+      const mockData = {
+        repos: [
+          {
+            full_name: 'org/repo-a',
+            discovery_channel: 'installation',
+            status: {
+              rollupState: 'red',
+              failingChecks: 1,
+              failingCheckDetails: [
+                { workflowTitle: null, runAttempt: 1, checkName: 'build', detailsUrl: '' },
+              ],
+              openPrCount: 0,
+              openIssueCount: 0,
+              openAlertCount: null,
+              stale: false,
+            },
+          },
+        ],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+      const res = await fetchMonitoring()
+      expect(res.ok).toBe(true)
+      if (res.ok) {
+        expect(res.data.repos).toEqual([
+          {
+            fullName: 'org/repo-a',
+            discoveryChannel: 'installation',
+            status: {
+              rollupState: 'red',
+              failingChecks: 1,
+              failingCheckDetails: [
+                { workflowTitle: null, runAttempt: 1, checkName: 'build', detailsUrl: '' },
+              ],
+              openPrCount: 0,
+              openIssueCount: 0,
+              openAlertCount: null,
+              stale: false,
+            },
+          },
+        ])
+      }
+    })
   })
 })
