@@ -3,7 +3,7 @@ import {existsSync, readdirSync} from 'node:fs'
 import {join} from 'node:path'
 import process from 'node:process'
 import {beforeAll, describe, expect, it, vi} from 'vitest'
-import {buildDashboardApp, buildSnapshotProvider, readMonitoringRefreshConfig, readServerBindConfig} from '../src/server.ts'
+import {buildDashboardApp, buildSnapshotProvider, readInstallationId, readMonitoringRefreshConfig, readServerBindConfig} from '../src/server.ts'
 import {SessionManager} from '../src/session.ts'
 import {makeEnumerateSuccess, makeInstallationRecord, makeRepoRecord} from './make-enumerate-result.ts'
 
@@ -177,6 +177,57 @@ repos:
     // After a successful refresh, refreshedAt is set — the empty default always returns null.
     // This assertion fails if the production path uses the empty default.
     expect(snapshot.refreshedAt).not.toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-684 — installation-id boundary validation
+// ---------------------------------------------------------------------------
+
+describe('readInstallationId — installation-id boundary validation (rm-684)', () => {
+  // The default resolver for GET /repos/{owner}/{repo}/installation runs
+  // against the real App-JWT endpoint (unreachable from tests); these
+  // malformed-response fixtures prove the boundary itself throws a typed
+  // error instead of an `undefined` id propagating silently into token
+  // minting (mirrors the metadataReader's shape-validation pattern).
+  it('accepts a well-formed installation envelope', () => {
+    expect(readInstallationId({id: 42})).toBe(42)
+    expect(readInstallationId({id: 123456789})).toBe(123456789)
+  })
+
+  it('rejects a string id instead of letting it reach token minting', () => {
+    expect(() => readInstallationId({id: '12345'})).toThrowError(
+      /installation response did not carry a positive integer id \(got: "12345"\)/,
+    )
+  })
+
+  it('rejects a missing id — undefined never reaches mintReadOnlyToken', () => {
+    expect(() => readInstallationId({})).toThrowError(/positive integer id \(got: undefined\)/)
+  })
+
+  it('rejects null/undefined/array/primitive envelopes with the typed error', () => {
+    expect(() => readInstallationId(null)).toThrowError(/positive integer id/)
+    expect(() => readInstallationId(undefined)).toThrowError(/positive integer id/)
+    expect(() => readInstallationId([])).toThrowError(/positive integer id/)
+    expect(() => readInstallationId('42')).toThrowError(/positive integer id/)
+  })
+
+  it('rejects fractional, zero, negative and NaN ids', () => {
+    expect(() => readInstallationId({id: 1.5})).toThrowError(/positive integer id/)
+    expect(() => readInstallationId({id: 0})).toThrowError(/positive integer id/)
+    expect(() => readInstallationId({id: -1})).toThrowError(/positive integer id/)
+    expect(() => readInstallationId({id: Number.NaN})).toThrowError(/positive integer id/)
+  })
+
+  it('the typed error is a NotFound-coded Error, not a raw TypeError', () => {
+    let caught: unknown
+    try {
+      readInstallationId({id: false})
+    } catch (error) {
+      caught = error
+    }
+    expect(caught).toBeInstanceOf(Error)
+    expect((caught as {code?: string}).code).toBe('NOT_FOUND')
   })
 })
 
