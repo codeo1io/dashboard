@@ -42,7 +42,7 @@ Compute secret presence in a tiny preceding job (a step-level `env` MAY read
 jobs:
   secret-gate:
     name: Fro Bot secret gate
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
     outputs:
@@ -68,8 +68,9 @@ and works for secrets, because the gate job itself has no `if:`.
 
 Trade-offs to account for:
 
-- The gate job is a real job: it queues on the runner (this fork has ONE
-  self-hosted runner, so jobs serialize), it appears in Check-Workflows
+- The gate job is a real job: it queues on a runner (the fleet has been
+  GitHub-hosted since 2026-09-22, d73fbe7, so it consumes a hosted slot for
+  seconds), it appears in Check-Workflows
   expectations, and it runs on every configured trigger (seconds each).
 - Keep it trivial — no checkout, no permissions (`permissions: {}`), small
   `timeout-minutes` so a stuck runner cannot hold a slot long.
@@ -85,10 +86,11 @@ above — never landed. origin/main shipped the same constraint fix at 916783f
 arms plus a skip-warning step (the release.yaml 886c28e pattern generalized;
 job-level `env` may read `secrets`, step-level `if:` may read `env`). Both
 forms satisfy the rule above — pick the needs-gate when the JOB body itself
-must branch, job-env + step-ifs when only steps do. Also note the example's
-`runs-on: self-hosted` reflects the 2026-09-20 policy; CI moved to
-GitHub-hosted runners on 2026-09-22 (d73fbe7), so a gate job written today
-uses `ubuntu-latest`.
+must branch, job-env + step-ifs when only steps do. The example originally
+showed `runs-on: self-hosted` (2026-09-20 policy); CI moved to GitHub-hosted
+runners on 2026-09-22 (d73fbe7) and the example + trade-off note were
+corrected to the hosted reality on 2026-10-06 (rm-673 truth-correction rider,
+run c6cd7c83).
 
 ## Validation
 
