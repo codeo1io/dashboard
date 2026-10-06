@@ -12,6 +12,19 @@ allowBuilds:
 # first-party pins that sometimes need same-day adoption.
 minimumReleaseAge: 1440
 
+# 2026-10-05 (run cfa9f94b cycle 3, unfreeze batch B2): pnpm 11.x
+# auto-installs dependencies when a script runs against a stale tree and
+# silently REWRITES pnpm-lock.yaml in place — observed live on 2026-10-05
+# across sibling runs (a fresh clone's first `pnpm <script>` dirtied the
+# tracked lockfile; A/B control: with this key present a script run leaves
+# the lockfile byte-identical, without it the rewrite lands). `pnpm config
+# get verify-deps-before-run` misleadingly prints undefined — THIS
+# camelCase workspace key is the honored form. CI is unaffected: gates run
+# explicit frozen installs and this key only governs `pnpm run`-family
+# commands. Revisit at the pnpm 12 bump (rm-140) — re-evaluate 12's default
+# before carrying it forward.
+verifyDepsBeforeRun: false
+
 # rm-196 rider (2026-09-25): hono@4.13.9 and vite@8.3.1 are the rider targets
 # — an explicit, disclosed bypass of the rm-133 age gate, not a weakening of
 # it. Truth note (run 5ae8aaf72d8f, B3): at the rider merge (828a1e6,
@@ -21,8 +34,11 @@ minimumReleaseAge: 1440
 # of 2026-09-25T12:26Z; the entry remains as the dated bypass record.
 # 2026-10-03 integrate (run 23d39aa7 landing): the hono@4.13.9 entry retired
 # — the security refresh to hono 4.13.11 + @hono/node-server 2.1.3 is landed
-# (rm-285; that same batch's fast-uri floor cure is what closed the two live
-# HIGH alerts #29/#30 — both fast-uri, per the batch doc's live probes), so
+# (rm-285; that batch's fast-uri floor cure DID close the two live HIGH
+# alerts #29/#30 on 2026-10-03, but the lockfile half was reverted next day
+# by the 1e1e2f5 upstream merge — #29/#30 re-opened 15:47:15Z; the lockfile
+# reconcile rides the 2026-10-05 unfreeze batch, rm-285's correction rider),
+# so
 # the name was a dead bypass record; the retirement is rm-277's acceptance
 # rider (rm-271's 2026-09-30 note).
 # vite@8.3.1 stays (both rider targets past maturity; the record remains dated).
@@ -67,5 +83,20 @@ overrides:
   # NEWLY indexed advisory BY DESIGN and the undici 8 + jsdom 30 migration
   # rides rm-271's majors window. undici is dev-transitive via jsdom.
   undici@7: '>=7.30.0 <8.0.0'
+  # 2026-10-06 floor completion (run cc4339fe implement, time-defeat rider on
+  # the 2026-10-05 unfreeze batch): source-map-js GHSA-68fv-2mgg-jv7q (high,
+  # vuln >=1.0.0 <1.2.2, patched 1.2.2 published 2026-09-30T14:08Z) —
+  # dev-transitive via 16 paths (@eslint/css-tree, @tailwindcss/*, vite>
+  # postcss); floor takes the patched line, cap <2.0.0 pending a deliberate
+  # major. Postdates every 2026-10-05 batch validation: PR #389's audit-0
+  # expired when this advisory hit the DB (re-derived live 2026-10-06: audit
+  # rc=1 on the adopted cure tree, exactly this + katex).
+  source-map-js: '>=1.2.2 <2.0.0'
+  # KaTeX GHSA-238p-pmpm-9mq7 (low, prototype pollution; vuln >=0.11.0
+  # <0.18.2, patched >=0.18.2) — dev-transitive via @bfra.me/eslint-config>
+  # @eslint/markdown>micromark-extension-math (declares ^0.16.0; the floor
+  # forces 0.18 out-of-range, inert at lint time: repo markdown has no math
+  # fences). Both patched lines are past the 1440-minute release-age gate.
+  katex: '>=0.18.2 <0.19.0'
 
 shamefullyHoist: true
