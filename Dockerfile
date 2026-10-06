@@ -10,9 +10,10 @@
 # BUILDPLATFORM-native.) The final stage carries the target arch and does
 # only cheap target-executed work: COPY plus two RUNs — the bookworm security
 # package upgrades (libpcre2-8-0 CVE-2026-103111, added 2026-10-05; perl-base
-# 3 CRITICAL + 4 HIGH CVE set, added 2026-10-06; two lineages converged on the
-# same set — run 5e661558's B3 + review fix F1 and run 73d35a6's rm-647 +
-# review fix fab25700) and the package-manager prune (a measured ~1.4 s rm
+# 3 CRITICAL + 4 HIGH CVE set, added 2026-10-06; three lineages converged on
+# the same set — run 5e661558's B3 + review fix F1, run 73d35a6's rm-647 +
+# review fix fab25700, and run cfa9f94b's unfreeze B3) and the package-manager
+# prune (a measured ~1.4 s rm
 # under QEMU for arm64; RUN has no --platform flag and COPY cannot express
 # deletions or package upgrades, so these are the minimal target-executed
 # steps the design allows — see the rm-558 CI-time note in
@@ -22,7 +23,7 @@ ARG NODE_IMAGE=node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc3
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS builder
 
 # Enable corepack for pnpm
-RUN corepack enable && corepack prepare pnpm@11.28.3 --activate
+RUN corepack enable && corepack prepare pnpm@11.28.4 --activate
 
 WORKDIR /app
 
@@ -42,7 +43,7 @@ RUN pnpm build:web
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS prod-deps
 
 # Enable corepack for pnpm
-RUN corepack enable && corepack prepare pnpm@11.28.3 --activate
+RUN corepack enable && corepack prepare pnpm@11.28.4 --activate
 
 WORKDIR /app
 
@@ -69,7 +70,13 @@ RUN pnpm install --frozen-lockfile --prod
 # Sibling lineage note: run 73d35a6ca2bd's rm-647 + review fix fab25700
 # independently re-derived the same two-package upgrade from its own
 # 2026-10-05/06 trivy ladder (same retirement history, same dead-end digest
-# re-pin conclusion), and its fresh-DB Enforce replica likewise returned 0.
+# re-pin conclusion), and its fresh-DB Enforce replica likewise returned 0;
+# run cfa9f94b's unfreeze B3 landed the same heal from the same false
+# 'absorbed at the base' retirement (adding perl-base for CVE-2026-103112's
+# deb12u4 line), verified 2026-10-05T16:0xZ by sibling run 3570419605cb —
+# dpkg reports deb12u2+deb12u4 after build, fresh-DB trivy 0.72.0
+# HIGH/CRITICAL ignore-unfixed → 0 findings — and re-verified at build time
+# by that run's own docker build.
 # History:
 # docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md
 
@@ -109,7 +116,7 @@ ENV NODE_ENV=production
 # Remove package-manager binaries, shims, and caches inherited from the Node base
 # image before handing the filesystem to the unprivileged runtime user.
 # rm-558: one of the two target-platform RUNs in the file (see the header
-# comment; the rm-647 apt upgrade is the other).
+# comment; the apt security upgrade above is the other).
 RUN rm -rf \
       /usr/local/bin/npm \
       /usr/local/bin/npx \
