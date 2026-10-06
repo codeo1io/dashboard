@@ -1,0 +1,149 @@
+# Standing residue sweep — rm-159's automation half (landed 2026-10-06,
+# conductor run 00f7bf29 implement 75ed284e). The conductor/ci-* validation
+# ref population grows monotonically (44 on 2026-09-24 -> 49 on 2026-10-06
+# of 123 conductor refs) while the manual one-shot sweep of the original
+# acceptance was exercised zero times since mint, and reaped full_tests
+# sessions can strand open PRs whose head ref was deleted mid-check-wait
+# (the #390 dangling-head class). This workflow converts that debt into a
+# standing, safe-by-default sweep.
+#
+# Safety shape (rm-159's extended acceptance):
+#   - dry-run by DEFAULT: scheduled fires and an unmodified dispatch only
+#     LOG every ref/PR they would touch; the destructive half runs only via
+#     workflow_dispatch with dry-run=false.
+#   - 14-day age floor on both refs (tip committerdate) and PRs (createdAt)
+#     — in-flight validations are far younger.
+#   - every conductor/run-* ref is deliberately PRESERVED: that namespace
+#     is the delivered-vanished recovery stratum, never swept regardless of
+#     age. Unknown other conductor/ namespaces are kept and logged, not
+#     deleted.
+#   - PRs close BEFORE refs delete, so a close can never mint a new
+#     dangling head.
+name: Residue Sweep
+
+on:
+  schedule:
+    - cron: '37 5 * * 2' # Tuesdays 05:37 UTC — off the Monday scheduled pile (audit 03:37Z, base-drift 04:13Z, canary 05:23Z, scorecard 06:27Z)
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Log the sweep plan without touching anything (live sweep: false)'
+        required: false
+        default: 'true'
+      older-than-days:
+        description: 'Minimum age in days of conductor/ci-* refs and PRs before they are swept'
+        required: false
+        default: '14'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: residue-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    name: Sweep stale conductor/ci-* residue
+    # rm-188-era pin (2026-09-25): ubuntu-24.04, not ubuntu-latest — the
+    # alias still maps to 24.04; re-evaluate at the rm-139 Node-26 window
+    # (2026-10-28).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: ⤵ Checkout Branch
+        # persist-credentials stays ON (default): the live sweep pushes ref
+        # deletions with the workflow token under contents: 'write'.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Fetch conductor refs
+        run: |
+          set -euo pipefail
+          git fetch --prune origin '+refs/heads/conductor/*:refs/remotes/origin/conductor/*'
+
+      - name: Sweep stale conductor/ci-* refs and superseded ephemeral PRs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Scheduled fires carry no inputs, so both fall back to the safe
+          # defaults; only an explicit dispatch can go live.
+          DRY_RUN: ${{ inputs.dry-run || 'true' }}
+          OLDER_THAN_DAYS: ${{ inputs.older-than-days || '14' }}
+        run: |
+          set -euo pipefail
+
+          days="$OLDER_THAN_DAYS"
+          if ! [[ "$days" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::warning::invalid older-than-days '$days' — falling back to 14"
+            days=14
+          fi
+          cutoff=$(( $(date +%s) - days * 86400 ))
+          verb=deleted
+          [ "$DRY_RUN" = 'true' ] && verb='DRY-RUN: would delete'
+          echo "mode: dry-run=$DRY_RUN, floor: refs/PRs older than $days days (before $(date -u -d "@$cutoff" --iso-8601=seconds))"
+
+          # 1. Close superseded ephemeral PRs FIRST — deleting a head ref
+          #    before its PR closes is how dangling heads get minted.
+          closed=0
+          while IFS="$(printf '\t')" read -r num head created; do
+            [ -n "$num" ] || continue
+            if [ "$(date -u -d "$created" +%s)" -ge "$cutoff" ]; then
+              echo "keep PR #$num (head $head) — under the floor"
+              continue
+            fi
+            if [ "$DRY_RUN" = 'true' ]; then
+              echo "DRY-RUN: would close PR #$num (head $head, opened $created)"
+            else
+              gh pr close "$num" --repo "$GITHUB_REPOSITORY" \
+                --comment "Closed by the residue sweep: the ephemeral conductor/ci-* validation branch behind this PR is past the ${days}-day floor (rm-159). Content that mattered has landed or is carried by a newer validation PR."
+              echo "closed PR #$num (head $head)"
+            fi
+            closed=$((closed + 1))
+          done < <(gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 300 \
+            --json number,headRefName,createdAt \
+            --jq '.[] | select(.headRefName | startswith("conductor/ci-")) | [.number, .headRefName, .createdAt] | @tsv')
+
+          # 2. Sweep stale refs. conductor/run-* is PRESERVED unconditionally
+          #    (delivered-vanished recovery stratum); anything outside
+          #    conductor/ci-* (which glob-covers conductor/ci-base-*) is kept
+          #    and logged, never deleted.
+          swept=0
+          kept=0
+          while read -r ts ref; do
+            short="${ref#refs/remotes/origin/}"
+            age="$(date -u -d "@$ts" --iso-8601=seconds)"
+            case "$short" in
+              conductor/run-*)
+                echo "PRESERVED $short (run stratum, tip $age)"
+                kept=$((kept + 1))
+                continue
+                ;;
+              conductor/ci-*)
+                ;;
+              *)
+                echo "keep $short (non-ci namespace, tip $age)"
+                kept=$((kept + 1))
+                continue
+                ;;
+            esac
+            if [ "$ts" -ge "$cutoff" ]; then
+              echo "keep $short (tip $age) — under the floor"
+              kept=$((kept + 1))
+              continue
+            fi
+            echo "$verb ref $short (tip $age)"
+            if [ "$DRY_RUN" != 'true' ]; then
+              git push origin --delete "$short"
+            fi
+            swept=$((swept + 1))
+          done < <(git for-each-ref --sort=refname \
+            --format='%(committerdate:unix) %(refname)' 'refs/remotes/origin/conductor/*')
+
+          pr_verb=closed
+          [ "$DRY_RUN" = 'true' ] && pr_verb='would close'
+          echo "sweep summary: $swept ref(s) $verb, $closed PR(s) $pr_verb, $kept kept/preserved"
+          if [ "$DRY_RUN" = 'true' ]; then
+            echo 'dry-run complete — nothing touched. Dispatch with dry-run=false to execute.'
+          fi
