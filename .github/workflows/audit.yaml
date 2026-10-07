@@ -22,12 +22,17 @@
 # the same convention base-drift.yaml documents for its authoritative exit 1.
 #
 # Day-2 designed red (also recorded in pnpm-workspace.yaml's undici floor
-# comment): no indexed undici advisory touches 7.29.1 or the 7.x tip 7.30.0
-# (verified 2026-10-01: GitHub's advisory DB indexes 46 undici records, none
-# with a vulnerable range containing either; npm's DB indexes ten, all
-# patching at >=7.29.1), so this gate going red on ANY undici 7.x means a
-# NEWLY indexed advisory — that is the designed forcing function for the
-# undici 8 + jsdom 30 majors migration (rm-271's window), not a regression.
+# comment; corrected 2026-10-05, run 73d35a6ca2bd implement): the 2026-10-01
+# DB verification (46 GitHub + 10 npm undici records) holds for the floor
+# itself — no vulnerable range contains 7.29.1 or 7.30.0 — but CVE-2026-19534
+# (7.x fix line 7.29.1) makes a RESOLVED undici 7.29.0 auditable-red, exactly
+# the state the pre-cure lockfile divergence left main in: resolved below its
+# own floor. The cure for that red is the lockfile regen (restore the
+# pnpm-workspace.yaml floors into pnpm-lock.yaml), not a floor bump. Against
+# the cured floor 7.30.0 (one patch above the fix line), green is expected,
+# and an undici 7.x red then means a NEWLY indexed advisory above the patched
+# line — the designed forcing function for the undici 8 + jsdom 30 majors
+# migration (rm-271's window), not a regression.
 name: Dependency audit
 
 on:
@@ -73,5 +78,5 @@ jobs:
             echo 'audit clean — zero known advisories against every resolved version'
             exit 0
           fi
-          echo '::error::pnpm audit --recursive found advisories against the resolved set (rm-278 weekly signal). Cure: raise the offending override floor in pnpm-workspace.yaml with its GHSA rationale and re-resolve pnpm-lock.yaml in the SAME change (rm-276 convention), then verify locally with pnpm audit --recursive returning zero. Known designed red: no indexed undici advisory touches 7.29.1+ (verified 2026-10-01), so an undici 7.x red here means a newly indexed advisory — that points to the undici 8 + jsdom 30 majors migration (rm-271 window), not a floor bump.'
+          echo '::error::pnpm audit --recursive found advisories against the resolved set (rm-278 weekly signal). Cure: raise the offending override floor in pnpm-workspace.yaml with its GHSA rationale and re-resolve pnpm-lock.yaml in the SAME change (rm-276 convention), then verify locally with pnpm audit --recursive returning zero. Known designed red: CVE-2026-19534 fixes the undici 7.x line at 7.29.1, so a resolved 7.29.0 reds here (pre-cure divergence: resolved below its own floor — the cure is the lockfile regen, not a floor bump); against the cured 7.30.0 floor (one patch above the fix line) an undici red means a newly indexed advisory — that points to the undici 8 + jsdom 30 majors migration (rm-271 window), not a floor bump.'
           exit 1

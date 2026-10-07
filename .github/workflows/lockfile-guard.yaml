@@ -1,13 +1,19 @@
-# Wall-family armor (2026-10-05, run cfa9f94b cycle 3 unfreeze batch B4;
-# content-adopted from sibling run 3570419605cb's uncommitted B4, which
-# itself content-adopted from run a2def4ce34dc; on main the wall's ledger
-# anchor is rm-285): the
-# 3-second lockfile-consistency gate — the missing pre-install check that
-# would have caught the 2026-10-04 1e1e2f5 break at merge time (an upstream
-# merge rode upstream's pnpm-lock.yaml in against the fork's
-# pnpm-workspace.yaml floors; every install-bearing workflow then died ~1 min
-# into Setup with ERR_PNPM_LOCKFILE_CONFIG_MISMATCH and 4 of 5 push workflows
-# sat red on main for hours).
+# Wall-family armor (2026-10-05): the 3-second lockfile-consistency gate —
+# the missing pre-install check that would have caught the 2026-10-04 1e1e2f5
+# break at merge time (an upstream merge rode upstream's pnpm-lock.yaml in
+# against the fork's pnpm-workspace.yaml floors; every install-bearing
+# workflow then died ~1 min into Setup with ERR_PNPM_LOCKFILE_CONFIG_MISMATCH
+# and 8 of 12 check-runs sat red on main for ~12 h — 4 of 5 push workflows
+# by class). Ledger anchors on main: the wall family rides rm-285 (floors /
+# lockfile reconcile) and the required-check interlock rides rm-116. Delivery
+# lineages, content-identical: run 5e661558 cycle:1 B4 (byte-adopted; landed
+# at 032fb6f, GREEN on ephemeral PR #385 run 37346287839) and run cfa9f94b
+# cycle 3 unfreeze batch B4 (landed at 60cb484, GREEN on ephemeral PRs #389 /
+# #392, 11/11 checks), which itself content-adopted from sibling run
+# 3570419605cb's uncommitted B4 ← run a2def4ce34dc — those stranded
+# lineages' pre-landing 'rm-648' mint lost to landed meanings per the
+# d00d095 convention (landed rm-648 is run 73d35a6ca2bd's weekly trivy
+# digest scan), so this header cites the landed anchors instead.
 #
 # `pnpm install --frozen-lockfile --lockfile-only` resolves and validates the
 # lockfile WITHOUT installing node_modules: ~1 s on the cured tree (933 ms
