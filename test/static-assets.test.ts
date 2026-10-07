@@ -1085,3 +1085,71 @@ describe('rm-498 — % rejection compatibility (allowPercentInPath stays unset)'
     expect(offenders).toEqual([])
   })
 })
+
+// ---------------------------------------------------------------------------
+// rm-690 — Cache-Control policy for static surfaces
+// ---------------------------------------------------------------------------
+// Vite content-hashes everything under /assets/* (index-Dy_WXR3M.js style), so
+// a given URL's bytes can never change: RFC 8246 (HTTP Immutable Responses)
+// and the MDN Cache-Control `immutable` entry make a one-year public lifetime
+// sound. Unhashed surfaces (/icon-*, manifest.webmanifest, sw.js,
+// /registerSW.js) must revalidate on every load instead. sw.js and
+// /registerSW.js already carried a no-cache,no-store policy before rm-690
+// (src/server.ts pre-secureHeaders middleware and the registerSW wrapper)
+// — those cases pin the pre-existing behavior; the /assets/*, /icon-* and
+// manifest cases were RED first (headers absent) and went green with the
+// rm-690 middleware.
+
+/** First content-hashed file in web/dist/assets matching Vite's -<hash>.<ext>. */
+function firstHashedAsset(): string {
+  const dir = resolve(process.cwd(), 'web/dist/assets')
+  const files = readdirSync(dir).find(f => /-[\w-]{8}\.[a-z]+$/.test(f))
+  if (files === undefined) {
+    throw new Error(`no content-hashed asset found in ${dir} — run pnpm build:web`)
+  }
+  return files
+}
+
+describe('rm-690 — Cache-Control policy for static surfaces', () => {
+  it('GET /assets/<content-hashed> carries Cache-Control public, max-age=31536000, immutable', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request(`/assets/${firstHashedAsset()}`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, immutable')
+  })
+
+  it('GET /assets/<missing> 404s WITHOUT the immutable header (errors must never be pinned for a year)', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/assets/index-doesnotexist.js')
+    expect(res.status).toBe(404)
+    expect(res.headers.get('cache-control') ?? '').not.toContain('immutable')
+  })
+
+  it('GET /icon-<name> carries a no-cache-family policy (unhashed surface revalidates)', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/icon-192.svg')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-cache')
+  })
+
+  it('GET /manifest.webmanifest carries a no-cache-family policy (unhashed surface revalidates)', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/manifest.webmanifest')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-cache')
+  })
+
+  it('GET /sw.js keeps its no-cache,no-store policy (pinned pre-rm-690 behavior)', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/sw.js')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-cache, no-store, must-revalidate')
+  })
+
+  it('GET /registerSW.js keeps its no-cache,no-store policy (pinned pre-rm-690 behavior)', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/registerSW.js')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-cache, no-store, must-revalidate')
+  })
+})
