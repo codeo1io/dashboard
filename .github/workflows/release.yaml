@@ -168,6 +168,10 @@ jobs:
       - name: 🔧 Set up Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
+      - name: Stamp build date (rm-708)
+        id: stamp
+        run: echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: 🏗️ Build and push candidate image
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -175,6 +179,14 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
+          # rm-708: bake build identity into the image — the Dockerfile's
+          # final-stage ARGs become ENV APP_GIT_SHA/APP_BUILD_DATE, served
+          # read-only at /api/healthz so deploy currency is observable without
+          # host access. The smoke-test step below asserts the live healthz
+          # gitSha equals github.sha before the image can be promoted.
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            BUILD_DATE=${{ steps.stamp.outputs.build_date }}
           # rm-558: multi-arch release. The Dockerfile's toolchain stages are
           # FROM --platform=$BUILDPLATFORM (shared/cache-hit across targets); each
           # target only re-COPYs the arch-independent artifacts and runs one ~1.2 s
@@ -228,6 +240,19 @@ jobs:
           if curl -fsS http://127.0.0.1:8080/manifest.webmanifest >/dev/null 2>&1; then spa=1; fi
           if [ "$spa" != 1 ]; then
             echo "SMOKE FAILED: SPA manifest not served (web/dist/ missing from image?)"
+            docker logs dashboard-smoke || true
+            exit 1
+          fi
+          # rm-708: verify the baked build identity surfaces at /api/healthz —
+          # gitSha must equal the workflow's merged sha and buildDate must be
+          # non-empty (deploy currency is observable without host access).
+          id_ok=0
+          HZ=$(curl -fsS http://127.0.0.1:8080/api/healthz 2>/dev/null || true)
+          got_sha=$(printf '%s' "$HZ" | grep -oE '"gitSha":"[0-9a-f]{40}"' | cut -d'"' -f4)
+          got_date=$(printf '%s' "$HZ" | grep -oE '"buildDate":"[^"]+"' | cut -d'"' -f4)
+          if [ "$got_sha" = "${{ github.sha }}" ] && [ -n "$got_date" ]; then id_ok=1; fi
+          if [ "$id_ok" != 1 ]; then
+            echo "SMOKE FAILED: build identity wrong at /api/healthz (got_sha=$got_sha got_date=$got_date)"
             docker logs dashboard-smoke || true
             exit 1
           fi

@@ -52,6 +52,17 @@ export const MAX_SSE_BUFFER_BYTES = 1_000_000
 export const MAX_OUTPUT_TEXT_CHARS = 256_000
 
 /**
+ * rm-220: wall-clock idle watchdog for an ESTABLISHED (live) stream. The
+ * first-frame timer only guards the stream's first frame; after that, a
+ * connection can stay open while silent indefinitely (a wedged gateway behind
+ * a proxy that never times the connection out), leaving the UI on a frozen
+ * "live" view. Any wire activity resets the timer — parsed frames AND
+ * comment-only heartbeat chunks both count — so it trips only on total
+ * silence. On trip the stream is marked visibly 'stale' and reconnects.
+ */
+export const IDLE_TIMEOUT_MS = 45_000
+
+/**
  * Hard cap on the per-run approval tombstone map. A hostile stream could send many
  * distinct settle frames; this bounds the map size. When the cap is reached, the
  * oldest entry (FIFO) is evicted before adding the new one.
@@ -219,7 +230,12 @@ export function parseSseFrame(record) {
   const normalized = normalizeCrlf(record)
   const lines = normalized.split('\n')
   let eventName
-  let dataLine
+  // rm-114: SSE permits multiple `data:` lines per record — the spec (WHATWG
+  // HTML §9.2.6 server-sent events) dispatches them as ONE payload whose
+  // lines are joined by U+000A. Storing only the last `data:` line silently
+  // corrupted any record the gateway emitted with split data lines; collect
+  // the lines and join instead (twin of src/gateway/operator-sse-reader.ts).
+  const dataLines = []
 
   for (const line of lines) {
     if (line.startsWith(':')) {
@@ -229,12 +245,14 @@ export function parseSseFrame(record) {
     if (line.startsWith('event:')) {
       eventName = line.slice('event:'.length).trim()
     } else if (line.startsWith('data:')) {
-      dataLine = line.slice('data:'.length).trim()
+      dataLines.push(line.slice('data:'.length).trim())
     }
   }
 
+  const dataText = dataLines.length > 0 ? dataLines.join('\n') : undefined
+
   // Comment-only record (heartbeat) — produce no frame
-  if (eventName === undefined && dataLine === undefined) {
+  if (eventName === undefined && dataText === undefined) {
     return null
   }
 
@@ -246,7 +264,7 @@ export function parseSseFrame(record) {
   // Parse the data field as JSON
   let parsed
   try {
-    parsed = JSON.parse(dataLine ?? 'null')
+    parsed = JSON.parse(dataText ?? 'null')
   } catch {
     return {success: false, error: 'sse record data is not valid JSON'}
   }
@@ -404,7 +422,7 @@ export function parseSseFrame(record) {
  * Pure reducer: given the current stream state and an event, return the next state.
  *
  * State shape:
- *   connection: 'connecting' | 'live' | 'reconnecting' | 'drift' | 'not-found' |
+ *   connection: 'connecting' | 'live' | 'reconnecting' | 'stale' | 'drift' | 'not-found' |
  *               'backpressure' | 'failed' | 'closed'
  *   runs: Object.create(null) — null-prototype map keyed by runId
  *   retryCount: number
@@ -418,9 +436,13 @@ export function parseSseFrame(record) {
  *   { type: 'network-error' }
  *   { type: 'stream-closed' }
  *   { type: 'unexpected-close' }
+ *   { type: 'first-frame-timeout' }
+ *   { type: 'idle-timeout' }
  *
  * Drift is absorbing: once in drift, ready/status do not move back to live.
- * A status before any ready is not rendered.
+ * 'stale' (rm-220) is NOT absorbing: it marks an established stream that went
+ * silent for IDLE_TIMEOUT_MS, and a successful reconnect (ready) returns to
+ * 'live'. A status before any ready is not rendered.
  */
 export function nextStreamState(current, event) {
   switch (event.type) {
@@ -915,6 +937,33 @@ export function nextStreamState(current, event) {
         }
       }
       return current
+    }
+
+    case 'idle-timeout': {
+      // rm-220: the wall-clock idle watchdog tripped — no wire activity for
+      // IDLE_TIMEOUT_MS on an established (live) stream. Pre-first-frame
+      // silence belongs to 'first-frame-timeout'; this is a no-op in every
+      // non-live state. 'stale' is visible in the UI while the reconnect
+      // runs; Last-Event-ID is DECLINED (decision note 2026-10-08, rm-220),
+      // so frames emitted during the gap are lost by design — the reconnect
+      // gap is bounded by IDLE_TIMEOUT_MS + backoff + FIRST_FRAME_TIMEOUT_MS.
+      // Retry budget mirrors 'unexpected-close': exhausted → 'failed'.
+      if (current.connection !== 'live') {
+        return current
+      }
+      if (current.retryCount >= RETRY_MAX_COUNT) {
+        return {
+          ...current,
+          connection: 'failed',
+          shouldReconnect: false,
+        }
+      }
+      return {
+        ...current,
+        connection: 'stale',
+        retryCount: current.retryCount + 1,
+        shouldReconnect: true,
+      }
     }
 
     default: {
@@ -2083,6 +2132,7 @@ export function initOperatorStream(opts) {
   let abortController = null
   let reconnectTimer = null // track pending reconnect timer
   let firstFrameTimer = null // track pending first-frame timeout
+  let idleTimer = null // rm-220: wall-clock idle watchdog for live streams
   let aborted = false // set by close() to prevent late timer from fetching
   let announcedFailure = false
 
@@ -2129,6 +2179,12 @@ export function initOperatorStream(opts) {
         noticeEl.hidden = false
       } else if (conn === 'backpressure') {
         noticeEl.textContent = 'Stream temporarily unavailable \u2014 retrying\u2026'
+        noticeEl.hidden = false
+      } else if (conn === 'stale') {
+        // rm-220: established stream went silent for IDLE_TIMEOUT_MS — the UI
+        // must not sit on a frozen "live" view. Last-Event-ID is declined
+        // (decision note), so frames sent during the reconnect gap are lost.
+        noticeEl.textContent = 'Stream went quiet \u2014 reconnecting; frames sent in the gap are missed.'
         noticeEl.hidden = false
       } else if (conn === 'failed') {
         noticeEl.textContent = 'Stream connection failed.'
@@ -2308,6 +2364,34 @@ export function initOperatorStream(opts) {
     }
   }
 
+  function clearIdleTimer() {
+    if (idleTimer !== null) {
+      clearTimeout(idleTimer)
+      idleTimer = null
+    }
+  }
+
+  // rm-220: (re)arm the wall-clock idle watchdog. Armed only while the stream
+  // is live (dispatch's transition hook) and reset on every chunk read — any
+  // wire bytes, including comment-only heartbeat chunks, prove liveness. On
+  // trip the stream is marked 'stale' (visible in the UI) and reconnects; the
+  // wedged-but-open pending read never settles, so abort to release the reader
+  // and socket instead of stranding (rm-261) — the read loop's catch swallows
+  // abort-caused rejections, so no phantom close is dispatched over 'stale'.
+  function armIdleWatchdog() {
+    clearIdleTimer()
+    idleTimer = setTimeout(() => {
+      idleTimer = null
+      dispatch({type: 'idle-timeout'})
+      if (abortController !== null) {
+        abortController.abort()
+      }
+      if (state.shouldReconnect) {
+        scheduleReconnect()
+      }
+    }, IDLE_TIMEOUT_MS)
+  }
+
   // Track whether we've done the reconcile GET for the current connection attempt.
   // Reset on each connect() call so reconnects trigger a fresh reconcile.
   let reconcileDone = false
@@ -2324,7 +2408,13 @@ export function initOperatorStream(opts) {
     // Trigger reconcile when the stream first goes live (or re-goes live after reconnect).
     // This is the one-shot GET on (re)connect.
     if (prevConnection !== 'live' && state.connection === 'live') {
+      // rm-220: the stream is established — arm the wall-clock idle watchdog.
+      armIdleWatchdog()
       reconcileApprovals()
+    } else if (prevConnection === 'live' && state.connection !== 'live') {
+      // rm-220: leaving live (stale/closed/failed/reconnecting/…) — the idle
+      // watchdog only guards established streams; a pending one is moot.
+      clearIdleTimer()
     }
   }
 
@@ -2430,8 +2520,10 @@ export function initOperatorStream(opts) {
 
     // Clear any previously-pending first-frame timer before arming a new one.
     // Without this, a reconnect would leak the old timer, which could fire later
-    // and wrongly dispatch first-frame-timeout on a recovering stream.
+    // and wrongly dispatch first-frame-timeout on a recovering stream. The idle
+    // watchdog is cleared for the same reason (rm-220).
     clearFirstFrameTimer()
+    clearIdleTimer()
 
     // Abort any superseded connection before starting a new one (rm-261).
     // Replacing the controller without aborting the old one strands that
@@ -2550,6 +2642,13 @@ export function initOperatorStream(opts) {
                 bufferBytes = encoder.encode(buffer).length
               }
 
+              // rm-220: any wire bytes on an established stream — including
+              // comment-only heartbeat chunks that produce no frame — prove
+              // the stream is alive: reset the idle watchdog.
+              if (state.connection === 'live') {
+                armIdleWatchdog()
+              }
+
               // Hard buffer cap (UTF-8 bytes, rm-114) — abort the reader and fail
               // closed terminally (no reconnect) if exceeded without a record boundary.
               if (bufferBytes > MAX_SSE_BUFFER_BYTES) {
@@ -2585,6 +2684,7 @@ export function initOperatorStream(opts) {
                 state.connection !== 'failed' &&
                 state.connection !== 'not-found' &&
                 state.connection !== 'drift' && // stop reading on drift
+                state.connection !== 'stale' && // stop reading after idle watchdog (rm-220)
                 state.connection !== 'submitted-unobservable' // stop reading after first-frame timeout
               ) {
                 readChunk()
@@ -2647,6 +2747,7 @@ export function initOperatorStream(opts) {
         reconnectTimer = null
       }
       clearFirstFrameTimer()
+      clearIdleTimer()
       if (abortController) {
         abortController.abort()
       }

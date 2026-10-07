@@ -113,6 +113,16 @@ COPY --from=builder /app/web/dist/ ./web/dist/
 # and pnpm build:web run with full dev-dep access.
 ENV NODE_ENV=production
 
+# rm-708: deploy-currency observability — bake build identity into the image.
+# The release workflow (release.yaml build-push step) supplies both build-args:
+# GIT_SHA=github.sha and BUILD_DATE=UTC stamp; they become ENV here and the
+# public /api/healthz serves them read-only. Empty defaults keep local builds
+# working (healthz then reports null for both fields).
+ARG GIT_SHA=""
+ARG BUILD_DATE=""
+ENV APP_GIT_SHA=${GIT_SHA}
+ENV APP_BUILD_DATE=${BUILD_DATE}
+
 # Remove package-manager binaries, shims, and caches inherited from the Node base
 # image before handing the filesystem to the unprivileged runtime user.
 # rm-558: one of the two target-platform RUNs in the file (see the header
