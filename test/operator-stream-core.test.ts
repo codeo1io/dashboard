@@ -24,6 +24,7 @@ import {
   GATEWAY_PENDING_APPROVALS_CAP,
   getOpenApprovals,
   hasOpenApprovals,
+  IDLE_FRAME_TIMEOUT_MS,
   initOperatorStream,
   MAX_APPROVAL_TOMBSTONES,
   MAX_OPEN_APPROVALS,
@@ -72,6 +73,40 @@ const INITIAL_STATE: StreamState = {
 }
 
 describe('parseSseFrame — pure parser', () => {
+  it('multi-`data:` record joins ALL lines — a JSON payload split across data: lines parses (rm-484)', () => {
+    // The seeded regression: the last-wins `data:` overwrite dropped all but
+    // the final line of a multi-line payload. With the WHATWG §9.2.6 join the
+    // reassembled payload is byte-exact — a split at a JSON-whitespace-legal
+    // position (between tokens) parses. Both syntax halves (shared canonical
+    // + embedded twin) are pinned by test/operator-sse-syntax-divergence.test.ts;
+    // this is the semantic-layer confirmation through parseSseFrame.
+    const text = `event: ready\ndata: {"contractVersion":\ndata: "1.6.0"}\n\n`
+    const result = parseSseFrame(text)
+    expect(result).not.toBeNull()
+    expect(result?.success).toBe(true)
+    if (result !== null && result.success) {
+      expect(result.frame.type).toBe('ready')
+      if (result.frame.type === 'ready') {
+        expect(result.frame.data.contractVersion).toBe('1.6.0')
+      }
+    }
+  })
+
+  it('a JSON payload split at a between-token byte position reassembles exactly (rm-484)', () => {
+    // The multi-data join is byte-exact, not line-semantic: whatever
+    // JSON-whitespace-legal point the wire splits the payload at, the
+    // reassembled payload equals the original (escaped \n sequences inside
+    // string values survive untouched).
+    const payload = JSON.stringify({runId: 'run-abc', text: 'first\nsecond', final: false, seq: 3})
+    const splitAt = payload.indexOf('"final"')
+    const wrapped = `event: output\ndata: ${payload.slice(0, splitAt)}\ndata: ${payload.slice(splitAt)}\n\n`
+    const result = parseSseFrame(wrapped)
+    expect(result?.success).toBe(true)
+    if (result !== null && result.success && result.frame.type === 'output') {
+      expect(result.frame.data.text).toBe('first\nsecond')
+    }
+  })
+
   it('parses a ready frame', () => {
     const text = `event: ready\ndata: {"contractVersion":"1.5.0"}\n\n`
     const result = parseSseFrame(text)
@@ -7503,5 +7538,166 @@ describe('connection lifecycle — stranded connections abort (rm-261)', () => {
     expect(signals[0]?.aborted).toBe(true) // response body cancelled, socket released
     expect(fetchCount).toBe(1) // backoff (1s) has not fired within the tick
     expect(noticeEl.dataset.connectionState).toBeTruthy()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Idle-frame watchdog (rm-220) — a wedged-but-open stream must not freeze the
+// live view forever. The watchdog re-arms on every received record boundary
+// (data frames AND comment-only heartbeats both count); only total silence
+// past IDLE_FRAME_TIMEOUT_MS fires 'idle-timeout': a visible stall notice,
+// an abort of the wedged socket, and a bounded reconnect.
+// -------------------------------------------------------------------------
+
+describe('idle-frame watchdog (rm-220)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  it('reducer: idle-timeout from live reconnects consuming one retry; terminal-ish states are guarded', () => {
+    const live = nextStreamState(INITIAL_STATE, {
+      type: 'ready',
+      data: {contractVersion: PINNED_CONTRACT_VERSION},
+    })
+    expect(live.connection).toBe('live')
+
+    const afterIdle = nextStreamState(live, {type: 'idle-timeout'})
+    expect(afterIdle.connection).toBe('reconnecting')
+    expect(afterIdle.retryCount).toBe(1)
+    expect(afterIdle.shouldReconnect).toBe(true)
+
+    // Terminal-ish display states must never be reopened by the watchdog
+    // (an abort-rejection from close() or a terminal display owns its state).
+    for (const terminal of [
+      'closed',
+      'submitted-unobservable',
+      'drift',
+      'not-found',
+      'failed',
+      'backpressure',
+    ] as const) {
+      const terminalState: StreamState = {...live, connection: terminal, shouldReconnect: false}
+      expect(nextStreamState(terminalState, {type: 'idle-timeout'}).connection).toBe(terminal)
+    }
+
+    // Retry-budget exhaustion is terminal, same as unexpected-close.
+    const exhausted: StreamState = {...live, retryCount: RETRY_MAX_COUNT}
+    const afterExhaustedIdle = nextStreamState(exhausted, {type: 'idle-timeout'})
+    expect(afterExhaustedIdle.connection).toBe('failed')
+    expect(afterExhaustedIdle.shouldReconnect).toBe(false)
+  })
+
+  it('reducer: idle-timeout before the first frame reconnects on budget rather than freezing', () => {
+    const afterIdle = nextStreamState(INITIAL_STATE, {type: 'idle-timeout'})
+    expect(afterIdle.connection).toBe('reconnecting')
+    expect(afterIdle.retryCount).toBe(1)
+    expect(afterIdle.shouldReconnect).toBe(true)
+  })
+
+  it('IDLE_FRAME_TIMEOUT_MS exceeds FIRST_FRAME_TIMEOUT_MS (pre-first-frame stays first-frame governed)', () => {
+    expect(typeof IDLE_FRAME_TIMEOUT_MS).toBe('number')
+    expect(IDLE_FRAME_TIMEOUT_MS).toBeGreaterThan(FIRST_FRAME_TIMEOUT_MS)
+  })
+
+  it('integration: heartbeats keep a quiet live stream alive; silence past the window stalls visibly and reconnects', async () => {
+    const {statusEl, noticeEl} = makeLifecycleElements()
+    stubLifecycleDom()
+    const encoder = new TextEncoder()
+    const readyFrame = `event: ready\ndata: ${JSON.stringify({contractVersion: PINNED_CONTRACT_VERSION})}\n\n`
+    const heartbeat = ': keep-alive\n\n'
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined
+    let fetchCount = 0
+    const signals: AbortSignal[] = []
+    vi.stubGlobal('fetch', async (_url: unknown, init?: {signal?: AbortSignal}) => {
+      fetchCount++
+      if (init?.signal !== undefined) signals.push(init.signal)
+      return {
+        ok: true,
+        status: 200,
+        headers: {get: (h: string) => (h === 'content-type' ? 'text/event-stream' : null)},
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            streamController = controller
+            if (fetchCount === 1) controller.enqueue(encoder.encode(readyFrame))
+          },
+        }),
+      } as unknown as Response
+    })
+
+    vi.useFakeTimers()
+    initOperatorStream({runId: 'run-001', statusEl, noticeEl})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(noticeEl.dataset.connectionState).toBe('live')
+
+    // 90s of heartbeats every 15s — comment-only records re-arm the watchdog
+    // and the stream must stay live (the no-false-positive leg: a quiet but
+    // healthy stream never stalls).
+    for (let i = 0; i < 6; i++) {
+      streamController?.enqueue(encoder.encode(heartbeat))
+      await vi.advanceTimersByTimeAsync(15_000)
+    }
+    expect(noticeEl.dataset.connectionState).toBe('live')
+    expect(fetchCount).toBe(1)
+
+    // Anchor the window at the current instant: one more heartbeat NOW, then
+    // silence — the watchdog window must be measured from THIS record.
+    streamController?.enqueue(encoder.encode(heartbeat))
+    await vi.advanceTimersByTimeAsync(0)
+
+    // Silence, one millisecond before the window: STILL live, no stall notice.
+    await vi.advanceTimersByTimeAsync(IDLE_FRAME_TIMEOUT_MS - 1)
+    expect(noticeEl.dataset.connectionState).toBe('live')
+    expect(noticeEl.textContent).not.toContain('stalled')
+
+    // The window elapses: the stall becomes visible (honest stale state, not
+    // a silent "connecting"), the wedged socket is released, and a bounded
+    // reconnect is scheduled.
+    await vi.advanceTimersByTimeAsync(1)
+    expect(noticeEl.dataset.connectionState).toBe('reconnecting')
+    expect(noticeEl.textContent).toBe('Stream stalled — reconnecting…')
+    expect(signals[0]?.aborted).toBe(true)
+
+    // First retry lands after the base backoff (retryCount 1 → base × factor).
+    await vi.advanceTimersByTimeAsync(RETRY_BASE_MS * RETRY_FACTOR + 100)
+    expect(fetchCount).toBe(2)
+  })
+
+  it('integration: re-live after a stall clears the stall notice (honest live view after recovery)', async () => {
+    const {statusEl, noticeEl} = makeLifecycleElements()
+    stubLifecycleDom()
+    const encoder = new TextEncoder()
+    const readyFrame = `event: ready\ndata: ${JSON.stringify({contractVersion: PINNED_CONTRACT_VERSION})}\n\n`
+    let fetchCount = 0
+    vi.stubGlobal('fetch', async () => {
+      fetchCount++
+      return {
+        ok: true,
+        status: 200,
+        headers: {get: (h: string) => (h === 'content-type' ? 'text/event-stream' : null)},
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            // Every connection goes live immediately; connection 1 then
+            // stays silent (stalls) while connection 2 keeps the stream open.
+            controller.enqueue(encoder.encode(readyFrame))
+          },
+        }),
+      } as unknown as Response
+    })
+
+    vi.useFakeTimers()
+    initOperatorStream({runId: 'run-001', statusEl, noticeEl})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(noticeEl.dataset.connectionState).toBe('live')
+
+    // Silence past the window → stall; then the reconnect goes live again.
+    await vi.advanceTimersByTimeAsync(IDLE_FRAME_TIMEOUT_MS + 1)
+    expect(noticeEl.dataset.connectionState).toBe('reconnecting')
+    expect(noticeEl.textContent).toBe('Stream stalled — reconnecting…')
+
+    await vi.advanceTimersByTimeAsync(RETRY_BASE_MS * RETRY_FACTOR + 100)
+    expect(fetchCount).toBe(2)
+    expect(noticeEl.dataset.connectionState).toBe('live')
+    expect(noticeEl.textContent).not.toContain('stalled')
   })
 })

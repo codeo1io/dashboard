@@ -10,8 +10,27 @@
  */
 import fc from 'fast-check'
 import {describe, expect, it} from 'vitest'
+import {
+  appendStreamChunk as appendTwin,
+  sseUtf8ByteLength as bytesTwin,
+  parseSseRecordFields as fieldsTwin,
+} from '../public/operator-stream.js'
 import {OPERATOR_CONTRACT_VERSION} from '../src/gateway/operator-contract/version.ts'
+// ---------------------------------------------------------------------------
+// Shared-source parity properties (rm-114) — the SSE wire-syntax layer has
+// ONE canonical definition (src/gateway/operator-sse-syntax.ts) consumed
+// directly by the server reader and embedded (generated) in the browser twin
+// public/operator-stream.js. These properties pin behavioral parity of the
+// two halves at the syntax layer, so the generated-embed pipeline cannot
+// silently change semantics. (Byte-identity of the embedded block itself is
+// gated at test/operator-sse-syntax-divergence.test.ts.)
+// ---------------------------------------------------------------------------
 import {parseSseChunk} from '../src/gateway/operator-sse-reader.ts'
+import {
+  appendStreamChunk as appendCanonical,
+  sseUtf8ByteLength as bytesCanonical,
+  parseSseRecordFields as fieldsCanonical,
+} from '../src/gateway/operator-sse-syntax.ts'
 
 // ---------------------------------------------------------------------------
 // Generators for valid frames
@@ -204,6 +223,71 @@ describe('operator SSE parser properties (rm-144)', () => {
         expect(pieceFrames).toEqual(wholeFrames)
       }),
       {numRuns: 100},
+    )
+  })
+})
+
+describe('SSE syntax layer — shared-source parity (rm-114)', () => {
+  it('multi-`data:` join: a record split across N data: lines reassembles byte-exactly in BOTH halves (rm-484)', () => {
+    fc.assert(
+      fc.property(fc.array(fc.stringMatching(/^[^\n\r]{0,60}$/), {minLength: 1, maxLength: 6}), fragments => {
+        const record = `event: output\n${fragments.map(f => `data: ${f}`).join('\n')}\n\n`
+        // WHATWG §9.2.6: each data: line contributes its value (ONE leading
+        // space stripped) and the parts concatenate with U+000A. The strip
+        // cancels the single space this serializer adds after the colon, so
+        // each fragment survives byte-exactly.
+        const expectedData = fragments.join('\n')
+        const canonical = fieldsCanonical(record)
+        expect(canonical?.eventName).toBe('output')
+        expect(canonical?.data).toBe(expectedData)
+        expect(fieldsTwin(record)).toEqual(canonical)
+      }),
+      {numRuns: 200},
+    )
+  })
+
+  it('fragmentation invariance: ANY chunk split of the wire leaves the accumulated buffer unchanged — and both halves agree after EVERY chunk (rm-477/rm-114)', () => {
+    fc.assert(
+      fc.property(
+        fc.array(frameArb, {minLength: 1, maxLength: 12}),
+        fc.array(fc.constantFrom<'\n' | '\r\n' | '\r'>('\n', '\r\n', '\r'), {minLength: 1, maxLength: 6}),
+        fc.array(fc.integer({min: 1, max: 13}), {minLength: 1, maxLength: 48}),
+        (frames, eols, chunkSizes) => {
+          const text = frames
+            .map((frame, i) => serialize(frame, eols[i % eols.length] ?? '\n'))
+            .join('')
+          let canonical = ''
+          let twin = ''
+          let cursor = 0
+          let sizeIndex = 0
+          while (cursor < text.length) {
+            const size = chunkSizes[sizeIndex % chunkSizes.length] ?? 1
+            sizeIndex++
+            const chunk = text.slice(cursor, cursor + size)
+            cursor += chunk.length
+            // Per-chunk parity: the two halves must hold the IDENTICAL buffer
+            // after every append — the pending-CR hold, CRLF normalization,
+            // and idempotence all included.
+            canonical = appendCanonical(canonical, chunk)
+            twin = appendTwin(twin, chunk)
+            expect(twin).toBe(canonical)
+          }
+          // Chunk-split accumulation equals one-shot accumulation.
+          expect(canonical).toBe(appendCanonical('', text))
+        },
+      ),
+      {numRuns: 150},
+    )
+  })
+
+  it('UTF-8 byte accounting: both halves agree with TextEncoder on every unicode payload (rm-114 cap unit)', () => {
+    fc.assert(
+      fc.property(fc.string({maxLength: 200, unit: 'grapheme'}), value => {
+        const encoded = new TextEncoder().encode(value).length
+        expect(bytesTwin(value)).toBe(encoded)
+        expect(bytesCanonical(value)).toBe(encoded)
+      }),
+      {numRuns: 200},
     )
   })
 })

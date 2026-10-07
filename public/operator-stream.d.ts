@@ -21,18 +21,57 @@ export declare const PINNED_CONTRACT_VERSION: string
 export declare const RETRY_BASE_MS: number
 export declare const RETRY_FACTOR: number
 export declare const RETRY_MAX_COUNT: number
+/**
+ * Hard cap on the incremental SSE stream buffer, in UTF-8 BYTES — not
+ * UTF-16 code units. Owned by the shared syntax layer (rm-114):
+ * src/gateway/operator-sse-syntax.ts (embedded, generated, above).
+ */
 export declare const MAX_SSE_BUFFER_BYTES: number
 
 /**
  * rm-477: append one decoded read() chunk to the stream buffer, holding a
  * trailing CR back so a CRLF pair split across chunks cannot forge a phantom
- * record boundary. The server reader carries the same pending-CR logic inline.
+ * record boundary. Single definition site shared with the server reader
+ * (rm-114).
  */
 export declare function appendStreamChunk(buffer: string, decoded: string): string
+
+/**
+ * rm-114: byte length in UTF-8 — the unit of MAX_SSE_BUFFER_BYTES. Uses
+ * TextEncoder so astral characters count as 4 bytes and CJK as 3.
+ */
+export declare function sseUtf8ByteLength(text: string): number
+
+/**
+ * Normalize CRLF and lone CR line endings to LF. Must be applied before
+ * searching for record boundaries ('\n\n'). Single definition site (rm-114).
+ */
+export declare function normalizeCrlf(text: string): string
+
+/** Fields collected from one complete SSE record (syntax layer only, rm-114). */
+export declare interface SseRecordFields {
+  /** Value of the `event:` line, if any (undefined when absent). */
+  eventName: string | undefined
+  /** All `data:` lines joined with U+000A (WHATWG §9.2.6, rm-484), or undefined when the record carried no `data:` line. */
+  data: string | undefined
+}
+
+/**
+ * rm-484: collect the fields of one complete SSE record — comment-only
+ * records (heartbeats) → null; `data:` lines join with U+000A per WHATWG
+ * §9.2.6. Single definition site (rm-114).
+ */
+export declare function parseSseRecordFields(record: string): SseRecordFields | null
 export declare const MAX_OUTPUT_TEXT_CHARS: number
 export declare const MAX_APPROVAL_TOMBSTONES: number
 export declare const MAX_OPEN_APPROVALS: number
 export declare const FIRST_FRAME_TIMEOUT_MS: number
+/**
+ * rm-220: idle-frame watchdog window — the longest a connection may go
+ * between received SSE records (data frames and comment heartbeats both
+ * count) before 'idle-timeout' dispatch + bounded reconnect.
+ */
+export declare const IDLE_FRAME_TIMEOUT_MS: number
 /**
  * Mirrors the gateway's PENDING_APPROVALS_MAX_RESULTS cap (50) from
  * fro-bot/agent v0.76.2 packages/gateway/src/web/operator/pending-approvals-route.ts.
@@ -237,6 +276,7 @@ export type StreamEvent =
   | {readonly type: 'unexpected-close'}
   | {readonly type: 'buffer-overflow'}
   | {readonly type: 'first-frame-timeout'}
+  | {readonly type: 'idle-timeout'}
   | ApprovalReconcileEvent
   | CancelActionEvent
 

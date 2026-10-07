@@ -2287,3 +2287,44 @@ describe('fixture SSE scenarios — serializeScenarioToSse output format', () =>
     expect(() => serializeScenarioToSse('not-a-real-scenario', FIXTURE_RUN_ID_FOR_TESTS)).toThrow()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Multi-`data:` record reassembly (rm-484, reader half) — WHATWG §9.2.6: a
+// record's data is the join of ALL its data: lines with U+000A between them.
+// The last-wins `data:` overwrite dropped all but the final line, silently
+// truncating any payload the wire chose to split across lines. The syntax
+// layer is shared (src/gateway/operator-sse-syntax.ts) with the browser twin;
+// the cross-half gate lives at test/operator-sse-syntax-divergence.test.ts.
+// -------------------------------------------------------------------------
+
+describe('parseSseChunk — multi-`data:` records join ALL lines (rm-484)', () => {
+  it('a JSON payload split at a between-token position across two data: lines parses as ONE frame', () => {
+    const payload = JSON.stringify({runId: 'run-001', text: 'first\nsecond', final: false, seq: 3})
+    const splitAt = payload.indexOf('"final"')
+    const text =
+      `event: output\ndata: ${payload.slice(0, splitAt)}\ndata: ${payload.slice(splitAt)}\n\n`
+    const results = parseSseChunk(text)
+    expect(results).toHaveLength(1)
+    const frame = results[0]
+    expect(frame?.success).toBe(true)
+    if (frame?.success && frame.frame.type === 'output') {
+      expect(frame.frame.data.text).toBe('first\nsecond')
+      expect(frame.frame.data.seq).toBe(3)
+    }
+  })
+
+  it('the batch-doc seeded regression no longer drops the first data line', () => {
+    // 'event: x\ndata: {"a":1,"b":\ndata: 2}\n\n' — the last-wins overwrite
+    // parsed this as {"b":2}; the join reassembles {"a":1,"b":\n2} (newline
+    // is JSON whitespace between tokens) and BOTH members survive.
+    const text = 'event: output\ndata: {"runId":"run-001","text":"a",\ndata: "final":false}\n\n'
+    const results = parseSseChunk(text)
+    // The reassembled payload here is VALID JSON (the newline lands after a
+    // comma — between tokens) but missing the output frame's required `seq`,
+    // so the semantic gate must reject it fail-closed: ONE error result with
+    // a fixed message — never a silently dropped first line, never a bogus
+    // survivor frame built from the last fragment alone.
+    expect(results).toHaveLength(1)
+    expect(results[0]?.success).toBe(false)
+  })
+})

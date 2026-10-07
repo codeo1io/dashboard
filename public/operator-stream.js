@@ -40,8 +40,127 @@ export const RETRY_FACTOR = 2
 /** Maximum number of reconnect attempts before transitioning to failed. */
 export const RETRY_MAX_COUNT = 5
 
-/** Hard cap on the incremental SSE buffer in bytes. Overflow → abort + failed. */
-export const MAX_SSE_BUFFER_BYTES = 1_000_000
+// >>> SSE-SYNTAX-GENERATED (from src/gateway/operator-sse-syntax.ts — regenerate: node scripts/gen-operator-sse-syntax.ts)
+/* eslint-disable @stylistic/brace-style, @stylistic/object-curly-spacing -- generated block: TS-emit style artifacts; canonical src/gateway/operator-sse-syntax.ts is the linted source */
+/**
+ * Shared SSE wire-syntax layer for the operator run stream — the ONE
+ * definition site for the record-parsing primitives (rm-114).
+ *
+ * Two twins consume these primitives:
+ * - src/gateway/operator-sse-reader.ts imports this module directly.
+ * - public/operator-stream.js embeds a GENERATED, type-stripped copy of this
+ *   file between the `SSE-SYNTAX-GENERATED` markers (the browser twin is
+ *   served raw from public/ with no build step, so it cannot import TS).
+ *   Regenerate with `node scripts/gen-operator-sse-syntax.ts` — never edit the
+ *   generated block by hand; any divergence between this file and the embedded
+ *   copy fails the gate at test/operator-sse-syntax-divergence.test.ts (runs
+ *   under `pnpm test`).
+ *
+ * Scope: ONLY the WHATWG-syntax layer — CRLF/CR normalization, chunk
+ * appending with the pending-CR hold (rm-477), field collection with the
+ * multi-`data:` join (rm-484), and the UTF-8 byte-cap accounting unit
+ * (rm-114). The per-twin semantic layers (typed frames, allowlists, error
+ * shapes) stay in their consumers; the wire-or-fold decision for the twins
+ * themselves is tracked separately at rm-253.
+ */
+/**
+ * Hard cap on the incremental SSE stream buffer, in UTF-8 BYTES — not UTF-16
+ * code units (string.length undercounts every astral character by half).
+ * Guards against unbounded memory growth from a hostile or broken upstream.
+ */
+const MAX_SSE_BUFFER_BYTES = 1_000_000
+const sseByteEncoder = new TextEncoder()
+/**
+ * Byte length of `text` in UTF-8 — the unit of the MAX_SSE_BUFFER_BYTES cap.
+ * Uses TextEncoder (not .length) so astral characters count as 4 bytes and
+ * CJK as 3, matching what actually crosses the wire.
+ */
+function sseUtf8ByteLength(text) {
+  return sseByteEncoder.encode(text).length
+}
+/**
+ * Normalize CRLF and lone CR line endings to LF.
+ * Must be applied before searching for record boundaries ('\n\n').
+ */
+function normalizeCrlf(text) {
+  // Replace \r\n first (order matters — avoids double-replacing the \r)
+  return text.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
+}
+/**
+ * Append one decoded read() chunk to the stream buffer, holding a trailing CR
+ * back (rm-477) so a CRLF pair split across chunks cannot forge a phantom
+ * record boundary: normalizing a lone trailing CR to LF would terminate its
+ * line early, and the LF that opens the NEXT chunk would then read as a blank
+ * line. The held CR normalizes together with the following chunk.
+ * normalizeCrlf is idempotent on already-normalized text, so re-normalizing
+ * the concatenation is safe; only the junction between a held CR and a
+ * following LF changes.
+ */
+function appendStreamChunk(buffer, decoded) {
+  let text = buffer + decoded
+  let held = ''
+  if (text.endsWith('\r')) {
+    held = '\r'
+    text = text.slice(0, -1)
+  }
+  return normalizeCrlf(text) + held
+}
+function stripFieldLeadingSpace(value) {
+  return value.startsWith(' ') ? value.slice(1) : value
+}
+/**
+ * Collect the fields of one complete SSE record (the text between two blank
+ * lines, trailing terminator included or not — extra blank lines are inert).
+ *
+ * - comment-only records (e.g. `: heartbeat`) → null — no fields, no frame
+ * - each `data:` line contributes its value to the joined payload; per WHATWG
+ *   §9.2.6 the parts concatenate with a single U+000A between them, so a JSON
+ *   payload split across two `data:` lines reassembles byte-exactly (rm-484 —
+ *   the last-wins `data:` overwrite this replaces dropped all but the final
+ *   line of a multi-line payload)
+ * - after a field name's colon exactly ONE leading space is stripped (spec
+ *   field-value semantics); `data:{"x":1}` and `data: {"x":1}` are equivalent
+ * - unknown field names (id/retry/…) are ignored — this contract carries no
+ *   `id:` fields and sets no retry interval (see rm-220's Last-Event-ID
+ *   disposition)
+ *
+ * Only the syntax layer lives here; validating that `eventName` names a known
+ * frame and that `data` parses as a JSON object belongs to each twin's
+ * semantic layer.
+ */
+function parseSseRecordFields(record) {
+  const lines = normalizeCrlf(record).split('\n')
+  let eventName
+  let dataParts
+  for (const line of lines) {
+    if (line.startsWith(':'))
+      continue
+    if (line.startsWith('event:')) {
+      eventName = stripFieldLeadingSpace(line.slice('event:'.length))
+    }
+    else if (line.startsWith('data:')) {
+      dataParts = dataParts ?? []
+      dataParts.push(stripFieldLeadingSpace(line.slice('data:'.length)))
+    }
+  }
+  if (eventName === undefined && dataParts === undefined)
+    return null
+  const data = dataParts === undefined ? undefined : dataParts.join('\n')
+  return { eventName, data }
+}
+/* eslint-enable @stylistic/brace-style, @stylistic/object-curly-spacing */
+// <<< SSE-SYNTAX-GENERATED
+
+// The generated block above is the browser half of the SSE wire-syntax
+// SINGLE definition site (rm-114): CRLF normalization, pending-CR chunk
+// append (rm-477), multi-`data:` field collection with the WHATWG §9.2.6
+// join (rm-484), and the UTF-8 byte-cap unit — type-stripped from
+// src/gateway/operator-sse-syntax.ts, which the server-side reader
+// (src/gateway/operator-sse-reader.ts) imports directly. NEVER edit the
+// generated block by hand: the gate at
+// test/operator-sse-syntax-divergence.test.ts fails `pnpm test` on any
+// divergence between the two halves.
+export {appendStreamChunk, MAX_SSE_BUFFER_BYTES, normalizeCrlf, parseSseRecordFields, sseUtf8ByteLength}
 
 /**
  * Hard cap on cumulative accumulated run-output characters. The raw SSE buffer cap
@@ -87,6 +206,21 @@ export const GATEWAY_PENDING_APPROVALS_CAP = 50
  * queued behind the concurrency cap or still starting). A manual retry re-opens.
  */
 export const FIRST_FRAME_TIMEOUT_MS = 15_000
+
+/**
+ * Idle-frame watchdog window in milliseconds (rm-220): the longest a healthy
+ * connection may go between received SSE records. Data frames AND comment-only
+ * heartbeats both count as liveness — a connection that crosses this window
+ * with no record at all is wedged-but-open (silent TCP, stuck proxy, hung
+ * gateway), so the client dispatches 'idle-timeout' (a visible stale state)
+ * and reconnects on the normal bounded retry budget. Must exceed
+ * FIRST_FRAME_TIMEOUT_MS so the pre-first-frame phase stays governed by the
+ * first-frame timer. Frames missed during the reconnect gap are recovered by
+ * the approvals-reconcile pass on re-live, not replayed — see rm-220's
+ * Last-Event-ID disposition in
+ * docs/prioritization/2026-10-08-repository-maintenance-cycle-1-run-34b02781.md.
+ */
+export const IDLE_FRAME_TIMEOUT_MS = 45_000
 
 /** Terminal OperatorWebStatus values — a run in one of these states will not progress. */
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled'])
@@ -173,30 +307,6 @@ export const FAILURE_REASON_LABELS = {
 // CRLF normalization
 // ---------------------------------------------------------------------------
 
-/**
- * Normalize CRLF and lone CR line endings to LF.
- * Must be applied before searching for record boundaries.
- */
-function normalizeCrlf(text) {
-  // Replace \r\n first (order matters — avoids double-replacing the \r)
-  return text.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
-}
-
-// rm-477: append one decoded read() chunk to the stream buffer, holding a
-// trailing CR back so it cannot be normalized to LF before the next chunk
-// reveals whether it is half of a CRLF pair. Exported for the twin suite —
-// the server reader (src/gateway/operator-sse-reader.ts) carries the same
-// pending-CR logic inline and both are pinned by chunk-split regressions.
-export function appendStreamChunk(buffer, decoded) {
-  let text = buffer + decoded
-  let held = ''
-  if (text.endsWith('\r')) {
-    held = '\r'
-    text = text.slice(0, -1)
-  }
-  return normalizeCrlf(text) + held
-}
-
 // ---------------------------------------------------------------------------
 // Pure SSE frame parser
 // ---------------------------------------------------------------------------
@@ -213,40 +323,25 @@ export function appendStreamChunk(buffer, decoded) {
  * NO-ORACLE: error strings are fixed. They never echo, interpolate, or stringify
  * any part of the input.
  *
- * Input is normalized for CRLF before parsing.
+ * Record framing, line normalization, and field collection (including the
+ * multi-`data:` join, rm-484) come from the generated shared syntax block
+ * above; this function is the semantic half — event-name dispatch, JSON
+ * object gate, allowlists, frame construction.
  */
 export function parseSseFrame(record) {
-  const normalized = normalizeCrlf(record)
-  const lines = normalized.split('\n')
-  let eventName
-  let dataLine
-
-  for (const line of lines) {
-    if (line.startsWith(':')) {
-      // SSE comment (e.g. ": heartbeat") — skip
-      continue
-    }
-    if (line.startsWith('event:')) {
-      eventName = line.slice('event:'.length).trim()
-    } else if (line.startsWith('data:')) {
-      dataLine = line.slice('data:'.length).trim()
-    }
-  }
-
-  // Comment-only record (heartbeat) — produce no frame
-  if (eventName === undefined && dataLine === undefined) {
-    return null
-  }
+  const fields = parseSseRecordFields(record)
+  if (fields === null) return null // comment-only record (heartbeat)
+  const {eventName, data} = fields
 
   // Record has data but no event name
   if (eventName === undefined) {
     return {success: false, error: 'sse record missing event name'}
   }
 
-  // Parse the data field as JSON
+  // Parse the data field as JSON (rm-484: `data` is the multi-`data:` join)
   let parsed
   try {
-    parsed = JSON.parse(dataLine ?? 'null')
+    parsed = JSON.parse(data ?? 'null')
   } catch {
     return {success: false, error: 'sse record data is not valid JSON'}
   }
@@ -781,6 +876,39 @@ export function nextStreamState(current, event) {
       if (
         current.connection === 'closed' ||
         current.connection === 'submitted-unobservable'
+      ) {
+        return current
+      }
+      if (current.retryCount >= RETRY_MAX_COUNT) {
+        return {
+          ...current,
+          connection: 'failed',
+          shouldReconnect: false,
+        }
+      }
+      return {
+        ...current,
+        connection: 'reconnecting',
+        retryCount: current.retryCount + 1,
+        shouldReconnect: true,
+      }
+    }
+
+    case 'idle-timeout': {
+      // rm-220: the idle-frame watchdog fired — the socket is open but no
+      // record (not even a comment heartbeat) has arrived for
+      // IDLE_FRAME_TIMEOUT_MS. The live view is stale; reconnect on the
+      // normal bounded retry budget, exactly like unexpected-close. Terminal
+      // display states are guarded the same way: an abort-rejection from
+      // close() must never reopen the stream, and terminal-ish states own
+      // their notices.
+      if (
+        current.connection === 'closed' ||
+        current.connection === 'submitted-unobservable' ||
+        current.connection === 'drift' ||
+        current.connection === 'not-found' ||
+        current.connection === 'failed' ||
+        current.connection === 'backpressure'
       ) {
         return current
       }
@@ -2086,6 +2214,11 @@ export function initOperatorStream(opts) {
   let aborted = false // set by close() to prevent late timer from fetching
   let announcedFailure = false
 
+  // rm-220: set when the idle watchdog fires on this attempt — keeps the
+  // visible notice honest ("stalled", not a silent generic "connecting")
+  // until the stream re-goes-live. Declared before updateDOM (its reader).
+  let stalledNotice = false
+
   function updateDOM() {
     // Late-frame guard: after close(), no write of any kind (notice, status,
     // output, coalesced hint, approvals, or badge) may reach the DOM. A late
@@ -2119,7 +2252,12 @@ export function initOperatorStream(opts) {
           noticeEl.hidden = true
         }
       } else if (conn === 'connecting' || conn === 'reconnecting') {
-        noticeEl.textContent = 'Connecting to run stream\u2026'
+        // rm-220: after an idle-timeout the notice must say the stream went
+        // stale — a generic "Connecting…" would render a frozen live view as
+        // if it were merely reconnecting after a clean close.
+        noticeEl.textContent = stalledNotice
+          ? 'Stream stalled \u2014 reconnecting\u2026'
+          : 'Connecting to run stream\u2026'
         noticeEl.hidden = false
       } else if (conn === 'drift') {
         noticeEl.textContent = 'Stream version mismatch \u2014 refresh the page.'
@@ -2315,6 +2453,50 @@ export function initOperatorStream(opts) {
   // Monotonic counter incremented on every connect() call. Each reconcileApprovals
   // invocation captures the epoch before its await; if the epoch changed by the time
   // the GET resolves, the result is stale and must be discarded.
+  // rm-220: idle-frame watchdog state — one timer per connection attempt,
+  // re-armed on every received record boundary (data frames and comment-only
+  // heartbeats both count). Unlike the first-frame timer this stays relevant
+  // the whole time the stream is live: a wedged-but-open socket produces no
+  // records at all, so only wall-clock since the last boundary can detect it.
+  let idleTimer = null // track pending idle-frame watchdog timer
+
+  const clearIdleTimer = () => {
+    if (idleTimer !== null) {
+      clearTimeout(idleTimer)
+      idleTimer = null
+    }
+  }
+
+  const armIdleTimer = controller => {
+    if (aborted) return
+    clearIdleTimer()
+    idleTimer = setTimeout(() => {
+      idleTimer = null
+      if (aborted) return
+      // Only an open/awaiting connection can be idle-stalled; terminal-ish
+      // states govern their own notices and must not be reopened (mirrors
+      // the unexpected-close guard).
+      if (
+        state.connection !== 'live' &&
+        state.connection !== 'connecting' &&
+        state.connection !== 'reconnecting'
+      ) {
+        return
+      }
+      // Mark the visible stale state, then treat the wedged socket exactly
+      // like a dead one: bounded reconnect via the retry budget. The abort
+      // releases the stranding-prone socket (rm-261); the pending read's
+      // catch swallows the abort rejection (signal.aborted), so no phantom
+      // unexpected-close rides the teardown.
+      stalledNotice = true
+      dispatch({type: 'idle-timeout'})
+      controller.abort()
+      if (state.shouldReconnect) {
+        scheduleReconnect()
+      }
+    }, IDLE_FRAME_TIMEOUT_MS)
+  }
+
   let connectEpoch = 0
 
   function dispatch(event) {
@@ -2324,6 +2506,10 @@ export function initOperatorStream(opts) {
     // Trigger reconcile when the stream first goes live (or re-goes live after reconnect).
     // This is the one-shot GET on (re)connect.
     if (prevConnection !== 'live' && state.connection === 'live') {
+      // Fresh (re)connect succeeded — the stale-stall notice no longer
+      // applies (rm-220), and the reconnect gap's approval drift is
+      // recoverable via the reconcile pass below.
+      stalledNotice = false
       reconcileApprovals()
     }
   }
@@ -2445,6 +2631,11 @@ export function initOperatorStream(opts) {
     const controller = abortController
     const signal = controller.signal
 
+    // rm-220: a stale idle watchdog left over from a superseded attempt must
+    // never fire into a fresh connection (it would abort a healthy stream) —
+    // clear it alongside the superseded controller.
+    clearIdleTimer()
+
     // Arm the first-frame timeout. If no ready/status/reset frame arrives within
     // FIRST_FRAME_TIMEOUT_MS, the run is considered submitted but not yet observable.
     // The timer is cleared as soon as the first frame is dispatched or on close().
@@ -2458,6 +2649,12 @@ export function initOperatorStream(opts) {
         controller.abort()
       }
     }, FIRST_FRAME_TIMEOUT_MS)
+
+    // rm-220: arm the idle-frame watchdog for this connection attempt. The
+    // window resets on every received record boundary (data frame OR
+    // comment-only heartbeat); it is cleared on close, on every terminal
+    // teardown, and alongside the first-frame timer at all its clear sites.
+    armIdleTimer(controller)
 
     // Build the stream URL — runId is used only here, never logged.
     // endpointBase defaults to '/operator'; dev mode may pass a different base.
@@ -2513,7 +2710,6 @@ export function initOperatorStream(opts) {
         }
 
         const decoder = new TextDecoder()
-        const encoder = new TextEncoder()
         let buffer = ''
         let bufferBytes = 0
         const reader = response.body.getReader()
@@ -2523,6 +2719,9 @@ export function initOperatorStream(opts) {
             .read()
             .then(({done, value}) => {
               if (done) {
+                // Stream ended cleanly — the idle watchdog has nothing left
+                // to watch on this attempt (rm-220).
+                clearIdleTimer()
                 // Flush remaining buffer before handling done
                 if (buffer.trim() !== '') {
                   const flushResult = parseSseFrame(`${buffer}\n\n`)
@@ -2547,13 +2746,14 @@ export function initOperatorStream(opts) {
                 // chunk would forge a phantom record boundary and silently
                 // drop the frame. The held CR normalizes with the next chunk.
                 buffer = appendStreamChunk(buffer, decoder.decode(value, {stream: true}))
-                bufferBytes = encoder.encode(buffer).length
+                bufferBytes = sseUtf8ByteLength(buffer)
               }
 
               // Hard buffer cap (UTF-8 bytes, rm-114) — abort the reader and fail
               // closed terminally (no reconnect) if exceeded without a record boundary.
               if (bufferBytes > MAX_SSE_BUFFER_BYTES) {
                 clearFirstFrameTimer()
+                clearIdleTimer()
                 if (abortController) {
                   abortController.abort()
                 }
@@ -2566,7 +2766,10 @@ export function initOperatorStream(opts) {
               while (boundary !== -1) {
                 const record = buffer.slice(0, boundary)
                 buffer = buffer.slice(boundary + 2)
-                bufferBytes -= encoder.encode(`${record}\n\n`).length
+                bufferBytes -= sseUtf8ByteLength(`${record}\n\n`)
+                // rm-220: every received record boundary — data frame OR
+                // comment-only heartbeat — resets the idle-frame watchdog.
+                armIdleTimer(controller)
 
                 const result = parseSseFrame(`${record}\n\n`)
                 if (result !== null && result.success) {
@@ -2594,6 +2797,7 @@ export function initOperatorStream(opts) {
                 // abort so the reader releases and the socket closes instead
                 // of stranding (rm-261). Aborting an already-ended stream is a
                 // no-op; the read loop's catch swallows abort rejections.
+                clearIdleTimer()
                 controller.abort()
               }
             })
@@ -2604,6 +2808,7 @@ export function initOperatorStream(opts) {
               if (signal.aborted) return
               // Stream read error — fail closed, no logging of error details
               clearFirstFrameTimer()
+              clearIdleTimer()
               dispatch({type: 'unexpected-close'})
               if (state.shouldReconnect) {
                 scheduleReconnect()
@@ -2619,6 +2824,7 @@ export function initOperatorStream(opts) {
         if (signal.aborted) return
         // Network error — fail closed, no logging of error details
         clearFirstFrameTimer()
+        clearIdleTimer()
         dispatch({type: 'network-error'})
         if (state.shouldReconnect) {
           scheduleReconnect()
@@ -2646,6 +2852,8 @@ export function initOperatorStream(opts) {
         clearTimeout(reconnectTimer)
         reconnectTimer = null
       }
+      clearIdleTimer()
+      stalledNotice = false
       clearFirstFrameTimer()
       if (abortController) {
         abortController.abort()
