@@ -21,8 +21,8 @@ import type {MetadataReader} from './github/metadata.ts'
 import type {ListenerStore} from './listener/store.ts'
 import {Buffer} from 'node:buffer'
 import {createHash} from 'node:crypto'
-import {existsSync, readFileSync, statSync} from 'node:fs'
-import {readFile} from 'node:fs/promises'
+import {existsSync} from 'node:fs'
+import {readFile, stat} from 'node:fs/promises'
 import {join} from 'node:path'
 import process from 'node:process'
 import {serve} from '@hono/node-server'
@@ -1179,12 +1179,18 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     let etag: string | undefined
     try {
       const absolutePath = join('./public', c.req.path.replace(/^\/static\//, ''))
-      const stats = statSync(absolutePath)
+      // rm-478 residual (F2, 2026-10-07): the stat + read are ASYNC — this
+      // post-middleware runs on every operator runtime asset hit, and the
+      // sync stat+read pair blocked the event loop on that hot path
+      // (loadSpaShell is the fs/promises precedent). The mtime-keyed cache
+      // keeps the async read a cold-path cost only; the caching policy and
+      // 304 semantics are unchanged.
+      const stats = await stat(absolutePath)
       const cached = operatorRuntimeAssetCache.get(absolutePath)
       if (cached !== undefined && cached.mtimeMs === stats.mtimeMs) {
         etag = cached.etag
       } else {
-        etag = `"${createHash('sha256').update(readFileSync(absolutePath)).digest('hex').slice(0, 32)}"`
+        etag = `"${createHash('sha256').update(await readFile(absolutePath)).digest('hex').slice(0, 32)}"`
         operatorRuntimeAssetCache.set(absolutePath, {etag, mtimeMs: stats.mtimeMs})
       }
     } catch {
@@ -1328,6 +1334,28 @@ export interface SnapshotProviderDeps {
 }
 
 /**
+ * rm-684 (2026-10-07): shape-validate the GET /repos/{owner}/{repo}/installation
+ * response at the Octokit boundary — the last unvalidated cast in server.ts.
+ * A malformed envelope (proxy error page, truncated JSON, a shifted API
+ * shape) used to yield `undefined`, which propagated silently into token
+ * minting and failed opaquely downstream. Mirrors the metadata reader's
+ * cast-then-validate-then-throw pattern; exported so malformed-response
+ * fixtures prove the typed error directly (the default resolver runs against
+ * the real App-JWT endpoint and is unreachable from tests).
+ */
+export function readInstallationId(data: unknown): number {
+  const envelope = data as {id?: unknown} | null | undefined
+  const id = envelope?.id
+  if (typeof id !== 'number' || !Number.isInteger(id) || id < 1) {
+    const described = typeof id === 'string' ? JSON.stringify(id) : String(id)
+    throw makeNotFoundError(
+      `installation response did not carry a positive integer id (got: ${described})`,
+    )
+  }
+  return id
+}
+
+/**
  * Build the real aggregator snapshot provider from GitHub App credentials.
  *
  * Extracted from `createDashboardServer` so tests can assert the production
@@ -1367,8 +1395,7 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
         owner,
         repo: name,
       })
-      const data = response.data as unknown as {id: number}
-      return data.id
+      return readInstallationId(response.data)
     })
 
   // Real Octokit-backed metadata reader: fetches metadata/repos.yaml from

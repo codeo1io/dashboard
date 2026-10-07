@@ -19,9 +19,14 @@
 # - dependency-review.yaml is PR-diff-only and minimumReleaseAge gates NEW
 #   resolutions, never already-resolved ones.
 #
-# Design constraints (rm-278): a SIGNAL, not a new required check —
-# schedule-only, no pull_request/push triggers, so it can never gate a merge
-# and never rides the validation runner budget. A red run IS the signal:
+# Design constraints (rm-278, amended by rm-683 2026-10-07): a SIGNAL, not
+# a new required check — still no pull_request trigger, so it can never gate
+# a merge and never rides the validation runner budget. rm-683 adds a
+# main-only push trigger PATHS-FILTERED to the only surfaces an audit result
+# can change (the manifests, the floors, this workflow): schedule-only meant
+# a cured tree kept a red badge up to 7 days (live window: red 2026-10-05 →
+# next fire 2026-10-12); now the cure's own landing mints the fresh signal
+# and docs-only pushes mint no run. A red run IS the signal:
 # issues are disabled on this fork (has_issues=false → the issue API 410s),
 # the same convention base-drift.yaml documents for its authoritative exit 1.
 #
@@ -42,10 +47,24 @@ name: Dependency audit
 on:
   schedule:
     - cron: '37 3 * * 1' # Mondays 03:37 UTC — before the 04:13 base-drift check
+  # rm-683 (2026-10-07): push-path self-heal — a floors/lockfile cure on main
+  # mints its own audit run instead of waiting up to 7 days for Monday.
+  # Paths-filtered to the surfaces `pnpm audit --recursive` reads plus this
+  # workflow itself, so docs-only pushes mint no runs.
+  push:
+    branches: [main]
+    paths:
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .github/workflows/audit.yaml
   workflow_dispatch: {}
 
 permissions:
   contents: read
+  # rm-672: the dependabot alert census step reads
+  # /repos/{owner}/{repo}/dependabot/alerts (reporting-only, never fails the job).
+  security-events: read
 
 jobs:
   audit:
@@ -68,7 +87,7 @@ jobs:
       # verified locally 2026-09-30 (a bare lockfile+workspace copy audits
       # clean with no node_modules).
       - name: Install pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
       - name: Set up Node 24
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -84,3 +103,49 @@ jobs:
           fi
           echo '::error::pnpm audit --recursive found advisories against the resolved set (rm-278 weekly signal). Cure: raise the offending override floor in pnpm-workspace.yaml with its GHSA rationale and re-resolve pnpm-lock.yaml in the SAME change (rm-276 convention), then verify locally with pnpm audit --recursive returning zero. Known designed red: CVE-2026-19534 fixes the undici 7.x line at 7.29.1, so a resolved 7.29.0 reds here (pre-cure divergence: resolved below its own floor — the cure is the lockfile regen, not a floor bump); against the cured 7.30.0 floor (one patch above the fix line) an undici red means a newly indexed advisory — that points to the undici 8 + jsdom 30 majors migration (rm-271 window), not a floor bump.'
           exit 1
+
+      # rm-672 (2026-10-07): a red audit run must self-describe its Dependabot
+      # alert universe — this fleet already minted one phantom count this way
+      # ('47 open' 2026-10-05 from a flag-less gh call that resolved to the
+      # upstream fork; the same-day per-state truth was 9 open / 30 fixed /
+      # 0 dismissed / 39 ever). Per-state pagination survives that failure
+      # mode, and the run summary is where a future red run's evidence gets
+      # read first. REPORTING-ONLY: `if: always()` and NO `set -e` — a census
+      # failure warns and proceeds, never widening the audit gate.
+      - name: Dependabot alert census (per-state, reporting-only)
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          # Full endpoint path, never `-R` (gh 2.86.0 rejects -R before the
+          # `api` subcommand, and flag-less calls have resolved to the
+          # upstream fork). The Dependabot alerts API is CURSOR-paginated via
+          # the Link header and rejects `page=` outright (HTTP 400, verified
+          # 2026-10-07) — gh's --paginate follows the cursor. One line per
+          # alert is emitted, then counted. Counts flow via CENSUS_TOTAL
+          # (command substitution would swallow ::warning:: annotations into
+          # the captured string, so warnings reach real stdout instead).
+          CENSUS_TOTAL=0
+          count_state() {
+            state="$1"; CENSUS_TOTAL=0
+            query="/repos/codeo1io/dashboard/dependabot/alerts?per_page=100"
+            [ -n "$state" ] && query="${query}&state=${state}"
+            if ! alerts="$(gh api --paginate "$query" --jq '.[].number' 2>/dev/null)"; then
+              echo "::warning::census query failed (state=${state:-any}) — count unavailable"
+              return 0
+            fi
+            CENSUS_TOTAL="$(printf '%s' "$alerts" | grep -c . || true)"
+          }
+          count_state open; OPEN="$CENSUS_TOTAL"
+          count_state fixed; FIXED="$CENSUS_TOTAL"
+          count_state dismissed; DISMISSED="$CENSUS_TOTAL"
+          count_state ''; EVER="$CENSUS_TOTAL"
+          {
+            echo '### Dependabot alert census (per-state, rm-672)'
+            echo "- open: ${OPEN}"
+            echo "- fixed: ${FIXED}"
+            echo "- dismissed: ${DISMISSED}"
+            echo "- total (any state): ${EVER}"
+            echo "- snapshot: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
