@@ -291,3 +291,107 @@ Dated corrections to the records above, verified live this fix:
   (independent review 11:19Z) → 0 open (this fix) — floors deployed and
   alerts dismissed. Recorded audit greens expire with the advisory DB; keep
   re-deriving live at every gate (rm-278 rider governs).
+
+## Outcome (adoption run 8b1672ef, 2026-10-06 — pre-review record)
+
+This batch was adopted, implemented, and validated green by run 8b1672ef at
+base 306a972 (origin/main unmoved at implement; it later advanced to 3d07cf9,
+the managed-render commit — see rm-104's 2026-10-06 rider for that hazard).
+
+- **Adoption**: 8 non-ROADMAP files byte-adopted from the CI-validated ref
+  (local `adopt/cfa9f94b-cure` == `conductor/ci-6f0d063134` == PR `#389`
+  head; `git diff --stat` over the 8 paths EMPTY); ROADMAP.md unioned by
+  three-way merge-file, zero conflicts, both rider sets verified present.
+- **Local battery** (implement e377f266): frozen install rc=0 (pnpm 11.28.4),
+  lockfile sha256-head `9abdcdd5` stable across every later phase, audit 17->0
+  at implement time, `pnpm lint` rc=0 (one ROADMAP emphasis fix),
+  `pnpm check-types` rc=0, 18/18 vitest (guards).
+- **Targeted validation** (664f580a): impacted-tests runner classified
+  package.json as shared build/test config and escalated INTERNALLY to its
+  authoritative fallback — ephemeral CI PR `#393`, ALL 11 checks SUCCESS,
+  zero debris.
+- **Full validation** (73c95090): `github_ci_validate.py --repo .` verbatim —
+  ephemeral CI PR `#395` (snapshot f6354ab7ca57 on base 28e91f948111),
+  ALL 11 checks SUCCESS incl `Lockfile Guard`, self-closed with both refs
+  deleted (zero debris); validation digest
+  `validation:v1:9cade95907f7fb11bd75235f254c2b61e2505bfbb9f13a73793bd070592ae733`
+  declared verbatim and re-derived EQUAL (no executable change post-implement).
+- **New hazard recorded (pre-review)**: the implement-time audit-0 EXPIRED —
+  source-map-js GHSA-68fv-2mgg-jv7q (HIGH) + katex GHSA-238p-pmpm-9mq7 (LOW)
+  now cover this batch's own resolutions; no PR check exercises `pnpm audit`;
+  verified cure floors on rm-285's 2026-10-06 rider — fold BEFORE the Monday
+  2026-10-12T03:37Z audit fire, then re-validate (executable change ⇒ new
+  digest).
+- **Adoption source preserved**: PR `#389` OPEN + MERGEABLE throughout; two
+  fleet attempts died of session-reaping this cycle (f9db2587 assess,
+  917b4462 full_tests — zero-work deaths, nothing adopted from either).
+
+## Next-cycle candidates (handoff, run 8b1672ef compound b0413212)
+
+1. source-map-js/katex floors + lockfile regen were FOLDED INTO the batch at
+   the 2026-10-06 review fix (run 8b1672ef attempt 83b08898, remediating
+   independent_review 1d96c395) — no longer a landing-time step; keep
+   re-deriving `pnpm audit` live at the merge gate every time
+   (rm-278 rider; solutions doc 2026-10-06).
+2. After the batch merges: close PR `#389`, then sweep the 100+ dead
+   `conductor/*` refs on origin (preserve `conductor/ci-6f0d063134` until the
+   merge, not after); re-check `git ls-files .conductor` empties post-merge
+   (landing-pipeline trap in AGENTS).
+3. ROADMAP recovery: the union artifact already exists — THIS run's worktree
+   ROADMAP.md (restored 306a972 base + unlanded riders unioned by CONTENT,
+   215 defs incl. this run's 11 riders) IS the take-wholesale side of the
+   landing merge vs 3d07cf9; never re-derive from bare 306a972 at landing
+   (read literally that drops the 11 riders this run added). See the rm-104
+   rider 2026-10-06 — render corruption census + emitter obligations;
+   reconcile the canary.yaml:19 'rm-650' label by content, not id.
+4. Re-cut rm-674 (canary daily-cron consolidation) post-adoption — blocked
+   while installs are red; same window as rm-179/rm-671 canary reds.
+5. Deferred by prioritize 7ff002a8 with named blockers: rm-116 fill
+   (post-landing ops; add `Lockfile Guard` to contexts), rm-156 watchdog,
+   R3/R4/R5 bumps, upstream absorb (NO-ABSORB until B4 on main; 1e1e2f5 is
+   the recorded revert vector).
+6. Posture refresh riders when the wall clears: OpenSSF scorecard
+   re-measure (rm-143 rider; Vulnerabilities 0 with 17 detected clears on
+   B1) + docs/runbooks/security-posture.md refresh; fast-uri-4 window
+   unowned (rm-499 rider).
+7. Process: session-reap deaths (two this fleet leg) are retryable transport
+   artifacts — event-log + absent-artifact forensics decided both in one read;
+   keep doing prior-attempt forensics before redoing a phase.
+
+## Review remediation record (2026-10-06, run 8b1672ef independent_review)
+
+Two adversarial review passes ran on this batch; a third attempt
+(a952f777) remediates the second pass's findings. The first pass (1d96c395)
+found the audit-expiry and lint defects, fixed in-batch by 83b08898
+(source-map-js/katex floors, lockfile re-derived to blob `a9dfc490`,
+ROADMAP :216 backtick). The second pass (078836c3) re-verified the substance
+green first-hand but found the landscape had moved under the record:
+
+- **Guard byte-harmonized to main (HIGH, fixed this attempt)**: main advanced
+  mid-cycle — fe928ca (08:22Z) landed a divergent cure variant including its
+  own 58-line `lockfile-guard.yaml`; c210933 (11:30Z) extended it. This
+  batch's 62-line fleet variant add/add-collides with main's inside
+  `github_ci_validate`'s disposable base (the base overlays CURRENT main's
+  workflows; `git apply --3way` then aborts fail-closed pre-push). Fix:
+  adopted main's bytes verbatim (blob `97a8ebf6`; delta = attribution header
+  + one quote style, triggers/steps byte-identical; actionlint rc=0).
+  Re-harmonize if main's guard moves again before ship.
+- **Stale records corrected (MEDIUM)**: PR `#389` was CLOSED unmerged by
+  codeo1io at 2026-10-06T07:54:36Z and origin ref `conductor/ci-6f0d063134`
+  deleted — the Outcome-section claims at :174 (ref equality), :197 (OPEN +
+  MERGEABLE), and :208 ("close after merge") are historical, superseded by
+  this addendum. Cure custody: local `adopt/cfa9f94b-cure` @ `6f0d0d063134`
+  (re-probed alive) plus this batch tree.
+- **Premise shift recorded (MEDIUM)**: "unfreeze main" is already
+  substantially satisfied — fe928ca/c210933 landed the divergent cure with
+  the same floor values and a `pnpm-lock.yaml` blob identical to ours
+  (`a9dfc490`). This batch's remaining landing value is reconcile-and-land:
+  3-way vs c210933 = pnpm-workspace 2 hunks (floor lines byte-identical,
+  comment prose only), Dockerfile 3 (ours pins pnpm 11.28.4 in both corepack
+  prepares vs main's 11.28.3), ROADMAP 5 rider hunks; pnpm-lock merges
+  trivially (identical blobs).
+- **Digest re-declared**: comment-only workflow byte changes move the
+  `validation:v1:` digest (content hash over executable surfaces); the
+  post-harmonization value is re-derived and declared in this attempt's
+  phase result.
+
