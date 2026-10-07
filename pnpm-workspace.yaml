@@ -12,6 +12,22 @@ allowBuilds:
 # first-party pins that sometimes need same-day adoption.
 minimumReleaseAge: 1440
 
+# rm-656 (2026-10-05, run 5e661558 cycle:1; independently re-derived the same
+# day by run cfa9f94b cycle 3 unfreeze batch B2 — converging lineages, one
+# key): pnpm 11.28.3 auto-installs when
+# a script runs against a stale tree and silently REWRITES pnpm-lock.yaml in
+# place (observed live 2026-10-05: a fresh clone's first `pnpm <script>`
+# dirtied the tracked lockfile and contaminated two audit/gate evidence
+# captures; A/B control at a stale-tree copy — research ecae3ba9
+# /tmp/vdb-ecae: with this key present a script run leaves the lockfile
+# byte-identical, without it the rewrite lands in ~12.3s). `pnpm config get
+# verify-deps-before-run` misleadingly prints undefined — THIS camelCase
+# pnpm-workspace.yaml key is the honored form. CI is unaffected: gates run
+# explicit frozen installs and this only governs `pnpm run`-family commands.
+# Revisit at the pnpm 12 bump (rm-140) — re-evaluate 12's default for this
+# behavior before carrying the pin forward.
+verifyDepsBeforeRun: false
+
 # rm-196 rider (2026-09-25): hono@4.13.9 and vite@8.3.1 are the rider targets
 # — an explicit, disclosed bypass of the rm-133 age gate, not a weakening of
 # it. Truth note (run 5ae8aaf72d8f, B3): at the rider merge (828a1e6,
@@ -21,10 +37,17 @@ minimumReleaseAge: 1440
 # of 2026-09-25T12:26Z; the entry remains as the dated bypass record.
 # 2026-10-03 integrate (run 23d39aa7 landing): the hono@4.13.9 entry retired
 # — the security refresh to hono 4.13.11 + @hono/node-server 2.1.3 is landed
-# (rm-285; that same batch's fast-uri floor cure is what closed the two live
-# HIGH alerts #29/#30 — both fast-uri, per the batch doc's live probes), so
-# the name was a dead bypass record; the retirement is rm-277's acceptance
+# (rm-285; that batch's fast-uri floor cure DID close the two live HIGH
+# alerts #29/#30 on 2026-10-03, but the lockfile half was reverted next day
+# by the 1e1e2f5 upstream merge — #29/#30 re-opened 15:47:15Z; the lockfile
+# reconcile rides the 2026-10-05 unfreeze batch, rm-285's correction rider),
+# so the name was a dead bypass record; the retirement is rm-277's acceptance
 # rider (rm-271's 2026-09-30 note).
+# 2026-10-06 review fix note (F3, run 5e661558 attempt 7cca9ec3): the #29/#30
+# closure above was reverted 2026-10-04 by 1e1e2f5's stale-lockfile re-import
+# (rm-285's correction-of-record rider); this batch's floors lockfile re-closes
+# both on landing (batch doc watch item 4 — dependabot re-indexes the landed
+# blob).
 # vite@8.3.1 stays (both rider targets past maturity; the record remains dated).
 minimumReleaseAgeExclude:
   - '@bfra.me/eslint-config@0.51.2 || 0.51.3 || 0.51.4 || 0.52.0 || 0.52.1 || 0.52.2 || 0.54.0'
@@ -67,5 +90,31 @@ overrides:
   # NEWLY indexed advisory BY DESIGN and the undici 8 + jsdom 30 migration
   # rides rm-271's majors window. undici is dev-transitive via jsdom.
   undici@7: '>=7.30.0 <8.0.0'
+  # 2026-10-06 — both floors below were minted by converging lineages
+  # after the advisory DB moved overnight (the L3 time-varying-DB class the
+  # trivy perl-base wave proved the same cycle): landed run 5e661558's review
+  # repair fccd4229 (review eb452afd finding), run 73d35a6ca2bd's review
+  # f83fb832, and run cfa9f94b's review_fix 8319b391 (independent review
+  # finding 1 fold) independently recorded the same floors; rm-276 convention —
+  # floor + GHSA rationale + re-resolve in the same change. Standing lesson:
+  # audit greens expire with the advisory DB — re-derive at every fold.
+  # source-map-js is dev-transitive along ~16 paths (@eslint/css-tree, the
+  # @tailwindcss/* chain, vite > postcss); GHSA-68fv-2mgg-jv7q is HIGH
+  # (event-loop DoS; published 2026-09-18, vulnerable >=1.0.0 <1.2.2 — the
+  # patched 1.2.2, published 2026-09-30T14:08Z, is the minimumReleaseAge-mature
+  # tip), indexed into the audit DB only between 2026-10-05 and 2026-10-06 —
+  # AFTER every recorded audit-0 of the 2026-10-05 era.
+  source-map-js: '>=1.2.2 <2.0.0'
+  # katex is dev-transitive via @bfra.me/eslint-config > @eslint/markdown >
+  # micromark-extension-math@3.1.0, which declares ^0.16.0 with no
+  # ^0.18-capable successor; GHSA-238p-pmpm-9mq7 is LOW (vulnerable
+  # >=0.11.0 <0.18.2, patched 0.18.2; the advisory published
+  # 2026-10-05T23:41:05Z — 19 min before run cfa9f94b's full_tests launch).
+  # This override deliberately forces the patched 0.18 line OUT OF the
+  # declared range — an out-of-range force, verified inert at lint time (this
+  # repo renders no math fences; the markdown plugin never evaluates them;
+  # pnpm lint green on the forced resolution), same review folds as
+  # source-map-js above.
+  katex: '>=0.18.2 <0.19.0'
 
 shamefullyHoist: true
