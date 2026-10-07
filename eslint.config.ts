@@ -21,6 +21,17 @@ export default defineConfig(
     },
   },
   {
+    // rm-682 (2026-10-06, cycle-1 batch): eslint-plugin-erasable-syntax-only
+    // 0.6.0 added the export-aliases rule (flags CJS-style `export =`
+    // assignments — a strip-only blind spot none of the four preset rules
+    // cover). @bfra.me/eslint-config 0.54.0's erasableSyntaxOnly preset
+    // predates it, so the rule is enabled HERE explicitly; proven present in
+    // the resolved config via `pnpm exec eslint --print-config src/server.ts`.
+    rules: {
+      'erasable-syntax-only/export-aliases': 'error',
+    },
+  },
+  {
     // operator-runtime.test.ts lives in test/ but requires DOM types (jsdom environment).
     // It is excluded from the root tsconfig (no DOM lib) and covered by web/tsconfig.json.
     // Override the parser project for this file so ESLint resolves it correctly.
