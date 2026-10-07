@@ -580,10 +580,12 @@ describe('GET /.well-known/security.txt — RFC 9116 security contact', () => {
 
     const body = await res.text()
     expect(body).toMatch(/^Contact: https:\/\/github\.com\/codeo1io\/dashboard\/security\/advisories\/new$/m)
-    // Review F2: the second Contact must be a channel verified working — the
-    // fork's own issues are dead (has_issues=false) until the operator flips
-    // them on; upstream fro-bot/dashboard issues are live (probed 2026-09-24).
-    expect(body).toMatch(/^Contact: https:\/\/github\.com\/fro-bot\/dashboard\/issues$/m)
+    // Review F2 (rm-699, 2026-10-07): the advisory form is the SOLE Contact —
+    // private vulnerability reporting is now ENABLED on codeo1io/dashboard
+    // (live probe, run a94d0659), so the 2026-09-24 fallback to the upstream
+    // repo's public tracker is retired: a public tracker on another repo
+    // misroutes reporters and under-privatizes disclosure (RFC 9116).
+    expect(body).not.toMatch(/^Contact: https:\/\/github\.com\/fro-bot\/dashboard\/issues$/m)
     expect(body).not.toMatch(/^Contact: https:\/\/github\.com\/codeo1io\/dashboard\/issues$/m)
     expect(body).toMatch(/^Expires: /m)
     expect(body).toMatch(/^Preferred-Languages: en$/m)
