@@ -10,6 +10,8 @@ import {mkdirSync} from 'node:fs'
 import {dirname} from 'node:path'
 import {DatabaseSync} from 'node:sqlite'
 
+import {logger} from '../logger.ts'
+
 export interface ListenerStore {
   insert: (input: IngestMessage) => {id: string; receivedAt: string}
   list: (opts: {unreadOnly?: boolean; limit?: number}) => MessagesResponse
@@ -40,6 +42,32 @@ const DEFAULT_LIST_LIMIT = 100
 const MIN_LIST_LIMIT = 1
 const MAX_LIST_LIMIT = 200
 
+/**
+ * rm-187: degrade, never throw. Writes serialize `links` via JSON.stringify,
+ * but the sqlite file is an operator-reachable surface (schema drift, truncated
+ * write, manual edit) — one corrupt cell must not 500 every message behind
+ * GET /api/listener/messages. A cell that fails to parse or is not a JSON array
+ * maps to an empty links with a logged warning so the degradation stays
+ * observable; every other row field is served intact.
+ */
+function parseLinksCell(row: MessageRow): readonly ListenerLink[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(row.links)
+  } catch {
+    parsed = undefined
+  }
+  if (Array.isArray(parsed)) {
+    return parsed as readonly ListenerLink[]
+  }
+  logger.warning('listener-store: corrupt links cell degraded to empty links (rm-187)', {
+    id: row.id,
+    source: row.source,
+    kind: row.kind,
+  })
+  return []
+}
+
 function rowToMessage(row: MessageRow): ListenerMessage {
   return {
     id: row.id,
@@ -48,7 +76,7 @@ function rowToMessage(row: MessageRow): ListenerMessage {
     severity: row.severity as ListenerMessage['severity'],
     title: row.title,
     body: row.body,
-    links: JSON.parse(row.links) as readonly ListenerLink[],
+    links: parseLinksCell(row),
     dedupeKey: row.dedupe_key,
     createdAt: row.created_at,
     receivedAt: row.received_at,

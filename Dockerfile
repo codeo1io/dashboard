@@ -18,7 +18,17 @@
 # deletions or package upgrades, so these are the minimal target-executed
 # steps the design allows — see the rm-558 CI-time note in
 # .github/workflows/release.yaml).
-ARG NODE_IMAGE=node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6
+# rm-682 (2026-10-07, run 09e5b4d619fe implement 9ba13c2e): base digest re-pin
+# 0e0ff40c -> d6aa754f. Provenance: re-derived live at implement via the Docker Hub
+# token-authed registry manifest HEAD — node:24-slim and node:24-bookworm-slim both
+# resolve to sha256:d6aa754f… (a refreshed same-suite bookworm build: Node 24.21.0 +
+# refreshed OS packages, NOT a suite switch), in parity with upstream
+# fro-bot/dashboard #567 (same digest, same day). The recorded 57-open-Trivy-OS-CVE
+# tail on 0e0ff40c is expected to drop at the next weekly trivy scan (rm-648) —
+# the count is the watch, registry parity the gate. If the refreshed base ships
+# libpcre2-8-0 deb12u2+/perl-base deb12u4+, the runtime stage's --only-upgrade
+# apt layer below self-no-ops by its own design note.
+ARG NODE_IMAGE=node:24-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
 
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS builder
 
