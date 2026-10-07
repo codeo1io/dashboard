@@ -91,7 +91,7 @@ export function buildApiRouter(getSnapshot?: SnapshotProvider): Hono {
   const api = new Hono()
 
   api.get('/healthz', c => {
-    return c.json({ok: true, lastFetch: null, rateLimit: null})
+    return c.json({ok: true})
   })
 
   /**
