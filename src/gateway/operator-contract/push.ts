@@ -12,9 +12,11 @@
  *
  * PushHandoffState is NOT a wire field — it is derived client-side from
  * PushSubscriptionMetadata plus local browser state (permission, local
- * PushSubscription presence/keyVersion). It is defined here so the vendored
- * contract and the web-side duplicate (web/src/push/push-types.ts) share one
- * canonical string set.
+ * PushSubscription presence/keyVersion). It is defined here as the sole
+ * canonical copy of the string set — the former web-side duplicate
+ * (web/src/push/) was retired with the client push receive half (rm-106
+ * decision, 2026-10-07); this vendored contract is what a future client
+ * half would pin against.
  *
  * Error messages are fixed strings — never echo or interpolate input.
  * Extra fields are ignored (permissive structural subtyping).

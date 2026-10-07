@@ -15,8 +15,9 @@
  * silently flip all three together.
  *
  * Precedents: web/src/push/push-types.test.ts (the repo's pin-the-copy
- * pattern) and test/operator-runtime.test.ts (cross-tree import of web/src
- * proven). Mutation demo (run in the implementing batch): drift any single
+ * pattern; retired 2026-10-07 with the client push half, rm-106) and
+ * test/operator-runtime.test.ts (cross-tree import of web/src proven).
+ * Mutation demo (run in the implementing batch): drift any single
  * copy (e.g. drop the `..` rejection from the public copy) → this suite goes
  * red on that copy only.
  */

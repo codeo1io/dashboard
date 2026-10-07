@@ -116,7 +116,6 @@ interface TestAppOpts {
   operatorUiEnabled: boolean
   gatewayOperatorSessionEnabled?: boolean
   operatorClient?: OperatorClient
-  pushNotificationsEnabled?: boolean
   webDistRoot?: string
 }
 
@@ -135,7 +134,6 @@ async function buildTestApp(opts: TestAppOpts | boolean) {
     gatewayOperatorSessionEnabled: resolved.gatewayOperatorSessionEnabled,
     gatewayProxyAcknowledged: resolved.gatewayOperatorSessionEnabled === true,
     operatorClient: resolved.operatorClient,
-    pushNotificationsEnabled: resolved.pushNotificationsEnabled,
     webDistRoot: resolved.webDistRoot,
   })
 }
@@ -922,43 +920,30 @@ describe('push routes — no-dashboard-proxy 404 invariant', () => {
   }
 })
 
-describe('push-enabled meta injection — served SPA shell integrity', () => {
-  it('serves a COMPLETE index.html (root mount target present) with the injected meta when push is enabled', async () => {
-    const app = await buildTestApp({operatorUiEnabled: true, pushNotificationsEnabled: true})
+describe('served SPA shell integrity', () => {
+  it('serves a COMPLETE index.html (root mount target present)', async () => {
+    const app = await buildTestApp({operatorUiEnabled: true})
     const res = await authedGet(app, '/')
     expect(res.status).toBe(200)
     const body = await res.text()
-    // The injected meta must be present...
-    expect(body).toContain('<meta name="push-enabled" content="true">')
-    // ...AND the response must NOT be truncated: the React mount target must
-    // survive injection. A stale Content-Length after injection dropped the
-    // tail of the document (regression: blank page / "Root element not found").
+    // The response must NOT be truncated: the React mount target must survive.
     expect(body).toContain('<div id="root">')
     expect(body).toContain('</html>')
-    // Content-Length, when present, must match the actual (post-injection) body
-    // byte length — a mismatch is exactly what truncated the served shell.
+    // Content-Length, when present, must match the actual body byte length —
+    // a mismatch is exactly what used to truncate the served shell.
     const contentLength = res.headers.get('content-length')
     if (contentLength !== null) {
       expect(Number(contentLength)).toBe(Buffer.byteLength(body))
     }
-    // rm-166 (cycle-10 rider): the injected shell is identity-reflecting
-    // (push flag is operator-gated) — no intermediary may cache it.
+    // rm-166 (cycle-10 rider): the shell is served behind the operator
+    // session gate — no intermediary may cache it.
     expect(res.headers.get('cache-control')).toBe('no-store')
-  })
-
-  it('does not inject the meta when push is disabled', async () => {
-    const app = await buildTestApp({operatorUiEnabled: true, pushNotificationsEnabled: false})
-    const res = await authedGet(app, '/')
-    expect(res.status).toBe(200)
-    const body = await res.text()
-    expect(body).not.toContain('push-enabled')
-    expect(body).toContain('<div id="root">')
   })
 
   it('rm-172: shell is cached — no per-request sync IO; flip honored within the TTL bound', async () => {
     // rm-172: '/' used to readFileSync(index.html) on EVERY authenticated
     // request. The handler now reads asynchronously once and caches with a
-    // TTL (5s). Verify: (1) first read injects and serves; (2) a rewrite
+    // TTL (5s). Verify: (1) first read loads and serves; (2) a rewrite
     // within the TTL still serves the CACHED copy; (3) after the TTL the
     // next request picks up the rebuilt shell.
     const dir = mkdtempSync(`${tmpdir()}/spa-shell-rm172-`)
@@ -971,14 +956,13 @@ describe('push-enabled meta injection — served SPA shell integrity', () => {
     }
     try {
       writeShell('MARKER-V1')
-      const app = await buildTestApp({operatorUiEnabled: true, pushNotificationsEnabled: true, webDistRoot: dir})
+      const app = await buildTestApp({operatorUiEnabled: true, webDistRoot: dir})
 
-      // (1) first request loads + injects
+      // (1) first request loads + serves
       const first = await authedGet(app, '/')
       expect(first.status).toBe(200)
       let body = await first.text()
       expect(body).toContain('MARKER-V1')
-      expect(body).toContain('<meta name="push-enabled" content="true">')
       expect(first.headers.get('cache-control')).toBe('no-store')
 
       // (2) rewrite mid-TTL → cached copy still served (no re-read)
@@ -997,7 +981,6 @@ describe('push-enabled meta injection — served SPA shell integrity', () => {
         expect(third.status).toBe(200)
         body = await third.text()
         expect(body).toContain('MARKER-V2')
-        expect(body).toContain('<meta name="push-enabled" content="true">')
       } finally {
         vi.useRealTimers()
       }
@@ -1009,7 +992,7 @@ describe('push-enabled meta injection — served SPA shell integrity', () => {
   it('rm-172: missing shell still falls back to 404, not a 500', async () => {
     const dir = mkdtempSync(`${tmpdir()}/spa-shell-missing-`)
     try {
-      const app = await buildTestApp({operatorUiEnabled: true, pushNotificationsEnabled: true, webDistRoot: dir})
+      const app = await buildTestApp({operatorUiEnabled: true, webDistRoot: dir})
       const res = await authedGet(app, '/')
       expect(res.status).toBe(404)
     } finally {

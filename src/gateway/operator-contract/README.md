@@ -30,8 +30,10 @@ inlined boundary types for RunPhase/Surface/RunState).
   raw endpoint, `p256dh`, or `auth` keys). `PushHandoffState` is client-derived,
   not a wire field: the Gateway exposes no handoff-state route, so the
   dashboard computes it from subscription metadata plus local browser state.
-  It is defined here so the vendored contract and the web-side duplicate
-  (`web/src/push/push-types.ts`) share one canonical string set.
+  It is defined here as the sole canonical copy of the string set — the former
+  web-side duplicate (`web/src/push/`) was retired with the client push receive
+  half (rm-106 decision, 2026-10-07); this vendored contract is what a future
+  client half would pin against.
 
 ## Omissions vs upstream
 

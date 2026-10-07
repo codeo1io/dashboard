@@ -11,7 +11,7 @@
  * Dismiss state is persisted to localStorage so the prompt doesn't reappear
  * on reload after the user explicitly dismisses it. That persistence is
  * DELIBERATE and stays one-way for the banner itself — the way back is the
- * AppShell footer's "Restore notifications" affordance (rm-596), which
+ * AppShell footer's "Restore install prompt" affordance (rm-596), which
  * clears this key and remounts the prompt surface.
  *
  * Browser-only: all window/document access is guarded for SSR safety.

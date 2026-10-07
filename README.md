@@ -61,7 +61,7 @@ client changes). The test suite rebuilds the client automatically via `pretest`.
 - `POST /api/listener/ingest` — gateway-to-dashboard message ingest, HMAC-signed via the listener ingest key (not operator-session auth).
 - `POST /api/listener/messages/:id/ack` · `POST /api/listener/ack-all` — digest acknowledgements (authenticated).
 - `GET /api/listener/csrf` — listener-ack CSRF token mint (authenticated; mounted only when the ingest store is configured).
-- `GET /privacy` — public privacy policy for the push/listener surfaces.
+- `GET /privacy` — public privacy policy for the listener surfaces.
 - `GET /auth/login` · `GET /auth/callback` · `POST /auth/logout` · `GET /auth/logout-csrf` — GitHub OAuth session flow; the last row mints the logout-form CSRF token.
 - `GET /.well-known/security.txt` — public RFC 9116 security contact.
 - `/manifest.webmanifest`, `/sw.js` — PWA manifest and service worker.
@@ -145,7 +145,6 @@ missing `_FILE` path silently falls back to the environment variable).
 | `DASHBOARD_OAUTH_CLIENT_SECRET` | `src/server.ts` | `''` | GitHub OAuth app client secret. |
 | `DASHBOARD_OAUTH_REDIRECT_URI` | `src/server.ts` | `http://localhost:3000/auth/callback` | OAuth callback URL. |
 | `DASHBOARD_OPERATOR_LOGIN` | `src/server.ts` | unset | The single-operator allowlist login (exact, case-sensitive match); a whitespace-only value throws at construction (fail-closed). |
-| `DASHBOARD_OPERATOR_PUSH_ENABLED` | `src/gateway/operator-config.ts` | off | Push-notification delivery flag; only the exact value `true` enables (fail-closed). |
 | `DASHBOARD_OPERATOR_UI_ENABLED` | `src/gateway/operator-config.ts` | off | Operator UI mount flag; only the exact value `true` enables (fail-closed). |
 | `DASHBOARD_PORT` | `src/server.ts` | `3000` | Bind port; anything but an integer in 1–65535 throws at startup (fail loud). |
 | `DASHBOARD_SNAPSHOT_CACHE` | `src/server.ts` | unset (off) | Optional file path enabling the boot-time snapshot bridge (rm-198): the last good snapshot is persisted here and reloaded at restart to bridge the cold-start window (forced stale, original `refreshedAt` preserved); unset/blank keeps in-memory-only behavior, and a missing/corrupt/oversize file fails open to an empty boot. |
