@@ -50,12 +50,16 @@ describe('rm-678 schema half: live ledger', () => {
 
   it('records the current id ceiling (bump on the next mint)', () => {
     const live = census(roadmap)
-    // 692 = the b2a3ae9b cycle-1 batch ceiling (rm-690 immutable
-    // Cache-Control, rm-691 release triage, rm-692 security-posture
-    // reword), minted above the all-lineage sibling ceiling rm-689 and
-    // landed at the 2026-10-08 integrate (conflict case 8921afd9) above
-    // main's prior 14a81ea6 ceiling rm-682 (conflict case e3e5d160).
-    expect(live.max).toBe(692)
+    // 746 = the 13de8662 repository-maintenance cycle:3 extension #30
+    // ceiling (rm-744 gateway-validating rate-class coverage, rm-745
+    // client-side refresh-failure stale marking, rm-746 SHA-preserving
+    // redaction seam), minted above the all-lineage sibling ceiling
+    // (worktree def-lines max rm-743, 405e9004; stranded rm-737..739
+    // honored) on the 232-def base of the 2026-10-08 integrate
+    // (conflict case 8921afd9) — spool bands rm-753..755/790..796/
+    // 799..801 adjudicated foreign (agenttrace) and do not consume
+    // the id space.
+    expect(live.max).toBe(746)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
