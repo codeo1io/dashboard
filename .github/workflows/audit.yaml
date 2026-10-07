@@ -2,9 +2,13 @@
 # run 23d39aa7467e).
 #
 # Why this exists: nothing else watches TRANSITIVE dev dependencies.
-# - Dependabot version updates (.github/dependabot.yml) track direct
-#   dependencies only, so fast-uri (via ajv@8 in the eslint chain) and
-#   undici (via jsdom) have no PR path.
+# - Dependabot version updates (.github/dependabot.yml) DO open transitive
+#   bumps — corrected 2026-10-06 (run 14a81ea6 cycle 1, rm-278's rider): PR
+#   #345 bumped undici 7.29.0 -> 7.30.0 (via jsdom) on 2026-10-02, so the
+#   old 'direct-only / no PR path' claim here was false. PRs are still not
+#   the landing path: #345 was closed UNMERGED the same day (the content
+#   reached main via the fleet's undici floor override — rm-102's
+#   disposition rider), so floors + this weekly gate stay deterministic.
 # - Dependabot SECURITY updates cannot cure a transitive override floor: a
 #   floor the vulnerable version already satisfies pins the advisory open —
 #   proven live 2026-09-30 by fast-uri alerts #29/#30 (both high) staying

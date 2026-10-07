@@ -50,10 +50,11 @@ describe('rm-678 schema half: live ledger', () => {
 
   it('records the current id ceiling (bump on the next mint)', () => {
     const live = census(roadmap)
-    // 681 = the cc4339fe cycle-1 census-guard mint re-anchored off collided
-    // rm-672 at the 2026-10-07 integrate (conflict case e836a18d) above the
-    // previous all-lineage ceiling rm-680.
-    expect(live.max).toBe(681)
+    // 682 = the 14a81ea6 cycle-1 rm-682 mint (erasable-syntax-only 0.7.x +
+    // export-aliases, fork-first), landed at the 2026-10-07 integrate
+    // (conflict case e3e5d160) above the cc4339fe re-anchor ceiling rm-681
+    // (conflict case e836a18d).
+    expect(live.max).toBe(682)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
