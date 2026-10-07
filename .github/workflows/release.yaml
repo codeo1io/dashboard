@@ -474,10 +474,22 @@ jobs:
           # observed 2026-09 on the workstation-era self-hosted runner), so parse the
           # Digest line from the default output instead of trusting the template
           # across buildx versions.
+          # rm-691 (2026-10-07, run b2a3ae9bf75b implement): the readbacks below
+          # (this one and promote-latest) must NOT let awk exit before consuming
+          # docker's full output. The workflow shell is `bash -Eeuo pipefail`:
+          # when awk exits early, docker's next write to the closed pipe fails
+          # and docker exits non-zero (255 observed live), so the readback
+          # conjunct fails even though the Digest line was already parsed.
+          # That class caused four red Release runs (37567189586, 37574226127,
+          # 37453985189, 37435636956 — each "did not verify" with the correct
+          # digest visible in the log; the promotion itself always landed). The
+          # END-pattern parse is byte-equivalent (exactly one top-level Digest
+          # line in the default output) and preserves docker's real exit
+          # status, so genuine inspect failures still fail honestly.
           for TAG in "$CALVER" "sha-${SHORT_SHA}"; do
             got=$(docker buildx imagetools inspect \
               "ghcr.io/${{ github.repository }}:$TAG" \
-              | awk '/^Digest:/{print $2; exit}')
+              | awk '/^Digest:/{d=$2} END{print d}')
             if [ "$got" != "${{ steps.build.outputs.digest }}" ]; then
               echo "DIGEST MISMATCH on $TAG: got=$got expected=${{ steps.build.outputs.digest }}"
               exit 1
@@ -511,11 +523,16 @@ jobs:
           verified=0
           for attempt in 1 2 3; do
             got=""
+            # rm-691: awk must consume docker's full output before exiting —
+            # an early `exit` races the writer under `bash -Eeuo pipefail`
+            # (docker exits 255 on the closed pipe, failing the readback even
+            # though the Digest was parsed). See the NOTE above the CalVer
+            # readback for the four red runs this class caused.
             if docker buildx imagetools create \
                 --tag "ghcr.io/${{ github.repository }}:latest" "$SRC" \
                 && got="$(docker buildx imagetools inspect \
                   "ghcr.io/${{ github.repository }}:latest" \
-                  | awk '/^Digest:/{print $2; exit}')" \
+                  | awk '/^Digest:/{d=$2} END{print d}')" \
                 && [ "$got" = "${{ steps.build.outputs.digest }}" ]; then
               verified=1
               break

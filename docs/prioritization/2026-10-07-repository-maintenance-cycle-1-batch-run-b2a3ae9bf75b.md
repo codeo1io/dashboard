@@ -1,0 +1,46 @@
+# Dashboard roadmap prioritization — 2026-10-07, repository-maintenance cycle:1 batch (conductor run b2a3ae9bf75b)
+
+Base c19b62ea, clean tree at phase start; this run's assess 732f928e + research 39ad0909 + roadmap 096aa127 precede this selection. Ledger state at selection: 228 defs, 0 duplicate ids, in-file max rm-692 (this run minted rm-690/rm-691/rm-692 above the all-lineage ceiling rm-689; committed main at 25d32beb sits at rm-682 — recorded as pointer, not ceiling). This document records the cycle:1 batch selection and the rationale; ledger def lines carry the status flips and per-item scope lines.
+
+## Batch selected for this cycle
+
+- rm-690 (reliability, priority 38) — immutable Cache-Control for content-hashed static assets. Serving-layer correctness + operator-perceived performance: the 286 KB hashed bundle re-downloads per navigation today (assess F1 probe; the adapter sets Last-Modified only and has no conditional-request handling, and 2.1.3 is npm-latest, so no upstream cure exists). Scope this cycle: the full acceptance block — wrapping middleware before the /assets/* serveStatic setting `public, max-age=31536000, immutable` on /assets/*, explicit no-cache family on /icon-*, sw.js and manifest.webmanifest (registerSW.js no-store stays), a red-first guard test pinning both policies, and a code comment recording the adapter's Last-Modified-only behavior for the next adapter bump. Effort small-medium, risk low (local-only surface, in-repo middleware precedent at src/server.ts:1259, standard-backed by RFC 8246 + MDN, zero dependency movement), impact medium.
+- rm-691 (reliability, priority 45) — release-pipeline failure triage, triage-first slice. The release pipeline is red 2-of-3 recent runs at then-main (promote-readback exhaustion on run 37567189586; build-and-push failure on 37220191056; two distinct step classes with guard/smoke healthy), and no ledger item covered release reliability before this run's mint. Scope this cycle: root-cause both classes from the run logs and land a triage row (run ids + decision) in the release runbook; promote-step hardening — graduated backoff or a manifest-registry-API digest assertion behind the existing CalVer tag-race guards — only if the propagation-latency cause is proven from the logs; guard, smoke and Trivy layers stay untouched either way. Effort medium (log forensics), risk low-to-medium (workflow edit only on proven cause), impact high (pipeline red at main).
+- rm-692 (docs, priority 22) — security-posture runbook conditional GitHub-Release wording. Two runbook lines claim an unconditional design ("no GitHub Releases by design"; "There are no GitHub Releases to sign") while release.yaml carries a dormant App-gated release path that activates the moment the two APPLICATION_* secrets are provisioned (live check: zero secrets, zero releases today). Scope this cycle: reword both lines to carry the conditional, record what happens to the Signed-Releases row if the path ever activates, and stamp the fresh Scorecard reading (7.8, analyzed 2026-10-07T03:32Z) in the same edit. Effort small, risk low (docs-only, no code or workflow changes), impact medium (posture truth; the row's rationale is currently falsifiable by a secret-provisioning action).
+
+## Why this batch
+
+Coherence: all three members harden what the release path serves and says — asset-delivery semantics (rm-690), release-pipeline reliability (rm-691), and the posture record that describes the release design (rm-692). None moves a dependency, none touches the operator contract surface, and each is independently verifiable by local gates plus a first-hand probe or log citation, so the batch can complete end-to-end within the cycle (implement, review, fold, CI green) without an external clock or an unavailable environment. Sequencing inside the batch is free: the three members share no files (src/server.ts + test, runbook + logs, runbook + Scorecard), and rm-691/rm-692 both write docs without overlapping paths.
+
+## Considered and deferred
+
+- rm-252 contract 1.8.0 absorb — highest strategic item but a multi-cycle effort (33-file upstream port, provenance parsers, run-card fields, operator-stream tests +1264, twin wire-or-fold interplay). The ledger's own decision deadline is 2026-10-13: the DECISION record (absorb set + sequencing + twin disposition) should be the first action of the next cycle of this campaign; this run's riders already record the concrete absorb target and the infra interlock (gateway pin v0.113.2 to v0.118.1 in the same marcusrbrown/infra deploy), so the decision is fully evidence-backed the moment it is taken.
+- Base-image digest refresh 0e0ff40 to d6aa754 (rm-103 rider thread) — upstream adopted the new node:24-slim digest, but our pinned digest carries a healed two-package overlay that a refresh re-opens; safe execution needs a Trivy verification environment the implement phase cannot guarantee. Defer to the image-watch family (rm-178/rm-648) with upstream adoption as supporting, not sufficient, evidence.
+- vite 8.3.3 and eslint 10.12.0 regen openers (rm-108) — minimumReleaseAge eligibility crossed today; value is low, cost is lockfile churn plus CI digest coupling. Rides the registry-regen sweep window (rm-271).
+- Engine pin files (node-version or nvmrc plus engine-strict) — main's rm-139 rider (a09d18f8, 2026-10-06) owns the enforcement precondition and ties it to the Node flip decision window (2026-10-28); front-running it in this batch would duplicate an owned plan. This run's rm-139 rider adds the node:sqlite stability datum for that decision.
+- rm-677 secret-scanning-alerts extension — unlanded sibling lineage claim; do-not-re-mint rule stands.
+- conductor/ci-* stale-branch reaping (48 refs) — push-stage action, prohibited inside a cycle phase.
+- Fleet PRs 415/416 ship state — owned by other runs; out of this run's scope.
+
+## Verification expectations for the implement phase
+
+- rm-690: red-first guard test (fails against current serving) then green after the middleware; curl -sD probes showing the immutable header on a hashed asset and the no-cache family on /icon-*, sw.js, manifest.webmanifest; check-types, lint and test green; no dependency movement.
+- rm-691: triage rows citing run 37567189586 and 37220191056 with the log-derived cause; release.yaml diff only if the cause is proven, guarded behind the existing tag-race logic; gates green.
+- rm-692: runbook diff carrying the conditional wording plus the fresh Scorecard date and score; lint green.
+- Ledger after this phase: rm-690/rm-691/rm-692 flipped candidate to open with selection provenance (census: candidate 75 to 72, open 2 to 5); per-item scope lines added; no other def lines touched.
+
+## Cycle outcomes (compound record, pre-review, 2026-10-07)
+
+Recorded by the compound phase (attempt 529d1fd4) from already-recorded cycle evidence; no new validation was executed in that phase.
+
+- Delivered in-tree pending landing: rm-690 (immutable Cache-Control middleware trio in `src/server.ts`), rm-691 (both `release.yaml` digest-readback sites converted to END-block awk form plus the new `docs/runbooks/release.md`), rm-692 (security-posture conditional wording). Tracked delta +152/-8 at implement close; the ROADMAP def units now sit under Completed items with implemented statuses and compound riders recording the validation closure.
+- Validation record: targeted impacted-suite 740/740 across 20 files plus the web-project guard 1/1 (the runner-mapped web test is not collectable by the root vitest project and was closed by an explicit companion run); full ephemeral GitHub CI PR #427 first-round 10/10 green (Test, Lint, Check Types, Design Check, Check Workflows, Test Scripts Load, Lockfile Guard, Analyze, CodeQL, Dependency Review) at snapshot `b51c18fc` on digest `validation:v1:93280b8f`; PR closed and both validation refs reaped.
+- Process lesson: the first implement fold was rejected only because the phase result JSON lacked its validation_evidence record; the work itself was byte-stable and the cure was declaring the evidence, not redoing the work.
+- New solution docs this cycle: `docs/solutions/workflow-issues/pipefail-awk-early-exit-digest-readback-sigpipe-2026-10-07.md`, `docs/solutions/workflow-issues/phase-result-validation-evidence-missing-implement-fold-rejection-2026-10-07.md`, `docs/solutions/best-practices/immutable-cache-control-hashed-assets-adapter-no-conditional-requests-2026-10-07.md`.
+
+### Next-cycle entry points
+
+- First action: the rm-252 upstream-absorb decision (upstream tip `0d470023`, contract 1.8.0 adoption with the gateway-pin interlock) — deadline 2026-10-13.
+- Watch item: the first release run from main after this batch lands is the live proof of the SIGPIPE readback fix; one green run is weak evidence (pipe race), one red run at a digest-readback step is strong evidence.
+- The base-digest refresh rides the image watch; vite and eslint config regeneration and the engine pin files remain main-owned; stale ci-ref reaping is push-stage.
+- Mint ceiling: this run minted up to rm-692; sibling worktrees carry materialized rm-693 and rm-694 claims, so the next mint-bearing phase must re-probe the all-lineage ceiling before minting.
