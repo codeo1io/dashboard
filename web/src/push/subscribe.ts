@@ -650,6 +650,8 @@ export interface ReconcileSweepCache {
   readonly permission: NotificationPermission | 'unsupported'
   readonly subscriptionPresent: boolean
   readonly handoffState: HandoffState | undefined
+  /** Gateway VAPID key version observed by the last executed sweep (rm-600). */
+  readonly keyVersion: string | undefined
   readonly lastActionAt: number
 }
 
@@ -657,6 +659,7 @@ export const INITIAL_RECONCILE_SWEEP_CACHE: ReconcileSweepCache = {
   permission: 'default',
   subscriptionPresent: false,
   handoffState: undefined,
+  keyVersion: undefined,
   lastActionAt: 0,
 }
 
@@ -691,10 +694,14 @@ const DEFAULT_MIN_INTERVAL_MS = 30_000
  * handoff state, and returns the reconcile action.
  *
  * Debounce/no-change guard: skips the Gateway GET (and any action) when
- * permission + local-subscription-presence are unchanged since the cached
- * sweep, or when the minimum interval between reconcile actions hasn't
- * elapsed — so rapid `visibilitychange`/`focus` cycling cannot trigger
- * subscribe/unsubscribe storms.
+ * permission + local-subscription-presence + the Gateway VAPID key version
+ * are unchanged since the cached sweep, or when the minimum interval between
+ * reconcile actions hasn't elapsed — so rapid `visibilitychange`/`focus`
+ * cycling cannot trigger subscribe/unsubscribe storms. Folding the key
+ * version into the unchanged predicate (rm-600) is what makes a Gateway key
+ * rotation on an open, stably-subscribed page detectable on the following
+ * sweep WITHOUT a reload: the version change voids the skip, the metadata
+ * GET re-runs, and derivePushHandoffState classifies the stale subscription.
  */
 export async function runReconcileSweep(
   deps: ReconcileSweepDeps,
@@ -724,10 +731,16 @@ export async function runReconcileSweep(
 
   // cache.handoffState === undefined means no sweep has run yet — always run the
   // first sweep regardless of how the cache's other fields happen to be seeded.
+  // rm-600: the current key version participates in the unchanged predicate. It
+  // is read BEFORE the guards (not only at derivation time) so a rotation voids
+  // the skip even when permission and subscription presence are both stable —
+  // the version is also threaded into nextCache for the following comparison.
+  const currentKeyVersion = deps.getCurrentKeyVersion?.()
   const unchanged =
     cache.handoffState !== undefined &&
     permission === cache.permission &&
-    subscriptionPresent === cache.subscriptionPresent
+    subscriptionPresent === cache.subscriptionPresent &&
+    currentKeyVersion === cache.keyVersion
   const withinMinInterval = cache.handoffState !== undefined && now() - cache.lastActionAt < minIntervalMs
 
   if (unchanged || withinMinInterval) {
@@ -752,8 +765,6 @@ export async function runReconcileSweep(
       localHash = undefined
     }
   }
-  const currentKeyVersion = deps.getCurrentKeyVersion?.()
-
   const handoffState = derivePushHandoffState(localHash, currentKeyVersion, metadataResult.data)
 
   const permissionForReconcile: NotificationPermission = permission === 'unsupported' ? 'denied' : permission
@@ -769,6 +780,7 @@ export async function runReconcileSweep(
     permission,
     subscriptionPresent,
     handoffState,
+    keyVersion: currentKeyVersion,
     lastActionAt: now(),
   }
 
