@@ -50,7 +50,10 @@ describe('rm-678 schema half: live ledger', () => {
 
   it('records the current id ceiling (bump on the next mint)', () => {
     const live = census(roadmap)
-    expect(live.max).toBe(680)
+    // 681 = the cc4339fe cycle-1 census-guard mint re-anchored off collided
+    // rm-672 at the 2026-10-07 integrate (conflict case e836a18d) above the
+    // previous all-lineage ceiling rm-680.
+    expect(live.max).toBe(681)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {

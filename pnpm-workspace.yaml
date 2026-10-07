@@ -95,9 +95,14 @@ overrides:
   # trivy perl-base wave proved the same cycle): landed run 5e661558's review
   # repair fccd4229 (review eb452afd finding), run 73d35a6ca2bd's review
   # f83fb832, and run cfa9f94b's review_fix 8319b391 (independent review
-  # finding 1 fold) independently recorded the same floors; rm-276 convention —
-  # floor + GHSA rationale + re-resolve in the same change. Standing lesson:
-  # audit greens expire with the advisory DB — re-derive at every fold.
+  # finding 1 fold) independently recorded the same floors, and run
+  # cc4339fe's cycle-1 adoption re-derived the same pair live as its
+  # time-defeat rider (PR #389's audit-0 had already expired once these
+  # advisories hit the DB — audit rc=1 on the adopted cure tree until
+  # exactly these two floors ride; landed 2026-10-07, conflict case
+  # e836a18d); rm-276 convention — floor + GHSA rationale + re-resolve in
+  # the same change. Standing lesson: audit greens expire with the
+  # advisory DB — re-derive at every fold.
   # source-map-js is dev-transitive along ~16 paths (@eslint/css-tree, the
   # @tailwindcss/* chain, vite > postcss); GHSA-68fv-2mgg-jv7q is HIGH
   # (event-loop DoS; published 2026-09-18, vulnerable >=1.0.0 <1.2.2 — the
