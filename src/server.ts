@@ -104,19 +104,21 @@ interface RateLimitEntry {
 /**
  * RFC 9116 security contact document served at /.well-known/security.txt.
  *
- * Contact policy (verified 2026-09-24, review F2): the fork's own surfaces
- * are dead by default — codeo1io/dashboard has has_issues=false (fork default)
- * and private-vulnerability-reporting disabled — so the second Contact points
- * at the upstream repo's issues (fro-bot/dashboard, has_issues=true, probed
- * live), the one channel verified working today. The first Contact (this
- * fork's advisory form) goes live the moment the operator enables private
- * vulnerability reporting; enabling it is a mandatory B0 landing-checklist
- * step in docs/prioritization/2026-09-24-cycle-1-batch.md. Expires is a hard
- * requirement of RFC 9116 and must stay under a year out; refresh it on the
- * maintenance cadence (rm-245 in ROADMAP.md owns the refresh).
+ * Contact policy (rm-699, verified live 2026-10-07): the sole Contact is the
+ * fork's GitHub advisory form — private vulnerability reporting is now
+ * ENABLED on codeo1io/dashboard (private-vulnerability-reporting →
+ * enabled:true, probed 2026-10-07), and has_issues stays false by deliberate
+ * fork stance (rm-258). The 2026-09-24 fallback Contact pointing at the
+ * upstream repo's public issue tracker ("the one channel verified working"
+ * while the fork's advisory surface was dark) is retired: its premise
+ * expired when the advisory channel went live, and it routed reporters to a
+ * public tracker on a repo that cannot act on the fork's disclosures —
+ * under-privatizing and misrouting them. Do not re-add a public-tracker
+ * Contact without a fresh live probe showing the advisory channel dead.
+ * Expires is a hard requirement of RFC 9116 and must stay under a year out;
+ * refresh it on the maintenance cadence (rm-245 in ROADMAP.md owns it).
  */
 const SECURITY_TXT = `Contact: https://github.com/codeo1io/dashboard/security/advisories/new
-Contact: https://github.com/fro-bot/dashboard/issues
 Expires: 2026-12-24T00:00:00.000Z
 Preferred-Languages: en
 `
