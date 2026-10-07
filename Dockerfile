@@ -18,7 +18,20 @@
 # deletions or package upgrades, so these are the minimal target-executed
 # steps the design allows — see the rm-558 CI-time note in
 # .github/workflows/release.yaml).
-ARG NODE_IMAGE=node:24-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6
+#
+# rm-698 (2026-10-07): pin moved to node:24-trixie-slim — upstream re-based
+# 24-slim onto trixie on 2026-09-28 (fro-bot/dashboard #576/#577), so the
+# 0e0ff40 bookworm pin silently drifted distro and the weekly base-drift
+# gate would fire a correct red on its next fire. Verified live this run:
+# the OCI index digest for 24-trixie-slim == the pin below, and docker run
+# on the pinned digest reports Debian 13.7, libpcre2-8-0 10.46-1~deb13u3,
+# perl-base 5.40.1-6+deb13u1, zlib1g 1:1.3.dfsg+really1.3.1-1+b1 — the two
+# bookworm CVE-cure sets are natively past, so the runtime upgrade layer
+# below is a no-op on trixie (retained as the standing cure path). Keep ALL
+# stages on this one ARG: prod-deps compiles native modules copied into
+# runtime, so glibc must match (upstream moved all three stages together for
+# exactly this reason).
+ARG NODE_IMAGE=node:24-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66
 
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS builder
 
@@ -84,6 +97,12 @@ FROM ${NODE_IMAGE}
 
 WORKDIR /app
 
+# rm-698 (2026-10-07): trixie natively ships newer-than-fixed revisions of
+# both packages (verified live on the pinned digest above: libpcre2-8-0
+# 10.46-1~deb13u3 ≥ the deb12u2 fix line, perl-base 5.40.1-6+deb13u1 ≥ the
+# deb12u4 line), so --only-upgrade makes this layer a NO-OP on the trixie
+# base — kept unchanged as the standing cure path for any future CVE in
+# either package (the no-op the original note anticipated).
 # Image-level CVE cure (2026-10-05 B3; extended 2026-10-06 by review fix F1;
 # independently re-derived by run 73d35a6ca2bd's rm-647 + review fix fab25700,
 # whose fresh-DB Enforce replica likewise returned 0 on the two-package
