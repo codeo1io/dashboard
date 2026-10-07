@@ -1,7 +1,7 @@
 # Security Posture
 
 The README badge shows this fork's own OpenSSF Scorecard (weekly analysis via
-the Scorecard workflow). As of the 2026-09-22 run the score is **7.1** — high
+the Scorecard workflow). As of the 2026-10-07 analysis the score is **7.8** — high
 for a repo this young, but several sub-scores read low, and most of those are
 **deliberate design decisions**, not oversights. This runbook names every
 sub-score below 8 with its disposition so a reader never has to guess whether
@@ -19,7 +19,7 @@ by design, with the reason).
 | Fuzzing | 0 | tracked | `rm-144` (fast-check property suites over OSS-Fuzz) |
 | License | 0 | tracked | `rm-147`, blocked-external — upstream is also unlicensed |
 | Maintained | 0 | time-gated | self-resolves ~2026-11-08 (90-day activity heuristic, measured from repo created_at 2026-08-10) |
-| Signed-Releases | -1 | declined | image-based deploys, no GitHub Releases by design |
+| Signed-Releases | -1 | declined | deploys are signed container images (provenance + SBOM attestations on GHCR); GitHub Releases are App-gated and unprovisioned — see below |
 
 ## Why the declined items are declined
 
@@ -34,10 +34,16 @@ by design, with the reason).
   self-certification aimed at widely-consumed open source. This is an
   internal monitoring dashboard; the equivalent rigor here is the fork's own
   gate suite (lint, types, full tests, actionlint, CodeQL, Scorecard itself).
-- **Signed-Releases -1.** There are no GitHub Releases to sign: deploys are
-  container images published to GHCR by the Release workflow (with build
-  provenance attestations). Signing GitHub Releases would first require
-  creating artifacts the deployment model deliberately does not use.
+- **Signed-Releases -1.** Deploys are container images published to GHCR by
+  the Release workflow with registry-embedded build-provenance and SBOM
+  attestations (`.github/workflows/release.yaml` build-push step; verification
+  recipe and published-state checks in `docs/runbooks/release.md`) — the
+  artifacts the deployment model consumes are already integrity-evidenced by
+  digest-pinned, attested images. The workflow's App-gated GitHub-Release
+  steps (tag + release, `.github/workflows/release.yaml`) remain
+  unprovisioned; creating and signing GitHub Releases just to satisfy this
+  check would add a release App token and signing keys — new attack surface —
+  without adding integrity to anything the deployment actually consumes.
 
 ## Tracked items
 
