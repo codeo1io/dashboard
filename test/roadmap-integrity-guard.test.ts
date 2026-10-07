@@ -53,8 +53,10 @@ describe('rm-678 schema half: live ledger', () => {
     // 682 = the 14a81ea6 cycle-1 rm-682 mint (erasable-syntax-only 0.7.x +
     // export-aliases, fork-first), landed at the 2026-10-07 integrate
     // (conflict case e3e5d160) above the cc4339fe re-anchor ceiling rm-681
-    // (conflict case e836a18d).
-    expect(live.max).toBe(682)
+    // (conflict case e836a18d). 711 = the 69b161e1 extension #34 mint band
+    // (rm-709..711) above the still-unlanded 683..708 sibling compositions;
+    // if a sibling lands first, reconcile the union's true max here.
+    expect(live.max).toBe(711)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
