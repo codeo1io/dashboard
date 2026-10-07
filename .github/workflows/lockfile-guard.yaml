@@ -66,3 +66,35 @@ jobs:
       - name: 🔒 Lockfile consistency
         run: pnpm install --frozen-lockfile --lockfile-only
         shell: bash -Eeuo pipefail {0}
+
+  ledger-census:
+    name: Ledger Census
+    # rm-678 detection half (2026-10-06, run 85e37a8b cycle 1): catches the
+    # roadmap-sync render-recurrence class proven live by the 2026-10-06
+    # 3d07cf9 render — def/comment-count collapse, trailing whitespace,
+    # Python-style ['...'] bracket lists outside backticks, a collapsed
+    # '## Closed items' section, defs leaving Open items without a dated
+    # marker, and a census comment that lies about its own ledger. No
+    # install on purpose (same chicken-and-egg argument as the lockfile gate
+    # above: a vitest guard needs the install this family protects; the
+    # vitest half lives at test/ledger-schema.test.ts). This checkout KEEPS
+    # credentials (default) solely for the depth-1 baseline fetch below —
+    # the workflow-level contents:read token, and nothing is pushed.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: ⤵ Checkout Branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: 📒 Ledger census (rm-678)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          baseline_sha="${BASE_SHA:-}"
+          if [ -n "${baseline_sha}" ] && [ "${baseline_sha}" != "0000000000000000000000000000000000000000" ]; then
+            git fetch --no-tags --depth=1 origin "${baseline_sha}"
+            git show 'FETCH_HEAD:ROADMAP.md' > /tmp/roadmap-baseline.md
+            exec node scripts/check-ledger-census.mjs --baseline /tmp/roadmap-baseline.md
+          fi
+          node scripts/check-ledger-census.mjs
+        shell: bash -Eeuo pipefail {0}
