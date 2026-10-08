@@ -198,6 +198,92 @@ describe('Monitoring (rm-192 red-repo drill-down)', () => {
     expect(screen.queryByTestId('monitoring-error')).not.toBeInTheDocument()
   })
 
+  // rm-751: enumeration-truth last mile — the whole contract pipeline already
+  // publishes+parses enumerationIncomplete/driftCount; these tests pin the
+  // render consumer. Written red-first against the view that ignored both.
+  describe('rm-751 enumeration-truth rendering', () => {
+    it('cues the enumeration gap on a fresh-but-partial snapshot and qualifies the all-clear claim', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({
+          repos: [
+            makeRepo({fullName: 'fro-bot/agent', status: {rollupState: 'green', failingChecks: 0, failingCheckDetails: []}})
+          ],
+          enumerationIncomplete: 3,
+          staleBanner: false
+        })
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      // The cue is its own affordance, separate from the stale banner.
+      const cue = screen.getByTestId('monitoring-enumeration-gap')
+      expect(cue).toHaveTextContent('3')
+      expect(cue).toHaveTextContent(/not enumerated/)
+      expect(cue).toHaveTextContent(/incomplete/i)
+      expect(screen.queryByTestId('monitoring-stale-banner')).not.toBeInTheDocument()
+
+      // The all-clear block never claims completeness while enumeration is incomplete.
+      const allClear = screen.getByTestId('monitoring-all-clear')
+      expect(allClear).toHaveTextContent('All enumerated repositories green')
+      expect(allClear).not.toHaveTextContent('All repositories green')
+    })
+
+    it('renders the driftCount footer when installation-only repos exist (rm-126 decision: footer fold)', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({driftCount: 2, enumerationIncomplete: 0})
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      const drift = screen.getByTestId('monitoring-drift-count')
+      expect(drift).toHaveTextContent('2')
+      // driftCount is provenance, not incompleteness — no enumeration cue for it.
+      expect(screen.queryByTestId('monitoring-enumeration-gap')).not.toBeInTheDocument()
+    })
+
+    it('keeps the complete-snapshot rendering uncued and unqualified (null and 0 enumerationIncomplete)', async () => {
+      for (const enumerationIncomplete of [null, 0] as const) {
+        vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+          ok: true,
+          data: makeData({enumerationIncomplete})
+        })
+
+        const {unmount} = render(<Monitoring />)
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10)
+        })
+
+        expect(screen.queryByTestId('monitoring-enumeration-gap')).not.toBeInTheDocument()
+        expect(screen.getByTestId('monitoring-all-clear')).toHaveTextContent('All repositories green')
+        expect(screen.queryByTestId('monitoring-drift-count')).not.toBeInTheDocument()
+        unmount()
+      }
+    })
+
+    it('shows the enumeration cue alongside red repos too (board-level truth, not all-clear-only)', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({repos: [makeRepo()], enumerationIncomplete: 1, staleBanner: false})
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      expect(screen.getByTestId('monitoring-red-repo')).toBeInTheDocument()
+      expect(screen.getByTestId('monitoring-enumeration-gap')).toHaveTextContent('1 installation not enumerated')
+    })
+  })
+
   // rm-251 regressions: the pre-hook inline poll wedged permanently on one
   // hung response (no timeout race, no abort, latch released only on the
   // settled path). The shared useBoundedPoll hook restores the rm-155 shape.
