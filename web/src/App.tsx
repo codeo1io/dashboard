@@ -129,8 +129,10 @@ export default function App() {
   // rm-208: a 401 means the session is gone — polling can only ever return
   // 401 again, so stop the loop entirely (the hook's live-read `enabled` gate
   // makes the interval, focus and visibility polls no-ops once authExpired
-  // flips). Recovery is a fresh sign-in, which is a full-page navigation
-  // that remounts the app.
+  // flips). rm-487 corrects the old recovery note (it claimed recovery
+  // required a fresh sign-in's full-page remount): a sign-in in ANOTHER tab
+  // restores the session cookie without navigating this one, and the focus
+  // re-probe below re-arms the loop when that happens.
   useBoundedPoll<FetchListenerResult>({
     fetcher: abortSignal => fetchListenerMessages({limit: 1, unreadOnly: true, abortSignal}),
     timeoutMs: UNREAD_POLL_TIMEOUT_MS,
@@ -142,6 +144,30 @@ export default function App() {
     pauseWhenHidden: true,
     enabled: !authExpired,
   })
+
+  /**
+   * rm-487: while the poll loop is disabled by auth expiry, re-probe the
+   * session once per window focus. A sign-in in another tab restores the
+   * cookie without remounting this tab — on success the probe clears
+   * authExpired (re-arming the loop) and feeds the result through the same
+   * result half, so the badge and indicators update immediately. Fail-closed
+   * by construction: on any failure nothing latches (state changes only on
+   * success), the loop stays disabled, and the next focus retries.
+   */
+  useEffect(() => {
+    if (!authExpired) return
+    const reprobeSessionOnFocus = () => {
+      void (async () => {
+        const res = await fetchListenerMessages({limit: 1, unreadOnly: true})
+        if (res.ok) {
+          setAuthExpired(false)
+          handleUnreadResult(res)
+        }
+      })()
+    }
+    window.addEventListener('focus', reprobeSessionOnFocus)
+    return () => window.removeEventListener('focus', reprobeSessionOnFocus)
+  }, [authExpired, handleUnreadResult])
 
   return (
     <AppShell

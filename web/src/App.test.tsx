@@ -184,15 +184,71 @@ describe('App', () => {
       // must not linger on the dock).
       expect(clearAppBadge).toHaveBeenCalled()
 
-      // The loop is torn down: neither focus events nor the interval may fire
-      // further polls (they could only ever 401 again).
+      // The loop is torn down: the interval and the visibility handler may
+      // not fire further polls (they could only ever 401 again). rm-487
+      // narrows the freeze to the loop itself — a FOCUS event now fires
+      // exactly one bounded session re-probe (cross-tab re-login recovery),
+      // which here also 401s and leaves the expired state standing.
       spy.mockClear()
-      act(() => { window.dispatchEvent(new Event('focus')) })
       document.dispatchEvent(new Event('visibilitychange'))
       await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)) })
       expect(spy.mock.calls.length).toBe(0)
+
+      act(() => { window.dispatchEvent(new Event('focus')) })
+      await waitFor(() => expect(spy.mock.calls.length).toBe(1))
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)) })
+      expect(spy.mock.calls.length).toBe(1) // the re-probe, and nothing else
+      expect(screen.getByTestId('unread-auth-expired')).toBeInTheDocument()
       // The network-stale indicator is NOT the story here — sign-in is.
       expect(screen.queryByTestId('unread-poll-error')).not.toBeInTheDocument()
+    })
+
+    it('rm-487: a focus re-probe after cross-tab re-login recovers the session, feeds the result half, and re-arms the loop', async () => {
+      const {setAppBadge} = stubBadgeApis()
+      const listenerApi = await import('./api/listener.ts')
+      const spy = vi.mocked(listenerApi.fetchListenerMessages)
+      spy.mockResolvedValueOnce({ok: false, reason: 'unauthenticated'})
+      spy.mockResolvedValue({ok: true, data: {messages: [], unreadCount: 4, prunedCount: 0, droppedCount: 0}})
+
+      render(<App />)
+      await waitFor(() => expect(screen.getByTestId('unread-auth-expired')).toBeInTheDocument())
+
+      // Re-login happened in another tab; focusing this one re-probes once.
+      act(() => { window.dispatchEvent(new Event('focus')) })
+      await waitFor(() => expect(screen.queryByTestId('unread-auth-expired')).not.toBeInTheDocument())
+      // The fresh count flows through the result half without remount.
+      await waitFor(() => expect(screen.getByTestId('unread-badge')).toHaveTextContent('4'))
+      expect(setAppBadge).toHaveBeenCalledWith(4)
+
+      // The loop is re-armed: the hook's own focus poll flows again.
+      spy.mockClear()
+      act(() => { window.dispatchEvent(new Event('focus')) })
+      await waitFor(() => expect(spy.mock.calls.length).toBe(1))
+    })
+
+    it('rm-487: a failed focus re-probe stays fail-closed and retries on the next focus', async () => {
+      stubBadgeApis()
+      const listenerApi = await import('./api/listener.ts')
+      const spy = vi.mocked(listenerApi.fetchListenerMessages)
+      spy.mockResolvedValueOnce({ok: false, reason: 'unauthenticated'})
+      spy.mockResolvedValue({ok: false, reason: 'network'})
+
+      render(<App />)
+      await waitFor(() => expect(screen.getByTestId('unread-auth-expired')).toBeInTheDocument())
+      spy.mockClear()
+
+      // Each focus probes exactly once; failures latch nothing (a network
+      // failure is not evidence the session is still alive — or dead).
+      act(() => { window.dispatchEvent(new Event('focus')) })
+      await waitFor(() => expect(spy.mock.calls.length).toBe(1))
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)) })
+      expect(screen.getByTestId('unread-auth-expired')).toBeInTheDocument()
+      expect(spy.mock.calls.length).toBe(1)
+
+      // The retry affordance is the next focus itself.
+      act(() => { window.dispatchEvent(new Event('focus')) })
+      await waitFor(() => expect(spy.mock.calls.length).toBe(2))
+      expect(screen.getByTestId('unread-auth-expired')).toBeInTheDocument()
     })
 
     it('rm-208: a two-failure streak marks the rendered badge stale (aria + title with the last-good timestamp)', async () => {
