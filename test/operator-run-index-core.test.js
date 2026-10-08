@@ -283,6 +283,8 @@ describe('parseRunSummaryItem — failureKind', () => {
       'stream-ended',
       'workspace-unreachable',
       'session-error',
+      'checkout-substituted',
+      'workspace-unavailable',
       'unknown',
     ]
     for (const failureKind of kinds) {

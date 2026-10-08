@@ -28,8 +28,21 @@
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Contract version this client expects on the ready frame. */
+/**
+ * Contract version this client expects on the ready frame — the primary of
+ * the supported-versions window below (rm-157). Kept exported so the parity
+ * test can pin it to the vendored OPERATOR_CONTRACT_VERSION.
+ */
 export const PINNED_CONTRACT_VERSION = '1.6.0'
+
+/**
+ * rm-157 supported-versions window: ready frames with any of these versions
+ * are dispatched; everything else fails closed to drift. Mirrors
+ * SUPPORTED_OPERATOR_CONTRACT_VERSIONS in src/gateway/operator-contract/version.ts
+ * (pinned by test/operator-contract-window.test.ts). '1.8.0' is additive-only
+ * shape; the primary stays '1.6.0' until the deployed gateway moves.
+ */
+export const SUPPORTED_CONTRACT_VERSIONS = ['1.6.0', '1.8.0']
 
 /** Base delay in milliseconds for exponential backoff. */
 export const RETRY_BASE_MS = 1000
@@ -151,6 +164,8 @@ const VALID_FAILURE_KINDS = new Set([
   'stream-ended',
   'workspace-unreachable',
   'session-error',
+  'checkout-substituted',
+  'workspace-unavailable',
   'unknown',
 ])
 
@@ -164,8 +179,10 @@ export const FAILURE_REASON_LABELS = {
   'inactivity-timeout': 'No recent activity',
   'max-duration-timeout': 'Run timed out',
   'stream-ended': 'Stream ended early',
-  'workspace-unreachable': 'Workspace unavailable',
+  'workspace-unreachable': 'Workspace unreachable',
   'session-error': 'Session error',
+  'checkout-substituted': 'Checkout mismatch',
+  'workspace-unavailable': 'Workspace unavailable',
   unknown: 'Unknown failure',
 }
 
@@ -429,7 +446,7 @@ export function nextStreamState(current, event) {
       if (current.connection === 'drift') {
         return current
       }
-      if (event.data.contractVersion !== PINNED_CONTRACT_VERSION) {
+      if (!SUPPORTED_CONTRACT_VERSIONS.includes(event.data.contractVersion)) {
         // Contract version mismatch — fail closed, clear all run state
         return {
           connection: 'drift',

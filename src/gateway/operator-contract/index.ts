@@ -2,7 +2,7 @@
  * Single public import authority for the operator API contract (vendored copy).
  *
  * Vendored from fro-bot/agent packages/gateway/src/operator-contract/index.ts
- * at tag v0.71.0 (PR #952, commit 92b621e1).
+ * (PR #952).
  *
  * Omissions vs upstream barrel:
  * - toOperatorDecisionState: omitted — requires DecisionOutcome (upstream-only registry type)
@@ -29,6 +29,30 @@ export {
   parseOperatorOk,
   parseOperatorSessionInfo,
 } from './parse.ts'
+export type {
+  CheckoutRefusalReasonsAreExact,
+  OperatorCheckoutHead,
+  OperatorCheckoutObservation,
+  OperatorCheckoutOperation,
+  OperatorCheckoutPreparation,
+  OperatorCheckoutPreparationFailed,
+  OperatorCheckoutPreparationRefused,
+  OperatorCheckoutProvenance,
+  OperatorLayoutRefusalReason,
+  OperatorObstructionKind,
+  OperatorRemoteFreshness,
+  OperatorUpdateFailureReason,
+  OperatorWorktreeState,
+} from './provenance.ts'
+export {
+  CHECKOUT_OPERATIONS,
+  CHECKOUT_REFUSAL_REASONS,
+  LAYOUT_REFUSAL_REASONS,
+  OBSTRUCTION_KINDS,
+  parseOperatorCheckoutPreparation,
+  parseOperatorCheckoutProvenance,
+  UPDATE_FAILURE_REASONS,
+} from './provenance.ts'
 export type {PushHandoffState, PushSubscriptionMetadata, VapidKeyResponse} from './push.ts'
 export {parsePushHandoffState, parsePushSubscriptionMetadata, parseVapidKeyResponse} from './push.ts'
 export {assertRedactionApplied, AUTHORIZATION_OBLIGATION, REDACTION_OBLIGATION} from './redaction.ts'
@@ -67,4 +91,4 @@ export type {
 export type {RunsListResponse, RunSummary, RunSummaryStatus} from './run-summary.ts'
 export {parseRunsListResponse, parseRunSummary, parseRunSummaryList, RUN_INDEX_CAP} from './run-summary.ts'
 export type {ReadyFrame, ResetFrameData, ResetReason, RunStreamFrame, StatusFrameData} from './sse-frames.ts'
-export {OPERATOR_CONTRACT_VERSION} from './version.ts'
+export {OPERATOR_CONTRACT_VERSION, SUPPORTED_OPERATOR_CONTRACT_VERSIONS} from './version.ts'
