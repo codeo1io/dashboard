@@ -324,6 +324,28 @@ describe('operator runtime JS caching policy (rm-478)', () => {
       expect(res.headers.get('etag'), asset).toMatch(/^"[0-9a-f]{32}"$/)
     }
   })
+
+  it('concurrent cold-start requests all get one consistent content-hash ETag (async stat/read port)', async () => {
+    // F2 (2026-10-07): the mtime probe + hash read are now async
+    // (fs/promises, loadSpaShell precedent). A cold cache hit by N
+    // concurrent requests interleaves the stats/reads — every response must
+    // still carry the SAME valid content-hash ETag (the cache write is
+    // idempotent; no half-state can leak), and the warm path still 304s.
+    const app = await buildTestApp(false)
+    const responses = await Promise.all(
+      Array.from({length: 8}, async () => app.request('/static/operator-stream.js')),
+    )
+    for (const res of responses) {
+      expect(res.status).toBe(200)
+      expect(res.headers.get('cache-control')).toBe('no-cache')
+    }
+    const etags = new Set(responses.map(res => res.headers.get('etag')))
+    expect(etags.size).toBe(1)
+    const etag = responses[0]?.headers.get('etag') ?? ''
+    expect(etag).toMatch(/^"[0-9a-f]{32}"$/)
+    const warm = await app.request('/static/operator-stream.js', {headers: {'If-None-Match': etag}})
+    expect(warm.status).toBe(304)
+  })
 })
 
 // ---------------------------------------------------------------------------

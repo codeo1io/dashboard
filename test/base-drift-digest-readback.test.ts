@@ -19,7 +19,11 @@ import {describe, expect, it} from 'vitest'
  * attestation-bearing indexes — parse the Digest: line instead). These tests
  * fail on BOTH failure shapes anywhere they may creep back in:
  *   1. any workflow piping `docker manifest inspect` into a `^Digest:` awk;
- *   2. base-drift.yaml not using the buildx readback + empty-digest guard.
+ *   2. base-drift.yaml not using the buildx readback + empty-digest guard;
+ *   3. any workflow piping `docker buildx imagetools inspect` into an
+ *      EARLY-EXIT `^Digest:` awk without an `|| true` rescue — under
+ *      `bash -Eeuo pipefail` the early exit SIGPIPEs docker and the
+ *      readback fails despite a correct digest (release.yaml cure, 2026-10-07).
  */
 
 const workflowsDir = join(process.cwd(), '.github', 'workflows')
@@ -91,5 +95,46 @@ describe('base-drift digest readback — workflow statics (rm-166)', () => {
       text.includes('[ -z "$LIVE_DIGEST" ]'),
       'base-drift.yaml must fail loudly when the live digest readback comes back empty',
     ).toBe(true)
+  })
+
+  it('no workflow pipes `docker buildx imagetools inspect` into an early-exit ^Digest: awk (SIGPIPE under pipefail)', () => {
+    // release.yaml runs under `bash -Eeuo pipefail`: an awk that exits on the
+    // first Digest line closes the read end of the pipe while docker still
+    // has output to write — docker takes SIGPIPE (141), the pipeline fails,
+    // and the readback is declared broken EVEN WHEN the digest parsed
+    // correctly. This exact shape killed 7 of the 8 Release runs through
+    // 2026-10-07 at the digest-verification and promote steps (runs
+    // 37574226127 / 37567189586, skipping every 'Dispatch infra deploy').
+    // The only legal early-exit survivor is base-drift.yaml's sentinel, whose
+    // `|| true` rescue routes a pipeline failure into its empty-digest guard
+    // instead of tripping set -e.
+    const WINDOW = 3 // the awk sits on its own continuation line in multi-line pipelines
+    for (const {name, text} of readWorkflowFiles()) {
+      const lines = text.split('\n')
+      lines.forEach((line, i) => {
+        if (!line.includes("awk '/^Digest:/{print $2; exit}'")) return
+        const window = lines.slice(Math.max(0, i - WINDOW), Math.min(lines.length, i + WINDOW + 1)).join('\n')
+        expect(
+          window.includes('docker buildx imagetools inspect') && !line.includes('|| true'),
+          `${name} pipes docker buildx imagetools inspect into an early-exit ^Digest: awk without an || true rescue — docker SIGPIPEs under pipefail and the readback fails despite a correct digest (use the END-block form awk '/^Digest:/{d=$2} END{print d}'): ${line.trim()}`,
+        ).toBe(false)
+      })
+    }
+  })
+
+  it('release.yaml uses the END-block Digest readback at both readback sites', () => {
+    const file = readWorkflowFiles().find(f => f.name === 'release.yaml')
+    expect(file, '.github/workflows/release.yaml must exist').toBeDefined()
+    const text = file?.text ?? ''
+    const endForm = "awk '/^Digest:/{d=$2} END{print d}'"
+    const count = text.split(endForm).length - 1
+    expect(
+      count,
+      `release.yaml must keep the SIGPIPE-safe END-block Digest readback at both the digest-verification loop and the promote step (found ${count})`,
+    ).toBeGreaterThanOrEqual(2)
+    expect(
+      text.includes("awk '/^Digest:/{print $2; exit}'"),
+      'release.yaml must not use the early-exit Digest awk at all — its readbacks must hard-fail the job on CLI trouble (no || true rescue), so the END form is the only safe shape',
+    ).toBe(false)
   })
 })
