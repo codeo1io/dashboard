@@ -418,6 +418,9 @@ export function validateDynamicId(id: string): boolean {
     // Malformed percent-encoding — reject
     return false
   }
+  // Reject values still percent-encoded after the single decode above
+  // (rm-767 — double-encoding probes like `%252e%252e` decode to `%2e%2e`)
+  if (decoded.includes('%')) return false
   if (decoded === '.' || decoded === '..') return false
   // Split decoded value on path separators and check each segment
   const segments = decoded.split(/[/\\]/)

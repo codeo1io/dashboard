@@ -72,8 +72,13 @@ describe('rm-678 schema half: live ledger', () => {
     // as-authored: both ids are collision-free against the landed
     // ledger (690-692 then 744 bracket them) and are stamped into
     // validated executable surfaces, so no renumber and no bump —
-    // the max def id is unchanged at 744 (235 defs).
-    expect(live.max).toBe(744)
+    // 2026-10-08 bump — run 392bad29b3d3 roadmap fdf48bb9 minted rm-767
+    // (validateDynamicId still-encoded-% rejection, family rm-595) above
+    // the all-lineage unlanded ceiling rm-766 re-censused across sibling
+    // worktrees at compose; riders-only elsewhere, so defs 236 -> 237.
+    // Prior provenance (76d683f2 era): the 700 pin died with the duplicate
+    // rm-683 def, ceiling moved to 744 at 235 defs.
+    expect(live.max).toBe(767)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {

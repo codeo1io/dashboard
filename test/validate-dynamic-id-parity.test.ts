@@ -65,6 +65,7 @@ const HOSTILE_IDS: readonly {id: string; why: string}[] = [
   {id: 'a%zz', why: 'malformed percent-encoding (invalid hex)'},
   {id: '%E0%A4%A', why: 'malformed UTF-8 percent-encoding (truncated sequence)'},
   {id: ' %2F', why: 'encoded slash with leading whitespace'},
+  {id: '%252e%252e', why: 'double-encoded dot-dot — still percent-encoded after the single decode (rm-767)'},
 ]
 
 /** Corpus members that MUST be accepted by every copy (plain dynamic ids). */
@@ -125,7 +126,7 @@ describe('validateDynamicId three-copy parity (rm-595)', () => {
   it('the corpus has teeth: pin a representative verdict per rejection class', () => {
     // Guard against the corpus itself rotting (e.g. an id accidentally edited
     // into the valid list). One known verdict per documented rejection class.
-    expect(HOSTILE_IDS).toHaveLength(31)
+    expect(HOSTILE_IDS).toHaveLength(32)
     expect(VALID_IDS).toHaveLength(7)
     expect(serverValidateDynamicId('run-001')).toBe(true)
     expect(serverValidateDynamicId('..')).toBe(false)

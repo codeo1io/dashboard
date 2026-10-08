@@ -1219,6 +1219,9 @@ export function validateDynamicId(id) {
   } catch {
     return false
   }
+  // Reject values still percent-encoded after the single decode above
+  // (rm-767 — double-encoding probes like `%252e%252e` decode to `%2e%2e`)
+  if (decoded.includes('%')) return false
   if (decoded === '.' || decoded === '..') return false
   const segments = decoded.split(/[/\\]/)
   for (const segment of segments) {
