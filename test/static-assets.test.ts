@@ -1020,7 +1020,9 @@ describe('rm-498 — serveStatic double-decode bypass (GHSA-rmxm-3fg6-px4f / GHS
   // what the router saw (and any path still containing '%' after decoding,
   // unless allowPercentInPath is set — we keep that unset).
   //
-  // Sentinel: the repo-root Dockerfile (first line 'FROM node:24-slim') — a
+  // Sentinel: the repo-root Dockerfile (unique marker 'ARG
+  // NODE_IMAGE=node:24-trixie-slim', its pin line since rm-698 2026-10-07;
+  // pre-ARG the marker was the 'FROM node:24-slim' first line) — a
   // file that exists OUTSIDE the static roots and must never be servable
   // through /static/* or /assets/*.
 
@@ -1028,7 +1030,7 @@ describe('rm-498 — serveStatic double-decode bypass (GHSA-rmxm-3fg6-px4f / GHS
     const app = await buildTestApp(true)
     const res = await app.request('/static/%2e%2e/Dockerfile')
     expect(res.status).not.toBe(200)
-    expect(await res.text()).not.toContain('FROM node:24-slim')
+    expect(await res.text()).not.toContain('ARG NODE_IMAGE=node:24-trixie-slim')
   })
 
   it('double-encoded traversal /static/%252e%252e/Dockerfile is rejected, not re-decoded (rm-498)', async () => {
@@ -1038,7 +1040,7 @@ describe('rm-498 — serveStatic double-decode bypass (GHSA-rmxm-3fg6-px4f / GHS
     const app = await buildTestApp(true)
     const res = await app.request('/static/%252e%252e/Dockerfile')
     expect(res.status).not.toBe(200)
-    expect(await res.text()).not.toContain('FROM node:24-slim')
+    expect(await res.text()).not.toContain('ARG NODE_IMAGE=node:24-trixie-slim')
   })
 
   it('double-encoded traversal against /assets/* (webDistRoot) is never served either (rm-498)', async () => {
@@ -1048,7 +1050,7 @@ describe('rm-498 — serveStatic double-decode bypass (GHSA-rmxm-3fg6-px4f / GHS
     const app = await buildTestApp(true)
     const res = await app.request('/assets/%252e%252e/Dockerfile')
     expect(res.status).not.toBe(200)
-    expect(await res.text()).not.toContain('FROM node:24-slim')
+    expect(await res.text()).not.toContain('ARG NODE_IMAGE=node:24-trixie-slim')
   })
 
   it('encoded traversal stays unauthenticated-safe: same denials without a session cookie (rm-498)', async () => {
@@ -1056,7 +1058,7 @@ describe('rm-498 — serveStatic double-decode bypass (GHSA-rmxm-3fg6-px4f / GHS
     for (const path of ['/static/%2e%2e/Dockerfile', '/static/%252e%252e/Dockerfile']) {
       const res = await app.request(path)
       expect(res.status).not.toBe(200)
-      expect(await res.text()).not.toContain('FROM node:24-slim')
+      expect(await res.text()).not.toContain('ARG NODE_IMAGE=node:24-trixie-slim')
     }
   })
 })
