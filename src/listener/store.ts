@@ -9,6 +9,7 @@ import {randomUUID} from 'node:crypto'
 import {mkdirSync} from 'node:fs'
 import {dirname} from 'node:path'
 import {DatabaseSync} from 'node:sqlite'
+import {logger, sanitizeErrorMessage} from '../logger.ts'
 
 export interface ListenerStore {
   insert: (input: IngestMessage) => {id: string; receivedAt: string}
@@ -40,6 +41,24 @@ const DEFAULT_LIST_LIMIT = 100
 const MIN_LIST_LIMIT = 1
 const MAX_LIST_LIMIT = 200
 
+/**
+ * rm-187: degrade instead of 500. `links` is written by this module as
+ * `JSON.stringify(links)`; a corrupt cell (hand-edited sqlite, partial write,
+ * disk corruption) must fail that row to `[]` — never take the whole
+ * GET /api/listener/messages response down with a thrown SyntaxError.
+ */
+function parseLinks(rowId: string, raw: string): readonly ListenerLink[] {
+  try {
+    return JSON.parse(raw) as readonly ListenerLink[]
+  } catch (error) {
+    logger.warning('listener store: corrupt links cell degraded to empty list', {
+      messageId: rowId,
+      error: sanitizeErrorMessage(error),
+    })
+    return []
+  }
+}
+
 function rowToMessage(row: MessageRow): ListenerMessage {
   return {
     id: row.id,
@@ -48,7 +67,7 @@ function rowToMessage(row: MessageRow): ListenerMessage {
     severity: row.severity as ListenerMessage['severity'],
     title: row.title,
     body: row.body,
-    links: JSON.parse(row.links) as readonly ListenerLink[],
+    links: parseLinks(row.id, row.links),
     dedupeKey: row.dedupe_key,
     createdAt: row.created_at,
     receivedAt: row.received_at,
