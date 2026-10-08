@@ -62,7 +62,9 @@ describe('rm-678 schema half: live ledger', () => {
     // #570 minted rm-683, deduped into rm-744 — landed meanings
     // own ids — so the ceiling stays 744 and the 683 pin dies with
     // the duplicate def.
-    expect(live.max).toBe(744)
+    // ceiling bump 2026-10-08 (rm-745..rm-750 minted by run 5bd710d8ff89 roadmap 4aa2eb71;
+    // prior 744 set by run 02238c80e4c241b4b87dfde5b30c9efb via 8abe5d21 integrate of 9c3e8f4)
+    expect(live.max).toBe(750)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
