@@ -1173,6 +1173,23 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       return c.html(spaShellCache.injected)
     })
   } else {
+    // rm-802 (2026-10-09, repository-maintenance cycle:3 run 6a97d6f78af6): this
+    // arm serves the shell through bare serveStatic, which sets ONLY
+    // Last-Modified (adapter note above — no ETag, no conditional handling),
+    // so browsers and shared intermediaries fall back to heuristic caching
+    // (RFC 9111 §4.2.2): a freshened Last-Modified pins a shell that still
+    // references the PREVIOUS deploy's /assets/* manifest until the heuristic
+    // expires. The shell is unhashed and this arm's body is NOT
+    // identity-reflecting (the push-enabled meta is injected only in the other
+    // arm), so the revalidation family is the correct posture — no-cache, not
+    // the injected arm's no-store. Status guard per rm-690: a missed 404 must
+    // not be painted with a caching policy.
+    app.use('/', async (c, next) => {
+      await next()
+      if (c.res.status === 200) {
+        c.res.headers.set('cache-control', 'no-cache')
+      }
+    })
     app.get('/', serveStatic({root: webDistRoot, path: 'index.html'}))
   }
 
