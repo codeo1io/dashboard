@@ -7,6 +7,15 @@
         "rule": "bounce-easing",
         "value": "cubic-bezier(0.34, 1.56, 0.64, 1)",
         "createdAt": "2026-06-24T06:45:31.087Z"
+      },
+      {
+        "rule": "flat-type-hierarchy",
+        "value": "*",
+        "files": [
+          "web/privacy.html"
+        ],
+        "createdAt": "2026-10-08T05:15:12.373Z",
+        "reason": "Static legal page: h1/h2 use Tailwind size utilities (text-4xl/5xl, text-2xl/3xl) the detector cannot resolve on unbuilt HTML — real hierarchy is 1.5x+; pinned at the 3.2.1->4.1.0 refresh (rm-711)"
       }
     ]
   }

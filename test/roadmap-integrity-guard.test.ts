@@ -73,6 +73,10 @@ describe('rm-678 schema half: live ledger', () => {
     // ledger (690-692 then 744 bracket them) and are stamped into
     // validated executable surfaces, so no renumber and no bump —
     // the max def id is unchanged at 744 (235 defs).
+    // 2026-10-08 (run 69b161e1423d ext #34, implement 9a85ab72):
+    // mints rm-709/rm-710/rm-711 ride BELOW the 744 ceiling at base
+    // b658cb6 (defs 236 to 239, max unchanged) — no renumber, no bump;
+    // the pin moves only when a mint crosses 744.
     expect(live.max).toBe(744)
   })
 

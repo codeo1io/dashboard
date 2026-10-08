@@ -78,8 +78,12 @@ jobs:
 
       - name: 🎨 Detect UI anti-patterns
         run: |
-          # Pinned: an older major ignores .impeccable/config.json ignoreValues and would fail the gate on intentional brand tokens.
-          findings=$(npx --yes impeccable@3.2.1 detect --json web/src web/privacy.html)
+          # Pinned (rm-711, 2026-10-08 refresh 3.2.1 -> 4.1.0): majors change the rule
+          # set and the ignore semantics together — 3.x ignored .impeccable/config.json
+          # ignoreValues; 4.x honors them (incl. file-scoped entries) but reports
+          # flat-type-hierarchy on unbuilt Tailwind HTML (false positive, suppressed
+          # file-scoped in the config). Bump the pin and the config together.
+          findings=$(npx --yes impeccable@4.1.0 detect --json web/src web/privacy.html)
           if [ "$findings" != "[]" ]; then
             echo "$findings"
             echo "Impeccable detected UI anti-patterns. Address them or, for an intentional brand choice, add a scoped ignore via 'impeccable ignores add-value'."
@@ -183,3 +187,70 @@ jobs:
             node -e "import('./$f').then(() => {}).catch(err => { process.stderr.write('FAIL $f: ' + (err.code || err.message) + '\\n'); process.exit(1); })"
             echo "  ok   $f"
           done < <(find src -name '*.ts' ! -name '*.test.ts' | sort)
+
+  # rm-709 (repository-maintenance cycle:1, run 69b161e1423d): the fleet's own
+  # red pipelines must surface in the product itself — through 2026-10-08 the
+  # operator needed out-of-band `gh run list` to learn Release was red 4-of-5.
+  # Posts an HMAC-signed IngestMessage to the dashboard's listener ingest
+  # (POST /api/listener/ingest; verifier src/listener/ingest-auth.ts, contract
+  # src/listener/contract.ts; emitter fenced by test/ci-failure-listener-emitter.test.ts).
+  # Runs ONLY on main-ref failures: PR-run failures stay conductor-owned.
+  notify-listener:
+    name: Notify listener (CI-failure alert)
+    needs: [lint, design-check, check-types, test, check-workflows, test-scripts-load]
+    if: failure() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: 🔔 Post CI-failure alert to the dashboard listener ingest
+        env:
+          # Actions secret == the deployment's DASHBOARD_LISTENER_INGEST_KEY, so
+          # rotation is single-sided (rotate the deploy env, then this secret).
+          INGEST_KEY: ${{ secrets.DASHBOARD_LISTENER_INGEST_KEY }}
+          INGEST_URL: ${{ vars.DASHBOARD_LISTENER_INGEST_URL }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPO_SLUG: ${{ github.repository }}
+        run: |
+          set -eu
+          if [ -z "$INGEST_KEY" ] || [ -z "$INGEST_URL" ]; then
+            echo "::notice title=CI-failure alert skipped::DASHBOARD_LISTENER_INGEST_KEY secret or DASHBOARD_LISTENER_INGEST_URL variable is not configured; skipping the listener ingest alert (provision per ROADMAP rm-709). Absence is never a red."
+            exit 0
+          fi
+          FAILED_JOBS="$(printf '%s' "$NEEDS_JSON" | jq -r 'to_entries | map(select(.value.result == "failure") | .key) | join(", ")')"
+          TS="$(date +%s)"
+          # jq builds the IngestMessage (contract: src/listener/contract.ts) and
+          # escapes every interpolated value; the SAME string is signed AND sent.
+          BODY="$(jq -nc \
+            --arg source 'infra' \
+            --arg kind 'ci-failure' \
+            --arg severity 'critical' \
+            --arg title "$WORKFLOW_NAME run #$RUN_ID (attempt $RUN_ATTEMPT) failed" \
+            --arg body "Workflow $WORKFLOW_NAME on $REPO_SLUG@main failed. Failed jobs: ${FAILED_JOBS:-none recorded}. Full log at the run link." \
+            --argjson links "[{\"label\":\"Run log\",\"url\":\"$RUN_URL\"}]" \
+            --arg dedupeKey "ci-failure:$REPO_SLUG:$WORKFLOW_NAME:$RUN_ID" \
+            --arg createdAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{source:$source,kind:$kind,severity:$severity,title:$title,body:$body,links:$links,dedupeKey:$dedupeKey,createdAt:$createdAt}')"
+          # HMAC exactly as the verifier computes it: sha256 over
+          # "${timestamp}.${rawBody}". awk prints the LAST field and never exits
+          # early, so the pipe drains all of openssl's output (no SIGPIPE; the
+          # release.yaml :480/:518 awk-exit class stays cured).
+          SIG="$(printf '%s.%s' "$TS" "$BODY" | openssl dgst -sha256 -hmac "$INGEST_KEY" | awk '{print $NF}')"
+          STATUS="$(curl -sS --connect-timeout 10 --max-time 30 -o "$RUNNER_TEMP/ingest-resp.json" -w '%{http_code}' -X POST "$INGEST_URL" \
+            -H "x-listener-timestamp: $TS" \
+            -H "x-listener-signature: sha256=$SIG" \
+            -H 'content-type: application/json' \
+            --data-binary "$BODY")" && RC=0 || RC=$?
+          if [ "$RC" -ne 0 ] || [ "$STATUS" != "202" ]; then
+            echo "::error title=Listener ingest alert undelivered::curl rc=$RC HTTP $STATUS (expected 202) posting to the listener ingest — alerting is provisioned but broken; response body (if any) follows."
+            cat "$RUNNER_TEMP/ingest-resp.json" || true
+            exit 1
+          fi
+          echo "CI-failure alert delivered to the listener ingest (HTTP $STATUS):"
+          cat "$RUNNER_TEMP/ingest-resp.json" || true
+          echo
