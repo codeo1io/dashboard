@@ -58,9 +58,13 @@ const MUTATING_REST_VERBS = /['"`](?:POST|PATCH|PUT|DELETE)\s+\/[^'"`\s]*/g
  * Octokit REST-method write shape: `octokit.pulls.create(`, `issues.update(`,
  * `repos.delete(`, `pulls.merge(` … on the write namespaces. get-prefixed and
  * list-prefixed methods are the reads; everything else on these namespaces
- * mutates.
+ * mutates. rm-756: the receiver set includes the `gh` alias spelling, and
+ * the namespace set covers the non-CRUD write families (checks,
+ * codeScanning, migrations, actions) whose methods carry no verb-stem
+ * prefix (rerequestRun, uploadSarif, startForOrg, approveWorkflowRun …).
+ * The alias/destructuring and `.rest` facets are rm-747's scope.
  */
-const OCTOKIT_METHOD_WRITE = /\b(?:octokit|githubClient|gitHub)\s*\.\s*(?:repos|pulls|issues|git|apps|users|orgs)\s*\.\s*(?!(?:get|list)(?:[A-Z]|\b))[\w$]+\s*\(/g
+const OCTOKIT_METHOD_WRITE = /\b(?:octokit|githubClient|gitHub|gh)\s*\.\s*(?:repos|pulls|issues|git|apps|users|orgs|checks|codeScanning|migrations|actions)\s*\.\s*(?!(?:get|list)(?:[A-Z]|\b))[\w$]+\s*\(/g
 
 /** GraphQL mutation — the string/template must OPEN with `mutation`. */
 const GRAPHQL_MUTATION = /['"`]mutation[\s{(]/g
@@ -165,6 +169,19 @@ describe('read-only invariant guard (rm-649) — src/ stays free of write-capabi
       {kind: 'octokit-write-method', text: 'await octokit.pulls.merge({pull_number: 1})', expectMatch: 'pulls.merge'},
       {kind: 'octokit-write-method', text: 'await octokit.issues.update({state: \'closed\'})', expectMatch: 'issues.update'},
       {kind: 'octokit-write-method', text: 'await octokit.repos.delete({owner, repo})', expectMatch: 'repos.delete'},
+      // rm-756 red-first corpus — the verb-shape escape classes that passed
+      // BOTH layered matchers before the rm-756 close: bare-verb last segments
+      // on an aliased receiver (gh), and non-stem write methods on write
+      // namespaces that were absent from the method-form list. Every shape is
+      // a real mutating Octokit REST method.
+      {kind: 'octokit-write-method', text: 'await gh.repos.delete({owner, repo})', expectMatch: 'gh.repos.delete'},
+      {kind: 'octokit-write-method', text: 'await gh.pulls.merge({pull_number: 1})', expectMatch: 'gh.pulls.merge'},
+      {kind: 'octokit-write-method', text: 'await octokit.checks.rerequestRun({owner, repo, check_run_id})', expectMatch: 'checks.rerequestRun'},
+      {kind: 'octokit-write-method', text: 'await octokit.checks.rerequestSuite({owner, repo, check_suite_id})', expectMatch: 'checks.rerequestSuite'},
+      {kind: 'octokit-write-method', text: 'await octokit.codeScanning.uploadSarif({owner, repo})', expectMatch: 'codeScanning.uploadSarif'},
+      {kind: 'octokit-write-method', text: 'await octokit.codeScanning.defaultSetupUpdate({owner, repo})', expectMatch: 'codeScanning.defaultSetupUpdate'},
+      {kind: 'octokit-write-method', text: 'await octokit.migrations.startForOrg({org})', expectMatch: 'migrations.startForOrg'},
+      {kind: 'octokit-write-method', text: 'await octokit.actions.approveWorkflowRun({owner, repo, workflow_id})', expectMatch: 'actions.approveWorkflowRun'},
       {
         kind: 'forbidden-import',
         text: `import {writePage} from '@fro-bot/wiki-write-core'`,
@@ -200,6 +217,12 @@ describe('read-only invariant guard (rm-649) — src/ stays free of write-capabi
       `const response = await request(octokit, 'GET /repos/{owner}/{repo}/installation', {owner, repo})`,
       'const res = await octokit.pulls.list({owner, repo})',
       'const res = await octokit.repos.getContent({owner, repo, path})',
+      // rm-756: receiver/namespace extensions must not flag sanctioned reads —
+      // the gh alias and the checks/codeScanning namespaces are policed by
+      // method shape (get/list prefix), not by receiver or namespace alone.
+      'const res = await gh.repos.getContent({owner, repo, path})',
+      'const res = await gh.checks.listForRef({owner, repo, ref})',
+      'const res = await octokit.codeScanning.listAlertsForRepo({owner, repo})',
       `import {createAppAuth} from '@octokit/auth-app'`,
       `import {Octokit} from '@octokit/core'`,
       'const data = await octokit.graphql(`query { viewer { login } }`)',

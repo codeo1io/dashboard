@@ -73,7 +73,13 @@ describe('rm-678 schema half: live ledger', () => {
     // ledger (690-692 then 744 bracket them) and are stamped into
     // validated executable surfaces, so no renumber and no bump —
     // the max def id is unchanged at 744 (235 defs).
-    expect(live.max).toBe(744)
+    // 2026-10-08 repository-maintenance cycle:2 run 9fd8bcad roadmap
+    // 8a4d7ae3: minted rm-755..rm-758 above the all-lineage sibling
+    // ceiling rm-754 (unlanded claims 5bd710d8 rm-745..750, f266ce30
+    // rm-751..754; all 146 conductor/ci refs + the delegate spool
+    // scanned clean) — the in-file census is now 240 defs, and the
+    // landed ceiling at b658cb6 stays 236 defs / max rm-744.
+    expect(live.max).toBe(758)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
