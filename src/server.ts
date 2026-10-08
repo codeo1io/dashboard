@@ -25,6 +25,7 @@ import {existsSync, readFileSync, statSync} from 'node:fs'
 import {readFile} from 'node:fs/promises'
 import {join} from 'node:path'
 import process from 'node:process'
+import {pathToFileURL} from 'node:url'
 import {serve} from '@hono/node-server'
 import {getConnInfo} from '@hono/node-server/conninfo'
 import {serveStatic} from '@hono/node-server/serve-static'
@@ -1623,8 +1624,28 @@ async function createDashboardServer(): Promise<ServerType> {
   return server
 }
 
-// Only start the server when this module is the entry point
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Only start the server when this module is the entry point.
+
+/**
+ * Entry-point detection for ESM (rm-702).
+ *
+ * Compares file URLs, not a literal `file://${process.argv[1]}` template: the
+ * template breaks whenever the entry path contains characters that URL-encode
+ * (a space, or anything outside the unreserved set) because `import.meta.url`
+ * percent-encodes while argv[1] does not — under such paths the template
+ * silently evaluated false and the server booted WITHOUT its listener.
+ */
+export function isMainEntryPoint(metaUrl: string, argv1: string | undefined): boolean {
+  if (argv1 === undefined || argv1 === '') return false
+  try {
+    return pathToFileURL(argv1).href === metaUrl
+  } catch {
+    // Unencodable argv (e.g. invalid path characters) — never autostart.
+    return false
+  }
+}
+
+if (isMainEntryPoint(import.meta.url, process.argv[1])) {
   createDashboardServer().catch((error: unknown) => {
     logger.error('Failed to start dashboard server', {
       error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
