@@ -1,5 +1,6 @@
 import type {AggregatorSnapshot, DashboardRepo, FailingCheckDetail, RepoCiStatus} from '../github/aggregator.ts'
 import {Hono} from 'hono'
+import process from 'node:process'
 import {COLD_START_SNAPSHOT} from '../github/aggregator.ts'
 
 /** Injectable snapshot provider — returns the current aggregator snapshot. */
@@ -91,7 +92,21 @@ export function buildApiRouter(getSnapshot?: SnapshotProvider): Hono {
   const api = new Hono()
 
   api.get('/healthz', c => {
-    return c.json({ok: true, lastFetch: null, rateLimit: null})
+    // rm-708: deploy-currency observability — the image's baked build identity
+    // (Dockerfile final-stage ARG GIT_SHA/BUILD_DATE → ENV APP_GIT_SHA/APP_BUILD_DATE,
+    // supplied by release.yaml build-args) is served read-only here so deploy
+    // currency is observable without host access. Null when unset (local/dev
+    // builds). Read at request time so tests and the live container both
+    // reflect the effective env; strictly read-only, non-sensitive values.
+    const gitSha = process.env.APP_GIT_SHA
+    const buildDate = process.env.APP_BUILD_DATE
+    return c.json({
+      ok: true,
+      lastFetch: null,
+      rateLimit: null,
+      gitSha: gitSha === undefined || gitSha === '' ? null : gitSha,
+      buildDate: buildDate === undefined || buildDate === '' ? null : buildDate,
+    })
   })
 
   /**

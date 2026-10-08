@@ -112,7 +112,12 @@ function normalizeCrlf(text: string): string {
 function parseSseRecord(record: string): SseParseResult | null {
   const lines = record.split('\n')
   let eventName: string | undefined
-  let dataLine: string | undefined
+  // rm-114: SSE permits multiple `data:` lines per record — the spec (WHATWG
+  // HTML §9.2.6 server-sent events) dispatches them as ONE payload whose lines
+  // are joined by U+000A. Storing only the last `data:` line silently corrupted
+  // any record the gateway emitted with split data lines; collect and join
+  // instead (twin of public/operator-stream.js parseSseFrame).
+  const dataLines: string[] = []
 
   for (const line of lines) {
     if (line.startsWith(':')) {
@@ -122,12 +127,14 @@ function parseSseRecord(record: string): SseParseResult | null {
     if (line.startsWith('event:')) {
       eventName = line.slice('event:'.length).trim()
     } else if (line.startsWith('data:')) {
-      dataLine = line.slice('data:'.length).trim()
+      dataLines.push(line.slice('data:'.length).trim())
     }
   }
 
+  const dataText = dataLines.length > 0 ? dataLines.join('\n') : undefined
+
   // A record with only comment lines produces no frame
-  if (eventName === undefined && dataLine === undefined) {
+  if (eventName === undefined && dataText === undefined) {
     return null
   }
 
@@ -139,7 +146,7 @@ function parseSseRecord(record: string): SseParseResult | null {
   // Parse the data field as JSON
   let parsed: unknown
   try {
-    parsed = JSON.parse(dataLine ?? 'null')
+    parsed = JSON.parse(dataText ?? 'null')
   } catch {
     return {success: false, error: new Error('sse record data is not valid JSON')}
   }
