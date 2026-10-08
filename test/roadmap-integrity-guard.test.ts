@@ -79,6 +79,18 @@ describe('rm-678 schema half: live ledger', () => {
     // folds by content into the landed rm-698 trixie re-pin
     // (a94d0659 via ad8f21e), its def dying with the fold, so
     // the max def id is unchanged at 744 (237 defs).
+    // 2026-10-09 integrate of run c026a644 (conflict case
+    // 46431058): that run's parallel port of the SAME upstream
+    // #570 minted rm-694 (the fourth parallel lineage, candidate
+    // only — its implement batch delivered rm-708/rm-709), deduped
+    // into rm-744 the same way, its def dying with the fold —
+    // while its rm-693 (push inactive-reason ladder, candidate),
+    // rm-708 (release.yaml END-block readback cure, byte-convergent
+    // with landed rm-691: one fix, two lineage ids per the
+    // rm-166/178 pattern, release.yaml net-diff-empty at the
+    // merge) and rm-709 (detailsUrl https-only boundary) land
+    // as-authored below the pin, so the max def id is unchanged
+    // at 744 (240 defs).
     expect(live.max).toBe(744)
   })
 

@@ -56,6 +56,11 @@ function parseFailingCheckDetail(item: unknown): FailingCheckDetail | null {
   if (workflowTitle !== null && typeof workflowTitle !== 'string') return null
   if (runAttempt !== null && typeof runAttempt !== 'number') return null
   if (typeof checkName !== 'string' || typeof detailsUrl !== 'string') return null
+  // https://-only detailsUrl contract (mirrors the enforced link filter in
+  // web/src/api/listener.ts): '' is the server's no-link value; any non-empty
+  // value must be https:// — a non-https detailsUrl is contract drift and the
+  // strict parse fails closed.
+  if (detailsUrl !== '' && !detailsUrl.startsWith('https://')) return null
   return {workflowTitle, runAttempt, checkName, detailsUrl}
 }
 
