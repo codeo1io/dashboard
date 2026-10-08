@@ -11,7 +11,7 @@
  */
 
 import {spawnSync} from 'node:child_process'
-import {mkdtempSync, rmSync, writeFileSync} from 'node:fs'
+import {mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join, resolve} from 'node:path'
 import process from 'node:process'
@@ -73,5 +73,69 @@ describe('isMainEntryPoint (rm-702)', () => {
     const result = spawnSync(process.execPath, [probe], {encoding: 'utf8'})
     expect(result.status).toBe(0)
     expect(result.stdout.trim()).toBe('ENTRY-TRUE')
+  })
+})
+
+describe('isMainEntryPoint — symlinked entries (rm-756 cure, run 788aa489c1d5)', () => {
+  // Node realpaths the ESM main entry (absent --preserve-symlinks-main) so
+  // import.meta.url is the REAL path while argv[1] keeps the symlinked
+  // spelling — the pre-cure comparator went false and the server booted
+  // WITHOUT its listener and exited silently (headless). Realpath argv[1]
+  // restores the match. These cases had ZERO coverage before (assess 2026-10-08).
+  const writeProbe = (dir: string) => {
+    const probe = join(dir, 'probe-entry.ts')
+    writeFileSync(
+      probe,
+      [
+        `import {isMainEntryPoint} from '${pathToFileURL(resolve('src/server.ts')).href}'`,
+        'console.log(isMainEntryPoint(import.meta.url, process.argv[1]) ? "ENTRY-TRUE" : "ENTRY-FALSE")',
+        '',
+      ].join('\n'),
+      'utf8',
+    )
+    return probe
+  }
+
+  it('true when argv[1] is a symlinked FILE (pure comparison)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'entry-sym-file-'))
+    dirs.push(dir)
+    const real = writeProbe(dir)
+    const link = join(dir, 'probe-link.ts')
+    symlinkSync(real, link)
+    // metaUrl carries the REAL path, argv[1] the symlink — must still match.
+    expect(isMainEntryPoint(pathToFileURL(real).href, link)).toBe(true)
+  })
+
+  it('true when argv[1] traverses a symlinked DIRECTORY (pure comparison)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'entry-sym-dir-'))
+    dirs.push(dir)
+    const real = writeProbe(dir)
+    const viaDir = join(dir, 'via-link')
+    mkdirSync(viaDir)
+    symlinkSync(dir, join(viaDir, 'inner'))
+    const entryThroughLink = join(viaDir, 'inner', 'probe-entry.ts')
+    expect(isMainEntryPoint(pathToFileURL(real).href, entryThroughLink)).toBe(true)
+  })
+
+  it('empirical: Node invoked through a file symlink detects itself as entry (was silent-headless)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'entry-sym-emp-'))
+    dirs.push(dir)
+    const real = writeProbe(dir)
+    const link = join(dir, 'probe-link.ts')
+    symlinkSync(real, link)
+    // argv[1] = symlink, import.meta.url = realpath — the assess probe
+    // (2026-10-08) printed ENTRY-FALSE here before the cure.
+    const result = spawnSync(process.execPath, [link], {encoding: 'utf8'})
+    expect(result.status).toBe(0)
+    expect(result.stdout.trim()).toBe('ENTRY-TRUE')
+  })
+
+  it('symlink cure does not weaken the elsewhere-pointer case', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'entry-sym-other-'))
+    dirs.push(dir)
+    const real = writeProbe(dir)
+    const link = join(dir, 'probe-link.ts')
+    symlinkSync(real, link)
+    expect(isMainEntryPoint(pathToFileURL('/elsewhere/server.ts').href, link)).toBe(false)
   })
 })

@@ -21,7 +21,7 @@ import type {MetadataReader} from './github/metadata.ts'
 import type {ListenerStore} from './listener/store.ts'
 import {Buffer} from 'node:buffer'
 import {createHash} from 'node:crypto'
-import {existsSync, readFileSync, statSync} from 'node:fs'
+import {existsSync, readFileSync, realpathSync, statSync} from 'node:fs'
 import {readFile} from 'node:fs/promises'
 import {join} from 'node:path'
 import process from 'node:process'
@@ -1664,10 +1664,26 @@ async function createDashboardServer(): Promise<ServerType> {
  */
 export function isMainEntryPoint(metaUrl: string, argv1: string | undefined): boolean {
   if (argv1 === undefined || argv1 === '') return false
+  let rawMatch = false
   try {
-    return pathToFileURL(argv1).href === metaUrl
+    rawMatch = pathToFileURL(argv1).href === metaUrl
   } catch {
     // Unencodable argv (e.g. invalid path characters) — never autostart.
+    return false
+  }
+  if (rawMatch) return true
+  try {
+    // Node resolves the ESM main entry through realpath (unless
+    // --preserve-symlinks-main is passed) while argv[1] keeps the symlinked
+    // spelling, so a raw comparison goes false and the server booted without
+    // its listener — silent headless. Realpath argv[1] and compare again
+    // (rm-756 cure, implemented by content in run 788aa489c1d5). The raw
+    // comparison already ran, so --preserve-symlinks-main invocations still
+    // match; this branch only ever WIDENS autostart to genuine entries.
+    return pathToFileURL(realpathSync(argv1)).href === metaUrl
+  } catch {
+    // Nonexistent argv (realpath ENOENT) or unresolvable path — never
+    // autostart.
     return false
   }
 }
