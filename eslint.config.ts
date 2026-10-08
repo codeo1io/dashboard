@@ -32,6 +32,33 @@ export default defineConfig(
     },
   },
   {
+    // rm-721 (2026-10-08, repository-maintenance cycle:1 run e0cd5af2ab82):
+    // phantom-dependency lint for the shamefullyHoist workspace
+    // (pnpm-workspace.yaml hoists every transitive to the root, so an
+    // undeclared import resolves locally and breaks on any hoist-free
+    // consumer). The import-x plugin is already registered by
+    // @bfra.me/eslint-config 0.54.0 (proven via
+    // `pnpm exec eslint --print-config src/server.ts`) but the preset leaves
+    // this rule off, so it is enabled HERE explicitly, same pattern as
+    // rm-682 above. Scope: every file this config lints (src/, test/,
+    // scripts/, root config files — web/** is globally ignored by this config
+    // and is type-checked via web/tsconfig.json in check-types instead).
+    // Options: the defaults are correct for this single-package layout — the
+    // nearest-package.json lookup resolves every linted file to the root
+    // package.json (no nested package.json exists, verified), and devDeps are
+    // allowed everywhere (the whole lint surface is dev surface); type-only
+    // imports stay unchecked (includeTypes defaults off — runtime/value
+    // imports are the phantom class shamefullyHoist masks). The rule's first
+    // live catch fired RED on line 2 of THIS file: typescript-eslint was
+    // imported since 2026-09 yet never declared (resolved only via the
+    // hoist) — hence the paired devDep promotions in package.json:
+    // eslint-plugin-import-x@4.17.1 (rule now load-bearing here) and
+    // typescript-eslint@8.70.1 (the catch).
+    rules: {
+      'import-x/no-extraneous-dependencies': 'error',
+    },
+  },
+  {
     // operator-runtime.test.ts lives in test/ but requires DOM types (jsdom environment).
     // It is excluded from the root tsconfig (no DOM lib) and covered by web/tsconfig.json.
     // Override the parser project for this file so ESLint resolves it correctly.

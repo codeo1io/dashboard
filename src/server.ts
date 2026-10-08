@@ -1272,10 +1272,15 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   // This middleware must be registered BEFORE serveStatic to override Content-Type.
   // application/manifest+json is required for PWA installability.
   // rm-690: the manifest is unhashed, so it revalidates every load (no-cache).
+  // rm-720: headers only on 200 — a 404 from serveStatic (missing file / wrong
+  // dist root) must not be labeled application/manifest+json or carry cache
+  // metadata; same status guard the rm-690 /assets/* and /icon-* wrappers use.
   app.use('/manifest.webmanifest', async (c, next) => {
     await next()
-    c.res.headers.set('content-type', 'application/manifest+json; charset=UTF-8')
-    c.res.headers.set('cache-control', 'no-cache')
+    if (c.res.status === 200) {
+      c.res.headers.set('content-type', 'application/manifest+json; charset=UTF-8')
+      c.res.headers.set('cache-control', 'no-cache')
+    }
   })
   app.use('/manifest.webmanifest', serveStatic({root: webDistRoot}))
 
@@ -1284,9 +1289,13 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   // entire origin. CSP is removed from /sw.js by the pre-secureHeaders middleware.
   app.use('/sw.js', serveStatic({root: webDistRoot}))
 
+  // rm-720: header only on 200 — a 404 must not carry a no-store policy for a
+  // body that is not the registration helper (same status guard as rm-690).
   app.use('/registerSW.js', async (c, next) => {
     await next()
-    c.res.headers.set('cache-control', 'no-cache, no-store, must-revalidate')
+    if (c.res.status === 200) {
+      c.res.headers.set('cache-control', 'no-cache, no-store, must-revalidate')
+    }
   })
   app.use('/registerSW.js', serveStatic({root: webDistRoot}))
 

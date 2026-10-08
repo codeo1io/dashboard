@@ -87,6 +87,9 @@ importers:
       eslint-plugin-erasable-syntax-only:
         specifier: 0.7.2
         version: 0.7.2(@typescript-eslint/parser@8.70.1(eslint@10.11.0(jiti@2.7.0))(typescript@6.0.3))(eslint@10.11.0(jiti@2.7.0))(typescript@6.0.3)
+      eslint-plugin-import-x:
+        specifier: 4.17.1
+        version: 4.17.1(@typescript-eslint/utils@8.70.1(eslint@10.11.0(jiti@2.7.0))(typescript@6.0.3))(eslint@10.11.0(jiti@2.7.0))
       fast-check:
         specifier: 4.10.2
         version: 4.10.2
@@ -108,6 +111,9 @@ importers:
       typescript:
         specifier: 6.0.3
         version: 6.0.3
+      typescript-eslint:
+        specifier: 8.70.1
+        version: 8.70.1(eslint@10.11.0(jiti@2.7.0))(typescript@6.0.3)
       vite:
         specifier: 8.3.2
         version: 8.3.2(@types/node@24.13.3)(jiti@2.7.0)(terser@5.48.0)(yaml@2.9.1)
