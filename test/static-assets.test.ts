@@ -11,7 +11,8 @@
  */
 import type {GitHubOAuthClient} from '../src/auth/oauth.ts'
 import {Buffer} from 'node:buffer'
-import {existsSync, readdirSync, statSync} from 'node:fs'
+import {existsSync, mkdtempSync, readdirSync, statSync} from 'node:fs'
+import {tmpdir} from 'node:os'
 import {join, resolve} from 'node:path'
 import process from 'node:process'
 import {afterEach, describe, expect, it} from 'vitest'
@@ -40,7 +41,10 @@ function makeSessionCookie(login: string = TEST_OPERATOR): string {
   return sm.sign(login)
 }
 
-async function buildTestApp(operatorUiEnabled: boolean) {
+async function buildTestApp(
+  operatorUiEnabled: boolean,
+  opts: {webDistRoot?: string} = {},
+) {
   return buildDashboardApp({
     operatorLogin: TEST_OPERATOR,
     cookieKey: TEST_KEY,
@@ -48,6 +52,7 @@ async function buildTestApp(operatorUiEnabled: boolean) {
     fetchUserLogin: async (_token: string) => TEST_OPERATOR,
     getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
     operatorUiEnabled,
+    ...opts,
   })
 }
 
@@ -1153,5 +1158,40 @@ describe('rm-690 — Cache-Control policy for static surfaces', () => {
     const res = await app.request('/registerSW.js')
     expect(res.status).toBe(200)
     expect(res.headers.get('cache-control')).toBe('no-cache, no-store, must-revalidate')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-720 — static-header status-guard completion (manifest / registerSW)
+// ---------------------------------------------------------------------------
+// rm-690 guarded the /assets/* and /icon-* header middlewares with
+// `if (c.res.status === 200)` but left the manifest and registerSW wrappers
+// unconditional: a serveStatic 404 (missing file / wrong dist root) came
+// back labeled application/manifest+json or carrying a no-store policy —
+// minting content-type and cache metadata for a body that is not the asset.
+// The guard adopts the same status check rm-690 uses, so non-200 responses
+// pass through untouched. Both routes have FIXED filenames that exist in a
+// real build, so the 404 leg is exercised by pointing webDistRoot at an
+// empty temp directory (the 200 legs stay covered by the rm-690 block above).
+
+/** Shared empty directory: a webDistRoot with no manifest.webmanifest / registerSW.js. */
+function emptyDistRoot(): string {
+  return mkdtempSync(join(tmpdir(), 'rm720-empty-dist-'))
+}
+
+describe('rm-720 — manifest/registerSW headers are set only on 200', () => {
+  it('GET /manifest.webmanifest 404 carries NEITHER the manifest content-type NOR any cache-control (empty dist root)', async () => {
+    const app = await buildTestApp(false, {webDistRoot: emptyDistRoot()})
+    const res = await app.request('/manifest.webmanifest')
+    expect(res.status).toBe(404)
+    expect(res.headers.get('content-type') ?? '').not.toContain('application/manifest+json')
+    expect(res.headers.get('cache-control')).toBeNull()
+  })
+
+  it('GET /registerSW.js 404 carries NO cache-control policy (empty dist root)', async () => {
+    const app = await buildTestApp(false, {webDistRoot: emptyDistRoot()})
+    const res = await app.request('/registerSW.js')
+    expect(res.status).toBe(404)
+    expect(res.headers.get('cache-control')).toBeNull()
   })
 })
