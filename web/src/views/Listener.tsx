@@ -14,7 +14,7 @@ type ViewState =
   | { state: 'error'; reason: string }
   | { state: 'auth-expired' }
   | { state: 'empty' }
-  | { state: 'ready'; data: ListenerMessagesResponse }
+  | { state: 'ready'; data: ListenerMessagesResponse; postReadyFailures: number }
 
 export const POLL_INTERVAL_MS = 30000
 /**
@@ -59,7 +59,14 @@ export function ListenerChannel() {
           setViewState({ state: 'auth-expired' })
           return
         }
-        setViewState(prev => (prev.state === 'ready' ? prev : { state: 'error', reason: result.reason }))
+        // rm-780: a failure AFTER the inbox is up keeps the last-good list
+        // (rm-155 semantics) but now counts — postReadyFailures drives the
+        // view-level staleness banner, so a silently frozen inbox is visible.
+        setViewState(prev =>
+          prev.state === 'ready'
+            ? { state: 'ready', data: prev.data, postReadyFailures: prev.postReadyFailures + 1 }
+            : { state: 'error', reason: result.reason },
+        )
         return
       }
 
@@ -69,7 +76,7 @@ export function ListenerChannel() {
         // Still 'ready' when the parsed list is empty but drift/retention
         // notices exist (rm-243/rm-244): those signals must render, not be
         // swallowed by the Inbox Zero state.
-        setViewState({ state: 'ready', data: result.data })
+        setViewState({ state: 'ready', data: result.data, postReadyFailures: 0 })
       }
     },
     refetchOnFocus: true,
@@ -127,6 +134,13 @@ export function ListenerChannel() {
       {ackFailed && (
         <div data-testid="listener-ack-failure" className="operator-warning-panel" role="alert" style={{ marginBottom: 'var(--space-3)' }}>
           Couldn't mark as read — the request timed out or was rejected. Try again.
+        </div>
+      )}
+
+      {viewState.state === 'ready' && viewState.postReadyFailures > 0 && (
+        <div data-testid="listener-view-stale-banner" className="operator-warning-panel" role="status" style={{ marginBottom: 'var(--space-3)' }}>
+          Showing the last known messages — refreshes are failing ({viewState.postReadyFailures}{' '}
+          {viewState.postReadyFailures === 1 ? 'failure' : 'failures'} in a row). Unread counts may be outdated.
         </div>
       )}
 
