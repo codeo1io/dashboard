@@ -14,8 +14,16 @@ import {mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import fc from 'fast-check'
-import {afterEach, describe, expect, it} from 'vitest'
+import {afterEach, describe, expect, it, vi} from 'vitest'
 import {createFileSnapshotStore} from '../src/github/snapshot-store.ts'
+
+// node:fs exports a frozen namespace, so rm-759's ordering proof mocks the
+// module with a passthrough-wrapped readFileSync (every other export is the
+// real one; readFileSync behaves identically until a test overrides it).
+vi.mock('node:fs', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  return {...actual, readFileSync: vi.fn(actual.readFileSync)}
+})
 
 function makeRepoRow(): DashboardRepo {
   return {
@@ -225,5 +233,51 @@ describe('createFileSnapshotStore — size bound measures UTF-8 bytes, not UTF-1
       ),
       {numRuns: 40},
     )
+  })
+})
+
+describe('createFileSnapshotStore — size gate fires before the read (rm-759)', () => {
+  const dirs: string[] = []
+
+  function makeStore(): {store: SnapshotStore; file: string} {
+    const dir = mkdtempSync(join(tmpdir(), 'snapshot-store-rm759-'))
+    dirs.push(dir)
+    const file = join(dir, 'snapshot.json')
+    return {store: createFileSnapshotStore(file) as SnapshotStore, file}
+  }
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, {recursive: true, force: true})
+  })
+
+  it('an oversize file is rejected WITHOUT buffering it — readFileSync never runs', () => {
+    const {store, file} = makeStore()
+    // A tampered on-disk file above the cap: the pre-cure implementation
+    // read the WHOLE thing into memory before rejecting it at the byte bound.
+    writeFileSync(file, 'x'.repeat(1_048_577), 'utf8')
+    const readMock = vi.mocked(readFileSync)
+    readMock.mockImplementation(() => {
+      throw new Error('readFileSync must not run for an oversize cache')
+    })
+    try {
+      expect(store.load()).toBeNull()
+    } finally {
+      readMock.mockReset()
+    }
+  })
+
+  it('an at-cap file still reads — the stat gate is inclusive, and the read count is exactly one', () => {
+    const {store, file} = makeStore()
+    const base = JSON.stringify(makeSnapshot())
+    const CAP = 1_048_576
+    writeFileSync(file, base + ' '.repeat(CAP - Buffer.byteLength(base, 'utf8')), 'utf8')
+    const readMock = vi.mocked(readFileSync)
+    readMock.mockClear()
+    try {
+      expect(store.load()).not.toBeNull()
+      expect(readMock).toHaveBeenCalledTimes(1)
+    } finally {
+      readMock.mockReset()
+    }
   })
 })
