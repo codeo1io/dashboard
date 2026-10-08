@@ -262,6 +262,39 @@
   background: rgba(0, 0, 0, 0.05);
 }
 
+/* rm-715: client-only terminal expiry state (not a wire status). Muted-neutral
+ * with a dashed border to read as "gone", distinct from queued/cancelled. */
+.run-status.status-expired {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--color-text-muted);
+  border-color: var(--color-border-muted);
+  border-style: dashed;
+}
+[data-theme="light"] .run-status.status-expired {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+/* rm-717: run lifecycle timestamps (Started · Finished) rendered by the stream
+ * shell into the runtime-seam-owned run-times element. */
+.run-times {
+  font-size: var(--text-body-sm);
+  color: var(--color-text-subtle);
+  white-space: nowrap;
+}
+.run-times time {
+  font-variant-numeric: tabular-nums;
+}
+
+/* rm-715: the expired-run affordance link rendered inside the run notice. */
+.operator-expired-link {
+  margin-left: var(--space-1);
+  color: var(--color-info);
+}
+.operator-expired-link:hover,
+.operator-expired-link:focus-visible {
+  text-decoration: underline;
+}
+
 .run-repo {
   font-family: var(--font-mono);
   font-size: var(--text-code);

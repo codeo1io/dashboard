@@ -52,6 +52,7 @@ export function discoverCardStreamTargets(runId: string): {
   badgeEl: Element | null
   reasonEl: Element | null
   cancelEl: Element | null
+  timestampsEl: HTMLElement | null
 } {
   const card = typeof document !== 'undefined'
     ? document.querySelector(`[data-run-id="${CSS.escape(runId)}"]`)
@@ -63,7 +64,33 @@ export function discoverCardStreamTargets(runId: string): {
     badgeEl: card?.querySelector('[data-role="approval-badge"]') ?? null,
     reasonEl: card?.querySelector('[data-role="run-reason"]') ?? null,
     cancelEl: card?.querySelector('[data-role="run-cancel"]') ?? null,
+    timestampsEl: card !== null ? ensureRunTimesElement(card) : null,
   }
+}
+
+/**
+ * rm-717: ensure the card has a run-times element (data-role="run-times") the
+ * stream shell renders lifecycle timestamps into. Cards are created by
+ * launch.js (optimistic) and operator-run-index.js (fetched) without one, so
+ * the runtime seam ensures presence idempotently at discovery time. Placed
+ * after the card's existing time element (run-updated-at) when present.
+ */
+function ensureRunTimesElement(card: Element): HTMLElement {
+  const existing = card.querySelector<HTMLElement>('[data-role="run-times"]')
+  if (existing !== null) return existing
+  const el = document.createElement('span')
+  el.dataset.role = 'run-times'
+  el.className = 'run-times'
+  el.hidden = true
+  const anchor =
+    card.querySelector('[data-role="run-updated-at"]') ??
+    card.querySelector('[data-role="run-status"]')
+  if (anchor !== null && anchor.parentElement !== null) {
+    anchor.after(el)
+  } else {
+    card.append(el)
+  }
+  return el
 }
 
 /**
@@ -234,7 +261,18 @@ export function createActiveStreamOwner(): {
     // markRunStreamAttached call happens to overwrite it (or never does).
     if (_activeStreamRunId !== null && typeof document !== 'undefined') {
       const card = document.querySelector(`[data-run-id="${CSS.escape(_activeStreamRunId)}"]`)
-      if (card !== null) delete (card as HTMLElement).dataset.streamAttached
+      if (card !== null) {
+        delete (card as HTMLElement).dataset.streamAttached
+        // rm-716: the cancel affordance must vanish at detach — belt-and-braces
+        // second layer alongside operator-stream.js close()'s own teardown, so
+        // collapse/switch can never leave a clickable cancel mounted on a
+        // detached card (upstream #584).
+        const cancelEl = card.querySelector('[data-role="run-cancel"]')
+        if (cancelEl !== null) {
+          cancelEl.replaceChildren()
+          ;(cancelEl as HTMLElement).hidden = true
+        }
+      }
     }
     _activeStreamRunId = null
   }
@@ -290,6 +328,7 @@ async function defaultRuntimeLoader(opts?: {
       badgeEl?: Element | null
       reasonEl?: Element | null
       cancelEl?: Element | null
+      timestampsEl?: Element | null
       endpointBase?: string
       fixtureSessionId?: string
     }) => {close(): void}
@@ -335,7 +374,7 @@ async function defaultRuntimeLoader(opts?: {
 
     // Discover the per-card render targets so live output, coalescing hints,
     // approval prompts, and the approval badge all render — not just status.
-    const {outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, cancelEl} = discoverCardStreamTargets(runId)
+    const {outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, cancelEl, timestampsEl} = discoverCardStreamTargets(runId)
 
     try {
       const handle = streamMod.initOperatorStream({
@@ -348,6 +387,7 @@ async function defaultRuntimeLoader(opts?: {
         badgeEl,
         reasonEl,
         cancelEl,
+        timestampsEl,
         endpointBase: opts?.endpointBase,
         fixtureSessionId: opts?.fixtureSessionId,
       })
