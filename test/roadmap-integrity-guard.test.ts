@@ -50,7 +50,7 @@ describe('rm-678 schema half: live ledger', () => {
 
   it('records the current id ceiling (bump on the next mint)', () => {
     const live = census(roadmap)
-    expect(live.max).toBe(680)
+    expect(live.max).toBe(681)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {

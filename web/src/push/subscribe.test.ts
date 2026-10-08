@@ -829,6 +829,60 @@ describe('runReconcileSweep', () => {
     expect(pushClient.getPushSubscriptionMetadata).toHaveBeenCalledTimes(1)
   })
 
+  it('rm-600: VAPID key rotation on an open, stably-subscribed page is detected on the following sweep without a reload', async () => {
+    const subscription = fakeSubscription('https://push.example/rotated')
+    const hash = await import('./endpoint-hash.ts').then(m => m.endpointHash(subscription.endpoint))
+    // Post-rotation Gateway view: the record still matches the local endpoint
+    // hash but was minted under the OLD key version.
+    const metadata: PushSubscriptionMetadata = {
+      endpointHash: hash,
+      keyVersion: 'v1',
+      active: true,
+      createdAt: '2026-07-08T00:00:00.000Z',
+      updatedAt: '2026-07-08T00:00:00.000Z',
+    }
+    const getPushSubscriptionMetadata = vi.fn().mockResolvedValue(ok({pushDisabled: false, metadata}))
+    const pushClient = fakePushClient({getPushSubscriptionMetadata})
+
+    // The production supplier's cached version, as in Notifications.tsx. The
+    // clock advances past the 30s min-interval between sweeps so only the
+    // unchanged guard (not the debounce) decides skip-vs-run.
+    let currentVersion: string | undefined = 'v1'
+    let clock = 1_000_000
+    const deps = {
+      getLocalSubscription: () => Promise.resolve(subscription),
+      getPermission: () => 'granted' as const,
+      pushClient,
+      getCurrentKeyVersion: () => currentVersion,
+      now: () => clock,
+    }
+
+    // First sweep: subscribed, no action; the observed version lands in the cache.
+    const first = await runReconcileSweep(deps, cache)
+    expect(first.skipped).toBe(false)
+    expect(first.uiState).toBe('subscribed')
+    expect(first.action).toBe('none')
+    expect(first.nextCache.keyVersion).toBe('v1')
+
+    // Stable permission + presence + key version: the unchanged guard still
+    // skips (no storm from focus/visibility cycling).
+    clock += 60_000
+    const second = await runReconcileSweep(deps, first.nextCache)
+    expect(second.skipped).toBe(true)
+    expect(getPushSubscriptionMetadata).toHaveBeenCalledTimes(1)
+
+    // Rotation: only the key version changes. The skip is voided, the metadata
+    // GET re-runs, and the sweep classifies the subscription as stale-key →
+    // resubscribe under the new key — without any page reload.
+    currentVersion = 'v2'
+    clock += 60_000
+    const third = await runReconcileSweep(deps, second.nextCache)
+    expect(third.skipped).toBe(false)
+    expect(getPushSubscriptionMetadata).toHaveBeenCalledTimes(2)
+    expect(third.action).toBe('resubscribe')
+    expect(third.nextCache.keyVersion).toBe('v2')
+  })
+
   it('derive-handoff-state match -> subscribed action none', async () => {
     const subscription = fakeSubscription('https://push.example/known')
     const hash = await import('./endpoint-hash.ts').then(m => m.endpointHash(subscription.endpoint))

@@ -252,6 +252,15 @@ export function createActiveStreamOwner(): {
   }
 }
 
+// rm-283 residue (assess F2, 2026-10-07): generation counter for the module-level
+// state the loader-returned cleanup resets (bootstrap/launch/run-index). Each
+// defaultRuntimeLoader call captures the current value synchronously at entry;
+// the returned cleanup only resets module state while it is still the latest
+// generation, so a late-resolving dead instance cannot clobber a newer live
+// instance's initialized module state. Distinct from operator-run-index.js's
+// own _runIndexGeneration, which invalidates that module's pending inits.
+let _runtimeModuleGeneration = 0
+
 async function defaultRuntimeLoader(opts?: {
   endpointBase?: string
   fixtureSessionId?: string
@@ -260,6 +269,10 @@ async function defaultRuntimeLoader(opts?: {
   onRunLaunched?: (runId: string, card: HTMLElement) => void
   onStateChange?: (state: OperatorState) => void
 }): Promise<() => void> {
+  // rm-283 residue (assess F2, 2026-10-07): capture the module-generation counter
+  // SYNCHRONOUSLY at loader entry, before any await — a newer instance that mounts
+  // later must bump the counter before this instance's cleanup can observe it.
+  const myModuleGeneration = ++_runtimeModuleGeneration
   // rm-283: active-stream ownership is INSTANCE-scoped — one owner per loader
   // call (one per runtime instance), never module-shared, so a stale StrictMode
   // cleanup cannot close another instance's stream. See createActiveStreamOwner.
@@ -467,6 +480,13 @@ async function defaultRuntimeLoader(opts?: {
   return () => {
     // Close the stream handle owned by THIS runtime instance on cleanup.
     streamOwner.close()
+    // rm-283 residue (assess F2): only the LATEST loader generation may reset
+    // module state. A dead instance whose loader resolved late must not wipe a
+    // newer live instance's freshly initialized modules (bootstrap timers, launch
+    // form state, run-index selection/expansion tracking — including the
+    // _onSelectRun retention the #570 absorb made load-bearing). The instance-
+    // scoped streamOwner.close() above stays unconditional.
+    if (myModuleGeneration !== _runtimeModuleGeneration) return
     if (typeof streamMod.resetBootstrapState === 'function') {
       streamMod.resetBootstrapState()
     }
@@ -488,9 +508,12 @@ async function defaultRuntimeLoader(opts?: {
  *
  * One lifecycle owner: React calls this once when the shell is ready and calls
  * cleanup() on unmount or auth expiry. React Strict Mode double-effects are safe
- * because cleanup() is idempotent AND the active-stream handle is instance-scoped
+ * because cleanup() is idempotent, the active-stream handle is instance-scoped
  * (rm-283, createActiveStreamOwner) — a late first-mount cleanup can never close
- * the second mount's just-attached stream.
+ * the second mount's just-attached stream — and the loader cleanup guards the
+ * module-level resets behind a generation check (rm-283 residue, assess F2), so
+ * a dead first mount whose loader resolves after the second mount initialized
+ * cannot reset the live instance's module state either.
  *
  * @param opts - Runtime options including container, state change callback, and
  *               optional injectable runtime loader for testing.
