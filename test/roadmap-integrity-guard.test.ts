@@ -91,7 +91,12 @@ describe('rm-678 schema half: live ledger', () => {
     // merge) and rm-709 (detailsUrl https-only boundary) land
     // as-authored below the pin, so the max def id is unchanged
     // at 744 (240 defs).
-    expect(live.max).toBe(744)
+    // 2026-10-09: run 38e728540707 roadmap 3e077905 (repository-
+    // maintenance cycle:2, base 7055c52) minted rm-797 above the
+    // all-lineage ceiling rm-796 (d1a0b216's unlanded wall; in-flight
+    // wall claims span rm-780..rm-796) — census after edit 241 defs,
+    // 0 dups, max rm-797 (cycle-2 extension comment at the open tail).
+    expect(live.max).toBe(797)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {

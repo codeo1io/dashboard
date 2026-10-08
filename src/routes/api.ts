@@ -14,8 +14,14 @@ export type SnapshotProvider = () => AggregatorSnapshot
 // Client DTO — /api/monitoring
 //
 // The SPA is an untrusted display-only client. This DTO exposes ONLY what the
-// monitoring UI needs. Internal fields (node_id, owner, name, fetchedAt,
-// installation_id, redactedNodeIds, redactedDatabaseIds) are NEVER emitted.
+// monitoring UI needs: per repo — full_name (the owner/name identity the
+// monitoring UI renders; the rm-126 operator decision), discovery_channel,
+// and the status rollup (rollupState, failingChecks with its bounded drill-down
+// details, openPrCount, openIssueCount, openAlertCount, stale); snapshot-wide —
+// staleBanner, driftCount, enumerationIncomplete, refreshedAt, and the rm-156
+// watchdog pair (refreshDurationMs, refreshDegraded). Internal fields
+// (node_id, owner, name, fetchedAt, installation_id, redactedNodeIds,
+// redactedDatabaseIds) stay server-side and are never emitted.
 // ---------------------------------------------------------------------------
 
 interface MonitoringRepoStatusDto {
@@ -91,6 +97,9 @@ export function buildApiRouter(getSnapshot?: SnapshotProvider): Hono {
   const api = new Hono()
 
   api.get('/healthz', c => {
+    // Constant probe body or not, no intermediary may cache an API response —
+    // same no-store posture as /api/status and /api/monitoring below.
+    c.header('Cache-Control', 'no-store')
     return c.json({ok: true, lastFetch: null, rateLimit: null})
   })
 
@@ -108,9 +117,12 @@ export function buildApiRouter(getSnapshot?: SnapshotProvider): Hono {
   /**
    * BFF aggregation endpoint for the SPA monitoring view.
    *
-   * Returns a MINIMIZED client DTO — only the fields the monitoring UI needs.
-   * Internal fields (node_id, owner, name, fetchedAt, installation_id,
-   * redactedNodeIds, redactedDatabaseIds) are NEVER emitted to the SPA client.
+   * Returns a MINIMIZED client DTO — only the fields the monitoring UI needs
+   * (per repo: full_name, discovery_channel, status rollup; snapshot-wide:
+   * staleBanner, driftCount, enumerationIncomplete, refreshedAt, watchdog
+   * pair). Internal fields (node_id, owner, name, fetchedAt, installation_id,
+   * redactedNodeIds, redactedDatabaseIds) stay server-side — never emitted to
+   * the SPA client.
    *
    * Security invariants:
    * - Cache-Control: no-store — snapshot must never be cached by intermediaries.
