@@ -567,6 +567,59 @@ describe('resetLaunchState — closes launch-created stream handle', () => {
   })
 })
 
+describe('setLaunchStreamHandle — overwrite-safe stream lifecycle (rm-768)', () => {
+  it('closing the prior handle: a second attach on the legacy path closes the first exactly once', () => {
+    let aClose = 0
+    let bClose = 0
+    const closeA = () => {
+      aClose += 1
+    }
+    const closeB = () => {
+      bClose += 1
+    }
+    setLaunchStreamHandle({close: closeA})
+    setLaunchStreamHandle({close: closeB})
+    expect(aClose).toBe(1)
+    expect(bClose).toBe(0)
+    // Teardown contract unchanged: reset closes only the live handle, exactly once.
+    resetLaunchState()
+    resetLaunchState()
+    expect(aClose).toBe(1)
+    expect(bClose).toBe(1)
+  })
+
+  it('re-setting the same handle does not close it (idempotent handoff)', () => {
+    let closeCount = 0
+    const handle = {close: () => { closeCount++ }}
+    setLaunchStreamHandle(handle)
+    setLaunchStreamHandle(handle)
+    expect(closeCount).toBe(0)
+    resetLaunchState()
+    expect(closeCount).toBe(1)
+  })
+
+  it('a throwing prior close() is tolerated — the replacement still lands', () => {
+    let bClosed = false
+    const throwClose = () => {
+      throw new Error('stream already dead')
+    }
+    const closeB = () => {
+      bClosed = true
+    }
+    setLaunchStreamHandle({close: throwClose})
+    expect(() => setLaunchStreamHandle({close: closeB})).not.toThrow()
+    resetLaunchState()
+    expect(bClosed).toBe(true)
+  })
+
+  it('source: the legacy no-runtime branch still routes through setLaunchStreamHandle (seam is the only direct store)', async () => {
+    const fs = await import('node:fs/promises')
+    const src = await fs.readFile('public/operator-launch.js', 'utf8')
+    expect(src).toContain('setLaunchStreamHandle(streamHandle)')
+    expect(src).toMatch(/Overwrite-safe/)
+  })
+})
+
 describe('operator-launch — fixture endpoint base support', () => {
   it('buildLaunchClient export exists and is a function', async () => {
     const mod = await import('../public/operator-launch.js')

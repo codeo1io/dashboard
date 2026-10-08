@@ -412,15 +412,26 @@ export function setLaunchListenerController(controller, generation) {
 }
 
 /**
- * Set the launch-created stream handle.
+ * Set the launch-created stream handle (overwrite-safe).
  *
  * Called internally by initOperatorLaunch after a successful launch to track
  * the stream handle so resetLaunchState() can close it. Exported for testing
  * so tests can inject a fake handle without calling the DOM-touching initOperatorLaunch.
  *
+ * Overwrite-safe: replacing a stored handle closes the prior one exactly once
+ * (tolerating a throwing close), so a repeated legacy-path attach cannot leak
+ * the first stream's connection/timers. Re-setting the same handle is a no-op.
+ *
  * @param {{close(): void}} handle - The stream handle returned by initOperatorStream.
  */
 export function setLaunchStreamHandle(handle) {
+  if (_launchStreamHandle !== null && _launchStreamHandle !== handle) {
+    try {
+      _launchStreamHandle.close()
+    } catch {
+      // ignore close errors — same tolerance as resetLaunchState()
+    }
+  }
   _launchStreamHandle = handle
 }
 
@@ -742,6 +753,8 @@ export async function initOperatorLaunch(opts) {
             onRunLaunched(runId, card)
           } else {
             // Legacy path: no runtime callback — attach stream directly and store handle.
+            // Overwrite-safe by construction: setLaunchStreamHandle closes any prior
+            // handle, so a second legacy attach cannot leak the first stream.
             const statusEl = card.querySelector('[data-role="run-status"]')
             const streamHandle = initOperatorStream({runId, statusEl, noticeEl: sharedNoticeEl, endpointBase: opts?.endpointBase, fixtureSessionId: opts?.fixtureSessionId})
             setLaunchStreamHandle(streamHandle)

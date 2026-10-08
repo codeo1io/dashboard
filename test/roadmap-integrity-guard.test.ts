@@ -4,10 +4,11 @@
 // Mirrors the no-install census half in scripts/roadmap-census.ts.
 
 import {execFileSync} from 'node:child_process'
-import {readFileSync} from 'node:fs'
+import {readdirSync, readFileSync} from 'node:fs'
 import {join, resolve} from 'node:path'
+import process from 'node:process'
 import {describe, expect, it} from 'vitest'
-import {census, violations} from '../scripts/roadmap-census.ts'
+import {census, danglingCitations, PHANTOM_ALLOWLIST, violations} from '../scripts/roadmap-census.ts'
 
 const repoRoot = resolve(import.meta.dirname, '..')
 const roadmap = readFileSync(join(repoRoot, 'ROADMAP.md'), 'utf8')
@@ -62,7 +63,15 @@ describe('rm-678 schema half: live ledger', () => {
     // #570 minted rm-683, deduped into rm-744 — landed meanings
     // own ids — so the ceiling stays 744 and the 683 pin dies with
     // the duplicate def.
-    expect(live.max).toBe(744)
+    // 2026-10-08 run 4fcdb776a1e6 (repository-maintenance
+    // cycle:2, roadmap attempt 31aa993a — the run's cycle-2
+    // extension comment; its earlier '#38' cycle-1 ordinal was
+    // retracted at prioritize efad5d03 per the 23d39aa7 cycle-2
+    // precedent): minted rm-768 (setLaunchStreamHandle legacy
+    // leak) + rm-769 (rm-13640 citation-integrity) above the
+    // all-lineage file-max ceiling rm-767 (run-392bad29b3d3; bands
+    // rm-745..767 fully claimed fleet-wide) — pin bumped 744 -> 769.
+    expect(live.max).toBe(769)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
@@ -153,4 +162,39 @@ describe('rm-678 schema half: corruption fixture 3d07cf9', () => {
     expect(bad.defs).toBe(197)
     expect(bad.trailingWs).toBeGreaterThan(0)
   })
+})
+
+it('citation integrity — workflow attribution ids resolve or carry a recorded origin (rm-769)', () => {
+  // The recurring trip site: attribution comments in .github/workflows/*.yaml
+  // citing ids that have no def anywhere (extensions #11/#12/#13 tripped on
+  // exactly this class). Strict here because the workflow set is curated and
+  // CI-stable — every cited id must be defined in the live ledger or sit in
+  // PHANTOM_ALLOWLIST (which demands a first-hand origin trace per entry).
+  const defined = new Set(
+    roadmap
+      .split('\n')
+      .map(line => line.match(/^- id: `(rm-\d+)`/)?.[1])
+      .filter(id => id !== undefined),
+  )
+  const citedId = /(?<![a-z0-9-])rm-\d+\b/g
+  const workflowDir = join(process.cwd(), '.github', 'workflows')
+  for (const file of readdirSync(workflowDir).filter(name => name.endsWith('.yaml') || name.endsWith('.yml'))) {
+    const text = readFileSync(join(workflowDir, file), 'utf8')
+    const cited = [...new Set(text.match(citedId) ?? [])]
+    const dangling = cited.filter(id => !defined.has(id) && !PHANTOM_ALLOWLIST.has(id))
+    expect(dangling, `${file} cites ids with no def and no recorded phantom origin: ${dangling.join(', ')}`).toEqual([])
+  }
+})
+
+it('citation integrity — census classifies ledger citations; rm-13640 stays the one recorded phantom (rm-769)', () => {
+  // Report tier: the live ledger legitimately cites other lineages' ids
+  // (riders/merge comments), so the ROADMAP-wide set is REPORTED, never
+  // pinned — a hard pin would be red on any merge base. What IS pinned: the
+  // allowlist holds exactly the traced phantom, the classifier actually
+  // classifies it, and the census stays healthy with the tier present.
+  const classified = danglingCitations(roadmap)
+  expect([...PHANTOM_ALLOWLIST]).toEqual(['rm-13640'])
+  expect(classified.phantom).toEqual(['rm-13640'])
+  expect(classified.foreign.length).toBeGreaterThan(0)
+  expect(violations(census(roadmap))).toEqual([])
 })

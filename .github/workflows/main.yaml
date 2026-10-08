@@ -42,6 +42,12 @@ jobs:
     # precedent for ordinary jobs — self-kills at 20. The 35 ceiling is
     # load-bearing: raise it and validation's poll window closes first;
     # lower it and a legitimate cold lint dies.
+    #
+    # rm-13640 phantom-record pointer (rm-769, 2026-10-08): rm-13640 has no
+    # def in any lineage ledger — its ONE recorded origin is the
+    # PHANTOM_ALLOWLIST in scripts/roadmap-census.ts, enforced by
+    # test/roadmap-integrity-guard.test.ts; landed equivalents
+    # rm-279/rm-284/rm-486. Historical prose citing it stays verbatim.
     timeout-minutes: 35
     steps:
       - name: ⤵ Checkout Branch
