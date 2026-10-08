@@ -19,6 +19,14 @@
  * - Content-Type must be text/event-stream on 200; otherwise fail closed.
  * - Path must be a relative /operator/runs/ path; absolute URLs rejected.
  * - Buffer is capped at MAX_SSE_BUFFER_BYTES; overflow → fail closed.
+ *
+ * The wire-syntax layer — CRLF normalization, chunk appending with the
+ * pending-CR hold (rm-477), field collection with the multi-`data:` join
+ * (rm-484), and the UTF-8 byte-cap unit — lives in ONE shared source
+ * (rm-114): src/gateway/operator-sse-syntax.ts. The browser twin
+ * public/operator-stream.js embeds a generated copy of that module (guarded
+ * by test/operator-sse-syntax-divergence.test.ts); this file keeps only the
+ * semantic layer: typed frames, allowlists, contract gates.
  */
 
 import type {Logger} from '../logger.ts'
@@ -26,21 +34,22 @@ import type {OperatorApprovalFrame} from './operator-contract/approval-frame.ts'
 import type {ResetReason, RunStreamFrame} from './operator-contract/sse-frames.ts'
 import {isOperatorFailureKind} from './operator-contract/run-status.ts'
 import {OPERATOR_CONTRACT_VERSION} from './operator-contract/version.ts'
+import {
+  appendStreamChunk,
+  MAX_SSE_BUFFER_BYTES,
+  normalizeCrlf,
+  parseSseRecordFields,
+  sseUtf8ByteLength,
+} from './operator-sse-syntax.ts'
+
+// The cap constant is owned by the shared syntax layer (rm-114 single
+// definition site) — re-exported here so the historical import surface
+// (tests import it from this module) stays stable.
+export {MAX_SSE_BUFFER_BYTES}
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/**
- * Hard cap on the incremental SSE buffer, in UTF-8 BYTES. Overflow → fail closed.
- *
- * rm-114 units truth: the cap is enforced on a byte count maintained
- * incrementally (TextEncoder per appended/consumed fragment), NOT on
- * `buffer.length` — a JS string's length counts UTF-16 code units: astral
- * characters undercount 2× (3× worst case for 3-byte BMP chars), letting
- * multi-byte frames sail past a BYTES-named bound.
- */
-export const MAX_SSE_BUFFER_BYTES = 1_000_000
 
 // ---------------------------------------------------------------------------
 // Allowlists for value-gated fields
@@ -94,52 +103,31 @@ function isValidResetReason(value: unknown): value is ResetReason {
 }
 
 /**
- * Normalize CRLF and lone CR line endings to LF in an SSE buffer chunk.
- * Must be applied before searching for record boundaries.
- */
-function normalizeCrlf(text: string): string {
-  // Replace \r\n first (order matters — avoids double-replacing the \r)
-  return text.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
-}
-
-/**
  * Parse a single SSE record (the text between two blank lines) into a
  * typed RunStreamFrame or a typed parse failure.
+ *
+ * Record framing, line normalization, and field collection (including the
+ * multi-`data:` join, rm-484) come from the shared syntax layer
+ * (operator-sse-syntax.ts); this function is the semantic half — event-name
+ * dispatch, JSON object gate, allowlists, typed-frame construction.
  *
  * NO-ORACLE: error messages are fixed strings. They never echo, interpolate,
  * or stringify any part of the input.
  */
 function parseSseRecord(record: string): SseParseResult | null {
-  const lines = record.split('\n')
-  let eventName: string | undefined
-  let dataLine: string | undefined
-
-  for (const line of lines) {
-    if (line.startsWith(':')) {
-      // SSE comment (e.g. ": heartbeat") — skip
-      continue
-    }
-    if (line.startsWith('event:')) {
-      eventName = line.slice('event:'.length).trim()
-    } else if (line.startsWith('data:')) {
-      dataLine = line.slice('data:'.length).trim()
-    }
-  }
-
-  // A record with only comment lines produces no frame
-  if (eventName === undefined && dataLine === undefined) {
-    return null
-  }
+  const fields = parseSseRecordFields(record)
+  if (fields === null) return null // comment-only record (heartbeat)
+  const {eventName, data} = fields
 
   // A record with no event name is an unknown event
   if (eventName === undefined) {
     return {success: false, error: new Error('sse record missing event name')}
   }
 
-  // Parse the data field as JSON
+  // Parse the data field as JSON (rm-484: `data` is the multi-`data:` join)
   let parsed: unknown
   try {
-    parsed = JSON.parse(dataLine ?? 'null')
+    parsed = JSON.parse(data ?? 'null')
   } catch {
     return {success: false, error: new Error('sse record data is not valid JSON')}
   }
@@ -463,7 +451,6 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
     }
 
     const decoder = new TextDecoder()
-    const encoder = new TextEncoder()
     let buffer = ''
     let bufferBytes = 0
     let contractVerified = false
@@ -528,22 +515,12 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
         if (done) break
 
         if (value !== undefined) {
-          // rm-477: a chunk ending in CR must not be normalized yet — converting
-          // the lone CR to LF here terminates its line early, so the LF that
-          // opens the NEXT chunk forges a phantom record boundary and the frame
-          // is dropped without even a parse error. Hold a trailing CR back and
-          // let it normalize together with the following chunk.
-          let text = buffer + decoder.decode(value, {stream: true})
-          let held = ''
-          if (text.endsWith('\r')) {
-            held = '\r'
-            text = text.slice(0, -1)
-          }
-          // normalizeCrlf is idempotent on already-normalized text, so
-          // re-normalizing the concatenation is safe; only the junction
-          // between a held CR and a following LF changes.
-          buffer = normalizeCrlf(text) + held
-          bufferBytes = encoder.encode(buffer).length
+          // Shared syntax layer (rm-114): appends the decoded chunk with the
+          // rm-477 pending-CR hold and CRLF normalization, and accounts the
+          // buffer in UTF-8 bytes — one definition site, shared with the
+          // browser twin (public/operator-stream.js).
+          buffer = appendStreamChunk(buffer, decoder.decode(value, {stream: true}))
+          bufferBytes = sseUtf8ByteLength(buffer)
         }
 
         // Hard buffer cap (UTF-8 bytes, rm-114) — fail closed if exceeded without a boundary
@@ -559,7 +536,7 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
         while (boundary !== -1) {
           const record = buffer.slice(0, boundary)
           buffer = buffer.slice(boundary + 2)
-          bufferBytes -= encoder.encode(`${record}\n\n`).length
+          bufferBytes -= sseUtf8ByteLength(`${record}\n\n`)
 
           const results = parseSseChunk(`${record}\n\n`)
           for (const result of results) {
