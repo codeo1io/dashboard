@@ -92,12 +92,23 @@ function MonitoringBoard({data}: {data: MonitoringData}) {
   const redRepos = data.repos.filter(repo => repo.status.rollupState === 'red' || repo.status.failingChecks > 0)
   const remaining = data.repos.length - redRepos.length
   const refreshedAt = data.refreshedAt === null ? null : new Date(data.refreshedAt).toLocaleString()
+  // rm-107: measured duration of the last walk for the degraded banner — null
+  // only when no cycle has ever stamped a snapshot (never while degraded).
+  const degradedDuration = data.refreshDurationMs === null ? null : `${(data.refreshDurationMs / 1000).toFixed(1)}s`
 
   return (
     <div data-testid="monitoring-board" style={{display: 'flex', flexDirection: 'column', gap: 'var(--space-3)'}}>
       {data.staleBanner && (
         <div data-testid="monitoring-stale-banner" className="operator-warning-panel" role="status">
           Data is stale — showing the last known state. Counts may be outdated.
+        </div>
+      )}
+
+      {data.refreshDegraded && (
+        <div data-testid="monitoring-refresh-degraded-banner" className="operator-warning-panel" role="status">
+          Refresh is degraded — the last refresh took{' '}
+          {degradedDuration ?? 'longer than expected'}, over the watchdog ceiling.
+          Counts are current as of the last completed walk but may lag behind live activity.
         </div>
       )}
 
