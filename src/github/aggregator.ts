@@ -649,11 +649,16 @@ function extractFailingCheckDetails(target: GraphqlCommitTarget | null | undefin
     const workflowTitle = suite.workflowRun?.displayTitle ?? null
     const runAttempt = suite.workflowRun?.runAttempt ?? null
     for (const run of suite.checkRuns?.nodes ?? []) {
+      // https://-only detailsUrl at the boundary (mirrors the enforced link
+      // filter in web/src/api/listener.ts): details_url is attacker-influenced
+      // repo content — javascript:/data:/relative values must never reach a
+      // client; '' stays the legal no-link value.
+      const detailsUrl = run.detailsUrl ?? ''
       details.push({
         workflowTitle,
         runAttempt,
         checkName: run.name ?? '(unnamed check)',
-        detailsUrl: run.detailsUrl ?? '',
+        detailsUrl: detailsUrl.startsWith('https://') ? detailsUrl : '',
       })
       if (details.length >= FAILING_CHECK_DETAILS_CAP) return details
     }
