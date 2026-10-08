@@ -91,7 +91,28 @@ describe('rm-678 schema half: live ledger', () => {
     // merge) and rm-709 (detailsUrl https-only boundary) land
     // as-authored below the pin, so the max def id is unchanged
     // at 744 (240 defs).
-    expect(live.max).toBe(744)
+    // 2026-10-08 extension #30 (run 788aa489c1d5): three mints above the
+    // all-lineage sibling ceiling rm-758 (745-750 5bd710d8, 751-754
+    // f266ce30, 755-758 double-claimed with divergent meanings by 89ebbf49
+    // and 9fd8bcad64a8 — reconcile by content at their integrates) —
+    // 235 → 238 defs, max rm-761.
+    // 2026-10-08 compound #12 (run 788aa489c1d5): one mint above the
+    // live-reprobed sibling ceiling rm-777 (392bad29b3d3 + a653567e at
+    // 768, c37a8576 at 771, 5bd710d8ff89 + 405e9004bd5a at 777) —
+    // 238 → 239 defs, max rm-778.
+    // 2026-10-09 integrate of run 788aa489c1d5 (conflict case
+    // 366f6059, integration 79dc3dcaec7b): that run was authored at
+    // base 9aceea8 (235 defs) while main moved through the 6277460e
+    // and c026a644 integrations — the two mints stacks above are
+    // the run's at-write counts against its own base, preserved
+    // verbatim. All four of its defs (rm-759 snapshot read-before-
+    // bound gate, rm-760 soak-cut dep refresh, rm-761 pnpm/action-
+    // setup re-pin, rm-778 conductor/ci-* stale-ref sweep) are
+    // collision-free against the landed ledger (main's additions
+    // all sit at/below rm-744) and land as-authored, so the union
+    // census is 240 + 4 = 244 defs with the ceiling moving to
+    // rm-778 — pin 744 → 778 atomically with this landing.
+    expect(live.max).toBe(778)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {

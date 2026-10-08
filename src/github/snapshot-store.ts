@@ -14,7 +14,9 @@
  *   (empty boot, exactly the pre-bridge contract).
  * - `persist()`: any error is logged and swallowed; refresh continues.
  * - Size-bounded: files above {@link MAX_SNAPSHOT_BYTES} are neither written
- *   nor loaded, so a runaway snapshot can't fill the disk.
+ *   nor loaded (stat-checked before the read, so an oversized file is never
+ *   buffered into memory — the in-memory byte bound stays as the second
+ *   guard), so a runaway snapshot can't fill the disk.
  *
  * Atomicity: persist writes to `<path>.tmp` then renames over the target, so
  * a crash mid-write can never leave a truncated file that the next boot
@@ -23,7 +25,7 @@
 
 import type {AggregatorSnapshot, SnapshotStore} from './aggregator.ts'
 import {Buffer} from 'node:buffer'
-import {readFileSync, renameSync, writeFileSync} from 'node:fs'
+import {readFileSync, renameSync, statSync, writeFileSync} from 'node:fs'
 import {logger} from '../logger.ts'
 
 /** 1 MiB — snapshots are repo-count * row-size bounded well under this. */
@@ -98,6 +100,17 @@ export function createFileSnapshotStore(path: string | undefined): SnapshotStore
     load(): AggregatorSnapshot | null {
       let raw: string
       try {
+        // Size-bound BEFORE the read (rm-759): a tampered/oversized file is
+        // rejected by stat and never buffered into memory. The in-memory
+        // byte bound below stays as the second guard against a writer that
+        // grows the file between stat and read.
+        const size = statSync(resolved).size
+        if (size > MAX_SNAPSHOT_BYTES) {
+          logPersistProblem('Snapshot cache exceeds size bound; ignoring (fail-open)', resolved, {
+            bytes: size,
+          })
+          return null
+        }
         raw = readFileSync(resolved, 'utf8')
       } catch {
         // Missing/unreadable — normal on first boot; stay quiet + fail open.
