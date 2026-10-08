@@ -135,7 +135,18 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
       return { ok: false, reason: 'unauthenticated' }
     }
 
-    const data = await res.json()
+    let data: unknown
+    try {
+      data = await res.json()
+    } catch (err) {
+      // rm-790: a 2xx whose body is not valid JSON is a CONTRACT regression
+      // on our side of the wire (wrong-route HTML, proxy interception, a
+      // serialization change) — drift, not a network outage the operator
+      // should retry through. A client-side abort during the body read is
+      // rethrown so the outer catch keeps its 'timeout' classification.
+      if (err instanceof DOMException && err.name === 'AbortError') throw err
+      return {ok: false, reason: 'contract-drift'}
+    }
     if (!isPlainObject(data) || !Array.isArray(data.repos)) return {ok: false, reason: 'contract-drift'}
     if (typeof data.staleBanner !== 'boolean' || typeof data.driftCount !== 'number') {
       return {ok: false, reason: 'contract-drift'}

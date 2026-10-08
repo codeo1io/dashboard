@@ -6,7 +6,7 @@
  */
 import type {Result} from '../result.ts'
 import {Buffer} from 'node:buffer'
-import {createHmac, timingSafeEqual} from 'node:crypto'
+import {createHash, createHmac, timingSafeEqual} from 'node:crypto'
 import {err, ok} from '../result.ts'
 
 export interface IngestAuthInput {
@@ -22,11 +22,30 @@ const SIGNATURE_RE = /^sha256=([\da-f]+)$/i
 const DEFAULT_WINDOW_SECONDS = 300
 
 /**
+ * The authenticated-delivery variant granted by this module (rm-215): the
+ * only ingest auth scheme today. A closed literal type so the store column
+ * and the wire DTO share one vocabulary; new schemes mint new literals.
+ */
+export type IngestVariant = 'hmac-sha256-v1'
+
+/**
+ * Success payload of `verifyIngestSignature` (rm-215): delivery evidence for
+ * persistence — which scheme authenticated the delivery, plus a plain SHA-256
+ * digest of the exact body bytes that were signature-verified. The digest is
+ * unkeyed evidence, not an auth artifact; verification semantics (timing-safe
+ * compare, fixed content-free error reasons) are unchanged.
+ */
+export interface IngestAuthSuccess {
+  readonly variant: IngestVariant
+  readonly rawDigest: string
+}
+
+/**
  * Verifies the `x-listener-timestamp` / `x-listener-signature` HMAC pair over
  * the raw request body. Constant-time comparison via `timingSafeEqual`
  * (length-guarded to avoid a throw on mismatched lengths).
  */
-export function verifyIngestSignature(input: IngestAuthInput): Result<true, Error> {
+export function verifyIngestSignature(input: IngestAuthInput): Result<IngestAuthSuccess, Error> {
   const windowSeconds = input.windowSeconds ?? DEFAULT_WINDOW_SECONDS
 
   if (input.timestampHeader === null || input.signatureHeader === null) {
@@ -63,5 +82,8 @@ export function verifyIngestSignature(input: IngestAuthInput): Result<true, Erro
     return err(new Error('unauthorized'))
   }
 
-  return ok(true)
+  return ok({
+    variant: 'hmac-sha256-v1',
+    rawDigest: createHash('sha256').update(input.rawBody, 'utf8').digest('hex'),
+  })
 }

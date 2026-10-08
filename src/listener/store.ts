@@ -4,14 +4,20 @@
  * See docs/contracts/operator-listener-channel.md — retention policy (500 rows
  * / 30 days) and idempotency (dedupeKey upsert) are enforced here.
  */
-import type {IngestMessage, ListenerLink, ListenerMessage, MessagesResponse} from './contract.ts'
+import type {
+  IngestEvidence,
+  IngestMessage,
+  ListenerLink,
+  ListenerMessage,
+  MessagesResponse,
+} from './contract.ts'
 import {randomUUID} from 'node:crypto'
 import {mkdirSync} from 'node:fs'
 import {dirname} from 'node:path'
 import {DatabaseSync} from 'node:sqlite'
 
 export interface ListenerStore {
-  insert: (input: IngestMessage) => {id: string; receivedAt: string}
+  insert: (input: IngestMessage, evidence: IngestEvidence) => {id: string; receivedAt: string}
   list: (opts: {unreadOnly?: boolean; limit?: number}) => MessagesResponse
   ack: (id: string) => {acked: boolean; readAt: string | null}
   ackAll: () => number
@@ -32,6 +38,9 @@ interface MessageRow {
   created_at: string
   received_at: string
   read_at: string | null
+  /** rm-215 delivery evidence; NULL on rows persisted before the columns existed. */
+  ingest_variant: string | null
+  raw_digest: string | null
 }
 
 const RETENTION_MAX_ROWS = 500
@@ -53,6 +62,11 @@ function rowToMessage(row: MessageRow): ListenerMessage {
     createdAt: row.created_at,
     receivedAt: row.received_at,
     read: row.read_at !== null,
+    // rm-215: pre-evidence rows surface as the 'legacy' display class instead
+    // of a fake variant. The cast is a boundary read: the column is only ever
+    // written with a closed-enum IngestEvidence.ingestVariant.
+    ingestVariant: (row.ingest_variant ?? 'legacy') as ListenerMessage['ingestVariant'],
+    rawDigest: row.raw_digest,
   }
 }
 
@@ -75,9 +89,23 @@ export function createListenerStore(dbPath: string): ListenerStore {
       dedupe_key TEXT NULL,
       created_at TEXT NOT NULL,
       received_at TEXT NOT NULL,
-      read_at TEXT NULL
+      read_at TEXT NULL,
+      ingest_variant TEXT NULL,
+      raw_digest TEXT NULL
     )
   `)
+  // rm-215: databases created before the delivery-evidence columns existed
+  // are migrated in place (NULL-backed → 'legacy' display class on read).
+  // Runs before the statements below are prepared so their column lists bind.
+  const columnNames = new Set(
+    (db.prepare('PRAGMA table_info(messages)').all() as unknown as {name: string}[]).map(c => c.name),
+  )
+  if (!columnNames.has('ingest_variant')) {
+    db.exec('ALTER TABLE messages ADD COLUMN ingest_variant TEXT NULL')
+  }
+  if (!columnNames.has('raw_digest')) {
+    db.exec('ALTER TABLE messages ADD COLUMN raw_digest TEXT NULL')
+  }
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_source_dedupe
       ON messages(source, dedupe_key)
@@ -86,12 +114,12 @@ export function createListenerStore(dbPath: string): ListenerStore {
 
   const findByDedupeStmt = db.prepare('SELECT id FROM messages WHERE source = ? AND dedupe_key = ?')
   const insertStmt = db.prepare(`
-    INSERT INTO messages (id, source, kind, severity, title, body, links, dedupe_key, created_at, received_at, read_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+    INSERT INTO messages (id, source, kind, severity, title, body, links, dedupe_key, created_at, received_at, read_at, ingest_variant, raw_digest)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
   `)
   const updateByIdStmt = db.prepare(`
     UPDATE messages
-    SET kind = ?, severity = ?, title = ?, body = ?, links = ?, created_at = ?, received_at = ?, read_at = messages.read_at
+    SET kind = ?, severity = ?, title = ?, body = ?, links = ?, created_at = ?, received_at = ?, read_at = messages.read_at, ingest_variant = ?, raw_digest = ?
     WHERE id = ?
   `)
   const selectAllStmt = db.prepare('SELECT * FROM messages ORDER BY received_at DESC LIMIT ?')
@@ -116,7 +144,7 @@ export function createListenerStore(dbPath: string): ListenerStore {
   // operator the list is a truncated view.
   let prunedTotal = 0
 
-  function insert(input: IngestMessage): {id: string; receivedAt: string} {
+  function insert(input: IngestMessage, evidence: IngestEvidence): {id: string; receivedAt: string} {
     const receivedAt = new Date().toISOString()
     const linksJson = JSON.stringify(input.links)
 
@@ -126,6 +154,8 @@ export function createListenerStore(dbPath: string): ListenerStore {
         // rm-169: replay (dedupe hit) refreshes content but PRESERVES read_at —
         // a redelivered webhook must not silently un-ack an operator-read
         // message. The SQL sets read_at = messages.read_at (no-op on itself).
+        // rm-215: the replay's evidence replaces the stored evidence so the
+        // digest always names the bytes of the LATEST verified delivery.
         updateByIdStmt.run(
           input.kind,
           input.severity,
@@ -134,6 +164,8 @@ export function createListenerStore(dbPath: string): ListenerStore {
           linksJson,
           input.createdAt,
           receivedAt,
+          evidence.ingestVariant,
+          evidence.rawDigest,
           existing.id,
         )
         prune()
@@ -153,6 +185,8 @@ export function createListenerStore(dbPath: string): ListenerStore {
       input.dedupeKey,
       input.createdAt,
       receivedAt,
+      evidence.ingestVariant,
+      evidence.rawDigest,
     )
     prune()
     return {id, receivedAt}

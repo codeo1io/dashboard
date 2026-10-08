@@ -129,6 +129,49 @@ describe('monitoring API', () => {
       expect(res).toEqual({ ok: false, reason: 'contract-drift' })
     })
 
+    describe('rm-790: malformed-JSON 2xx classification (drift, not network)', () => {
+      it('a 200 whose body is not valid JSON → contract-drift', async () => {
+        // An intercepting proxy or wrong-route handler answering 200 with an
+        // HTML page: res.json() throws and the pre-rm-790 catch blamed the
+        // network, routing a contract regression through the retry channel.
+        vi.mocked(fetch).mockResolvedValueOnce(
+          new Response('<html>interception page</html>', { status: 200, headers: { 'content-type': 'text/html' } }),
+        )
+        const res = await fetchMonitoring()
+        expect(res).toEqual({ ok: false, reason: 'contract-drift' })
+      })
+
+      it('a 200 with a valid body still parses (classification regression guard)', async () => {
+        const mockData = {
+          repos: [],
+          refreshDurationMs: 1234,
+          refreshDegraded: false,
+          staleBanner: false,
+          driftCount: 0,
+          enumerationIncomplete: null,
+          refreshedAt: null,
+        }
+        vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+        const res = await fetchMonitoring()
+        expect(res.ok).toBe(true)
+      })
+
+      it('a client-side abort DURING the body read stays timeout, not drift', async () => {
+        // The inner try/catch around res.json() rethrows the caller's
+        // AbortError so the outer catch keeps its 'timeout' classification.
+        const abortingBody = {
+          ok: true,
+          redirected: false,
+          json: async () => {
+            throw new DOMException('Aborted', 'AbortError')
+          },
+        } as unknown as Response
+        vi.mocked(fetch).mockResolvedValueOnce(abortingBody)
+        const res = await fetchMonitoring()
+        expect(res).toEqual({ ok: false, reason: 'timeout' })
+      })
+    })
+
     it('rm-709: a non-https detailsUrl is contract drift (https://-only mirror of the listener link filter)', async () => {
       const mockData = {
         repos: [

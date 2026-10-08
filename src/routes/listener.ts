@@ -134,7 +134,13 @@ export function buildListenerRouter(deps: ListenerRouterDeps): Hono {
       return c.json({error: parseResult.error.message}, 400)
     }
 
-    const {id, receivedAt} = deps.store.insert(parseResult.data)
+    // rm-215: thread the auth result's delivery evidence (verified-body digest
+    // + auth scheme) into persistence so client-side parse drops are
+    // attributable to the delivery that produced them.
+    const {id, receivedAt} = deps.store.insert(parseResult.data, {
+      ingestVariant: authResult.data.variant,
+      rawDigest: authResult.data.rawDigest,
+    })
     return c.json({id, receivedAt}, 202)
   })
 
