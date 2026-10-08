@@ -477,7 +477,7 @@ jobs:
           for TAG in "$CALVER" "sha-${SHORT_SHA}"; do
             got=$(docker buildx imagetools inspect \
               "ghcr.io/${{ github.repository }}:$TAG" \
-              | awk '/^Digest:/{print $2; exit}')
+              | awk '/^Digest:/{d=$2} END{print d}')
             if [ "$got" != "${{ steps.build.outputs.digest }}" ]; then
               echo "DIGEST MISMATCH on $TAG: got=$got expected=${{ steps.build.outputs.digest }}"
               exit 1
@@ -515,7 +515,7 @@ jobs:
                 --tag "ghcr.io/${{ github.repository }}:latest" "$SRC" \
                 && got="$(docker buildx imagetools inspect \
                   "ghcr.io/${{ github.repository }}:latest" \
-                  | awk '/^Digest:/{print $2; exit}')" \
+                  | awk '/^Digest:/{d=$2} END{print d}')" \
                 && [ "$got" = "${{ steps.build.outputs.digest }}" ]; then
               verified=1
               break
