@@ -57,6 +57,11 @@ describe('rm-678 schema half: live ledger', () => {
     // ids — minted above the all-lineage sibling ceiling rm-743
     // (def-line scan 2026-10-08), which sits above main's prior
     // b2a3ae9b landed ceiling rm-692 (conflict case 8921afd9).
+    // 2026-10-08 integrate of run 02238c80 (conflict case
+    // e6d1fba4): that run's parallel absorb of the SAME upstream
+    // #570 minted rm-683, deduped into rm-744 — landed meanings
+    // own ids — so the ceiling stays 744 and the 683 pin dies with
+    // the duplicate def.
     expect(live.max).toBe(744)
   })
 
