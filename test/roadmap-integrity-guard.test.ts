@@ -79,7 +79,15 @@ describe('rm-678 schema half: live ledger', () => {
     // folds by content into the landed rm-698 trixie re-pin
     // (a94d0659 via ad8f21e), its def dying with the fold, so
     // the max def id is unchanged at 744 (237 defs).
-    expect(live.max).toBe(744)
+    // 2026-10-09 repository-maintenance cycle:2 run 0cde5807f659
+    // (roadmap attempt 29abc342): three mints rm-784/rm-785/rm-786
+    // (cve-tripwire NODE_IMAGE first-fire red, stale local
+    // autonomy-upstream/main short-ref trap, push client CSRF-retry
+    // 'this' destructure fragility) take the ceiling 744 -> 786
+    // (237 -> 240 defs), minted above the live all-lineage
+    // ceiling rm-783 (fleet worktree def-line scan 2026-10-09,
+    // remote conductor refs to rm-778).
+    expect(live.max).toBe(786)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
