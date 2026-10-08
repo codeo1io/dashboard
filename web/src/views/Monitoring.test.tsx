@@ -35,6 +35,8 @@ function makeRepo(
 function makeData(overrides: Partial<MonitoringData> = {}): MonitoringData {
   return {
     repos: [],
+    refreshDurationMs: 1234,
+    refreshDegraded: false,
     staleBanner: false,
     driftCount: 0,
     enumerationIncomplete: null,
@@ -85,6 +87,40 @@ describe('Monitoring (rm-192 red-repo drill-down)', () => {
     expect(screen.getByTestId('monitoring-all-clear')).toBeInTheDocument()
     expect(screen.queryByTestId('monitoring-red-repo')).not.toBeInTheDocument()
     expect(screen.getByText('1 tracked repository', {exact: false})).toBeInTheDocument()
+  })
+
+  it('rm-107: renders the refresh-degraded banner when the watchdog flags a slow walk, independent of staleness', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({refreshDegraded: true, refreshDurationMs: 95000})
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.getByTestId('monitoring-board')).toBeInTheDocument()
+    expect(screen.getByTestId('monitoring-refresh-degraded-banner')).toBeInTheDocument()
+    // The measured walk duration surfaces in the banner (95,000 ms → 95.0s).
+    expect(screen.getByTestId('monitoring-refresh-degraded-banner')).toHaveTextContent('95.0s')
+    // Degraded is orthogonal to stale — neither banner implies the other.
+    expect(screen.queryByTestId('monitoring-stale-banner')).not.toBeInTheDocument()
+  })
+
+  it('rm-107: no degraded banner on a healthy walk (whitelist pair present, flag false)', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({refreshDegraded: false, refreshDurationMs: 1200})
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.getByTestId('monitoring-board')).toBeInTheDocument()
+    expect(screen.queryByTestId('monitoring-refresh-degraded-banner')).not.toBeInTheDocument()
   })
 
   it('renders a red repo with check name link, workflow title, and run attempt', async () => {
