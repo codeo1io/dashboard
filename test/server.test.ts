@@ -605,6 +605,13 @@ describe('GET /.well-known/security.txt — RFC 9116 security contact', () => {
     const now = Date.now()
     expect(expires).toBeGreaterThan(now)
     expect(expires).toBeLessThanOrEqual(now + 366 * 24 * 60 * 60 * 1000)
+    // rm-673: the quarterly refresh duty (rm-245 family) is CI-enforced — one
+    // missed refresh cycle must fail here well before RFC 9116 validity can
+    // lapse. The runway floor is 60 days: the field is refreshed on a ~90-day
+    // cadence, so a green run always carries roughly a quarter of margin,
+    // while one skipped cycle drops the runway below 60 days long before the
+    // timestamp itself goes stale or this suite's year-out bound can fire.
+    expect(expires - now).toBeGreaterThanOrEqual(60 * 24 * 60 * 60 * 1000)
   })
 
   it('returns the identical body for an authenticated operator session', async () => {

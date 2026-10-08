@@ -44,8 +44,15 @@ const FORBIDDEN_REQUEST_VERBS = /^(?:POST|PUT|PATCH|DELETE)\b/i
 // Write-verb call families on Octokit receivers. Readonly Octokit APIs are
 // uniformly `get*`/`list*`; any create/update/delete/add/remove/merge/edit/
 // cancel/rerun/dismiss call name is a write surface regardless of receiver.
+// rm-756: the verb stem may be the COMPLETE last segment (a bare `delete`/
+// `merge` call was chain-matched but verb-shape-missed before), and the
+// write-method set covers the non-stem families that carry no verb prefix
+// (rerequest/upload/approve/start/redeliver/default — real mutating Octokit
+// methods). `request` is deliberately NOT a stem: it prefixes every
+// sanctioned `.request('GET …')` literal and is policed by the dedicated
+// write-request-literal detector above.
 const WRITE_CALL_NAME =
-  /^(?:create|update|delete|add|remove|set|merge|edit|cancel|rerun|dismiss|close|reopen|lock|unlock|archive|transfer|enable|disable)[A-Z]/u
+  /^(?:create|update|delete|add|remove|set|merge|edit|cancel|rerun|dismiss|close|reopen|lock|unlock|archive|transfer|enable|disable|rerequest|upload|approve|start|redeliver|default)(?:$|[A-Z])/u
 
 // Receivers whose method calls are Octokit API surfaces. Static scanning
 // without type info cannot know every receiver, so this matches call chains
@@ -162,6 +169,7 @@ describe('read-only invariant guard (rm-649)', () => {
       `import { downloadWikiTarball } from '@fro-bot/wiki-sync'`,
       `await octokit.request('PUT /repos/{owner}/{repo}/git/refs', { ref })`,
       `const gh = await gh.repos.createOrUpdateFileContents({...})`,
+      `await gh.repos.delete({owner, repo})`,
       `export const P = { contents: 'write' } as const`,
     ].join('\n')
     const violations = detect(fixture, PERMISSION_FILE) // permission scope check rides the fixture file name
@@ -172,6 +180,30 @@ describe('read-only invariant guard (rm-649)', () => {
       'write-permission-scope',
       'write-request-literal',
     ])
+  })
+
+  it('rm-756 red-first corpus: bare-verb last segments and non-stem write methods must be flagged', () => {
+    // Two verb-shape escape classes passed BOTH layered matchers before
+    // rm-756: (a) a bare verb as the COMPLETE last segment — the chain
+    // matcher reached `gh.repos.delete(` but the verb shape required a
+    // capitalized continuation; (b) write methods with no verb-stem prefix
+    // on namespaces outside the method-form guard's list
+    // (`octokit.checks.rerequestRun(`, `octokit.codeScanning.uploadSarif(`).
+    // Every shape below is a real mutating Octokit REST method.
+    const corpus = [
+      `await gh.repos.delete({owner, repo})`,
+      `await gh.pulls.merge({pull_number: 1})`,
+      `await octokit.checks.rerequestRun({owner, repo, check_run_id})`,
+      `await octokit.checks.rerequestSuite({owner, repo, check_suite_id})`,
+      `await octokit.codeScanning.uploadSarif({owner, repo})`,
+      `await octokit.codeScanning.defaultSetupUpdate({owner, repo})`,
+      `await octokit.migrations.startForOrg({org})`,
+      `await octokit.actions.approveWorkflowRun({owner, repo, workflow_id})`,
+    ]
+    for (const line of corpus) {
+      const hits = detect(line, 'seeded.ts').filter(v => v.detector === 'write-call-family')
+      expect(hits, `escape shape must be flagged: ${line}`).toHaveLength(1)
+    }
   })
 
   it('src/ contains no write-capability surface', () => {
