@@ -17,6 +17,8 @@ describe('monitoring API', () => {
     it('returns parsed data on success', async () => {
       const mockData = {
         repos: [],
+        refreshDurationMs: 1234,
+        refreshDegraded: false,
         staleBanner: false,
         driftCount: 0,
         enumerationIncomplete: null,
@@ -31,6 +33,58 @@ describe('monitoring API', () => {
         expect(res.data.staleBanner).toBe(false)
         expect(res.data.driftCount).toBe(0)
       }
+    })
+
+    it("rm-107: the rm-156 watchdog pair survives the DTO whitelist (refreshDurationMs null is legal, refreshDegraded passes through)", async () => {
+      const mockData = {
+        repos: [],
+        refreshDurationMs: null,
+        refreshDegraded: true,
+        staleBanner: true,
+        driftCount: 2,
+        enumerationIncomplete: 1,
+        refreshedAt: 1742000000000,
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+      const res = await fetchMonitoring()
+      expect(res.ok).toBe(true)
+      if (res.ok) {
+        expect(res.data.refreshDurationMs).toBeNull()
+        expect(res.data.refreshDegraded).toBe(true)
+      }
+    })
+
+    it('rm-107: a payload missing the watchdog pair is contract-drift (the whitelist must not silently hide a degraded walk)', async () => {
+      const mockData = {
+        repos: [],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+      const res = await fetchMonitoring()
+      expect(res).toEqual({ ok: false, reason: 'contract-drift' })
+    })
+
+    it.each([
+      ['refreshDegraded is a string', {refreshDegraded: 'no'}],
+      ['refreshDurationMs is a string', {refreshDurationMs: '1234'}],
+    ])('rm-107: %s → contract-drift', async (_label, overrides) => {
+      const mockData = {
+        repos: [],
+        refreshDurationMs: 1234,
+        refreshDegraded: false,
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+        ...overrides,
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+      const res = await fetchMonitoring()
+      expect(res).toEqual({ ok: false, reason: 'contract-drift' })
     })
 
     it('rm-273: 401 maps to unauthenticated, not network (session expiry is not a transport failure)', async () => {

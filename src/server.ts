@@ -121,6 +121,22 @@ Expires: 2026-12-24T00:00:00.000Z
 Preferred-Languages: en
 `
 
+/**
+ * RFC 9309 robots policy served at /robots.txt (rm-713).
+ *
+ * The dashboard is an authenticated single-operator surface — there is no
+ * public content worth indexing, and the operator-auth/operator-proxy paths
+ * must not be crawled. A whole-site Disallow is the honest policy: well-behaved
+ * crawlers stop here instead of bouncing off the auth redirect, and the
+ * well-known documents that ARE public (/api/healthz, /.well-known/security.txt)
+ * remain reachable regardless (robots.txt is advisory, not an access control).
+ * Like SECURITY_TXT above: served inline so it carries no SPA build dependency
+ * and stays byte-identical across deployment postures.
+ */
+const ROBOTS_TXT = `User-agent: *
+Disallow: /
+`
+
 /** Simple fixed-window in-memory rate limiter */
 const rateLimitMap = new Map<string, RateLimitEntry>()
 const RATE_LIMIT_WINDOW_MS = 60_000 // 1 minute
@@ -863,6 +879,12 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     // /.well-known/* sibling silently inherits public access.
     path === '/.well-known/security.txt' ||
     path === '/.well-known/security.txt/' ||
+    // RFC 9309 robots policy — public in every deployment posture, like the
+    // security.txt pair above (the policy exists to stop crawlers BEFORE they
+    // hit auth). Exact match only (plus the trailing-slash variant) — /robots*
+    // siblings stay auth-gated.
+    path === '/robots.txt' ||
+    path === '/robots.txt/' ||
     // Listener machine-write path — public-before-session; HMAC-gated by the
     // route itself (see routes/listener.ts). The read/ack paths
     // (/api/listener/messages*, /api/listener/ack-all) are intentionally NOT
@@ -1309,6 +1331,18 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   )
   app.get('/.well-known/security.txt/', c =>
     c.text(SECURITY_TXT, 200, {'Content-Type': 'text/plain; charset=utf-8'}),
+  )
+
+  // ── RFC 9309 robots policy ──────────────────────────────────────
+  // Whole-site Disallow (see ROBOTS_TXT above): authenticated single-operator
+  // surface, nothing to index. Public via isPublicPath in both auth branches;
+  // served inline like security.txt — no web/dist dependency, byte-identical
+  // across deployment postures (rm-713).
+  app.get('/robots.txt', c =>
+    c.text(ROBOTS_TXT, 200, {'Content-Type': 'text/plain; charset=utf-8'}),
+  )
+  app.get('/robots.txt/', c =>
+    c.text(ROBOTS_TXT, 200, {'Content-Type': 'text/plain; charset=utf-8'}),
   )
 
   // Warn early if the SPA build artifact is missing (GET / will 404 silently).
