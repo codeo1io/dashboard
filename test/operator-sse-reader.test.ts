@@ -2,8 +2,9 @@
  * Tests for the fetch-based SSE reader for the operator run stream.
  *
  * Security invariants tested:
- * - Contract-version gate: first frame must be 'ready' with matching version;
- *   mismatched version triggers fail-closed drift error, no status frames dispatched.
+ * - Contract-version gate: first frame must be 'ready' with a version inside
+ *   the supported-versions window (rm-157); anything outside triggers a
+ *   fail-closed drift error, no status frames dispatched.
  * - 404 → typed not-found error, no body parsing for cause.
  * - 429 → typed rate-limited error.
  * - Network throw / abort → network-style error, fail closed.
@@ -2285,5 +2286,229 @@ describe('fixture SSE scenarios — serializeScenarioToSse output format', () =>
 
   it('unknown scenario name throws a clear error', () => {
     expect(() => serializeScenarioToSse('not-a-real-scenario', FIXTURE_RUN_ID_FOR_TESTS)).toThrow()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-157: contract 1.8.0 absorb + supported-versions window.
+// checkoutProvenance / checkoutPreparation are parsed field-by-field by the
+// vendored validators; malformed or absent values become absent and never
+// reject the frame. The window accepts {1.6.0, 1.8.0} and fails closed for
+// everything else. Adapted from upstream PR #573 (a82871d) test scenarios.
+// ---------------------------------------------------------------------------
+
+const SHA_A = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+const SHA_B = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+const SHA_C = 'cccccccccccccccccccccccccccccccccccccccc'
+
+const observedProvenance = {
+  kind: 'observed',
+  observation: {
+    head: {kind: 'detached', sha: SHA_A},
+    worktree: {kind: 'dirty', staged: 1, unstaged: 2, untracked: 3, conflicted: 0},
+    operationInProgress: 'none',
+    observedAt: '2026-10-07T00:00:00Z',
+  },
+  remote: {
+    kind: 'checked',
+    defaultBranch: 'main',
+    sha: SHA_B,
+    checkedAt: '2026-10-07T00:00:01Z',
+    change: 'fast-forward',
+    fromSha: SHA_C,
+  },
+}
+
+const unavailableProvenance = {kind: 'unavailable', remote: {kind: 'not-checked'}}
+
+const refusedObstructedPreparation = {
+  outcome: 'refused',
+  reason: 'obstructed',
+  obstructions: [{path: 'pkg/blocked', kind: 'exact-conflict'}],
+}
+
+const failedPreparation = {
+  outcome: 'failed',
+  reason: 'fetch-timeout',
+  mutationStarted: 'possibly',
+  permanent: true,
+}
+
+function statusText(extra: Record<string, unknown>, status = 'running', phase = 'EXECUTING'): string {
+  const payload = {
+    runId: 'run-001',
+    entityRef: 'fro-bot/agent',
+    surface: 'github',
+    phase,
+    status,
+    startedAt: '2026-10-07T00:00:00Z',
+    stale: false,
+    ...extra,
+  }
+  return `event: status\ndata: ${JSON.stringify(payload)}\n\n`
+}
+
+function firstStatusData(text: string) {
+  const results = parseSseChunk(text)
+  const first = results[0]
+  if (!first?.success || first.frame.type !== 'status') {
+    throw new Error(`expected a successful status frame, got: ${JSON.stringify(results[0])}`)
+  }
+  return first.frame.data
+}
+
+describe('parseSseChunk — rm-157 contract 1.8.0 soft fields', () => {
+  it('carries a valid observed provenance (detached, dirty, fast-forward remote) on the status frame', () => {
+    const data = firstStatusData(statusText({checkoutProvenance: observedProvenance}))
+    expect(data.checkoutProvenance).toEqual(observedProvenance)
+  })
+
+  it('carries an unavailable provenance', () => {
+    const data = firstStatusData(statusText({checkoutProvenance: unavailableProvenance}))
+    expect(data.checkoutProvenance).toEqual(unavailableProvenance)
+  })
+
+  it('drops a provenance whose head SHA is 39 characters but still accepts the frame', () => {
+    const malformed = {
+      ...observedProvenance,
+      observation: {
+        ...observedProvenance.observation,
+        head: {kind: 'detached', sha: SHA_A.slice(0, 39)},
+      },
+    }
+    const data = firstStatusData(statusText({checkoutProvenance: malformed}))
+    expect(data.checkoutProvenance).toBeUndefined()
+  })
+
+  it('drops a provenance with a fast-forward whose fromSha equals the remote sha', () => {
+    const malformed = structuredClone(observedProvenance)
+    if (malformed.remote.kind === 'checked' && malformed.remote.change === 'fast-forward') {
+      malformed.remote.fromSha = SHA_B
+    }
+    const data = firstStatusData(statusText({checkoutProvenance: malformed}))
+    expect(data.checkoutProvenance).toBeUndefined()
+  })
+
+  it('drops a provenance with a negative untracked count or an unknown operation', () => {
+    const badCount = structuredClone(observedProvenance)
+    if (badCount.observation.worktree.kind === 'dirty') badCount.observation.worktree.untracked = -1
+    expect(firstStatusData(statusText({checkoutProvenance: badCount})).checkoutProvenance).toBeUndefined()
+
+    const badOp = structuredClone(observedProvenance)
+    badOp.observation.operationInProgress = 'not-an-operation'
+    expect(firstStatusData(statusText({checkoutProvenance: badOp})).checkoutProvenance).toBeUndefined()
+  })
+
+  it('omits the key entirely when provenance is absent', () => {
+    const data = firstStatusData(statusText({}))
+    expect('checkoutProvenance' in data).toBe(false)
+  })
+
+  it('returns only contract fields, dropping extra provenance keys including a parsed __proto__', () => {
+    const payload = {
+      ...observedProvenance,
+      extraKey: 'should-not-survive',
+      __proto__: {polluted: true},
+    }
+    const data = firstStatusData(statusText({checkoutProvenance: payload}))
+    expect(data.checkoutProvenance).toEqual(observedProvenance)
+    expect(Object.getPrototypeOf(data.checkoutProvenance as object)).toBe(Object.prototype)
+  })
+
+  it('carries a refused obstructed preparation on a FAILED frame with no failureKind', () => {
+    const data = firstStatusData(statusText({checkoutPreparation: refusedObstructedPreparation}, 'failed', 'FAILED'))
+    expect(data.checkoutPreparation).toEqual(refusedObstructedPreparation)
+    expect('failureKind' in data).toBe(false)
+  })
+
+  it('carries a failed preparation and both soft fields together with a failureKind', () => {
+    const data = firstStatusData(
+      statusText(
+        {
+          failureKind: 'workspace-unavailable',
+          checkoutProvenance: observedProvenance,
+          checkoutPreparation: failedPreparation,
+        },
+        'failed',
+        'FAILED',
+      ),
+    )
+    expect(data.failureKind).toBe('workspace-unavailable')
+    expect(data.checkoutProvenance).toEqual(observedProvenance)
+    expect(data.checkoutPreparation).toEqual(failedPreparation)
+  })
+
+  it('drops malformed preparations without rejecting the frame or losing the failureKind', () => {
+    const data = firstStatusData(
+      statusText({failureKind: 'checkout-substituted', checkoutPreparation: {outcome: 'refused', reason: 'nope'}}, 'failed', 'FAILED'),
+    )
+    expect(data.failureKind).toBe('checkout-substituted')
+    expect(data.checkoutPreparation).toBeUndefined()
+  })
+
+  it('keeps a valid provenance when only the preparation is malformed, and the reverse', () => {
+    const provenOnly = firstStatusData(
+      statusText({checkoutProvenance: observedProvenance, checkoutPreparation: {outcome: 'failed'}}, 'failed', 'FAILED'),
+    )
+    expect(provenOnly.checkoutProvenance).toEqual(observedProvenance)
+    expect(provenOnly.checkoutPreparation).toBeUndefined()
+
+    const prepOnly = firstStatusData(statusText({checkoutProvenance: {kind: 'observed'}, checkoutPreparation: failedPreparation}, 'failed', 'FAILED'))
+    expect(prepOnly.checkoutProvenance).toBeUndefined()
+    expect(prepOnly.checkoutPreparation).toEqual(failedPreparation)
+  })
+
+  it('hard core is unchanged by the soft fields: unknown status still rejects with valid provenance present', () => {
+    const results = parseSseChunk(statusText({checkoutProvenance: observedProvenance}, 'exploded', 'FAILED'))
+    expect(results).toHaveLength(1)
+    expect(results[0]?.success).toBe(false)
+  })
+})
+
+describe('createOperatorSseReader — rm-157 supported-versions window', () => {
+  it('dispatches a 1.8.0 ready frame and a provenance-bearing status frame', async () => {
+    const sseText = `event: ready\ndata: {"contractVersion":"1.8.0"}\n\n${statusText({checkoutProvenance: observedProvenance})}`
+    const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
+    const reader = createOperatorSseReader({fetchImpl})
+
+    const events: RunStreamFrame[] = []
+    const errors: Error[] = []
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: frame => events.push(frame),
+      onError: err => errors.push(err),
+      onClose: () => {},
+    })
+
+    expect(errors).toHaveLength(0)
+    expect(events).toHaveLength(2)
+    const statusFrame = events.find(e => e.type === 'status')
+    expect(statusFrame).toBeDefined()
+    if (statusFrame?.type === 'status') {
+      expect(statusFrame.data.checkoutProvenance).toEqual(observedProvenance)
+    }
+  })
+
+  it('fails closed on 1.9.0 (future) and on 1.5.0 (pre-window) ready frames', async () => {
+    for (const version of ['1.9.0', '1.5.0']) {
+      const sseText = `event: ready\ndata: {"contractVersion":"${version}"}\n\n${statusText({})}`
+      const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
+      const reader = createOperatorSseReader({fetchImpl})
+
+      const events: RunStreamFrame[] = []
+      const errors: Error[] = []
+      let closed = false
+      await reader.open('/operator/runs/run-001/stream', {
+        onEvent: frame => events.push(frame),
+        onError: err => errors.push(err),
+        onClose: () => {
+          closed = true
+        },
+      })
+
+      expect(errors).toHaveLength(1)
+      expect(errors[0]?.message).toContain('contract-drift')
+      expect(events.filter(e => e.type === 'status')).toHaveLength(0)
+      expect(closed).toBe(true)
+    }
   })
 })
