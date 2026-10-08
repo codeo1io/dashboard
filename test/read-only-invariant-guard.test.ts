@@ -36,6 +36,8 @@ import path from 'node:path'
 import {fileURLToPath} from 'node:url'
 import {describe, expect, it} from 'vitest'
 
+import {GRAPHQL_MUTATION_SANCTIONED, GRAPHQL_MUTATION_SEEDS, GRAPHQL_MUTATION_SOURCE} from './graphql-mutation-corpus.ts'
+
 const here = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(here, '..')
 const srcRoot = path.join(repoRoot, 'src')
@@ -62,8 +64,14 @@ const MUTATING_REST_VERBS = /['"`](?:POST|PATCH|PUT|DELETE)\s+\/[^'"`\s]*/g
  */
 const OCTOKIT_METHOD_WRITE = /\b(?:octokit|githubClient|gitHub)\s*\.\s*(?:repos|pulls|issues|git|apps|users|orgs)\s*\.\s*(?!(?:get|list)(?:[A-Z]|\b))[\w$]+\s*\(/g
 
-/** GraphQL mutation — the string/template must OPEN with `mutation`. */
-const GRAPHQL_MUTATION = /['"`]mutation[\s{(]/g
+/**
+ * GraphQL mutation — rm-779 (2026-10-09, run 35b0c401b321 cycle:1): built from
+ * the corpus module's shared source so both guard twins detect the operation
+ * keyword in any position inside the string; the previous opening-anchored
+ * form evaded legal formatting (leading whitespace, a newline before the
+ * operation, a later line of a multi-line template).
+ */
+const GRAPHQL_MUTATION = new RegExp(GRAPHQL_MUTATION_SOURCE, 'g')
 
 /** Import/export specifier extraction — enough for a static guard. */
 const SPECIFIER = /(?:import|export)[^'";]*?from\s*['"]([^'"]+)['"]|import\s*\(\s*['"]([^'"]+)['"]\s*\)|import\s+['"]([^'"]+)['"]/g
@@ -185,6 +193,15 @@ describe('read-only invariant guard (rm-649) — src/ stays free of write-capabi
         text: 'const res = await octokit.graphql(`mutation { updateIssue(input: {id}) { id } }`, vars)',
         expectMatch: 'mutation',
       },
+      // rm-779: every formatting class from the shared corpus (leading
+      // whitespace after the quote, newline before the operation, a later line
+      // of a multi-line template, named operation, minified single line,
+      // parenthesis head) stays red through the same seed loop.
+      ...GRAPHQL_MUTATION_SEEDS.map(seed => ({
+        kind: 'graphql-mutation',
+        text: seed.text,
+        expectMatch: 'mutation',
+      })),
     ]
     for (const seed of seeds) {
       const hits = scanText('seeded.ts', seed.text).filter(
@@ -204,6 +221,9 @@ describe('read-only invariant guard (rm-649) — src/ stays free of write-capabi
       `import {Octokit} from '@octokit/core'`,
       'const data = await octokit.graphql(`query { viewer { login } }`)',
       `import {REPO_STATUS_QUERY} from './query-registry.ts'`,
+      // rm-779: the corpus's sanctioned prose shapes run through the same
+      // scanner — no false positives on any formatting class.
+      ...GRAPHQL_MUTATION_SANCTIONED,
     ]
     for (const text of sanctioned) {
       expect(scanText('sanctioned.ts', text), `sanctioned shape must not be flagged: ${text}`).toEqual([])

@@ -14,7 +14,7 @@ import {mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import fc from 'fast-check'
-import {afterEach, describe, expect, it} from 'vitest'
+import {afterEach, describe, expect, it, vi} from 'vitest'
 import {createFileSnapshotStore} from '../src/github/snapshot-store.ts'
 
 function makeRepoRow(): DashboardRepo {
@@ -156,6 +156,28 @@ describe('createFileSnapshotStore — size bound measures UTF-8 bytes, not UTF-1
     const {store, file} = makeStore()
     writeFileSync(file, JSON.stringify(makeSnapshot()) + ' '.repeat(CAP + 1 - bytes(JSON.stringify(makeSnapshot()))), 'utf8')
     expect(store.load()).toBeNull()
+  })
+
+  it('rm-780: the oversize log line carries the measured byte count and the store path', () => {
+    const {store, file} = makeStore()
+    const base = JSON.stringify(makeSnapshot())
+    const payload = base + ' '.repeat(CAP + 64 - bytes(base))
+    writeFileSync(file, payload, 'utf8')
+    const warnings: string[] = []
+    const spy = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '))
+    })
+    try {
+      expect(store.load()).toBeNull()
+    } finally {
+      spy.mockRestore()
+    }
+    // Before rm-780 the context collapsed to error:'[object Object]' and the
+    // measured count — the datum the branch exists to record — never landed.
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('exceeds size bound')
+    expect(warnings[0]).toContain(String(bytes(payload)))
+    expect(warnings[0]).toContain(file)
   })
 
   it('load: CJK snapshot over the byte cap but under the code-unit cap is rejected (the rm-701 defect)', () => {

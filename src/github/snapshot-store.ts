@@ -38,10 +38,19 @@ function utf8ByteLength(value: string): number {
   return Buffer.byteLength(value, 'utf8')
 }
 
-function logPersistProblem(message: string, path: string, error: unknown): void {
+function logPersistProblem(
+  message: string,
+  path: string,
+  error: unknown,
+  extra?: Record<string, string | number>,
+): void {
   logger.warning(message, {
     path,
     error: error instanceof Error ? error.message : String(error),
+    // rm-780 (2026-10-09, run 35b0c401b321 cycle:1): structured extras ride
+    // the log context verbatim — a non-Error detail used to collapse to
+    // '[object Object]' and lose the measured datum it existed to carry.
+    ...(extra ?? {}),
   })
 }
 
@@ -103,10 +112,17 @@ export function createFileSnapshotStore(path: string | undefined): SnapshotStore
         // Missing/unreadable — normal on first boot; stay quiet + fail open.
         return null
       }
-      if (utf8ByteLength(raw) > MAX_SNAPSHOT_BYTES) {
-        logPersistProblem('Snapshot cache exceeds size bound; ignoring (fail-open)', resolved, {
-          bytes: utf8ByteLength(raw),
-        })
+      // rm-780: the measured byte count and the bound reach the log as
+      // explicit structured fields (and the message), never as an opaque
+      // object that renders as '[object Object]'.
+      const bytes = utf8ByteLength(raw)
+      if (bytes > MAX_SNAPSHOT_BYTES) {
+        logPersistProblem(
+          'Snapshot cache exceeds size bound; ignoring (fail-open)',
+          resolved,
+          `snapshot is ${bytes} bytes; bound is ${MAX_SNAPSHOT_BYTES}`,
+          {bytes, bound: MAX_SNAPSHOT_BYTES},
+        )
         return null
       }
       try {
