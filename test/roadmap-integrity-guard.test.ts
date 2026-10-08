@@ -78,8 +78,11 @@ describe('rm-678 schema half: live ledger', () => {
     // rm-713 lands as-authored (public robots.txt) and rm-712
     // folds by content into the landed rm-698 trixie re-pin
     // (a94d0659 via ad8f21e), its def dying with the fold, so
-    // the max def id is unchanged at 744 (237 defs).
-    expect(live.max).toBe(744)
+    // the max def id is unchanged at 744 (237 defs) until rm-787
+    // (CI scanner currency) is minted above the fleet ceiling
+    // rm-786 on 2026-10-09 (run df0dd46d97a1 cycle:3 roadmap
+    // 265ae62b), moving the pin to 787 (238 defs).
+    expect(live.max).toBe(787)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
