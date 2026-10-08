@@ -79,10 +79,11 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           # Surface the drift as a tracking issue (deduplicated while one is
-          # open). Best-effort: issues are DISABLED on this fork
-          # (has_issues=false → the issue API 410s) — the same guard as
-          # base-drift.yaml. The unconditional exit 1 below is the
-          # authoritative drift signal.
+          # open). Best-effort: issues are ENABLED on this fork since
+          # 2026-10-08T14:50Z (rm-103 rider 2026-10-08), so the live path
+          # creates the tracking issue; the has_issues guard below stays as
+          # the degraded fallback — the same guard as base-drift.yaml. The
+          # unconditional exit 1 below is the authoritative drift signal.
           ISSUES_ENABLED="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.has_issues' 2>/dev/null || echo 'false')"
           if [ "$ISSUES_ENABLED" = 'true' ]; then
             gh label create upstream-drift --color D4E8F7 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || true
