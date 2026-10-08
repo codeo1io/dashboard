@@ -21,11 +21,11 @@ import type {MetadataReader} from './github/metadata.ts'
 import type {ListenerStore} from './listener/store.ts'
 import {Buffer} from 'node:buffer'
 import {createHash} from 'node:crypto'
-import {existsSync, readFileSync, statSync} from 'node:fs'
+import {existsSync, readFileSync, realpathSync, statSync} from 'node:fs'
 import {readFile} from 'node:fs/promises'
 import {join} from 'node:path'
 import process from 'node:process'
-import {pathToFileURL} from 'node:url'
+import {fileURLToPath, pathToFileURL} from 'node:url'
 import {serve} from '@hono/node-server'
 import {getConnInfo} from '@hono/node-server/conninfo'
 import {serveStatic} from '@hono/node-server/serve-static'
@@ -1667,9 +1667,16 @@ async function createDashboardServer(): Promise<ServerType> {
 export function isMainEntryPoint(metaUrl: string, argv1: string | undefined): boolean {
   if (argv1 === undefined || argv1 === '') return false
   try {
-    return pathToFileURL(argv1).href === metaUrl
+    // realpath both sides: Node resolves import.meta.url through the real
+    // path but leaves argv[1] as written, so an entry reached through a
+    // symlinked directory compared unequal and the server booted silently
+    // headless (run 8521c80a assess F3 — rm-702's landed suite covers
+    // URL-encodable characters, not symlinked directories).
+    const entry = pathToFileURL(realpathSync(argv1))
+    const moduleUrl = pathToFileURL(realpathSync(fileURLToPath(metaUrl)))
+    return entry.href === moduleUrl.href
   } catch {
-    // Unencodable argv (e.g. invalid path characters) — never autostart.
+    // argv[1] that cannot be resolved on disk is never the running entry.
     return false
   }
 }

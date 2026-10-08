@@ -51,6 +51,25 @@ Two independent structural blind spots, both repo-layout facts:
 - Prefer surfacing this to the runner's owner over re-implementing selection
   in-repo; the count check is the cheap local guard.
 
+## 2026-10-08 addendum — third leg: fs-scanning suites have no import edge
+
+Run `8521c80a2583448594f57380855a6b50` (targeted `c8eae1bb`) hit a new leg of the
+same class: MODIFIED tracked suites can be unselected too. The two read-only guard
+corpora (`test/read-only-invariant-guard.test.ts`,
+`test/readonly-invariant-guard.test.ts`) are acceptance fences for `src/server.ts`
+but scan it as TEXT via `fs.readFileSync` — no import edge — so the impacted map
+omitted them alongside the batch's NEW untracked parity suite
+(`test/workflow-image-parity.test.ts`, the original leg-2 case). The map's 22
+selected suites covered the two changed surfaces' import closure; all three of the
+batch's own acceptance suites were supplementary.
+
+Rule of thumb for any fix/test-bearing batch: run the batch-authored or
+batch-modified acceptance suites explicitly (`vitest run <explicit paths>`) as a
+supplementary focused run regardless of what the mapper selects — text-scanning
+guards, snapshot suites, and file-tree assertions will never be import-selected.
+The supplementary run is the only place a red acceptance suite surfaces at
+targeted scope; the full-suite gate catches it later at strictly higher cost.
+
 ## Verification recipe
 
 ```bash
