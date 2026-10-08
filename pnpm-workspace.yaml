@@ -120,6 +120,15 @@ overrides:
   # repo renders no math fences; the markdown plugin never evaluates them;
   # pnpm lint green on the forced resolution), same review folds as
   # source-map-js above.
+  # DIVERGENCE RECORD (rm-696, 2026-10-07, run bdc96578 cycle:2 research
+  # §4): fro-bot/agent v0.118.1 (PR #1724) explicitly DECLINED this force —
+  # "KaTeX remains at its supported version because the advisory fix is
+  # outside the range accepted by its consumer." The fork's force stands
+  # while (and only while) nothing evaluates math fences; that inertness is
+  # now pinned by test/no-math-fence-guard.test.ts (no math fences in any
+  # tracked markdown; no katex / micromark-extension-math mention on any
+  # source surface). Re-decide at the rm-271 undici 8 + jsdom 30 migration,
+  # which reshuffles this chain anyway.
   katex: '>=0.18.2 <0.19.0'
 
 shamefullyHoist: true

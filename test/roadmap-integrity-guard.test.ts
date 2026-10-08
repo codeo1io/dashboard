@@ -50,12 +50,13 @@ describe('rm-678 schema half: live ledger', () => {
 
   it('records the current id ceiling (bump on the next mint)', () => {
     const live = census(roadmap)
-    // 692 = the b2a3ae9b cycle-1 batch ceiling (rm-690 immutable
-    // Cache-Control, rm-691 release triage, rm-692 security-posture
-    // reword), minted above the all-lineage sibling ceiling rm-689 and
-    // landed at the 2026-10-08 integrate (conflict case 8921afd9) above
-    // main's prior 14a81ea6 ceiling rm-682 (conflict case e3e5d160).
-    expect(live.max).toBe(692)
+    // 697 = the bdc96578 cycle-2 batch ceiling (rm-695 advisory-watch
+    // workflow, rm-696 no-math-fence guard, rm-697 upstream absorb
+    // batch), minted above the landed b2a3ae9b cycle-1 ceiling rm-692
+    // (rm-690/691/692 at the 2026-10-08 integrate, conflict case 8921afd9)
+    // and re-unioned onto main 5aab7c7 at the 2026-10-08 implement
+    // (ff-advance ac61ff3→5aab7c7, extension by content-union).
+    expect(live.max).toBe(697)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
