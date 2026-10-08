@@ -629,6 +629,9 @@ function renderRunCard(view, onSelectRun) {
   )
   card.dataset.testid = 'run-card'
   card.dataset.runId = view.runId
+  // rm-794 (#583): the raw status rides the card so the runtime stream seam
+  // can seed the reducer for runs older than the gateway's snapshot retention.
+  card.dataset.status = view.status
 
   const statusGroup = document.createElement('span')
   statusGroup.className = 'run-status-group'
