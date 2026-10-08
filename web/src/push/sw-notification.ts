@@ -1,5 +1,11 @@
 /**
- * Pure payload → safe-notification mapping, imported by `sw.ts`.
+ * Pure payload → safe-notification mapping. rm-249/rm-106: INTENTIONALLY
+ * STRANDED — `sw.ts` imports nothing since the self-destructing kill-switch
+ * (dfa3f80) replaced the PWA service worker and stopped SW registration, so
+ * no live entry point pulls this module in yet. It is kept in-tree, tested
+ * (sw-notification.test.ts), and ready to re-wire the moment the push-SW
+ * unblock decision (rm-249) lands; the module performs no I/O, so carrying
+ * it stranded is inert.
  *
  * SW no-leak discipline: this module performs no I/O, has no `console.*`
  * calls, and never echoes payload free-text into rendered copy or into an

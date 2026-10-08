@@ -123,6 +123,88 @@ describe('createOperatorRuntime — double-mount idempotency', () => {
 })
 
 // ---------------------------------------------------------------------------
+// rm-283 residue (assess F2/F4, 2026-10-07): dead-instance late cleanup vs a
+// live newer instance. The loader-returned cleanup runs MODULE-level resets
+// (bootstrap/launch/run-index) in addition to closing the instance-scoped
+// stream owner. A dead instance whose loader resolves after a newer instance
+// already initialized must not wipe that live instance's module state — the
+// production cleanup guards the resets behind a loader-generation check.
+// Because defaultRuntimeLoader dynamically imports /static/operator-*.js (not
+// resolvable under Vitest), the interleaving is pinned behaviorally with
+// injected deferred loaders (handle-level mechanics) and the guard itself via
+// the source-contract pattern this file already uses for loader internals.
+// ---------------------------------------------------------------------------
+
+describe('createOperatorRuntime — dead-instance late cleanup vs live instance (rm-283 residue)', () => {
+  afterEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  it('a dead instance: deferred cleanup fires exactly once while the newer live instance stays mounted and un-cleaned', async () => {
+    let resolveA!: (cleanup: () => void) => void
+    const loaderA = new Promise<() => void>(resolve => {
+      resolveA = resolve
+    })
+    const cleanupA = vi.fn()
+    const handleA = createOperatorRuntime(makeOptions({_runtimeLoader: () => loaderA}))
+    // Instance A unmounts while its loader promise is still pending.
+    handleA.cleanup()
+    expect(handleA.isMounted).toBe(false)
+
+    // Instance B mounts and its loader resolves, registering B's cleanup.
+    const cleanupB = vi.fn()
+    const handleB = createOperatorRuntime(makeOptions({_runtimeLoader: async () => cleanupB}))
+    await new Promise(resolve => {
+      setTimeout(resolve, 10)
+    })
+    expect(cleanupB).not.toHaveBeenCalled()
+
+    // A's loader finally resolves — its cleanup must fire through the
+    // dead-instance path, exactly once, and must not disturb B.
+    resolveA(cleanupA)
+    await new Promise(resolve => {
+      setTimeout(resolve, 10)
+    })
+    expect(cleanupA).toHaveBeenCalledTimes(1)
+    expect(handleB.isMounted).toBe(true)
+    expect(cleanupB).not.toHaveBeenCalled()
+
+    handleB.cleanup()
+    expect(cleanupB).toHaveBeenCalledTimes(1)
+    // A's handle is already dead — no second late-cleanup call.
+    handleA.cleanup()
+    expect(cleanupA).toHaveBeenCalledTimes(1)
+  })
+
+  it('runtime.ts guards the module-level resets behind the loader-generation check (source contract)', async () => {
+    const fs = await import('node:fs/promises')
+    const path = await import('node:path')
+    const url = await import('node:url')
+    const __dirname = path.dirname(url.fileURLToPath(import.meta.url))
+    const src = await fs.readFile(path.join(__dirname, 'runtime.ts'), 'utf8')
+    expect(src).toContain('let _runtimeModuleGeneration = 0')
+    expect(src).toContain('const myModuleGeneration = ++_runtimeModuleGeneration')
+    expect(src).toContain('if (myModuleGeneration !== _runtimeModuleGeneration) return')
+    // The capture is synchronous at loader ENTRY — before the first await —
+    // so a later-mounting instance bumps the counter before an earlier
+    // instance's cleanup can observe it.
+    const captureIdx = src.indexOf('const myModuleGeneration = ++_runtimeModuleGeneration')
+    const firstAwaitIdx = src.indexOf('await import(/* @vite-ignore */ _streamSpecifier)')
+    expect(captureIdx).toBeGreaterThan(-1)
+    expect(captureIdx).toBeLessThan(firstAwaitIdx)
+    // Inside the returned cleanup, the guard runs after the instance-scoped
+    // stream close and before the module-level resets.
+    const cleanupIdx = src.indexOf('  return () => {')
+    const streamCloseIdx = src.indexOf('streamOwner.close()', cleanupIdx)
+    const guardIdx = src.indexOf('if (myModuleGeneration !== _runtimeModuleGeneration) return', cleanupIdx)
+    const resetIdx = src.indexOf('resetBootstrapState()', cleanupIdx)
+    expect(streamCloseIdx).toBeGreaterThan(-1)
+    expect(guardIdx).toBeGreaterThan(streamCloseIdx)
+    expect(resetIdx).toBeGreaterThan(guardIdx)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Lifecycle: cleanup
 // ---------------------------------------------------------------------------
 
