@@ -60,7 +60,7 @@ const MUTATING_REST_VERBS = /['"`](?:POST|PATCH|PUT|DELETE)\s+\/[^'"`\s]*/g
  * list-prefixed methods are the reads; everything else on these namespaces
  * mutates.
  */
-const OCTOKIT_METHOD_WRITE = /\b(?:octokit|githubClient|gitHub)\s*\.\s*(?:repos|pulls|issues|git|apps|users|orgs)\s*\.\s*(?!(?:get|list)(?:[A-Z]|\b))[\w$]+\s*\(/g
+const OCTOKIT_METHOD_WRITE = /\b(?:octokit|githubClient|gitHub)\s*\.\s*(?:repos|pulls|issues|git|apps|users|orgs|checks|codeScanning|migrations|actions)\s*\.\s*(?!(?:get|list)(?:[A-Z]|\b))[\w$]+\s*\(/g
 
 /** GraphQL mutation — the string/template must OPEN with `mutation`. */
 const GRAPHQL_MUTATION = /['"`]mutation[\s{(]/g
@@ -165,6 +165,36 @@ describe('read-only invariant guard (rm-649) — src/ stays free of write-capabi
       {kind: 'octokit-write-method', text: 'await octokit.pulls.merge({pull_number: 1})', expectMatch: 'pulls.merge'},
       {kind: 'octokit-write-method', text: 'await octokit.issues.update({state: \'closed\'})', expectMatch: 'issues.update'},
       {kind: 'octokit-write-method', text: 'await octokit.repos.delete({owner, repo})', expectMatch: 'repos.delete'},
+      {
+        kind: 'octokit-write-method',
+        text: 'await octokit.checks.rerequestRun({owner, repo, check_run_id})',
+        expectMatch: 'checks.rerequestRun',
+      },
+      {
+        kind: 'octokit-write-method',
+        text: 'await octokit.checks.rerequestSuite({owner, repo, check_suite_id})',
+        expectMatch: 'checks.rerequestSuite',
+      },
+      {
+        kind: 'octokit-write-method',
+        text: `await octokit.codeScanning.uploadSarif({owner, repo, sarif})`,
+        expectMatch: 'codeScanning.uploadSarif',
+      },
+      {
+        kind: 'octokit-write-method',
+        text: `await octokit.codeScanning.defaultSetupUpdate({owner, repo, state: 'enabled'})`,
+        expectMatch: 'codeScanning.defaultSetupUpdate',
+      },
+      {
+        kind: 'octokit-write-method',
+        text: 'await octokit.migrations.startForOrg({org, repositories})',
+        expectMatch: 'migrations.startForOrg',
+      },
+      {
+        kind: 'octokit-write-method',
+        text: 'await octokit.actions.approveWorkflowRun({owner, repo, run_id})',
+        expectMatch: 'actions.approveWorkflowRun',
+      },
       {
         kind: 'forbidden-import',
         text: `import {writePage} from '@fro-bot/wiki-write-core'`,
