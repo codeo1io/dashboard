@@ -45,7 +45,7 @@ const FORBIDDEN_REQUEST_VERBS = /^(?:POST|PUT|PATCH|DELETE)\b/i
 // uniformly `get*`/`list*`; any create/update/delete/add/remove/merge/edit/
 // cancel/rerun/dismiss call name is a write surface regardless of receiver.
 const WRITE_CALL_NAME =
-  /^(?:create|update|delete|add|remove|set|merge|edit|cancel|rerun|dismiss|close|reopen|lock|unlock|archive|transfer|enable|disable)[A-Z]/u
+  /^(?:create|update|delete|add|remove|set|merge|edit|cancel|rerun|rerequest|upload|approve|start|redeliver|default|dismiss|close|reopen|lock|unlock|archive|transfer|enable|disable)[A-Z]/u
 
 // Receivers whose method calls are Octokit API surfaces. Static scanning
 // without type info cannot know every receiver, so this matches call chains
@@ -181,6 +181,25 @@ describe('read-only invariant guard (rm-649)', () => {
       detect(readFileSync(file, 'utf8'), relativize(file)),
     )
     expect(violations).toEqual([])
+  })
+
+  it('cross-product closure: shapes outside the namespace list still fall to the verb family', () => {
+    // The six shapes below carry write-capable REST semantics while naming
+    // namespaces the rm-649 namespace detector never listed (checks /
+    // codeScanning / migrations / actions). The verb-family detector is the
+    // second wall: each line must be flagged independently of the first.
+    const crossProduct = [
+      `await octokit.checks.rerequestRun({owner, repo, check_run_id})`,
+      `await octokit.checks.rerequestSuite({owner, repo, check_suite_id})`,
+      `await octokit.codeScanning.uploadSarif({owner, repo, sarif})`,
+      `await octokit.codeScanning.defaultSetupUpdate({owner, repo, state: 'enabled'})`,
+      `await octokit.migrations.startForOrg({org, repositories})`,
+      `await octokit.actions.approveWorkflowRun({owner, repo, run_id})`,
+    ]
+    for (const line of crossProduct) {
+      const hits = detect(line, 'cross-product.ts').filter(v => v.detector === 'write-call-family')
+      expect(hits.length, `write-capable shape must fall to the verb family: ${line}`).toBe(1)
+    }
   })
 
   it('mint-time permission sets grant read scopes only', () => {
