@@ -6,7 +6,7 @@ type ViewState =
   | {state: 'loading'}
   | {state: 'error'; reason: string}
   | {state: 'auth-expired'}
-  | {state: 'ready'; data: MonitoringData}
+  | {state: 'ready'; data: MonitoringData; postReadyFailures: number}
 
 const POLL_INTERVAL_MS = 60000
 /** rm-251: hard ceiling on a single poll — releases the latch even if the transport never settles. */
@@ -42,10 +42,17 @@ export function Monitoring() {
           setViewState({state: 'auth-expired'})
           return
         }
-        setViewState(prev => (prev.state === 'ready' ? prev : {state: 'error', reason: result.reason}))
+        // rm-780: a failure AFTER the board is up keeps the last-good data
+        // (rm-155 semantics) but now counts — postReadyFailures drives the
+        // view-level staleness banner, so a silently frozen board is visible.
+        setViewState(prev =>
+          prev.state === 'ready'
+            ? {state: 'ready', data: prev.data, postReadyFailures: prev.postReadyFailures + 1}
+            : {state: 'error', reason: result.reason},
+        )
         return
       }
-      setViewState({state: 'ready', data: result.data})
+      setViewState({state: 'ready', data: result.data, postReadyFailures: 0})
     },
     refetchOnFocus: true,
   })
@@ -83,14 +90,34 @@ export function Monitoring() {
         </div>
       )}
 
-      {viewState.state === 'ready' && <MonitoringBoard data={viewState.data} />}
+      {viewState.state === 'ready' && viewState.postReadyFailures > 0 && (
+        <div data-testid="monitoring-view-stale-banner" className="operator-warning-panel" role="status">
+          Showing the last known state — refreshes are failing ({viewState.postReadyFailures}{' '}
+          {viewState.postReadyFailures === 1 ? 'failure' : 'failures'} in a row). Counts may be outdated.
+        </div>
+      )}
+
+      {viewState.state === 'ready' && <MonitoringBoard data={viewState.data} viewStale={viewState.postReadyFailures > 0} />}
     </div>
   )
 }
 
-function MonitoringBoard({data}: {data: MonitoringData}) {
+function MonitoringBoard({data, viewStale}: {data: MonitoringData; viewStale: boolean}) {
   const redRepos = data.repos.filter(repo => repo.status.rollupState === 'red' || repo.status.failingChecks > 0)
-  const remaining = data.repos.length - redRepos.length
+  // rm-780: stale-but-not-red repos were previously INVISIBLE — the red
+  // filter above is the only row render, the footer counted them as "not
+  // failing", and the all-clear empty state could sit over an all-stale
+  // board (the DTO-level staleBanner is enumeration-wide only). They now
+  // render attention-first: behind red, ahead of the green count.
+  const staleRepos = data.repos.filter(
+    repo =>
+      !redRepos.includes(repo) &&
+      (repo.status.stale === true || repo.status.rollupState === 'unknown'),
+  )
+  const remaining = data.repos.length - redRepos.length - staleRepos.length
+  // rm-780: the all-clear claim is only true when nothing is stale/unknown
+  // AND the view is not running on failing refreshes.
+  const allClear = redRepos.length === 0 && staleRepos.length === 0 && !viewStale
   const refreshedAt = data.refreshedAt === null ? null : new Date(data.refreshedAt).toLocaleString()
   // rm-107: measured duration of the last walk for the degraded banner — null
   // only when no cycle has ever stamped a snapshot (never while degraded).
@@ -112,18 +139,29 @@ function MonitoringBoard({data}: {data: MonitoringData}) {
         </div>
       )}
 
-      {redRepos.length === 0 ? (
-        <div data-testid="monitoring-all-clear" className="operator-empty-state">
-          <div className="operator-empty-icon" aria-hidden="true" style={{opacity: 0.2}}>✓</div>
-          <p className="operator-empty-title">All repositories green</p>
-          <p className="operator-empty-desc">
-            {data.repos.length} tracked {data.repos.length === 1 ? 'repository' : 'repositories'}, no failing checks
-            on default branches.
-          </p>
-        </div>
-      ) : (
-        redRepos.map(repo => <RedRepoCard key={repo.fullName} repo={repo} />)
-      )}
+      {redRepos.map(repo => <RedRepoCard key={repo.fullName} repo={repo} />)}
+
+      {staleRepos.map(repo => <StaleRepoCard key={repo.fullName} repo={repo} />)}
+
+      {redRepos.length === 0 && staleRepos.length === 0 &&
+        (allClear ? (
+          <div data-testid="monitoring-all-clear" className="operator-empty-state">
+            <div className="operator-empty-icon" aria-hidden="true" style={{opacity: 0.2}}>✓</div>
+            <p className="operator-empty-title">All repositories green</p>
+            <p className="operator-empty-desc">
+              {data.repos.length} tracked {data.repos.length === 1 ? 'repository' : 'repositories'}, no failing checks
+              on default branches.
+            </p>
+          </div>
+        ) : (
+          // rm-780: refreshes are failing — the "all green" claim cannot be
+          // made about the last-good data, so a neutral summary replaces it.
+          <div data-testid="monitoring-all-clear-suppressed" className="operator-empty-state">
+            <p className="operator-empty-desc">
+              No failing checks in the last completed refresh — current state unverified while refreshes fail.
+            </p>
+          </div>
+        ))}
 
       <div data-testid="monitoring-footer" style={{fontSize: 'var(--text-body-sm)', color: 'var(--color-text-muted)'}}>
         {remaining > 0 && (
@@ -131,7 +169,40 @@ function MonitoringBoard({data}: {data: MonitoringData}) {
             {remaining} {remaining === 1 ? 'repository' : 'repositories'} not failing ·{' '}
           </span>
         )}
+        {staleRepos.length > 0 && (
+          <span data-testid="monitoring-stale-count">
+            {staleRepos.length} {staleRepos.length === 1 ? 'repository' : 'repositories'} stale ·{' '}
+          </span>
+        )}
         {refreshedAt !== null ? <span>refreshed {refreshedAt}</span> : <span>never refreshed</span>}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * rm-780: attention-first card for a stale/unknown repo that is NOT red —
+ * previously this class of row was invisible (not failing, so not a red
+ * card; not green either, but the footer only had a "not failing" count).
+ * Mirrors RedRepoCard's chrome; the note carries the degradation truth.
+ */
+function StaleRepoCard({repo}: {repo: MonitoringRepo}) {
+  const note =
+    repo.status.stale === true
+      ? 'Status is stale — the last fetch failed; counts are from the last successful refresh.'
+      : 'Rollup state unknown — no CI conclusion could be derived for this repository.'
+  return (
+    <div data-testid="monitoring-stale-repo" className="listener-message-card">
+      <div className="listener-header">
+        <h3 className="listener-title" style={{margin: 0}}>
+          {repo.fullName}
+        </h3>
+        <span className="listener-severity severity-warning" aria-label="Stale status">
+          stale
+        </span>
+      </div>
+      <div data-testid="monitoring-stale-repo-note" style={{fontSize: 'var(--text-body-sm)', color: 'var(--color-text-muted)'}}>
+        {note}
       </div>
     </div>
   )

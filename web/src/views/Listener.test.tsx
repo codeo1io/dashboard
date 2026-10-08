@@ -458,3 +458,89 @@ describe('ListenerChannel', () => {
     expect(listenerApi.fetchListenerMessages).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('ListenerChannel rm-780 (frozen-inbox marker: post-ready refresh failures surface)', () => {
+  const goodMessages = {
+    ok: true,
+    data: {
+      messages: [
+        {
+          id: 'msg-1',
+          source: 'infra' as const,
+          kind: 'deploy-health',
+          severity: 'warning' as const,
+          title: 'Gateway issue',
+          body: 'Body text',
+          createdAt: '2026-07-11T12:00:00Z',
+          receivedAt: '2026-07-11T12:00:01Z',
+          read: false,
+          links: [{ label: 'Log', url: 'https://example.com' }]
+        }
+      ],
+      unreadCount: 1, prunedCount: 0, droppedCount: 0
+    }
+  } as const
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.mocked(listenerApi.fetchListenerMessages).mockResolvedValue({
+      ok: true,
+      data: { messages: [], unreadCount: 0, prunedCount: 0, droppedCount: 0 }
+    })
+  })
+
+  afterEach(() => {
+    vi.runOnlyPendingTimers()
+    vi.useRealTimers()
+    vi.clearAllMocks()
+    vi.restoreAllMocks()
+  })
+
+  it('keeps the last-good list and shows the view-stale banner on the first post-ready failure, clearing on recovery', async () => {
+    vi.mocked(listenerApi.fetchListenerMessages).mockResolvedValueOnce(goodMessages)
+
+    render(<ListenerChannel />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+    expect(screen.getByText('Gateway issue')).toBeInTheDocument()
+    expect(screen.queryByTestId('listener-view-stale-banner')).not.toBeInTheDocument()
+
+    // Poll 2 fails: the last-good list stays (rm-155 semantics) but the
+    // failure is now VISIBLE — no more silently frozen inbox.
+    vi.mocked(listenerApi.fetchListenerMessages).mockResolvedValueOnce({ok: false, reason: 'timeout'})
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    })
+    expect(screen.getByTestId('listener-view-stale-banner')).toHaveTextContent('1 failure in a row')
+    expect(screen.getByText('Gateway issue')).toBeInTheDocument()
+
+    // Poll 3 succeeds: the banner clears.
+    vi.mocked(listenerApi.fetchListenerMessages).mockResolvedValueOnce(goodMessages)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    })
+    expect(screen.queryByTestId('listener-view-stale-banner')).not.toBeInTheDocument()
+    expect(screen.getByText('Gateway issue')).toBeInTheDocument()
+  })
+
+  it('counts consecutive post-ready failures in the banner copy', async () => {
+    vi.mocked(listenerApi.fetchListenerMessages).mockResolvedValueOnce(goodMessages)
+
+    render(<ListenerChannel />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    vi.mocked(listenerApi.fetchListenerMessages).mockResolvedValueOnce({ok: false, reason: 'network'})
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    })
+    vi.mocked(listenerApi.fetchListenerMessages).mockResolvedValueOnce({ok: false, reason: 'network'})
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS)
+    })
+
+    expect(screen.getByTestId('listener-view-stale-banner')).toHaveTextContent('2 failures in a row')
+  })
+})
