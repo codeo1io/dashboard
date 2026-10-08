@@ -73,7 +73,14 @@ describe('rm-678 schema half: live ledger', () => {
     // ledger (690-692 then 744 bracket them) and are stamped into
     // validated executable surfaces, so no renumber and no bump —
     // the max def id is unchanged at 744 (235 defs).
-    expect(live.max).toBe(744)
+    // 2026-10-08 roadmap mint (run 46b0eca36d1148bbb2cf8565736ce2d5
+    // cycle:2, attempt 80ae9e1d78324b9bb06c50669a4ff3a4): rm-751
+    // deploy-currency observability, rm-752 audit.yaml dispatch
+    // lane, rm-753 posture-refresh cadence, rm-754 strict port
+    // parse — minted above the all-lineage def-line ceiling rm-750
+    // (run 5bd710d8's uncommitted roadmap mint; refs/origin max
+    // rm-744 at 235 defs), so the pin moves to 754 (239 defs).
+    expect(live.max).toBe(754)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
