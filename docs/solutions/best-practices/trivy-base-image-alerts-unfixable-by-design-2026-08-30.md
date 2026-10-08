@@ -199,6 +199,33 @@ The pinned digest
 matches the current published `node:24-slim`. There is no newer digest to move
 to.
 
+## Update (2026-10-08): code-scanning channel aligned to fixed-only (rm-761)
+
+Live forensics (run 89ebbf49 prioritize): of the 47 open code-scanning alerts,
+43 Trivy rows were frozen at `updated_at 2026-09-16T20:30:21Z` — untouched
+across seven weeks of green Release runs — while a new row (#81,
+CVE-2026-78410) was created 2026-10-08T08:48:03Z. Mechanism: the SARIF-upload
+Trivy scan in `.github/workflows/release.yaml` did not carry `ignore-unfixed`,
+so every digest's upload re-reported the standing unfixed families and
+code-scanning (correctly) never closed them; the Enforce gate scanned the same
+digest with `ignore-unfixed: true`, so the gate stayed green while the alert
+list read as failing.
+
+Cure (rm-761, run 89ebbf49 implement): the SARIF gen step now carries
+`ignore-unfixed: true` — parity with the Enforce gate by construction. The
+category stays the digest-independent constant `trivy/release-image`, so the
+first post-landing release uploads an analysis without the unfixed instances
+and code-scanning auto-closes the stale rows ("closed in the most recent
+analysis"). Expected steady state: the Trivy section of code-scanning shows
+exactly what the gate blocks — fixable HIGH/CRITICAL — i.e. empty on green
+releases. The standing families themselves stay tracked in this document and
+by the weekly CVE tripwire (`.github/workflows/cve-tripwire.yaml`), the
+designated channel for digest-level CVE movement (now at tag parity with the
+Dockerfile `ARG`, rm-755). Residual: rows that refuse to auto-close (e.g.
+instances whose fingerprint vanished rather than their rule) get a manual
+dismissal sweep at push-stage; re-derive the open count after the first
+post-landing release.
+
 ## When to revisit
 
 - A `Fixed Version:` appears for one of these alerts. The enforcement scan will

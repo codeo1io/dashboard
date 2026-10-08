@@ -73,7 +73,17 @@ describe('rm-678 schema half: live ledger', () => {
     // ledger (690-692 then 744 bracket them) and are stamped into
     // validated executable surfaces, so no renumber and no bump —
     // the max def id is unchanged at 744 (235 defs).
-    expect(live.max).toBe(744)
+    //
+    // 2026-10-08 repository-maintenance cycle:2 run 89ebbf49 roadmap
+    // (attempt cfb8636d completing reaped b5507011): four mints — rm-755
+    // (cve-tripwire NODE_IMAGE trixie cure; the same content as sibling
+    // 9fd8bcad's delivered-unlanded rm-755, dedupe by content at
+    // whichever integrate lands first) plus rm-759/rm-760/rm-761,
+    // renumbered above the union all-lineage ceiling rm-758 after the
+    // post-reap race discovery (sibling 9fd8bcad roadmap 8a4d7ae3 minted
+    // rm-756..758 blind to this lineage's since-reaped rm-756..758;
+    // ids 756-758 stay that lineage's) — census 240 defs at the bump.
+    expect(live.max).toBe(761)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
