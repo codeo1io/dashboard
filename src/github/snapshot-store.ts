@@ -22,11 +22,21 @@
  */
 
 import type {AggregatorSnapshot, SnapshotStore} from './aggregator.ts'
+import {Buffer} from 'node:buffer'
 import {readFileSync, renameSync, writeFileSync} from 'node:fs'
 import {logger} from '../logger.ts'
 
 /** 1 MiB — snapshots are repo-count * row-size bounded well under this. */
 const MAX_SNAPSHOT_BYTES = 1_048_576
+
+/**
+ * Measures UTF-8 bytes, not UTF-16 code units (rm-701): `String.length`
+ * judges CJK/astral-heavy snapshots up to 2x lighter than the byte cap
+ * enforced here. Mirrors the listener contract's helper of the same name.
+ */
+function utf8ByteLength(value: string): number {
+  return Buffer.byteLength(value, 'utf8')
+}
 
 function logPersistProblem(message: string, path: string, error: unknown): void {
   logger.warning(message, {
@@ -93,9 +103,9 @@ export function createFileSnapshotStore(path: string | undefined): SnapshotStore
         // Missing/unreadable — normal on first boot; stay quiet + fail open.
         return null
       }
-      if (raw.length > MAX_SNAPSHOT_BYTES) {
+      if (utf8ByteLength(raw) > MAX_SNAPSHOT_BYTES) {
         logPersistProblem('Snapshot cache exceeds size bound; ignoring (fail-open)', resolved, {
-          length: raw.length,
+          bytes: utf8ByteLength(raw),
         })
         return null
       }
@@ -119,8 +129,8 @@ export function createFileSnapshotStore(path: string | undefined): SnapshotStore
         logPersistProblem('Snapshot serialization failed; skipping persist', resolved, error)
         return
       }
-      if (serialized.length > MAX_SNAPSHOT_BYTES) {
-        logger.warning('Snapshot exceeds size bound; not persisted', {path: resolved, length: serialized.length})
+      if (utf8ByteLength(serialized) > MAX_SNAPSHOT_BYTES) {
+        logger.warning('Snapshot exceeds size bound; not persisted', {path: resolved, bytes: utf8ByteLength(serialized)})
         return
       }
       try {

@@ -62,6 +62,17 @@ describe('rm-678 schema half: live ledger', () => {
     // #570 minted rm-683, deduped into rm-744 — landed meanings
     // own ids — so the ceiling stays 744 and the 683 pin dies with
     // the duplicate def.
+    // 2026-10-08 integrate of run 5b333105 (conflict case
+    // 76d683f2): that run's fork-native port of the SAME upstream
+    // #570 minted rm-700 (the third parallel lineage), deduped
+    // into rm-744 the same way — byte-equal port, empty diff over
+    // all four #570 paths — so the 700 pin dies with the duplicate
+    // def and the ceiling stays 744. Its unique mints rm-701
+    // (snapshot byte bound) and rm-702 (ESM entry guard) land
+    // as-authored: both ids are collision-free against the landed
+    // ledger (690-692 then 744 bracket them) and are stamped into
+    // validated executable surfaces, so no renumber and no bump —
+    // the max def id is unchanged at 744 (235 defs).
     expect(live.max).toBe(744)
   })
 
