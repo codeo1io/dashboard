@@ -46,6 +46,9 @@ function needsAttention(status: RepoCiStatus): boolean {
     status.rollupState === 'red' ||
     status.failingChecks > 0 ||
     (status.openAlertCount !== null && status.openAlertCount > 0) ||
+    // rm-117: open code-scanning alerts trigger attention exactly like
+    // Dependabot alerts — green CI with burning CVEs still sorts first.
+    (status.openCodeScanningAlerts !== null && status.openCodeScanningAlerts.openCount > 0) ||
     status.openPrCount > 0
   )
 }
@@ -68,6 +71,22 @@ const statusArb = (fetchedAt: number): fc.Arbitrary<RepoCiStatus> =>
     openPrCount: fc.nat({max: 50}),
     openIssueCount: fc.nat({max: 500}),
     openAlertCount: fc.option(fc.nat({max: 30}), {nil: null}),
+    // rm-117: count + severity buckets, or null (unavailable). openCount is
+    // generated INDEPENDENTLY of the buckets — consumers must never derive one
+    // from the other.
+    openCodeScanningAlerts: fc.option(
+      fc.record({
+        openCount: fc.nat({max: 40}),
+        severity: fc.record({
+          critical: fc.nat({max: 40}),
+          high: fc.nat({max: 40}),
+          medium: fc.nat({max: 40}),
+          low: fc.nat({max: 40}),
+          unrated: fc.nat({max: 40}),
+        }),
+      }),
+      {nil: null},
+    ),
     stale: fc.boolean(),
     fetchedAt: fc.constant(fetchedAt),
   })
@@ -188,6 +207,10 @@ describe('aggregator parseRepoResponse invariants (rm-144)', () => {
             openPrCount: 0,
             openIssueCount: 0,
             openAlertCount: null,
+            // rm-117: the merged REST half is explicitly absent (null) on
+            // fails-visible rows — parseRepoResponse owns the GraphQL half
+            // only; the caller (fetchRepoStatus) merges the probe result.
+            openCodeScanningAlerts: null,
             stale: true,
             fetchedAt,
           })

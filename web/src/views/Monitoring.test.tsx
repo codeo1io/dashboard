@@ -12,6 +12,8 @@ function makeRepo(
   return {
     fullName: 'fro-bot/agent',
     discoveryChannel: 'installation',
+    ...overrides.fullName === undefined ? {} : {fullName: overrides.fullName},
+    ...overrides.discoveryChannel === undefined ? {} : {discoveryChannel: overrides.discoveryChannel},
     status: {
       rollupState: 'red',
       failingChecks: 1,
@@ -26,6 +28,7 @@ function makeRepo(
       openPrCount: 0,
       openIssueCount: 0,
       openAlertCount: null,
+      openCodeScanningAlerts: null,
       stale: false,
       ...overrides.status
     }
@@ -87,6 +90,125 @@ describe('Monitoring (rm-192 red-repo drill-down)', () => {
     expect(screen.getByTestId('monitoring-all-clear')).toBeInTheDocument()
     expect(screen.queryByTestId('monitoring-red-repo')).not.toBeInTheDocument()
     expect(screen.getByText('1 tracked repository', {exact: false})).toBeInTheDocument()
+  })
+
+  it('rm-117: all-clear names 0 open for BOTH alert sources', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+        repos: [
+          makeRepo({
+            fullName: 'fro-bot/clean',
+            status: {
+              rollupState: 'green',
+              failingChecks: 0,
+              failingCheckDetails: [],
+              openCodeScanningAlerts: {openCount: 0, severity: {critical: 0, high: 0, medium: 0, low: 0, unrated: 0}},
+            },
+          })
+        ]
+      })
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.getByTestId('monitoring-all-clear')).toBeInTheDocument()
+    expect(screen.getByText(/0 open Dependabot alerts and 0 open code-scanning alerts/)).toBeInTheDocument()
+  })
+
+  it('rm-117: a CI-green repo with open code-scanning alerts gets its own security card', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+        repos: [
+          makeRepo({
+            fullName: 'fro-bot/burning',
+            status: {
+              rollupState: 'green',
+              failingChecks: 0,
+              failingCheckDetails: [],
+              openAlertCount: 2,
+              openCodeScanningAlerts: {openCount: 4, severity: {critical: 2, high: 1, medium: 0, low: 0, unrated: 1}},
+            },
+          })
+        ]
+      })
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.queryByTestId('monitoring-all-clear')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('monitoring-red-repo')).not.toBeInTheDocument()
+    const card = screen.getByTestId('monitoring-security-repo')
+    expect(card).toHaveTextContent('fro-bot/burning')
+    expect(screen.getByText('4 open code-scanning alerts')).toBeInTheDocument()
+    expect(screen.getByText('2 Dependabot alerts')).toBeInTheDocument()
+    expect(screen.getByTestId('monitoring-codescanning-severity')).toHaveTextContent('2 critical · 1 high · 0 medium · 0 low · 1 unrated')
+  })
+
+  it('rm-117: a red repo card carries the security summary alongside its failing checks', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+        repos: [
+          makeRepo({
+            fullName: 'fro-bot/red-and-burning',
+            status: {
+              rollupState: 'red',
+              failingChecks: 1,
+              failingCheckDetails: [],
+              openCodeScanningAlerts: {openCount: 2, severity: {critical: 1, high: 1, medium: 0, low: 0, unrated: 0}},
+            },
+          })
+        ]
+      })
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    const card = screen.getByTestId('monitoring-red-repo')
+    expect(card).toHaveTextContent('1 failing check')
+    expect(screen.getByTestId('monitoring-security-summary')).toBeInTheDocument()
+    expect(card).toHaveTextContent('2 open code-scanning alerts')
+  })
+
+  it('rm-117: Dependabot-only attention renders with the honest unavailable note when code scanning lacks coverage', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+        repos: [
+          makeRepo({
+            fullName: 'fro-bot/dependabot-only',
+            status: {
+              rollupState: 'green',
+              failingChecks: 0,
+              failingCheckDetails: [],
+              openAlertCount: 3,
+              openCodeScanningAlerts: null,
+            },
+          })
+        ]
+      })
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.getByTestId('monitoring-security-repo')).toBeInTheDocument()
+    expect(screen.getByText('3 Dependabot alerts')).toBeInTheDocument()
+    expect(screen.getByTestId('monitoring-codescanning-unavailable')).toHaveTextContent('unavailable')
+    expect(screen.getByTestId('monitoring-codescanning-coverage')).toHaveTextContent('1 without code-scanning coverage')
   })
 
   it('rm-107: renders the refresh-degraded banner when the watchdog flags a slow walk, independent of staleness', async () => {
