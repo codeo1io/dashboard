@@ -57,6 +57,20 @@ immutable header on a hashed asset path, 404 without the immutable header,
 guard test — if you add an explicit entry-file policy, add its red-first
 guard in the same change.
 
+### Addendum — operator.css census gap (2026-10-09, rm-478)
+
+`/static/operator.css` rides the root catch-all's `public/` mount and sits
+OUTSIDE every explicit policy row above: no `Cache-Control`, no `ETag`,
+`Last-Modified` only, so clients fall back to heuristic freshness. The shape
+is pinned first-hand by the guard test `GET /static/operator.css header
+shape today` in `test/static-assets.test.ts` (run 35b0c401b321 cycle:1,
+'Read-only signal truth'). An explicit header was deliberately NOT added
+with the census: `operator.css` is unhashed and operator-visible, so the
+`no-cache` family is the obvious precedent — but the deploy-staleness
+versus request-rate trade-off needs its own evidence. Until a change lands
+one, the recorded policy for the catch-all path is "absent, baseline
+pinned".
+
 ## Prevention rule
 
 Do not rely on the adapter for caching policy. When bumping

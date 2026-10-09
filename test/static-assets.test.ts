@@ -235,6 +235,22 @@ describe('static asset serving — /static/operator.css', () => {
     expect(res.status).toBe(200)
   })
 
+  // rm-478 (2026-10-09, run 35b0c401b321 cycle:1): policy-census probe — the
+  // root catch-all serves operator.css through the same public/ mount as the
+  // other unhashed assets, and today it carries NO Cache-Control and no ETag:
+  // only Last-Modified, so clients fall back to heuristic freshness. This
+  // pins the recorded baseline; an explicit header belongs to its own change
+  // with deploy-staleness evidence, not to this census.
+  it('GET /static/operator.css header shape today: no Cache-Control, no ETag, Last-Modified only', async () => {
+    const app = await buildTestApp(true)
+    const res = await app.request('/static/operator.css')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBeNull()
+    expect(res.headers.get('etag')).toBeNull()
+    const lastModified = res.headers.get('last-modified') ?? ''
+    expect(lastModified.length, 'last-modified present for heuristic caching').toBeGreaterThan(0)
+  })
+
   it('GET /static/operator.css returns CSS content-type', async () => {
     const app = await buildTestApp(true)
     const res = await app.request('/static/operator.css')

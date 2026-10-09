@@ -3,6 +3,8 @@ import {resolve} from 'node:path'
 import process from 'node:process'
 import {describe, expect, it} from 'vitest'
 
+import {GRAPHQL_MUTATION_SANCTIONED, GRAPHQL_MUTATION_SEEDS, GRAPHQL_MUTATION_SOURCE} from './graphql-mutation-corpus.ts'
+
 // rm-649: static read-only-invariant guard.
 //
 // The dashboard is read-only BY CONSTRUCTION: every GitHub App installation
@@ -55,6 +57,12 @@ const WRITE_CALL_NAME =
 // (the actual method name) against the write-verb families.
 const API_CALL_CHAIN =
   /\b(?:octokit|client|app|gh|api)((?:\.[A-Za-z_$][\w$]*)+)\(/u
+
+// GraphQL mutation operation heads — rm-779 (2026-10-09, run 35b0c401b321
+// cycle:1): this twin previously carried NO GraphQL detector at all; the
+// whole-file scanner twin's net was opening-anchored and format-brittle.
+// Both now build from the corpus module's shared source.
+const GRAPHQL_MUTATION = new RegExp(GRAPHQL_MUTATION_SOURCE)
 
 // Mint-time permission grants. Only 'read' values may ever appear in the
 // two exported permission objects (see src/github/installations.ts:32-47);
@@ -135,6 +143,18 @@ function detect(source: string, relFile: string): Violation[] {
         })
       }
     }
+
+    // (2c) rm-779: GraphQL mutation operation heads, format-robust via the
+    // shared corpus source (leading whitespace, newline-first templates,
+    // named/aliased operations, minified single-liners all bite).
+    if (GRAPHQL_MUTATION.test(line)) {
+      violations.push({
+        detector: 'graphql-mutation',
+        file: relFile,
+        line: lineno,
+        excerpt,
+      })
+    }
   })
 
   // (3) mint-time permission values must be 'read' — anywhere in the file,
@@ -163,15 +183,30 @@ describe('read-only invariant guard (rm-649)', () => {
       `await octokit.request('PUT /repos/{owner}/{repo}/git/refs', { ref })`,
       `const gh = await gh.repos.createOrUpdateFileContents({...})`,
       `export const P = { contents: 'write' } as const`,
+      // rm-779: a formatting class the old opening-anchored nets missed —
+      // the operation keyword after a newline inside the template.
+      'const doc = `\n  mutation { updateIssue(input: {id}) { id } }`',
     ].join('\n')
     const violations = detect(fixture, PERMISSION_FILE) // permission scope check rides the fixture file name
     const detectors = new Set(violations.map(v => v.detector))
     expect([...detectors].sort()).toEqual([
       'forbidden-module',
+      'graphql-mutation',
       'write-call-family',
       'write-permission-scope',
       'write-request-literal',
     ])
+  })
+
+  it('rm-779: every shared-corpus formatting class bites, every sanctioned prose shape stays clean', () => {
+    for (const seed of GRAPHQL_MUTATION_SEEDS) {
+      const detectors = detect(seed.text, 'seeded.ts').map(v => v.detector)
+      expect(detectors, `${seed.label} :: ${seed.text}`).toContain('graphql-mutation')
+    }
+    for (const text of GRAPHQL_MUTATION_SANCTIONED) {
+      const detectors = detect(text, 'sanctioned.ts').map(v => v.detector)
+      expect(detectors, text).not.toContain('graphql-mutation')
+    }
   })
 
   it('src/ contains no write-capability surface', () => {
