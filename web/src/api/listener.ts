@@ -1,6 +1,8 @@
 export type ListenerSource = 'infra' | 'agent'
 export type ListenerSeverity = 'info' | 'warning' | 'critical'
 
+import {withGetSeamTimeout} from './fetch-timeout.ts'
+
 export interface ListenerLink {
   readonly label: string
   readonly url: string
@@ -90,11 +92,17 @@ export async function fetchListenerMessages(opts: {
   }
 
   try {
-    const res = await fetch(url.toString(), {
-      method: 'GET',
-      credentials: 'same-origin',
-      signal: opts.abortSignal,
-    })
+    // rm-780: the seam carries its own wall-clock bound (see fetch-timeout.ts)
+    // — the view-level `useBoundedPoll` bound only protects poll callers
+    // (App's rm-487 focus re-probe calls this directly, unbounded before).
+    const res = await withGetSeamTimeout(
+      fetch(url.toString(), {
+        method: 'GET',
+        credentials: 'same-origin',
+        signal: opts.abortSignal,
+      }),
+    )
+    if (res === 'timeout') return {ok: false, reason: 'timeout'}
 
     if (!res.ok) {
       // rm-273: 401 is session expiry, not a transport failure — classify it
@@ -117,7 +125,8 @@ export async function fetchListenerMessages(opts: {
       return { ok: false, reason: 'unauthenticated' }
     }
 
-    const data = await res.json()
+    const data = await withGetSeamTimeout(res.json())
+    if (data === 'timeout') return {ok: false, reason: 'timeout'}
     if (!isPlainObject(data) || !Array.isArray(data.messages) || typeof data.unreadCount !== 'number') {
       return { ok: false, reason: 'contract-drift' }
     }
