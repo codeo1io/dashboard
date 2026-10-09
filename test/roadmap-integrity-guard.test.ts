@@ -73,13 +73,11 @@ describe('rm-678 schema half: live ledger', () => {
     // ledger (690-692 then 744 bracket them) and are stamped into
     // validated executable surfaces, so no renumber and no bump —
     // the max def id is unchanged at 744 (235 defs).
-    // 2026-10-08 integrate of run 6277460e (conflict case
-    // 1e27af20): both of that run's mints sit below the pin —
-    // rm-713 lands as-authored (public robots.txt) and rm-712
-    // folds by content into the landed rm-698 trixie re-pin
-    // (a94d0659 via ad8f21e), its def dying with the fold, so
-    // the max def id is unchanged at 744 (237 defs).
-    expect(live.max).toBe(744)
+    // 2026-10-09 roadmap extension of run 32f33f1b (cycle:2,
+    // attempt 46236a9e): one mint rm-781 (unlanded validated-
+    // batch reconciliation queue) above the all-lineage def
+    // ceiling rm-780 — max becomes 781 (238 defs).
+    expect(live.max).toBe(781)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {

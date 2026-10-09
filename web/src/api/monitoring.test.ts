@@ -128,5 +128,72 @@ describe('monitoring API', () => {
       const res = await fetchMonitoring()
       expect(res).toEqual({ ok: false, reason: 'contract-drift' })
     })
+
+    // rm-781 U2 (detailsUrl https-only boundary): the server extraction seam
+    // (src/github/aggregator.ts) guarantees detailsUrl is https-or-'' because
+    // the value feeds an href sink in Monitoring.tsx. These field-contract
+    // tests mirror that guarantee client-side: https and '' parse through;
+    // anything else means the server contract drifted and the fetch fails
+    // closed — never an unvalidated href.
+    const payloadWithDetails = (details: readonly {checkName: string; detailsUrl: string}[]) => ({
+      repos: [{
+        full_name: 'org/repo',
+        discovery_channel: 'collab',
+        status: {
+          rollupState: 'red',
+          failingChecks: details.length,
+          failingCheckDetails: details.map(d => ({workflowTitle: null, runAttempt: null, checkName: d.checkName, detailsUrl: d.detailsUrl})),
+          openPrCount: 0,
+          openIssueCount: 0,
+          openAlertCount: null,
+          stale: false,
+        },
+      }],
+      refreshDurationMs: 1234,
+      refreshDegraded: false,
+      staleBanner: false,
+      driftCount: 0,
+      enumerationIncomplete: null,
+      refreshedAt: null,
+    })
+
+    it('rm-781 U2: an https detailsUrl survives the parse with the drill-down link intact', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(payloadWithDetails([
+        {checkName: 'build', detailsUrl: 'https://github.com/org/repo/actions/runs/1'},
+      ])), { status: 200 }))
+      const res = await fetchMonitoring()
+      expect(res.ok).toBe(true)
+      if (res.ok) {
+        expect(res.data.repos[0]?.status.failingCheckDetails).toEqual([
+          {workflowTitle: null, runAttempt: null, checkName: 'build', detailsUrl: 'https://github.com/org/repo/actions/runs/1'},
+        ])
+      }
+    })
+
+    it("rm-781 U2: the empty string is legal (the server collapses non-https to '') and parses through", async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(payloadWithDetails([
+        {checkName: 'legacy-status', detailsUrl: ''},
+      ])), { status: 200 }))
+      const res = await fetchMonitoring()
+      expect(res.ok).toBe(true)
+      if (res.ok) {
+        expect(res.data.repos[0]?.status.failingCheckDetails).toEqual([
+          {workflowTitle: null, runAttempt: null, checkName: 'legacy-status', detailsUrl: ''},
+        ])
+      }
+    })
+
+    it.each([
+      ['an http URL', 'http://github.com/org/repo/actions/runs/1'],
+      ['a javascript: URL', 'javascript:alert(1)'],
+      ['about:blank', 'about:blank'],
+      ['a scheme-relative URL', '//github.com/org/repo/actions/runs/1'],
+    ])('rm-781 U2: %s in detailsUrl → contract-drift (fail closed, never an unvalidated href)', async (_label, detailsUrl) => {
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(payloadWithDetails([
+        {checkName: 'build', detailsUrl},
+      ])), { status: 200 }))
+      const res = await fetchMonitoring()
+      expect(res).toEqual({ ok: false, reason: 'contract-drift' })
+    })
   })
 })
