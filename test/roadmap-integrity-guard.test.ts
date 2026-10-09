@@ -91,7 +91,15 @@ describe('rm-678 schema half: live ledger', () => {
     // merge) and rm-709 (detailsUrl https-only boundary) land
     // as-authored below the pin, so the max def id is unchanged
     // at 744 (240 defs).
-    expect(live.max).toBe(744)
+    // 2026-10-09 mint of run 438dea88 (repository-maintenance
+    // cycle:2): rm-792 (Scorecard alert triage sweep) minted
+    // above the all-lineage sibling frontier rm-791 (def-line
+    // scan across the 40 sibling run worktrees plus open PRs
+    // #447 and #448; PR #447 landed 2026-10-08 through rm-778
+    // on 546c93c — this tree rides dispatch base 7055c52 and
+    // the integrate unions onto that lineage), so the pin
+    // moves 744 to 792 (241 defs at compose).
+    expect(live.max).toBe(792)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
