@@ -9,8 +9,8 @@ import AxeBuilder from '@axe-core/playwright'
  *
  * Baseline provenance (rm-142): all three dark baselines are regenerated
  * inside the same pinned container image the visual job runs in —
- * mcr.microsoft.com/playwright:v1.63.0-noble (digest sha256:eff16c30…,
- * 2026-09-22) — so baseline capture and comparison share one deterministic
+ * mcr.microsoft.com/playwright:v1.64.0-noble (digest sha256:06a9939e…,
+ * 2026-10-09) — so baseline capture and comparison share one deterministic
  * render environment. Regen procedure: delete the baseline PNGs, then run
  * `pnpm exec playwright test --update-snapshots` inside that image (the
  * container block in .github/workflows/visual.yaml documents the same).

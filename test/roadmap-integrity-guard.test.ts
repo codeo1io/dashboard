@@ -79,7 +79,12 @@ describe('rm-678 schema half: live ledger', () => {
     // folds by content into the landed rm-698 trixie re-pin
     // (a94d0659 via ad8f21e), its def dying with the fold, so
     // the max def id is unchanged at 744 (237 defs).
-    expect(live.max).toBe(744)
+    // 2026-10-09 run ddb41af7e0bd roadmap 8b16cd4d (extension #36):
+    // mints rm-782..rm-786 above the all-house id ceiling rm-781
+    // (Completed-section landed ids) and the sibling open-def frontier
+    // rm-778; 242 defs at max 786. Selection 26cb99b4 flips four mints
+    // candidate->open (statuses only, no id change).
+    expect(live.max).toBe(786)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
