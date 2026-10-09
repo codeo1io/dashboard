@@ -148,7 +148,31 @@ describe('rm-678 schema half: live ledger', () => {
     // 778 -> 780 atomically with this landing: union census
     // 245 + 2 = 247 defs / 0 dups / max rm-780, next free
     // rm-781.
-    expect(live.max).toBe(780)
+    // 2026-10-09 extension #36 at-write note (run c37a857620e1
+    // roadmap d5f8451f, preserved verbatim per the 366f6059
+    // precedent; its rm-778 mint and 778 pin are the run's
+    // at-write values against its own base, superseded by the
+    // integrate note below): minted rm-778 above the all-lineage
+    // frontier (sibling walls through 769, PR #444 head 709,
+    // foreign-fleet spool 795-855 excluded, 777 ceiling note
+    // honored)
+    // 2026-10-09 integrate of run c37a857620e1 (conflict case
+    // 4d6d8d8e): the run was authored at base 559642a (its
+    // at-write tree 238 defs / max rm-778) while main moved
+    // through the c026a644 (case 46431058), 788aa489c1d5 (case
+    // 366f6059), 9289efaa (case 139848e6) and cbe70604 (case
+    // e796bbf3, re-dispatch 543f1e72) integrations, landing at
+    // 247 defs / max rm-780. Its single mint — the operator-
+    // monitoring failing-check annotations drill-down def —
+    // was authored as rm-778, which the landed ledger already
+    // owns (788aa489's conductor/ci-* stale-ref sweep, case
+    // 366f6059), so the def renumbers rm-778 -> rm-781 per the
+    // d00d095 landed-meanings-own-ids convention (the run's
+    // dated records keep their at-write rm-778 strings
+    // verbatim, e836a18d precedent) and the union census is
+    // 247 + 1 = 248 defs / 0 dups / max rm-781 — pin 780 -> 781
+    // atomically with this landing, next free rm-782.
+    expect(live.max).toBe(781)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
