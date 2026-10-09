@@ -12,7 +12,7 @@
 .opencode
 .slim
 docs
-node_modules
+**/node_modules
 test
 scripts
 web/dist
@@ -20,16 +20,24 @@ web/dist-fixture
 web/coverage
 *.md
 !README.md
-.env*
-*.pem
-*.key
+# rm-789 (2026-10-09): anchored with a **/ prefix — dockerignore slash-free
+# patterns match context-root entries only, so bare entries never sealed
+# nested copies (e.g. web/.env.local from a local Vite setup, or a stray
+# nested key).
+**/.env*
+**/*.pem
+**/*.key
 coverage
 .vite
 # rm-242 (cycle 1 engine label, 2026-09-25): local test-runner artifacts — test-results/
 # and playwright-report/ are created by playwright runs, .pnpm-store/ by pnpm
 # store-dir invocations. All are locally generated, large, and never needed
-# in the daemon's build context. Unanchored so nested copies (e.g. web/)
-# match too.
-test-results
-playwright-report
-.pnpm-store
+# in the daemon's build context. rm-789 (2026-10-09): anchored with a
+# **/ prefix so nested copies (e.g. web/ from a local pnpm install) match
+# too — dockerignore slash-free patterns are root-anchored and never
+# matched nested copies (verified live 2026-10-09: web/node_modules and
+# web/test-results shipped to the daemon while the root entries sealed
+# fine); root behavior is unchanged under **/.
+**/test-results
+**/playwright-report
+**/.pnpm-store
