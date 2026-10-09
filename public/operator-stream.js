@@ -1999,13 +1999,18 @@ export function renderCancelControl(runId, cancelClient, onCancelDispatch) {
 
   /**
    * Tear down the control on stream close/teardown: fences off any in-flight
-   * cancel attempt (same mechanism as notifyTerminal) and clears any pending
-   * retry timer so it can never fire after the caller has moved on.
+   * cancel attempt (same mechanism as notifyTerminal), clears any pending
+   * retry timer so it can never fire after the caller has moved on, and removes
+   * the control element from the DOM — every attachment lazily creates its own
+   * control inside the card's [data-role="run-cancel"] region (rm-794/#584),
+   * so a disposed control left in place would accumulate stale Cancel buttons
+   * across expand → collapse → re-expand.
    */
   function dispose() {
     disposed = true
     clearRetryTimer()
     canceling = false
+    el.remove()
   }
 
   renderIdle()
@@ -2037,7 +2042,7 @@ export function renderCancelControl(runId, cancelClient, onCancelDispatch) {
  * - Read-only: GET only for stream; approval decisions are operator-forwarded writes.
  */
 export function initOperatorStream(opts) {
-  const {runId, statusEl, noticeEl, outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, cancelEl, approvalClient: injectedApprovalClient, cancelClient: injectedCancelClient, endpointBase, fixtureSessionId} = opts
+  const {runId, statusEl, noticeEl, outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, cancelEl, approvalClient: injectedApprovalClient, cancelClient: injectedCancelClient, endpointBase, fixtureSessionId, seedStatus} = opts
 
   // Build the approval client lazily (only if approvalsEl is present).
   // Pass endpointBase and fixtureSessionId so fixture mode uses the fixture approval routes
@@ -2078,6 +2083,19 @@ export function initOperatorStream(opts) {
     runs: Object.create(null), // null-prototype to guard against __proto__ key pollution
     retryCount: 0,
     shouldReconnect: false,
+  }
+
+  // rm-794 (#583): seed the reducer with the run index's already-known status.
+  // The no-snapshot close branch in nextStreamState fires only "for a run the
+  // reducer knows is terminal," and that knowledge can otherwise only come from
+  // stream frames — which never arrive for a run older than the gateway's
+  // snapshot retention (the gateway answers with a no-snapshot reset it then
+  // holds the subscription open on). Seeding a terminal status at attach makes
+  // that branch reachable and lands the card terminal instead of parking the
+  // reader in 'reconnecting' forever. A non-terminal or absent seed changes
+  // nothing: live status frames overwrite the entry with the full shape.
+  if (typeof seedStatus === 'string' && TERMINAL_STATUSES.has(seedStatus)) {
+    state.runs[runId] = {runId, status: seedStatus, phase: '', startedAt: '', stale: false, terminal: true}
   }
 
   let abortController = null
@@ -2283,10 +2301,16 @@ export function initOperatorStream(opts) {
       const runIsTerminal = runEntry !== undefined && runEntry.terminal === true
 
       if (runIsTerminal) {
+        // rm-794 (#584): no control remains on a terminal card. notifyTerminal()
+        // runs first — it fences any in-flight cancel attempt (terminal-wins) —
+        // then the control element leaves the DOM and the now-empty region
+        // hides. The card's status pill carries the terminal outcome from here.
         if (cancelControl !== null) {
           cancelControl.notifyTerminal()
+          cancelControl.el.remove()
+          cancelControl = null
         }
-        cancelEl.hidden = false
+        cancelEl.hidden = true
       } else if (state.connection === 'live' && runEntry !== undefined) {
         if (cancelControl === null) {
           cancelControl = renderCancelControl(runId, cancelClient, targetRunId => {
@@ -2573,6 +2597,22 @@ export function initOperatorStream(opts) {
                   // Clear the first-frame timer on the first successfully parsed frame
                   clearFirstFrameTimer()
                   dispatch(result.frame)
+                  // rm-794 (#583): reset-while-gateway-holds-open. After a reset
+                  // the gateway may keep the subscription open instead of closing
+                  // the socket (observed live on no-snapshot resets), which parks
+                  // this read loop forever with shouldReconnect never consumed.
+                  // When the reducer chose retry, release the socket ourselves and
+                  // reconnect now — the abort rejection below is swallowed
+                  // (signal.aborted) and scheduleReconnect owns the backoff/cap.
+                  if (
+                    result.frame.type === 'reset' &&
+                    state.connection === 'reconnecting' &&
+                    state.shouldReconnect
+                  ) {
+                    controller.abort()
+                    scheduleReconnect()
+                    return
+                  }
                   // Parse failures are silently dropped (fail closed, no logging of frame data)
                 }
 
@@ -2705,7 +2745,11 @@ export function bootstrapOperatorStreams(opts) {
     // Discover the approval region and badge elements
     const approvalsEl = card.querySelector('[data-role="run-approvals"]')
     const badgeEl = card.querySelector('[data-role="approval-badge"]')
-    handles.push(initOperatorStream({runId, statusEl, noticeEl, outputEl, coalescedEl, approvalsEl, badgeEl, endpointBase, fixtureSessionId}))
+    // rm-794 (#583): seed the reducer from the card's known status (dataset.status,
+    // written by renderRunCard and kept current by updateCardInPlace) so an old
+    // terminal card lands terminal on a no-snapshot reset instead of parking in
+    // 'reconnecting'. initOperatorStream ignores non-terminal/absent seeds.
+    handles.push(initOperatorStream({runId, statusEl, noticeEl, outputEl, coalescedEl, approvalsEl, badgeEl, endpointBase, fixtureSessionId, seedStatus: card.dataset.status}))
   }
 
   _bootstrapHandles = handles

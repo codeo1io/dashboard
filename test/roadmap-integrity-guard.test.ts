@@ -91,7 +91,11 @@ describe('rm-678 schema half: live ledger', () => {
     // merge) and rm-709 (detailsUrl https-only boundary) land
     // as-authored below the pin, so the max def id is unchanged
     // at 744 (240 defs).
-    expect(live.max).toBe(744)
+    // 2026-10-09 run d1a0b216493d4fbbb8d3a8d67787f0c3 cycle:2 roadmap 21cf3b7d (from research 43c1d5e3):
+    // four mints rm-793..rm-796 above the all-lineage frontier rm-792 (sibling 438dea88 worktree tops the
+    // 2026-10-09 scan; origin/main 546c93c carries max rm-778; PR #448's diff mints nothing) — pin 744→796;
+    // at integrate onto the advanced main, re-derive on the union (248 defs if dedupe-free, max stays rm-796).
+    expect(live.max).toBe(796)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {

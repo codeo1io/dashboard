@@ -292,6 +292,7 @@ async function defaultRuntimeLoader(opts?: {
       cancelEl?: Element | null
       endpointBase?: string
       fixtureSessionId?: string
+      seedStatus?: string
     }) => {close(): void}
   }
   if (typeof streamMod.resetBootstrapState === 'function') {
@@ -337,11 +338,25 @@ async function defaultRuntimeLoader(opts?: {
     // approval prompts, and the approval badge all render — not just status.
     const {outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, cancelEl} = discoverCardStreamTargets(runId)
 
+    // rm-794 (#583/#584): prefer the card's own in-card stream-state notice and
+    // seed the reducer from the card's known status (dataset.status, written by
+    // renderRunCard and kept current by updateCardInPlace). The page-level
+    // stream-status notice remains the fallback for cards without an in-card
+    // region (legacy markup / fixture bootstrap); initOperatorStream ignores a
+    // seedStatus that is not a terminal status.
+    const card = typeof document !== 'undefined'
+      ? document.querySelector(`[data-run-id="${CSS.escape(runId)}"]`)
+      : null
+    const inCardNoticeEl = card?.querySelector('[data-role="run-notice"]') ?? null
+    const seedStatus = card instanceof HTMLElement && typeof card.dataset.status === 'string'
+      ? card.dataset.status
+      : undefined
+
     try {
       const handle = streamMod.initOperatorStream({
         runId,
         statusEl,
-        noticeEl,
+        noticeEl: inCardNoticeEl ?? noticeEl,
         outputEl,
         coalescedEl,
         approvalsEl,
@@ -350,6 +365,7 @@ async function defaultRuntimeLoader(opts?: {
         cancelEl,
         endpointBase: opts?.endpointBase,
         fixtureSessionId: opts?.fixtureSessionId,
+        seedStatus,
       })
       streamOwner.attach(handle, runId)
       if (typeof runIndexMod.markRunStreamAttached === 'function') {

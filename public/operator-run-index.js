@@ -579,6 +579,11 @@ function updateCardInPlace(card, view) {
     `Run, status: ${view.statusLabel}${view.reasonLabel === undefined ? '' : `, reason: ${view.reasonLabel}`}`,
   )
 
+  // rm-794 (#583): keep the seed status current — a card rendered while a run
+  // was live must carry its terminal status if the operator expands it later,
+  // or the stream-seeding cure would seed a stale non-terminal status.
+  card.dataset.status = view.status
+
   if (typeof card.querySelector === 'function') {
     const statusEl = card.querySelector('[data-role="run-status"]')
     if (statusEl !== null && statusEl !== undefined) {
@@ -629,6 +634,9 @@ function renderRunCard(view, onSelectRun) {
   )
   card.dataset.testid = 'run-card'
   card.dataset.runId = view.runId
+  // rm-794 (#583): the raw status rides the card so the runtime stream seam
+  // can seed the reducer for runs older than the gateway's snapshot retention.
+  card.dataset.status = view.status
 
   const statusGroup = document.createElement('span')
   statusGroup.className = 'run-status-group'
@@ -669,6 +677,16 @@ function renderRunCard(view, onSelectRun) {
   // Revealed on expansion. Safe-DOM only: createElement + textContent/
   // hidden/dataset, never innerHTML. No run field beyond the closed safe-view
   // reaches these elements at creation time.
+  // In-card stream-state notice (rm-794/#583): the selected card's own compact
+  // connection notice, written by operator-stream.js via the runtime seam; the
+  // page-level stream-status notice remains the fallback. Not in
+  // setSubstructureHidden on purpose — updateDOM alone owns its visibility so
+  // expansion never reveals a stale or empty notice from a prior attachment.
+  const noticeEl = document.createElement('div')
+  noticeEl.dataset.role = 'run-notice'
+  noticeEl.hidden = true
+  card.append(noticeEl)
+
   const outputEl = document.createElement('div')
   outputEl.dataset.role = 'run-output'
   outputEl.hidden = true
@@ -775,6 +793,16 @@ function ensureRunCardAnatomy(card, view, onSelectRun) {
     repoSpan.className = 'run-repo'
     repoSpan.dataset.role = 'run-repo'
     insertBeforeFirstRole(card, repoSpan, ['run-updated-at', 'run-output'])
+  }
+
+  if (card.querySelector('[data-role="run-notice"]') === null) {
+    // rm-794 (#583): in-card stream-state notice, same slot renderRunCard gives
+    // it (first of the hidden substructure). Hidden at creation; updateDOM owns
+    // its visibility.
+    const noticeEl = document.createElement('div')
+    noticeEl.dataset.role = 'run-notice'
+    noticeEl.hidden = true
+    insertBeforeFirstRole(card, noticeEl, ['run-output', 'run-cancel'])
   }
 
   if (card.querySelector('[data-role="run-cancel"]') === null) {

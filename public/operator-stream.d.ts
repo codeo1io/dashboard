@@ -346,6 +346,14 @@ export interface InitOptions {
   readonly cancelEl?: (HTMLElement & {hidden: boolean}) | null
   /** Injectable cancel client for testing. If absent, buildCancelClient() is used. */
   readonly cancelClient?: CancelControlClient | null
+  /**
+   * rm-794 (#583): run index's known status for this run, stamped on the card
+   * as data-status (dataset.status). When it is a TERMINAL_STATUSES value the
+   * reducer is seeded with a terminal entry at attach so a run older than the
+   * gateway's snapshot retention lands terminal on a no-snapshot reset instead
+   * of parking in 'reconnecting'. Non-terminal/absent values are ignored.
+   */
+  readonly seedStatus?: string
 }
 
 export declare function initOperatorStream(opts: InitOptions): StreamHandle

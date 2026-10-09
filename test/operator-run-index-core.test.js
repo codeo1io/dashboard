@@ -2135,7 +2135,7 @@ describe('initOperatorRunIndex — in-place diff reconciliation (background refr
     expect(src).toContain('status-pending')
   })
 
-  it('security: the diff sets no attribute outside {data-run-id, data-expanded, datetime, className}; no data-repo/data-status; consumes safe-views only', async () => {
+  it('security: the diff sets no attribute outside {data-run-id, data-expanded, datetime, className, data-status}; no data-repo; consumes safe-views only', async () => {
     const runId = 'run-diff-security-001'
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true, status: 200,
@@ -2154,15 +2154,23 @@ describe('initOperatorRunIndex — in-place diff reconciliation (background refr
 
     const card = cards[0]
     expect('repo' in card.attributes || card.dataset.repo !== undefined).toBe(false)
-    expect(card.dataset.status).toBeUndefined()
+    // rm-794 (#583): dataset.status is now a deliberate seed carrier — the
+    // value is the VALID_RUN_SUMMARY_STATUSES-validated enum from the safe
+    // view (never raw fetch json), so it joins the allowlist. data-repo stays
+    // forbidden.
+    expect(card.dataset.status).toBe('succeeded')
 
-    // Source-level guard: the diff/update helpers must not construct data-repo/data-status.
+    // Source-level guard: the diff/update helpers must not construct data-repo,
+    // and data-status writes must flow through the validated view only.
     const fs = await import('node:fs/promises')
     const src = await fs.readFile('public/operator-run-index.js', 'utf8')
     expect(src).not.toMatch(/dataset\.repo\s*=/)
-    expect(src).not.toMatch(/dataset\.status\s*=/)
     expect(src).not.toMatch(/setAttribute\(\s*['"]data-repo['"]/)
     expect(src).not.toMatch(/setAttribute\(\s*['"]data-status['"]/)
+    const sourceAssignments = [...src.matchAll(/dataset\.status\s*=\s*(.+)/g)].map(m => m[1])
+    for (const rhs of sourceAssignments) {
+      expect(rhs.trim()).toBe('view.status')
+    }
   })
 
   it('security: diff drives on buildRunSafeView output — source has no path from raw fetch json to card update', async () => {
@@ -2904,5 +2912,65 @@ describe('late <time> — a card first shown without updatedAt gains it when a l
 
     expect(card._children).toHaveLength(childCountBefore)
     expect(card.querySelector('[data-role="run-updated-at"]')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-794 (#583): in-card run-notice slot + dataset.status seed carrier
+// ---------------------------------------------------------------------------
+
+describe('renderRunCard — rm-794 run-notice slot and dataset.status carrier', () => {
+  afterEach(() => {
+    resetRunIndexState()
+    vi.restoreAllMocks()
+  })
+
+  it('stamps the card with the raw view status so the stream seam can seed the reducer', async () => {
+    const runId = 'run-seed-status-001'
+    stubFetchRuns([makeValidSummary({runId, status: 'running'})])
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+
+    await initOperatorRunIndex({endpointBase: '/operator'})
+
+    expect(cards).toHaveLength(1)
+    expect(cards[0].dataset.status).toBe('running')
+  })
+
+  it('renders a hidden [data-role="run-notice"] element as the first substructure element', async () => {
+    const runId = 'run-notice-slot-001'
+    stubFetchRuns([makeValidSummary({runId, status: 'queued'})])
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+
+    await initOperatorRunIndex({endpointBase: '/operator'})
+
+    const card = cards[0]
+    const notice = card.querySelector('[data-role="run-notice"]')
+    expect(notice).not.toBeNull()
+    expect(notice.hidden).toBe(true)
+    // First of the hidden substructure, ahead of run-output — expansion reveals
+    // the notice before the output, mirroring the page-level stream-status slot.
+    const roles = card._children.filter(c => c.dataset?.role).map(c => c.dataset.role)
+    expect(roles.indexOf('run-notice')).toBeLessThan(roles.indexOf('run-output'))
+    expect(roles.indexOf('run-notice')).toBeGreaterThan(-1)
+  })
+
+  it('updateCardInPlace keeps dataset.status current so a later expand seeds the terminal status', async () => {
+    const runId = 'run-seed-currency-001'
+    stubFetchRuns([makeValidSummary({runId, status: 'running'})])
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+
+    await initOperatorRunIndex({endpointBase: '/operator'})
+    expect(cards[0].dataset.status).toBe('running')
+
+    // A later index fetch that reports the run terminal must advance the
+    // carrier — otherwise an operator expanding the card afterwards would seed
+    // a stale non-terminal status and the card would never land terminal.
+    stubFetchRuns([makeValidSummary({runId, status: 'succeeded'})])
+    await initOperatorRunIndex({endpointBase: '/operator'})
+
+    expect(cards[0].dataset.status).toBe('succeeded')
   })
 })

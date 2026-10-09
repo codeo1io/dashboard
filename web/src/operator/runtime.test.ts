@@ -202,6 +202,30 @@ describe('createOperatorRuntime — dead-instance late cleanup vs live instance 
     expect(guardIdx).toBeGreaterThan(streamCloseIdx)
     expect(resetIdx).toBeGreaterThan(guardIdx)
   })
+
+  it('runtime.ts seeds the stream from the card and prefers the in-card notice (rm-794 source contract)', async () => {
+    const fs = await import('node:fs/promises')
+    const path = await import('node:path')
+    const url = await import('node:url')
+    const __dirname = path.dirname(url.fileURLToPath(import.meta.url))
+    const src = await fs.readFile(path.join(__dirname, 'runtime.ts'), 'utf8')
+    // The card lookup + in-card notice preference + seed status extraction all
+    // happen BEFORE initOperatorStream is called, and the seed rides the same
+    // call that passes the discovered targets.
+    const cardIdx = src.indexOf('document.querySelector(`[data-run-id="${CSS.escape(runId)}"]`)')
+    const noticeIdx = src.indexOf("querySelector('[data-role=\"run-notice\"]')")
+    const seedIdx = src.indexOf('card.dataset.status')
+    const initIdx = src.indexOf('streamMod.initOperatorStream({')
+    expect(cardIdx).toBeGreaterThan(-1)
+    expect(noticeIdx).toBeGreaterThan(cardIdx)
+    expect(seedIdx).toBeGreaterThan(cardIdx)
+    expect(initIdx).toBeGreaterThan(Math.max(noticeIdx, seedIdx))
+    // The in-card notice is a PREFERENCE with a page-level fallback — a card
+    // without the region (legacy markup / fixture bootstrap) still gets a
+    // notice target, so the fallback shape must stay in the source.
+    expect(src).toContain('noticeEl: inCardNoticeEl ?? noticeEl')
+    expect(src).toMatch(/seedStatus,/) // passed through to initOperatorStream
+  })
 })
 
 // ---------------------------------------------------------------------------

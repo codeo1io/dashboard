@@ -165,3 +165,42 @@ describe('digest readback — SIGPIPE fence (rm-708)', () => {
     ).toHaveLength(0)
   })
 })
+
+/**
+ * rm-793 (2026-10-09): cross-file pin-KEY fence — the workflow-statics suites
+ * (base-drift readback forms above, actionlint, zizmor) fence forms WITHIN a
+ * file; this fences IDENTITY ACROSS files. cve-tripwire.yaml resolves its
+ * pinned digest by grepping `${NODE_IMAGE}@sha256:<64-hex>` in the Dockerfile
+ * (cve-tripwire.yaml 'Resolve pinned digest' step), so the workflow's
+ * NODE_IMAGE tag must be exactly the Dockerfile ARG's tag — a one-word drift
+ * ('node:24-slim' vs 'node:24-trixie-slim', the state this fence closed) makes
+ * that grep unmatchable and the resolve step exits 1 BEFORE trivy ever runs,
+ * red-by-construction on every scheduled fire. The same holds if the
+ * workflow env ever carries the full tag@digest pin (the grep would then look
+ * for a doubled @sha256 suffix), so the bare-tag property is fenced too.
+ */
+describe('cve-tripwire NODE_IMAGE ↔ Dockerfile ARG pin-key fence (rm-793)', () => {
+  it("the tripwire's NODE_IMAGE tag equals the Dockerfile ARG tag, as a bare tag", () => {
+    const file = readWorkflowFiles().find(f => f.name === 'cve-tripwire.yaml')
+    expect(file, '.github/workflows/cve-tripwire.yaml must exist').toBeDefined()
+    const text = file?.text ?? ''
+    const envMatch = text.match(/^\s*NODE_IMAGE:\s*'([^']+)'\s*$/m)
+    expect(envMatch, 'cve-tripwire.yaml must set NODE_IMAGE as a single-quoted env value').toBeDefined()
+    const tag = envMatch?.[1] ?? ''
+    expect(
+      tag.includes('@'),
+      'NODE_IMAGE must be the BARE tag — the resolve step greps <tag>@sha256:<hex> in the Dockerfile, so a full tag@digest value can never match',
+    ).toBe(false)
+
+    const dockerfile = readFileSync(join(process.cwd(), 'Dockerfile'), 'utf8')
+    const argMatch = dockerfile.match(/^ARG NODE_IMAGE=([^@\s]+)@sha256:([0-9a-f]{64})\s*$/m)
+    expect(
+      argMatch,
+      'Dockerfile must pin ARG NODE_IMAGE=<tag>@sha256:<64-hex digest> (the tripwire resolve step depends on this exact shape)',
+    ).toBeDefined()
+    expect(
+      argMatch?.[1],
+      `workflow NODE_IMAGE '${tag}' does not match the Dockerfile ARG tag — the tripwire's digest grep is red by construction (rm-793)`,
+    ).toBe(tag)
+  })
+})
