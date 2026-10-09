@@ -342,6 +342,11 @@ jobs:
           output: trivy-results-${{ steps.digest.outputs.normalized }}.sarif
           scanners: vuln
           severity: HIGH,CRITICAL
+          # rm-761: parity with the Enforce gate below — uploaded alerts mirror
+          # exactly what the gate blocks (fixed-only). Keeping the category a
+          # digest-independent constant lets instances dropped from the SARIF
+          # auto-close their stale code-scanning rows on the next upload.
+          ignore-unfixed: true
           limit-severities-for-sarif: true
           exit-code: '0'
           version: v0.72.0
@@ -372,6 +377,7 @@ jobs:
             echo "- SARIF artifact: \`$ARTIFACT\`"
             echo "- Code scanning category: \`$CATEGORY\`"
             echo "- Report severity: HIGH,CRITICAL"
+            echo "- Filter: fixed-only (ignore-unfixed), matching the Enforce gate"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 🚦 Enforce fixed HIGH/CRITICAL vulnerabilities
