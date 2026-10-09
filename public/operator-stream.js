@@ -33,16 +33,18 @@
  * the supported-versions window below (rm-157). Kept exported so the parity
  * test can pin it to the vendored OPERATOR_CONTRACT_VERSION.
  */
-export const PINNED_CONTRACT_VERSION = '1.6.0'
+export const PINNED_CONTRACT_VERSION = '1.8.0'
 
 /**
  * rm-157 supported-versions window: ready frames with any of these versions
  * are dispatched; everything else fails closed to drift. Mirrors
  * SUPPORTED_OPERATOR_CONTRACT_VERSIONS in src/gateway/operator-contract/version.ts
- * (pinned by test/operator-contract-window.test.ts). '1.8.0' is additive-only
- * shape; the primary stays '1.6.0' until the deployed gateway moves.
+ * (pinned by test/operator-contract-window.test.ts). Flip executed
+ * 2026-10-09 (rm-157 deferred half): the deployed gateway moved to 1.8.0
+ * (infra faf71414, 2026-10-07T20:11:52Z, v0.118.2) and '1.6.0' was retired
+ * from the window in the same change.
  */
-export const SUPPORTED_CONTRACT_VERSIONS = ['1.6.0', '1.8.0']
+export const SUPPORTED_CONTRACT_VERSIONS = ['1.8.0']
 
 /** Base delay in milliseconds for exponential backoff. */
 export const RETRY_BASE_MS = 1000

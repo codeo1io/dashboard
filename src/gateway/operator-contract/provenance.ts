@@ -15,6 +15,14 @@
  * present on both variants — explicit, not an omitted field — so a later
  * contract version can add a `{kind: 'checked', ...}` variant without a
  * rewrite of every consumer.
+ *
+ * VENDORED-REFRESH CHECKLIST (rm-833): the exported vocabulary sets
+ * (`CHECKOUT_OPERATIONS`, `LAYOUT_REFUSAL_REASONS`, `OBSTRUCTION_KINDS`,
+ * `UPDATE_FAILURE_REASONS`, `CHECKOUT_REFUSAL_REASONS`) are pinned to exact
+ * membership by `test/operator-contract-vocabulary.test.ts`. A contract-
+ * version bump that changes any vocabulary must update the sets and that
+ * suite in the same change, or `pnpm test` fails — by design, as the
+ * vendored-drift signal.
  */
 
 // ---------------------------------------------------------------------------

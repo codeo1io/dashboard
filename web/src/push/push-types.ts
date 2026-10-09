@@ -28,10 +28,27 @@ export interface PushSubscriptionMetadata {
   readonly endpointHash: string
   readonly keyVersion: string
   readonly active: boolean
-  readonly createdAt: string
-  readonly updatedAt: string
-  readonly inactiveReason?: string
+  readonly createdAt: number
+  readonly updatedAt: number
+  readonly inactiveReason?: OperatorPushInactiveReason
 }
+
+/**
+ * rm-693: coarse, non-oracle reasons a subscription record became inactive —
+ * web-local mirror of the vendored contract's `OperatorPushInactiveReason`
+ * (src/gateway/operator-contract/push.ts). Membership pinned by
+ * push-types.test.ts against the vendored OPERATOR_PUSH_INACTIVE_REASONS.
+ * Distinct from the client-derived `stale_key` handoff state.
+ */
+export type OperatorPushInactiveReason = 'unsubscribed' | 'dead' | 'revoked' | 'session-revoked'
+
+/** Exact membership of the ladder (mirror of the vendored Set). */
+export const OPERATOR_PUSH_INACTIVE_REASONS: ReadonlySet<string> = new Set([
+  'unsubscribed',
+  'dead',
+  'revoked',
+  'session-revoked',
+])
 
 /**
  * Client-derived push handoff state. NOT a wire field — computed from

@@ -838,8 +838,8 @@ describe('runReconcileSweep', () => {
       endpointHash: hash,
       keyVersion: 'v1',
       active: true,
-      createdAt: '2026-07-08T00:00:00.000Z',
-      updatedAt: '2026-07-08T00:00:00.000Z',
+      createdAt: 1_772_924_800_000,
+      updatedAt: 1_772_924_800_000,
     }
     const getPushSubscriptionMetadata = vi.fn().mockResolvedValue(ok({pushDisabled: false, metadata}))
     const pushClient = fakePushClient({getPushSubscriptionMetadata})
@@ -890,8 +890,8 @@ describe('runReconcileSweep', () => {
       endpointHash: hash,
       keyVersion: 'v1',
       active: true,
-      createdAt: '2026-07-08T00:00:00.000Z',
-      updatedAt: '2026-07-08T00:00:00.000Z',
+      createdAt: 1_772_924_800_000,
+      updatedAt: 1_772_924_800_000,
     }
     const pushClient = fakePushClient({
       getPushSubscriptionMetadata: vi.fn().mockResolvedValue(ok({pushDisabled: false, metadata})),
@@ -919,8 +919,8 @@ describe('runReconcileSweep', () => {
       endpointHash: 'f'.repeat(64),
       keyVersion: 'v1',
       active: true,
-      createdAt: '2026-07-08T00:00:00.000Z',
-      updatedAt: '2026-07-08T00:00:00.000Z',
+      createdAt: 1_772_924_800_000,
+      updatedAt: 1_772_924_800_000,
     }
     const pushClient = fakePushClient({
       getPushSubscriptionMetadata: vi.fn().mockResolvedValue(ok({pushDisabled: false, metadata})),
@@ -955,8 +955,8 @@ describe('runReconcileSweep', () => {
       endpointHash: hash,
       keyVersion: 'v1',
       active: true,
-      createdAt: '2026-07-08T00:00:00.000Z',
-      updatedAt: '2026-07-08T00:00:00.000Z',
+      createdAt: 1_772_924_800_000,
+      updatedAt: 1_772_924_800_000,
     }
     const pushClient = fakePushClient({
       getPushSubscriptionMetadata: vi.fn().mockResolvedValue(ok({pushDisabled: false, metadata})),
@@ -986,8 +986,8 @@ describe('runReconcileSweep', () => {
       endpointHash: hash,
       keyVersion: 'v1',
       active: true,
-      createdAt: '2026-07-08T00:00:00.000Z',
-      updatedAt: '2026-07-08T00:00:00.000Z',
+      createdAt: 1_772_924_800_000,
+      updatedAt: 1_772_924_800_000,
     }
     const pushClient = fakePushClient({
       getPushSubscriptionMetadata: vi.fn().mockResolvedValue(ok({pushDisabled: false, metadata})),
@@ -1020,8 +1020,8 @@ describe('runReconcileSweep', () => {
       endpointHash: 'a'.repeat(64),
       keyVersion: 'v1',
       active: true,
-      createdAt: '2026-07-08T00:00:00.000Z',
-      updatedAt: '2026-07-08T00:00:00.000Z',
+      createdAt: 1_772_924_800_000,
+      updatedAt: 1_772_924_800_000,
     }
     const pushClient = fakePushClient({
       getPushSubscriptionMetadata: vi.fn().mockResolvedValue(ok({pushDisabled: false, metadata})),
@@ -1075,8 +1075,8 @@ describe('runReconcileSweep', () => {
       endpointHash: 'c'.repeat(64),
       keyVersion: 'v1',
       active: true,
-      createdAt: '2026-07-08T00:00:00.000Z',
-      updatedAt: '2026-07-08T00:00:00.000Z',
+      createdAt: 1_772_924_800_000,
+      updatedAt: 1_772_924_800_000,
     }
     const pushClient = fakePushClient({
       getPushSubscriptionMetadata: vi.fn().mockResolvedValue(ok({pushDisabled: false, metadata})),
@@ -1209,8 +1209,8 @@ describe('runReconcileSweep', () => {
       endpointHash: 'a'.repeat(64),
       keyVersion: 'v1',
       active: true,
-      createdAt: '2026-07-08T00:00:00.000Z',
-      updatedAt: '2026-07-08T00:00:00.000Z',
+      createdAt: 1_772_924_800_000,
+      updatedAt: 1_772_924_800_000,
     }
     const pushClient = fakePushClient({
       getPushSubscriptionMetadata: vi.fn().mockResolvedValue(ok({pushDisabled: false, metadata})),
