@@ -1173,7 +1173,23 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       return c.html(spaShellCache.injected)
     })
   } else {
-    app.get('/', serveStatic({root: webDistRoot, path: 'index.html'}))
+    // rm-818: the non-push '/' branch serves the SAME unhashed SPA shell the
+    // push branch serves inline — operator-gated, identity-reflecting content
+    // (auth-protected, and the DEFAULT posture while operator UI push is
+    // disabled; see operator-config fail-closed). Bare serveStatic carried no
+    // Cache-Control, so an intermediary could heuristically cache the
+    // unhashed document and hand a returning operator a stale shell after a
+    // redeploy. Pin the same no-store policy as the push branch above and
+    // /api/monitoring — hash-addressed bundles under /assets/* keep their
+    // immutable policy from rm-690.
+    app.get(
+      '/',
+      async (c, next) => {
+        await next()
+        c.res.headers.set('Cache-Control', 'no-store')
+      },
+      serveStatic({root: webDistRoot, path: 'index.html'}),
+    )
   }
 
   // ── /operator and /operator/ → / redirect (unconditional, flag-independent) ──

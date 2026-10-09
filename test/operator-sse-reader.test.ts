@@ -17,8 +17,9 @@ import type {RunStreamFrame} from '../src/gateway/operator-contract/sse-frames.t
 import type {Logger} from '../src/logger.ts'
 import fc from 'fast-check'
 import {describe, expect, it, vi} from 'vitest'
+import {FIRST_FRAME_TIMEOUT_MS} from '../public/operator-stream.js'
 import {FIXTURE_RUN_ID_FOR_TESTS, FIXTURE_SCENARIO_NAMES, serializeScenarioToSse} from '../src/gateway/operator-fixture-sse.ts'
-import {createOperatorSseReader, MAX_SSE_BUFFER_BYTES, parseSseChunk} from '../src/gateway/operator-sse-reader.ts'
+import {createOperatorSseReader, MAX_SSE_BUFFER_BYTES, parseSseChunk, SSE_READER_FIRST_FRAME_TIMEOUT_MS, SSE_READER_INACTIVITY_TIMEOUT_MS} from '../src/gateway/operator-sse-reader.ts'
 
 function makeStreamBody(chunks: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder()
@@ -2519,5 +2520,220 @@ describe('createOperatorSseReader — rm-157 supported-versions window', () => {
       expect(events.filter(e => e.type === 'status')).toHaveLength(0)
       expect(closed).toBe(true)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-820 — multi-line `data:` join (WHATWG SSE spec)
+// ---------------------------------------------------------------------------
+
+describe('rm-820 — multi-line data: lines join per the SSE spec', () => {
+  const encodeText = (s: string) => new TextEncoder().encode(s)
+
+  async function openWithText(text: string): Promise<{
+    events: RunStreamFrame[]
+    errors: Error[]
+    closed: boolean
+  }> {
+    const events: RunStreamFrame[] = []
+    const errors: Error[] = []
+    let closed = false
+    const reader = createOperatorSseReader({
+      fetchImpl: async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(encodeText(text))
+              controller.close()
+            },
+          }),
+          {status: 200, headers: {'content-type': 'text/event-stream'}},
+        ),
+    })
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: frame => {
+        events.push(frame)
+      },
+      onError: error => {
+        errors.push(error)
+      },
+      onClose: () => {
+        closed = true
+      },
+    })
+    return {events, errors, closed}
+  }
+
+  it('a ready frame split across two data: lines parses (joined with a newline)', async () => {
+    // Pre-rm-820 semantics kept only the LAST data: line — this record would
+    // have failed JSON parsing. The spec-correct join parses it whole.
+    const {events, errors, closed} = await openWithText(
+      'event: ready\ndata: {"contractVersion":\ndata: "1.6.0"}\n\n',
+    )
+    expect(errors).toEqual([])
+    expect(closed).toBe(true)
+    expect(events).toEqual([{type: 'ready', data: {contractVersion: '1.6.0'}}])
+  })
+
+  it('a status frame split across data: lines parses with its payload intact', async () => {
+    const payload = {
+      runId: 'run-001',
+      entityRef: 'fro-bot/agent',
+      surface: 'github',
+      phase: 'EXECUTING',
+      status: 'running',
+      startedAt: '2026-06-18T20:00:00Z',
+      stale: false,
+    }
+    // Split the JSON at an arbitrary token boundary across two data: lines.
+    const serialized = JSON.stringify(payload)
+    const splitAt = serialized.indexOf(':', serialized.indexOf('"runId"')) + 1
+    const text =
+      'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n' +
+      `event: status\ndata: ${serialized.slice(0, splitAt)}\ndata: ${serialized.slice(splitAt)}\n\n`
+    const {events, errors} = await openWithText(text)
+    expect(errors).toEqual([])
+    const status = events.find(e => e.type === 'status')
+    expect(status).toBeDefined()
+    if (status?.type === 'status') {
+      expect(status.data.runId).toBe('run-001')
+      expect(status.data.phase).toBe('EXECUTING')
+    }
+  })
+
+  it('an event with no data line still fails as a typed non-object record (pre-rm-820 path pinned)', async () => {
+    // No onError fires for parse failures (fail-open per record); the record
+    // is absorbed and the stream closes cleanly. This pins the `null` parse
+    // fallback that rm-820 preserved when switching to joined data lines.
+    const {events, errors, closed} = await openWithText('event: ready\n\n')
+    expect(errors).toEqual([])
+    expect(events).toEqual([])
+    expect(closed).toBe(true)
+  })
+
+  it('single-line data frames parse exactly as before (pinned 1.6.0-1.8.0 gateway behavior)', async () => {
+    const {events, errors} = await openWithText(
+      'event: ready\ndata: {"contractVersion":"1.8.0"}\n\n' +
+      'event: output\ndata: {"runId":"run-001","text":"hello","final":false,"seq":0}\n\n',
+    )
+    expect(errors).toEqual([])
+    expect(events.map(e => e.type)).toEqual(['ready', 'output'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-820 — twin-parity watchdogs (dead-but-open stream protection)
+// ---------------------------------------------------------------------------
+
+// A stream that opens 200 text/event-stream but never enqueues a byte and
+// never closes — the dead-but-open transport rm-820 guards against.
+function deadStream(): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({start() {}})
+}
+
+describe('rm-820 — twin-parity watchdogs bound open() instead of hanging', () => {
+  const encodeText = (s: string) => new TextEncoder().encode(s)
+
+  interface Outcome {
+    events: RunStreamFrame[]
+    errors: Error[]
+    closed: number
+  }
+
+  function readerWith(
+    body: ReadableStream<Uint8Array>,
+    options: {firstFrameTimeoutMs?: number; inactivityTimeoutMs?: number} = {},
+  ) {
+    const reader = createOperatorSseReader({
+      fetchImpl: async () =>
+        new Response(body, {status: 200, headers: {'content-type': 'text/event-stream'}}),
+      ...options,
+    })
+    const outcome: Outcome = {events: [], errors: [], closed: 0}
+    const openPromise = reader.open('/operator/runs/run-001/stream', {
+      onEvent: frame => {
+        outcome.events.push(frame)
+      },
+      onError: error => {
+        outcome.errors.push(error)
+      },
+      onClose: () => {
+        outcome.closed += 1
+      },
+    })
+    return {openPromise, outcome}
+  }
+
+  it('first-frame watchdog: a dead-but-open stream errors the consumer instead of parking open() forever', async () => {
+    const {openPromise, outcome} = readerWith(deadStream(), {
+      firstFrameTimeoutMs: 40,
+      inactivityTimeoutMs: 0,
+    })
+    await openPromise // pre-rm-820: never settled
+    expect(outcome.errors).toHaveLength(1)
+    expect(outcome.errors[0]?.message).toBe(
+      'network error: no first frame within the first-frame timeout',
+    )
+    expect(outcome.events).toEqual([])
+    expect(outcome.closed).toBe(1)
+  })
+
+  it('inactivity watchdog: frames arrive, then the stream goes silent — error instead of hang', async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encodeText('event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'),
+        )
+        // deliberately keep the stream open with no further bytes
+      },
+    })
+    const {openPromise, outcome} = readerWith(stream, {
+      firstFrameTimeoutMs: 5000,
+      inactivityTimeoutMs: 40,
+    })
+    await openPromise
+    expect(outcome.events.map(e => e.type)).toEqual(['ready'])
+    expect(outcome.errors).toHaveLength(1)
+    expect(outcome.errors[0]?.message).toBe(
+      'network error: stream inactive beyond the inactivity timeout',
+    )
+    expect(outcome.closed).toBe(1)
+  })
+
+  it('0 disables both bounds — open() stays pending on a dead stream (pre-rm-820 semantics pinned as opt-out)', async () => {
+    const {openPromise, outcome} = readerWith(deadStream(), {
+      firstFrameTimeoutMs: 0,
+      inactivityTimeoutMs: 0,
+    })
+    const marker = Symbol('still-pending')
+    const observed = await Promise.race([
+      openPromise.then(() => 'open-settled'),
+      new Promise<symbol>(resolve => {
+        setTimeout(() => resolve(marker), 80)
+      }),
+    ])
+    expect(observed).toBe(marker)
+    expect(outcome.errors).toHaveLength(0)
+  })
+
+  it('defaults are ON and mirror the browser twin: first-frame 15s (FIRST_FRAME_TIMEOUT_MS), inactivity 30s', async () => {
+    expect(SSE_READER_FIRST_FRAME_TIMEOUT_MS).toBe(15_000)
+    expect(SSE_READER_INACTIVITY_TIMEOUT_MS).toBe(30_000)
+    // Hard parity lock against the live twin module.
+    expect(SSE_READER_FIRST_FRAME_TIMEOUT_MS).toBe(FIRST_FRAME_TIMEOUT_MS)
+  })
+
+  it('happy path with default watchdogs armed: a completing stream dispatches normally and closes cleanly', async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encodeText('event: ready\ndata: {"contractVersion":"1.8.0"}\n\n'))
+        controller.close()
+      },
+    })
+    const {openPromise, outcome} = readerWith(stream) // defaults: 15s / 30s armed
+    await openPromise
+    expect(outcome.events.map(e => e.type)).toEqual(['ready'])
+    expect(outcome.errors).toEqual([])
+    expect(outcome.closed).toBe(1)
   })
 })

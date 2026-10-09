@@ -21,6 +21,20 @@
  * - Content-Type must be text/event-stream on 200; otherwise fail closed.
  * - Path must be a relative /operator/runs/ path; absolute URLs rejected.
  * - Buffer is capped at MAX_SSE_BUFFER_BYTES; overflow → fail closed.
+ *
+ * Twin parity (rm-820, 2026-10-10): the browser twin
+ * (public/operator-stream.js) bounds its fetch reader with a first-frame
+ * watchdog (FIRST_FRAME_TIMEOUT_MS) while inactivity/max-duration bounds
+ * arrive SERVER-side as reset reasons it renders. This typed twin mirrors
+ * that ladder with two OPTIONAL client-side bounds — `firstFrameTimeoutMs`
+ * (open → first parsed record) and `inactivityTimeoutMs` (between stream
+ * reads, reset on every chunk) — so a dead-but-open stream errors the
+ * consumer instead of parking open() forever. Both default ON at generous
+ * values a healthy pinned-window (1.6.0–1.8.0) stream never trips; 0
+ * disables either, pinning the exact pre-rm-820 unbounded behavior. Known
+ * remaining asymmetry (deliberate): the fetch-open phase itself is bounded
+ * only by the consumer's AbortSignal — the twin likewise relies on the
+ * browser stack for connection setup.
  */
 
 import type {Logger} from '../logger.ts'
@@ -115,7 +129,12 @@ function normalizeCrlf(text: string): string {
 function parseSseRecord(record: string): SseParseResult | null {
   const lines = record.split('\n')
   let eventName: string | undefined
-  let dataLine: string | undefined
+  // rm-820: per the WHATWG SSE algorithm, each `data:` line appends to the
+  // data buffer with an LF; the parser therefore JOINS multiple `data:`
+  // lines with '\n' instead of keeping only the last one. Single-line frames
+  // (the pinned 1.6.0–1.8.0 gateway behavior, and what the fixture serializer
+  // emits) parse identically to before — the join is additive.
+  const dataLines: string[] = []
 
   for (const line of lines) {
     if (line.startsWith(':')) {
@@ -125,12 +144,12 @@ function parseSseRecord(record: string): SseParseResult | null {
     if (line.startsWith('event:')) {
       eventName = line.slice('event:'.length).trim()
     } else if (line.startsWith('data:')) {
-      dataLine = line.slice('data:'.length).trim()
+      dataLines.push(line.slice('data:'.length).trim())
     }
   }
 
   // A record with only comment lines produces no frame
-  if (eventName === undefined && dataLine === undefined) {
+  if (eventName === undefined && dataLines.length === 0) {
     return null
   }
 
@@ -139,10 +158,12 @@ function parseSseRecord(record: string): SseParseResult | null {
     return {success: false, error: new Error('sse record missing event name')}
   }
 
-  // Parse the data field as JSON
+  // Parse the data field as JSON — multiple `data:` lines joined per spec.
+  // An event with no data lines parses 'null' (then fails the object check
+  // below), preserving the pre-rm-820 typed failure.
   let parsed: unknown
   try {
-    parsed = JSON.parse(dataLine ?? 'null')
+    parsed = JSON.parse(dataLines.length > 0 ? dataLines.join('\n') : 'null')
   } catch {
     return {success: false, error: new Error('sse record data is not valid JSON')}
   }
@@ -370,6 +391,57 @@ export interface OperatorSseReaderOptions {
    * runId is never logged.
    */
   readonly logger?: Logger
+  /**
+   * rm-820: bound (ms) from open() to the first parsed record. When it fires,
+   * open() resolves with onError (fixed message, no stream content wired
+   * into the error) instead of parking the consumer on a dead-but-open
+   * stream. Mirrors the browser twin's FIRST_FRAME_TIMEOUT_MS
+   * (public/operator-stream.js). 0 disables (pins pre-rm-820 behavior).
+   * Default: SSE_READER_FIRST_FRAME_TIMEOUT_MS.
+   */
+  readonly firstFrameTimeoutMs?: number | undefined
+  /**
+   * rm-820: bound (ms) between stream reads — reset on every chunk, so any
+   * arriving bytes refresh it. 0 disables. Default:
+   * SSE_READER_INACTIVITY_TIMEOUT_MS.
+   */
+  readonly inactivityTimeoutMs?: number | undefined
+}
+
+/**
+ * rm-820 twin-parity default: mirrors public/operator-stream.js's
+ * FIRST_FRAME_TIMEOUT_MS (15s) — bound from open() to the first parsed record.
+ */
+export const SSE_READER_FIRST_FRAME_TIMEOUT_MS = 15_000
+/** rm-820 twin-parity default: bound between stream reads (client backstop; the gateway's own inactivity reset remains the server-side bound). */
+export const SSE_READER_INACTIVITY_TIMEOUT_MS = 30_000
+
+/** Sentinel for watchdog expiry — never escapes this module; its fixed message becomes the onError text. */
+class SseWatchdogFired extends Error {}
+
+interface SseWatchdog {
+  readonly promise: Promise<never>
+  cancel: () => void
+}
+
+function createSseWatchdog(ms: number, message: string): SseWatchdog | null {
+  if (ms <= 0) {
+    return null
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const promise = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new SseWatchdogFired(message))
+    }, ms)
+  })
+  return {
+    promise,
+    cancel: () => {
+      if (timer !== undefined) {
+        clearTimeout(timer)
+      }
+    },
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -400,6 +472,10 @@ export interface OperatorSseReaderOptions {
  */
 export function createOperatorSseReader(options: OperatorSseReaderOptions = {}): OperatorSseReader {
   const {fetchImpl = fetch, logger} = options
+  // rm-820 twin-parity watchdog bounds (see the module header). Defaults are
+  // generous enough that a healthy pinned-window stream never trips them.
+  const firstFrameTimeoutMs = options.firstFrameTimeoutMs ?? SSE_READER_FIRST_FRAME_TIMEOUT_MS
+  const inactivityTimeoutMs = options.inactivityTimeoutMs ?? SSE_READER_INACTIVITY_TIMEOUT_MS
 
   // Route template used for logging — never the dynamic path
   const ROUTE_TEMPLATE = '/operator/runs/:runId/stream'
@@ -481,6 +557,11 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
     let bufferBytes = 0
     let contractVerified = false
     let drifted = false
+    // rm-820: armed below at stream open (twin parity — the browser twin arms
+    // its first-frame timer once the stream opens); declared before
+    // handleFrame so the closure can clear it on the first parsed record.
+    let firstFrameSeen = false
+    let firstFrameWatchdog: SseWatchdog | null = null
 
     /**
      * Unified frame handler — enforces the contract-version gate for BOTH the
@@ -488,6 +569,12 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
      * stop (drift detected).
      */
     function handleFrame(result: SseParseResult): boolean {
+      if (!firstFrameSeen) {
+        // rm-820: any parsed record proves the stream is live — the
+        // first-frame watchdog's job (dead-but-open detection) ends here.
+        firstFrameSeen = true
+        firstFrameWatchdog?.cancel()
+      }
       if (!result.success) {
         logger?.error('sse-reader: frame parse failure', {route: ROUTE_TEMPLATE})
         return true // continue reading
@@ -520,22 +607,56 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
       return true // continue
     }
 
+    // rm-820: bound from open to the first parsed record (twin parity).
+    firstFrameWatchdog = createSseWatchdog(
+      firstFrameTimeoutMs,
+      'network error: no first frame within the first-frame timeout',
+    )
+
     try {
       const reader = response.body.getReader()
 
       while (true) {
         let done: boolean
         let value: Uint8Array<ArrayBuffer> | undefined
+        // rm-820: fresh inactivity bound per read — any chunk arrival resets it.
+        const inactivityWatchdog = createSseWatchdog(
+          inactivityTimeoutMs,
+          'network error: stream inactive beyond the inactivity timeout',
+        )
         try {
-          const result = await reader.read()
+          type StreamReadResult = Awaited<ReturnType<typeof reader.read>>
+          const racers: Promise<StreamReadResult>[] = [reader.read()]
+          if (firstFrameWatchdog !== null) {
+            racers.push(firstFrameWatchdog.promise)
+          }
+          if (inactivityWatchdog !== null) {
+            racers.push(inactivityWatchdog.promise)
+          }
+          const result = await Promise.race(racers)
           done = result.done
           value = result.value as Uint8Array<ArrayBuffer> | undefined
-        } catch {
-          // Stream read error — fail closed
+        } catch (error) {
+          if (error instanceof SseWatchdogFired) {
+            // rm-820: watchdog fired — error the consumer instead of parking
+            // open() on a dead-but-open stream. Fixed message, no-oracle.
+            logger?.error('sse-reader: watchdog fired', {route: ROUTE_TEMPLATE})
+            onError(new Error(error.message))
+            // Fire-and-forget release of the transport — it must never block
+            // the error path, and a dead stream's cancel is not guaranteed
+            // prompt.
+            // eslint-disable-next-line no-void -- deliberate fire-and-forget stream release
+            void reader.cancel().catch(() => {})
+            onClose()
+            return
+          }
+          // Stream read error — fail closed (pre-rm-820 path, unchanged)
           logger?.error('sse-reader: stream read error', {route: ROUTE_TEMPLATE})
           onError(new Error('network error reading stream'))
           onClose()
           return
+        } finally {
+          inactivityWatchdog?.cancel()
         }
 
         if (done) break
@@ -598,6 +719,9 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
       onError(new Error('network error: unexpected stream failure'))
       onClose()
       return
+    } finally {
+      // rm-820: never leave an armed first-frame timer behind on any exit.
+      firstFrameWatchdog?.cancel()
     }
 
     onClose()

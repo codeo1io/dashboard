@@ -1017,3 +1017,38 @@ describe('push-enabled meta injection — served SPA shell integrity', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// SPA shell Cache-Control — both branches pinned (rm-818)
+// ---------------------------------------------------------------------------
+
+describe('rm-818 — SPA shell Cache-Control pinned on every serving branch', () => {
+  it('non-push branch: first hit carries Cache-Control: no-store (no heuristic caching of the unhashed shell)', async () => {
+    const dir = mkdtempSync(`${tmpdir()}/spa-shell-rm818-`)
+    writeFileSync(
+      `${dir}/index.html`,
+      '<!doctype html><html lang="en"><head><title>t</title></head><body><div id="root"></div></body></html>',
+    )
+    try {
+      // pushNotificationsEnabled: false is the DEFAULT posture (operator
+      // config fails closed to disabled) — the branch assess flagged as
+      // serving the shell with no Cache-Control at all.
+      const app = await buildTestApp({
+        operatorUiEnabled: true,
+        pushNotificationsEnabled: false,
+        webDistRoot: dir,
+      })
+      const first = await authedGet(app, '/')
+      expect(first.status).toBe(200)
+      // The unhashed shell is identity-reflecting operator content: an
+      // intermediary must never serve it heuristically after a redeploy.
+      // Same policy as the push branch (rm-166) and /api/monitoring.
+      expect(first.headers.get('cache-control')).toBe('no-store')
+      // The policy holds on repeat hits too (no first-hit-only behavior).
+      const second = await authedGet(app, '/')
+      expect(second.headers.get('cache-control')).toBe('no-store')
+    } finally {
+      rmSync(dir, {recursive: true, force: true})
+    }
+  })
+})

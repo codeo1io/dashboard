@@ -112,7 +112,7 @@ describe('rm-678 schema half: live ledger', () => {
     // all sit at/below rm-744) and land as-authored, so the union
     // census is 240 + 4 = 244 defs with the ceiling moving to
     // rm-778 — pin 744 → 778 atomically with this landing.
-    expect(live.max).toBe(778)
+    expect(live.max).toBe(821)
     // 2026-10-09 integrate of run 9289efaa (conflict case
     // 139848e6): that run's single mint rm-703 (release.yaml
     // digest-readback SIGPIPE -- the THIRD lineage id of the
@@ -126,6 +126,18 @@ describe('rm-678 schema half: live ledger', () => {
     // this note -- those bands have since landed and
     // reconciled by content (rm-693/694 via 46431058,
     // rm-698 via ad8f21e, rm-700..702 via 76d683f2).
+    // 2026-10-09 roadmap of run 5989eb976c8b (attempt a1bbd405,
+    // base 364272b at 245 defs / max rm-778): minted rm-818..rm-821
+    // (four defs) above the all-lineage observed ceiling — standing
+    // sibling wall max rm-805 (run-8dd690c85b50; next 803 d8fdf8b7,
+    // 802 6a97d6f7, 801 c37a8576-integration, 800 c4617181, 797
+    // 38e72854) plus transient rm-815/817 template-state def-lines
+    // observed in run-1930644a996e's wall during the ceiling
+    // derivation and absent at re-probe — rm-806..817 left as margin
+    // for that lane's re-mint; rm-818..821 collision-free via
+    // `git log --all -S` empty and zero wall mentions; census
+    // 245 + 4 = 249 defs, max rm-821, pin 778 -> 821 atomically
+    // with this tree's ledger edit.
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
