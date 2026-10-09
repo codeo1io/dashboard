@@ -148,7 +148,24 @@ describe('rm-678 schema half: live ledger', () => {
     // 778 -> 780 atomically with this landing: union census
     // 245 + 2 = 247 defs / 0 dups / max rm-780, next free
     // rm-781.
-    expect(live.max).toBe(780)
+    // 2026-10-09 run 1c814809d084 (repository-maintenance 3ea1787da405,
+    // cycle:1, roadmap 8cd4316c, ext #37) mints rm-838 (aggregator
+    // last-good scrub lacks the derived-databaseId secondary guard),
+    // rm-839 (rm-187's landing test carries the repo's only 10 lint
+    // warnings), rm-840 (codeql-action v4.38.3 digest refresh x3 sites,
+    // the unowned half per rm-108's landed rider; upload-artifact half
+    // folds with the 405e9004 lane), rm-841 (katex cap lift to admit
+    // upstream's patched 0.19.0 + toml floor 4.3.0) above the
+    // all-lineage def-line ceiling rm-837 — first-hand re-probe: worktree
+    // walls rm-833 (471d3910), rm-832 (28cd8f6c), rm-831 (ba5f6d7d),
+    // rm-829 (8134eb2e), rm-822 (122a6930), rm-821 (5989eb97), committed
+    // preserves rm-805 (8dd690c8) + rm-803 (d8fdf8b7) + branch
+    // run-0cde5807 at rm-786, spool-patch claims rm-835 (91f3d37f) +
+    // rm-836/837 (159ec0eb, tree restored pristine post-delivery);
+    // rm-838+ unused in main, every wall, every patch. Six dated riders
+    // appended (rm-108/140/157/252/650/760). census 247 + 4 = 251 defs /
+    // 0 dups / max rm-841, next free rm-842; pin 780 -> 841 atomically.
+    expect(live.max).toBe(841)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
