@@ -2744,6 +2744,9 @@ function makeBootSnapshotRepo(overrides: {node_id?: string; full_name?: string} 
       openPrCount: 0,
       openIssueCount: 0,
       openAlertCount: null,
+      // Required since the cycle-1 batch's rm-117 widening (counts + buckets
+      // only — null matches every pre-rm-117 fixture by design).
+      openCodeScanningAlerts: null,
       stale: false,
       fetchedAt: 1234,
     },
@@ -3097,5 +3100,162 @@ describe('rm-151 — denylist secondary guard accepts bigint-widened database id
     const serialized = JSON.stringify(agg.getSnapshot())
     expect(serialized).not.toContain('bigint-secret')
     expect(serialized).not.toContain('private-org')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-117: code-scanning REST half — merge, needsAttention, degradation
+// ---------------------------------------------------------------------------
+
+describe('aggregator — code-scanning alert half (rm-117)', () => {
+  it('merges the fetched summary into the repo row (counts only, alongside the CI fields)', async () => {
+    const repo = makeRepo({node_id: 'NODE_CS', owner: 'org', name: 'cs-repo'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_CS', owner: 'org', name: 'cs-repo'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+      fetchCodeScanningAlerts: vi.fn().mockResolvedValue({
+        openCount: 3,
+        severity: {critical: 1, high: 0, medium: 1, low: 0, unrated: 1},
+      }),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos).toHaveLength(1)
+    expect(snap.repos[0]?.status.openCodeScanningAlerts).toEqual({
+      openCount: 3,
+      severity: {critical: 1, high: 0, medium: 1, low: 0, unrated: 1},
+    })
+    // The REST probe was called with the repo's installation id + coordinates.
+    const fetchCalls = (deps.fetchCodeScanningAlerts as ReturnType<typeof vi.fn>).mock.calls
+    expect(fetchCalls[0]).toEqual([1, 'org', 'cs-repo'])
+  })
+
+  it('deps.fetchCodeScanningAlerts absent ⇒ openCodeScanningAlerts is null everywhere (pre-rm-117 behavior)', async () => {
+    const repo = makeRepo({node_id: 'NODE_NOC', owner: 'org', name: 'noc'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_NOC', owner: 'org', name: 'noc'})],
+      }))),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    expect(agg.getSnapshot().repos[0]?.status.openCodeScanningAlerts).toBeNull()
+  })
+
+  it('null return (permission absent / probe failed) ⇒ field omitted, row NOT stale, needsAttention unaffected', async () => {
+    const repo = makeRepo({node_id: 'NODE_NULLCS', owner: 'org', name: 'null-cs'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_NULLCS', owner: 'org', name: 'null-cs'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+      fetchCodeScanningAlerts: vi.fn().mockResolvedValue(null),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos[0]?.status.openCodeScanningAlerts).toBeNull()
+    expect(snap.repos[0]?.status.stale).toBe(false)
+    expect(snap.repos[0]?.status.rollupState).toBe('green')
+    // A null probe must not fabricate attention — verified via the sort: a
+    // null-probe repo sorts with the healthy tail in a two-repo board.
+  })
+
+  it('open code-scanning alerts sort before healthy repos (needsAttention trigger, CI-green blind-spot case)', async () => {
+    const repoHealthy = makeRepo({node_id: 'NODE_H3', owner: 'org', name: 'healthy3'})
+    const repoCs = makeRepo({node_id: 'NODE_CS2', owner: 'org', name: 'cs-burning'})
+
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repoHealthy, repoCs])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [
+          makePublicRepo({node_id: 'NODE_H3', owner: 'org', name: 'healthy3'}),
+          makePublicRepo({node_id: 'NODE_CS2', owner: 'org', name: 'cs-burning'}),
+        ],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+      fetchCodeScanningAlerts: vi.fn().mockImplementation(async (_installId, _owner, name) =>
+        name === 'cs-burning'
+          ? {openCount: 4, severity: {critical: 2, high: 1, medium: 0, low: 0, unrated: 1}}
+          : {openCount: 0, severity: {critical: 0, high: 0, medium: 0, low: 0, unrated: 0}},
+      ),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos[0]?.node_id).toBe('NODE_CS2')
+    expect(snap.repos[1]?.node_id).toBe('NODE_H3')
+  })
+
+  it('a rejected probe (transport/deadline) resolves null — the CI row still lands non-stale', async () => {
+    const repo = makeRepo({node_id: 'NODE_CSREJ', owner: 'org', name: 'cs-reject'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_CSREJ', owner: 'org', name: 'cs-reject'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+      fetchCodeScanningAlerts: vi.fn().mockRejectedValue(new Error('deadline breach')),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos[0]?.status.openCodeScanningAlerts).toBeNull()
+    expect(snap.repos[0]?.status.stale).toBe(false)
+    expect(snap.repos[0]?.status.rollupState).toBe('green')
+  })
+
+  it('a stale row (GraphQL failed) still carries a probe that succeeded — the two sources fail independently, and the merged row still sorts to the attention head', async () => {
+    const repoStale = makeRepo({node_id: 'NODE_CSSTALE', owner: 'org', name: 'cs-stale'})
+    const repoHealthy = makeRepo({node_id: 'NODE_H4', owner: 'org', name: 'healthy4'})
+    const graphqlQueryForInstallation: GraphqlQueryForInstallationFn = vi.fn().mockImplementation(async (_installId, _query, vars) => {
+      if ((vars as {name: string}).name === 'cs-stale') throw new Error('graphql down')
+      return makeGraphqlResponse({rollupState: 'SUCCESS'})
+    })
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repoStale, repoHealthy])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [
+          makePublicRepo({node_id: 'NODE_CSSTALE', owner: 'org', name: 'cs-stale'}),
+          makePublicRepo({node_id: 'NODE_H4', owner: 'org', name: 'healthy4'}),
+        ],
+      }))),
+      graphqlQueryForInstallation,
+      fetchCodeScanningAlerts: vi.fn().mockImplementation(async (_installId, _owner, name) =>
+        name === 'cs-stale'
+          ? {openCount: 2, severity: {critical: 0, high: 2, medium: 0, low: 0, unrated: 0}}
+          : {openCount: 0, severity: {critical: 0, high: 0, medium: 0, low: 0, unrated: 0}},
+      ),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    const staleRow = snap.repos.find(repo => repo.node_id === 'NODE_CSSTALE')
+    expect(staleRow?.status.stale).toBe(true)
+    expect(staleRow?.status.rollupState).toBe('unknown')
+    expect(staleRow?.status.openCodeScanningAlerts).toEqual({
+      openCount: 2,
+      severity: {critical: 0, high: 2, medium: 0, low: 0, unrated: 0},
+    })
+    // Attention order: the stale-but-burning repo heads the board.
+    expect(snap.repos[0]?.node_id).toBe('NODE_CSSTALE')
+    expect(snap.repos[1]?.node_id).toBe('NODE_H4')
   })
 })

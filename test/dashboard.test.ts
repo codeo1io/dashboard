@@ -59,6 +59,7 @@ function makeRepo(overrides: Partial<DashboardRepo> = {}): DashboardRepo {
       openPrCount: 0,
       openIssueCount: 0,
       openAlertCount: null,
+      openCodeScanningAlerts: null,
       stale: false,
       fetchedAt: 1_700_000_000_000,
     },
@@ -213,6 +214,7 @@ describe('/api/monitoring — BFF aggregation endpoint', () => {
           openPrCount: 0,
           openIssueCount: 0,
           openAlertCount: null,
+          openCodeScanningAlerts: null,
           stale: false,
           fetchedAt: 1_700_000_000_000,
         },
@@ -240,6 +242,54 @@ describe('/api/monitoring — BFF aggregation endpoint', () => {
           detailsUrl: 'https://github.com/fro-bot/agent/runs/2',
         },
       ])
+    })
+
+    it('rm-117: openCodeScanningAlerts survives the DTO projection (counts + buckets only, null passes through)', async () => {
+      const withSummary = makeRepo({
+        full_name: 'fro-bot/agent',
+        status: {
+          rollupState: 'green',
+          failingChecks: 0,
+          failingCheckDetails: [],
+          openPrCount: 0,
+          openIssueCount: 0,
+          openAlertCount: null,
+          openCodeScanningAlerts: {
+            openCount: 3,
+            severity: {critical: 1, high: 1, medium: 0, low: 0, unrated: 1},
+          },
+          stale: false,
+          fetchedAt: 1_700_000_000_000,
+        },
+      })
+      const unavailable = makeRepo({
+        full_name: 'fro-bot/other',
+        status: {
+          rollupState: 'green',
+          failingChecks: 0,
+          failingCheckDetails: [],
+          openPrCount: 0,
+          openIssueCount: 0,
+          openAlertCount: null,
+          openCodeScanningAlerts: null,
+          stale: false,
+          fetchedAt: 1_700_000_000_000,
+        },
+      })
+      const app = await buildTestApp(makeSnapshot({repos: [withSummary, unavailable]}))
+      const res = await authedGet(app, '/api/monitoring')
+
+      expect(res.status).toBe(200)
+      const body = await res.json() as AggregatorSnapshot
+      expect(body.repos[0]?.status.openCodeScanningAlerts).toEqual({
+        openCount: 3,
+        severity: {critical: 1, high: 1, medium: 0, low: 0, unrated: 1},
+      })
+      expect(body.repos[1]?.status.openCodeScanningAlerts).toBeNull()
+      // Content-free contract: no alert identifiers ever ride the DTO.
+      const serialized = JSON.stringify(body)
+      expect(serialized).not.toContain('rule')
+      expect(serialized).not.toContain('most_recent_instance')
     })
 
     it('returns empty snapshot when no repos', async () => {
