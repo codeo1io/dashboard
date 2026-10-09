@@ -111,8 +111,10 @@ describe('rm-678 schema half: live ledger', () => {
     // collision-free against the landed ledger (main's additions
     // all sit at/below rm-744) and land as-authored, so the union
     // census is 240 + 4 = 244 defs with the ceiling moving to
-    // rm-778 — pin 744 → 778 atomically with this landing.
-    expect(live.max).toBe(778)
+    // rm-778 — pin 744 → 778 atomically with this landing
+    // (the assertion line itself is relocated below so the pin
+    // value stays single-sourced; the note's 778 is its at-write
+    // value, superseded by this case's 780 below).
     // 2026-10-09 integrate of run 9289efaa (conflict case
     // 139848e6): that run's single mint rm-703 (release.yaml
     // digest-readback SIGPIPE -- the THIRD lineage id of the
@@ -126,6 +128,27 @@ describe('rm-678 schema half: live ledger', () => {
     // this note -- those bands have since landed and
     // reconciled by content (rm-693/694 via 46431058,
     // rm-698 via ad8f21e, rm-700..702 via 76d683f2).
+    // 2026-10-09 run cbe70604 (roadmap 32cdbb96, ext #36) mints
+    // rm-779 (cve-tripwire NODE_IMAGE reconciliation) and rm-780
+    // (Monitoring/Listener view stale-surfacing) above the
+    // all-lineage in-flight ceiling rm-778 — census 239/0/780,
+    // pin bumped atomically with the mints (the run's at-write
+    // counts against its own base 559642a, 237 defs / max
+    // rm-744 — preserved verbatim per the 366f6059 precedent).
+    // 2026-10-09 integrate of run cbe70604 (conflict case
+    // e796bbf3, completed at its re-dispatch as case
+    // 543f1e72): the run was authored at base 559642a while
+    // main moved through the 788aa489c1d5 (case 366f6059) and
+    // 9289efaa (case 139848e6) integrations, landing at 245
+    // defs / max rm-778. Its two mints rm-779/rm-780 sit ABOVE
+    // that landed ceiling and are collision-free first-hand
+    // (the 788aa489 wall's 'next free rm-779' pointer minted
+    // nothing above rm-778; rm-779/rm-780 appear in no landed
+    // def line), so both land as-authored and the pin moves
+    // 778 -> 780 atomically with this landing: union census
+    // 245 + 2 = 247 defs / 0 dups / max rm-780, next free
+    // rm-781.
+    expect(live.max).toBe(780)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {

@@ -283,3 +283,150 @@ describe('Monitoring (rm-192 red-repo drill-down)', () => {
     })
   })
 })
+
+describe('Monitoring rm-780 (stale-state surfacing: invisible rows, false all-clear, frozen-board marker)', () => {
+  // The file's makeRepo helper ignores its fullName override (default
+  // 'fro-bot/agent' always wins), so this describe wraps it to name rows.
+  function makeRepoRm780(fullName: string, status: Partial<MonitoringRepoStatus>): MonitoringRepo {
+    return {...makeRepo({status}), fullName}
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValue({
+      ok: true,
+      data: makeData()
+    })
+  })
+
+  afterEach(() => {
+    vi.runOnlyPendingTimers()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('renders stale-but-not-red repos as attention-first cards and separates the footer count', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+        repos: [
+          makeRepoRm780('fro-bot/healthy', {rollupState: 'green', failingChecks: 0, failingCheckDetails: []}),
+          makeRepoRm780('fro-bot/stale-green', {rollupState: 'green', failingChecks: 0, failingCheckDetails: [], stale: true}),
+          makeRepoRm780('fro-bot/unknown', {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: []}),
+        ],
+      }),
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    // Stale/unknown non-red rows are now VISIBLE (previously invisible).
+    const staleCards = screen.getAllByTestId('monitoring-stale-repo')
+    expect(staleCards).toHaveLength(2)
+    expect(screen.getAllByTestId('monitoring-stale-repo-note')).toHaveLength(2)
+    expect(staleCards[0]).toHaveTextContent('fro-bot/stale-green')
+    expect(staleCards[1]).toHaveTextContent('fro-bot/unknown')
+    // The stale note carries the degradation truth (stale vs unknown wording).
+    expect(screen.getAllByTestId('monitoring-stale-repo-note')[0]).toHaveTextContent('Status is stale')
+    expect(screen.getAllByTestId('monitoring-stale-repo-note')[1]).toHaveTextContent('Rollup state unknown')
+
+    // No false all-clear over a board with stale/unknown rows.
+    expect(screen.queryByTestId('monitoring-all-clear')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('monitoring-all-clear-suppressed')).not.toBeInTheDocument()
+
+    // Footer separates stale from not-failing (stale rows are no longer
+    // counted as plain "not failing").
+    expect(screen.getByTestId('monitoring-stale-count')).toHaveTextContent('2 repositories stale')
+    expect(screen.getByTestId('monitoring-footer')).toHaveTextContent('1 repository not failing')
+    expect(screen.getByTestId('monitoring-footer')).not.toHaveTextContent('3 repositories not failing')
+  })
+
+  it('sorts attention-first: red ahead of stale, stale ahead of the green count', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+        repos: [
+          makeRepoRm780('fro-bot/stale-green', {rollupState: 'green', failingChecks: 0, failingCheckDetails: [], stale: true}),
+          makeRepoRm780('fro-bot/red', {rollupState: 'red', failingChecks: 2, failingCheckDetails: []}),
+          makeRepoRm780('fro-bot/healthy', {rollupState: 'green', failingChecks: 0, failingCheckDetails: []}),
+        ],
+      }),
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    const red = screen.getAllByTestId('monitoring-red-repo')[0]!
+    const stale = screen.getAllByTestId('monitoring-stale-repo')[0]!
+    // Red renders before stale in DOM order (attention-first).
+    expect(red.compareDocumentPosition(stale) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(Node.DOCUMENT_POSITION_FOLLOWING)
+    expect(screen.getAllByTestId('monitoring-stale-repo')).toHaveLength(1)
+    expect(screen.getByTestId('monitoring-footer')).toHaveTextContent('1 repository not failing')
+  })
+
+  it('keeps the board and swaps all-clear for the suppressed note on the first post-ready refresh failure, then recovers', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+        repos: [makeRepoRm780('fro-bot/healthy', {rollupState: 'green', failingChecks: 0, failingCheckDetails: []})],
+      }),
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+    expect(screen.getByTestId('monitoring-all-clear')).toBeInTheDocument()
+    expect(screen.queryByTestId('monitoring-view-stale-banner')).not.toBeInTheDocument()
+
+    // Poll 2 fails: the board stays (last-good data) but the failure is now
+    // visible, and the "all green" claim is retracted for unverified data.
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({ok: false, reason: 'timeout'})
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60000)
+    })
+    expect(screen.getByTestId('monitoring-view-stale-banner')).toHaveTextContent('1 failure in a row')
+    expect(screen.getByTestId('monitoring-all-clear-suppressed')).toBeInTheDocument()
+    expect(screen.queryByTestId('monitoring-all-clear')).not.toBeInTheDocument()
+    expect(screen.getByTestId('monitoring-board')).toBeInTheDocument()
+    // The last-good data is still rendered (footer count from the kept data).
+    expect(screen.getByTestId('monitoring-footer')).toHaveTextContent('1 repository not failing')
+
+    // Poll 3 succeeds: banner clears, the all-clear claim is back.
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+        repos: [makeRepoRm780('fro-bot/healthy', {rollupState: 'green', failingChecks: 0, failingCheckDetails: []})],
+      }),
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60000)
+    })
+    expect(screen.queryByTestId('monitoring-view-stale-banner')).not.toBeInTheDocument()
+    expect(screen.getByTestId('monitoring-all-clear')).toBeInTheDocument()
+    expect(screen.queryByTestId('monitoring-all-clear-suppressed')).not.toBeInTheDocument()
+  })
+
+  it('an all-green healthy board still renders the plain all-clear with no stale markers', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+        repos: [makeRepoRm780('fro-bot/healthy', {rollupState: 'green', failingChecks: 0, failingCheckDetails: []})],
+      }),
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.getByTestId('monitoring-all-clear')).toBeInTheDocument()
+    expect(screen.queryByTestId('monitoring-stale-repo')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('monitoring-view-stale-banner')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('monitoring-stale-count')).not.toBeInTheDocument()
+  })
+})

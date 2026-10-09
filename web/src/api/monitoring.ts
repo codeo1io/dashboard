@@ -5,6 +5,8 @@
  * server contract, `Result`-style return, no `any`. The DTO is the minimized
  * whitelist from src/routes/api.ts — internal fields never arrive here.
  */
+import {withGetSeamTimeout} from './fetch-timeout.ts'
+
 export type CiRollupState = 'green' | 'red' | 'pending' | 'unknown'
 
 export interface FailingCheckDetail {
@@ -112,11 +114,16 @@ function parseRepo(item: unknown): MonitoringRepo | null {
 
 export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): Promise<FetchMonitoringResult> {
   try {
-    const res = await fetch('/api/monitoring', {
-      method: 'GET',
-      credentials: 'same-origin',
-      signal: opts.abortSignal,
-    })
+    // rm-780: the seam carries its own wall-clock bound (see fetch-timeout.ts)
+    // — the view-level `useBoundedPoll` bound only protects poll callers.
+    const res = await withGetSeamTimeout(
+      fetch('/api/monitoring', {
+        method: 'GET',
+        credentials: 'same-origin',
+        signal: opts.abortSignal,
+      }),
+    )
+    if (res === 'timeout') return {ok: false, reason: 'timeout'}
 
     if (!res.ok) {
       // rm-273: 401 is session expiry, not a transport failure — classify it
@@ -135,7 +142,8 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
       return { ok: false, reason: 'unauthenticated' }
     }
 
-    const data = await res.json()
+    const data = await withGetSeamTimeout(res.json())
+    if (data === 'timeout') return {ok: false, reason: 'timeout'}
     if (!isPlainObject(data) || !Array.isArray(data.repos)) return {ok: false, reason: 'contract-drift'}
     if (typeof data.staleBanner !== 'boolean' || typeof data.driftCount !== 'number') {
       return {ok: false, reason: 'contract-drift'}
