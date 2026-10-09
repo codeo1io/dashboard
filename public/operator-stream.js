@@ -141,6 +141,14 @@ const STATUS_LABELS = {
 }
 
 /**
+ * rm-715: static prefix for the expired-run affordance's gateway link. The
+ * suffix is always encodeURIComponent(stream runId) — the stream's own
+ * subscription id, same trust level as the stream fetch URL, never a
+ * wire-echoed value.
+ */
+const GATEWAY_RUN_LINK_PREFIX = '/operator/runs/'
+
+/**
  * Allowlisted OperatorFailureKind values — out-of-set values normalize to
  * absent, never parsed through.
  * Mirrors src/gateway/operator-contract/run-status.ts OPERATOR_FAILURE_KINDS.
@@ -705,6 +713,35 @@ export function nextStreamState(current, event) {
             shouldReconnect: false,
           }
         }
+        // rm-715: retry exhaustion here (retryCount already at the cap) with a
+        // non-terminal entry means the snapshot NEVER materialized across the
+        // full retry budget — classify as expiry (explicit expired card) rather
+        // than the generic failed connection.
+        if (current.retryCount >= RETRY_MAX_COUNT) {
+          const exhaustedEntry = current.runs[event.data.runId]
+          if (exhaustedEntry !== undefined && !exhaustedEntry.terminal) {
+            const expiredRuns = Object.assign(Object.create(null), current.runs, {
+              [event.data.runId]: {...exhaustedEntry, expired: true},
+            })
+            return {
+              ...current,
+              runs: expiredRuns,
+              connection: 'closed',
+              shouldReconnect: false,
+            }
+          }
+          return {
+            ...current,
+            connection: 'failed',
+            shouldReconnect: false,
+          }
+        }
+        return {
+          ...current,
+          connection: 'reconnecting',
+          retryCount: current.retryCount + 1,
+          shouldReconnect: true,
+        }
       }
 
       // Increment retryCount on reset and cap at RETRY_MAX_COUNT
@@ -947,6 +984,7 @@ export function toSafeRunView(runStatus) {
     startedAt: runStatus.startedAt,
     stale: runStatus.stale,
     ...(runStatus.reasonLabel === undefined ? {} : {reasonLabel: runStatus.reasonLabel}),
+    ...(runStatus.expired === undefined ? {} : {expired: runStatus.expired}),
   }
 }
 
@@ -969,6 +1007,21 @@ export function hasOpenApprovals(runEntry) {
   const openPrompts = runEntry.approvalOpenPrompts
   if (openPrompts === undefined || openPrompts === null) return false
   return Object.keys(openPrompts).length > 0
+}
+
+/**
+ * rm-717: client-side localization for run lifecycle timestamps. Produces the
+ * display text for a validated ISO datetime using the client's own locale —
+ * never a wire string. Invalid dates return an empty string (the caller has
+ * already validated the datetime, so this is belt-and-braces).
+ *
+ * @param {string} iso - A validated ISO 8601 datetime string.
+ * @returns {string} Locale-formatted timestamp, or '' if unparseable.
+ */
+export function formatRunTime(iso) {
+  const parsed = new Date(iso)
+  if (Number.isNaN(parsed.getTime())) return ''
+  return parsed.toLocaleString()
 }
 
 /**
@@ -2037,7 +2090,7 @@ export function renderCancelControl(runId, cancelClient, onCancelDispatch) {
  * - Read-only: GET only for stream; approval decisions are operator-forwarded writes.
  */
 export function initOperatorStream(opts) {
-  const {runId, statusEl, noticeEl, outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, cancelEl, approvalClient: injectedApprovalClient, cancelClient: injectedCancelClient, endpointBase, fixtureSessionId} = opts
+  const {runId, statusEl, noticeEl, outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, cancelEl, timestampsEl, approvalClient: injectedApprovalClient, cancelClient: injectedCancelClient, endpointBase, fixtureSessionId} = opts
 
   // Build the approval client lazily (only if approvalsEl is present).
   // Pass endpointBase and fixtureSessionId so fixture mode uses the fixture approval routes
@@ -2086,6 +2139,14 @@ export function initOperatorStream(opts) {
   let aborted = false // set by close() to prevent late timer from fetching
   let announcedFailure = false
 
+  // rm-717: run lifecycle timestamps — finishedAt is stamped by the client
+  // exactly once at the first terminal observation (the wire carries no
+  // finished-at field); rendered values are tracked so each datetime is
+  // localized exactly once and re-renders never rewrite stable text.
+  let finishedAtMs = null
+  let renderedStartedAt = ''
+  let renderedFinishedAt = ''
+
   function updateDOM() {
     // Late-frame guard: after close(), no write of any kind (notice, status,
     // output, coalesced hint, approvals, or badge) may reach the DOM. A late
@@ -2114,6 +2175,17 @@ export function initOperatorStream(opts) {
       if (conn === 'live') {
         if (currentStatus === 'failed' && announcedFailure) {
           // Keep failure announcement
+        } else if (
+          // rm-717: a live run in a PRE-RUN status (queued/blocked) shows an
+          // explicit waiting state instead of an empty notice — cleared by the
+          // first non-pre-run status (running, waiting_for_approval has its own
+          // prompts UI, terminal). A running-but-quiet run stays notice-empty
+          // (pinned: hidden while running).
+          runEntry !== undefined &&
+          (runEntry.status === 'queued' || runEntry.status === 'blocked')
+        ) {
+          noticeEl.textContent = 'Waiting to start\u2026'
+          noticeEl.hidden = false
         } else {
           noticeEl.textContent = ''
           noticeEl.hidden = true
@@ -2138,11 +2210,20 @@ export function initOperatorStream(opts) {
           'Run submitted \u2014 not yet observable (it may be queued or still starting).'
         noticeEl.hidden = false
       } else if (conn === 'closed') {
-        // If the stream closed before the run reached a terminal status, surface a
-        // generic path-unaware unavailable notice. This covers malformed/truncated
-        // streams that close without emitting a terminal status frame for the run.
-        const runIsTerminal = runEntry !== undefined && runEntry.terminal === true
-        if (runIsTerminal) {
+        // rm-715: a closed stream for an expired run renders the explicit
+        // expired affordance — fixed notice copy plus a link out to the
+        // gateway run endpoint. The link href is the only dynamically built
+        // value (same shape as the stream URL: static prefix + encodeURIComponent
+        // of the stream's own runId — never a wire echo), and its label is fixed.
+        if (runEntry !== undefined && runEntry.expired === true) {
+          noticeEl.textContent = 'Run snapshot expired \u2014 output is no longer available. '
+          const expiredLink = document.createElement('a')
+          expiredLink.href = GATEWAY_RUN_LINK_PREFIX + encodeURIComponent(runId)
+          expiredLink.className = 'operator-expired-link'
+          expiredLink.textContent = 'View run in the gateway'
+          noticeEl.append(expiredLink)
+          noticeEl.hidden = false
+        } else if (runEntry !== undefined && runEntry.terminal === true) {
           if (currentStatus === 'failed' && announcedFailure) {
             // Keep failure announcement
           } else {
@@ -2158,7 +2239,14 @@ export function initOperatorStream(opts) {
 
     if (statusEl) {
       const runEntry = state.runs[runId]
-      if (runEntry && (state.connection === 'live' || runEntry.terminal)) {
+      if (runEntry && runEntry.expired === true) {
+        // rm-715: client-side terminal expiry label — fixed copy, fixed class.
+        // Expiry is not a wire status (the raw wire status string must never
+        // reach textContent), so it gets its own client-only label.
+        statusEl.textContent = 'Expired'
+        statusEl.className = statusEl.className.replaceAll(/\bstatus-\S+/g, '')
+        statusEl.classList.add('status-expired')
+      } else if (runEntry && (state.connection === 'live' || runEntry.terminal)) {
         const view = toSafeRunView(runEntry)
         // Render label from local map, never the raw wire string into textContent
         const label = STATUS_LABELS[view.status] ?? ''
@@ -2214,10 +2302,67 @@ export function initOperatorStream(opts) {
     // free-form agent output and must NEVER be interpolated as HTML. droppedCount is
     // never echoed; a fixed-label hint is toggled instead. Other output-frame fields
     // are not rendered.
+    // Run lifecycle timestamps (rm-717): startedAt comes from the validated
+    // wire status frame; finishedAt is the client-stamped terminal time.
+    // Safe DOM only — fixed-label prefixes and <time datetime> elements; the
+    // localized text is produced by the client's own formatter, never from a
+    // wire string, and each distinct datetime is localized exactly once.
+    if (timestampsEl) {
+      const runEntry = state.runs[runId]
+      const startedAtRaw =
+        runEntry !== undefined && typeof runEntry.startedAt === 'string' ? runEntry.startedAt : ''
+      const startedAt =
+        startedAtRaw !== '' && !Number.isNaN(new Date(startedAtRaw).getTime()) ? startedAtRaw : ''
+      if (runEntry !== undefined && runEntry.terminal === true && finishedAtMs === null) {
+        finishedAtMs = Date.now()
+      }
+      const finishedIso = finishedAtMs === null ? '' : new Date(finishedAtMs).toISOString()
+      if (startedAt === '' && finishedIso === '') {
+        timestampsEl.hidden = true
+      } else {
+        if (startedAt !== renderedStartedAt || finishedIso !== renderedFinishedAt) {
+          timestampsEl.replaceChildren()
+          if (startedAt !== '') {
+            const startedLabel = document.createElement('span')
+            startedLabel.textContent = 'Started '
+            const startedTime = document.createElement('time')
+            startedTime.setAttribute('datetime', startedAt)
+            startedTime.textContent = formatRunTime(startedAt)
+            timestampsEl.append(startedLabel, startedTime)
+          }
+          if (finishedIso !== '') {
+            if (startedAt !== '') {
+              const separator = document.createElement('span')
+              separator.textContent = ' \u00B7 '
+              timestampsEl.append(separator)
+            }
+            const finishedLabel = document.createElement('span')
+            finishedLabel.textContent = 'Finished '
+            const finishedTime = document.createElement('time')
+            finishedTime.setAttribute('datetime', finishedIso)
+            finishedTime.textContent = formatRunTime(finishedIso)
+            timestampsEl.append(finishedLabel, finishedTime)
+          }
+          renderedStartedAt = startedAt
+          renderedFinishedAt = finishedIso
+        }
+        timestampsEl.hidden = false
+      }
+    }
+
     if (outputEl) {
       const runEntry = state.runs[runId]
       const outputText = runEntry?.outputText
-      if (typeof outputText === 'string' && outputText !== '') {
+      if (runEntry && runEntry.expired === true) {
+        // rm-715: expiry clears the card — stale pre-expiry output must not
+        // remain painted on a card whose snapshot is gone for good.
+        outputEl.textContent = ''
+        outputEl.hidden = true
+        if (coalescedEl) {
+          coalescedEl.textContent = ''
+          coalescedEl.hidden = true
+        }
+      } else if (typeof outputText === 'string' && outputText !== '') {
         outputEl.textContent = outputText
         outputEl.hidden = false
       } else {
@@ -2654,6 +2799,13 @@ export function initOperatorStream(opts) {
       // in-flight cancel attempt can never fire/mutate after close().
       if (cancelControl !== null) {
         cancelControl.dispose()
+      }
+      // rm-716: the cancel affordance must VANISH at detach (collapse or card
+      // switch) — a control left mounted on a detached card stays clickable
+      // and invites cancels for a run whose stream is gone (upstream #584).
+      if (cancelEl) {
+        cancelEl.replaceChildren()
+        cancelEl.hidden = true
       }
       state = nextStreamState(state, {type: 'stream-closed'})
     },

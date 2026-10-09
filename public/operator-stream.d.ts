@@ -173,6 +173,13 @@ export interface RunEntry {
    */
   readonly approvalTombstones?: Readonly<Record<string, true>>
   /**
+   * True once the gateway released this run's snapshot (expiry) while the run
+   * was non-terminal — set only by the reset/no-snapshot path for a
+   * previously-live run (rm-715). Terminal for display purposes: the card
+   * clears and renders the expired affordance; the run never streams again.
+   */
+  readonly expired?: boolean
+  /**
    * True while a browser-dispatched cancel POST is outstanding for this run.
    * Internal-only — set by the `cancel` action, cleared by a terminal status
    * frame from any source (terminal-wins). Never exposed via toSafeRunView.
@@ -252,6 +259,8 @@ export interface SafeRunView {
   readonly stale: boolean
   /** Pre-resolved dashboard display label for a known failure reason. Never the raw failureKind. */
   readonly reasonLabel?: string
+  /** True once the run's snapshot expired (rm-715); client-side terminal state. */
+  readonly expired?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -271,7 +280,7 @@ export declare function nextStreamState(current: StreamState, event: StreamEvent
 
 /**
  * Map a run status object to the safe render model.
- * Returns ONLY: { runId, status, phase, startedAt, stale, reasonLabel? }
+ * Returns ONLY: { runId, status, phase, startedAt, stale, reasonLabel?, expired? }
  */
 export declare function toSafeRunView(runStatus: {
   readonly runId: string
@@ -280,6 +289,7 @@ export declare function toSafeRunView(runStatus: {
   readonly startedAt: string
   readonly stale: boolean
   readonly reasonLabel?: string
+  readonly expired?: boolean
 }): SafeRunView
 
 /**
@@ -290,6 +300,13 @@ export declare function toSafeRunView(runStatus: {
  * they cannot desync.
  */
 export declare function hasOpenApprovals(runEntry: RunEntry | undefined | null): boolean
+
+/**
+ * rm-717: client-side localization for run lifecycle timestamps. Returns a
+ * locale-formatted string for a validated ISO datetime, or '' if unparseable.
+ * Never returns a wire string verbatim.
+ */
+export declare function formatRunTime(iso: string): string
 
 /**
  * Returns the list of open (non-tombstoned) approval prompts for a run entry,
@@ -344,6 +361,8 @@ export interface InitOptions {
   readonly reasonEl?: Element | null
   /** Cancel control container element (data-role="run-cancel"). */
   readonly cancelEl?: (HTMLElement & {hidden: boolean}) | null
+  /** Run lifecycle timestamps container (data-role="run-times", rm-717): renders Started/Finished <time> elements. */
+  readonly timestampsEl?: (HTMLElement & {hidden: boolean}) | null
   /** Injectable cancel client for testing. If absent, buildCancelClient() is used. */
   readonly cancelClient?: CancelControlClient | null
 }

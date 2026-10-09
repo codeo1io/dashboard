@@ -1008,6 +1008,59 @@ describe('nextStreamState — reset frame', () => {
   })
 })
 
+describe('nextStreamState — rm-715 expired-snapshot classification at no-snapshot retry exhaustion', () => {
+  const liveStateWithActiveRun = () => {
+    const liveState = nextStreamState(INITIAL_STATE, {
+      type: 'ready',
+      data: {contractVersion: PINNED_CONTRACT_VERSION},
+    })
+    return nextStreamState(liveState, {type: 'status', data: ACTIVE_STATUS})
+  }
+
+  it('keeps reconnecting while the retry budget remains (transient no-snapshot)', () => {
+    let state = liveStateWithActiveRun()
+    state = nextStreamState(state, {
+      type: 'reset',
+      data: {runId: ACTIVE_STATUS.runId, reason: 'no-snapshot'},
+    })
+    expect(state.connection).toBe('reconnecting')
+    expect(state.shouldReconnect).toBe(true)
+    expect(state.runs[ACTIVE_STATUS.runId]?.expired).toBeUndefined()
+  })
+
+  it('marks a non-terminal run expired and closes at retry exhaustion (rm-715)', () => {
+    const activeRunId = ACTIVE_STATUS.runId
+    let state = liveStateWithActiveRun()
+    for (let i = 0; i <= RETRY_MAX_COUNT; i += 1) {
+      state = nextStreamState(state, {
+        type: 'reset',
+        data: {runId: activeRunId, reason: 'no-snapshot'},
+      })
+    }
+    expect(state.runs[activeRunId]?.expired).toBe(true)
+    expect(state.runs[activeRunId]?.terminal).toBe(false)
+    expect(state.connection).toBe('closed')
+    expect(state.shouldReconnect).toBe(false)
+  })
+
+  it('still lands in failed (not expired) at exhaustion when the run entry is unknown', () => {
+    const liveState = nextStreamState(INITIAL_STATE, {
+      type: 'ready',
+      data: {contractVersion: PINNED_CONTRACT_VERSION},
+    })
+    let state = liveState
+    for (let i = 0; i <= RETRY_MAX_COUNT; i += 1) {
+      state = nextStreamState(state, {
+        type: 'reset',
+        data: {runId: 'run-unknown', reason: 'no-snapshot'},
+      })
+    }
+    expect(state.connection).toBe('failed')
+    expect(state.shouldReconnect).toBe(false)
+    expect(state.runs['run-unknown']).toBeUndefined()
+  })
+})
+
 describe('nextStreamState — lifecycle signals', () => {
   it('transitions to not-found on http-404 signal', () => {
     const state = nextStreamState(INITIAL_STATE, {type: 'http-status', code: 404})
@@ -6969,6 +7022,216 @@ function stubCancelRenderEnv() {
   vi.stubGlobal('addEventListener', () => {})
   vi.stubGlobal('crypto', {randomUUID: () => 'test-uuid-cancel'})
 }
+
+describe('rm-715/rm-716/rm-717 — expired affordance, waiting state, timestamps, cancel teardown', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    resetBootstrapState()
+  })
+
+  const makeStreamDom = () => {
+    const statusEl = makeFakeEl('span')
+    statusEl.className = 'run-status status-connecting'
+    const noticeEl = makeFakeEl('p')
+    const outputEl = makeFakeEl('pre')
+    const coalescedEl = makeFakeEl('p')
+    const reasonEl = makeFakeEl('span')
+    const badgeEl = makeFakeEl('span')
+    const approvalsEl = makeFakeEl('div')
+    const timestampsEl = makeFakeEl('span') as FakeElement & {replaceChildren: () => void}
+    ;(timestampsEl).replaceChildren = function (
+      this: FakeElement & {children: FakeElement[]},
+    ) {
+      this.children = []
+    }
+    const cancelEl = makeFakeEl('div') as FakeElement & {replaceChildren: () => void}
+    ;(cancelEl).replaceChildren = function (
+      this: FakeElement & {children: FakeElement[]},
+    ) {
+      this.children = []
+    }
+    return {statusEl, noticeEl, outputEl, coalescedEl, reasonEl, badgeEl, approvalsEl, timestampsEl, cancelEl}
+  }
+
+  const stubStreamDocument = () => {
+    vi.stubGlobal('document', {
+      createElement: (tag: string) => makeFakeEl(tag),
+      querySelector: () => null,
+      readyState: 'complete',
+      addEventListener: () => {},
+    })
+    vi.stubGlobal('addEventListener', () => {})
+    vi.stubGlobal('crypto', {randomUUID: () => 'test-uuid-stream'})
+  }
+
+  const wireFetchResponse = (wire: string, keepOpen = false) => {
+    const encoder = new TextEncoder()
+    const chunk = encoder.encode(wire)
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: {get: () => 'text/event-stream'},
+      body: {
+        getReader: () => {
+          let read = false
+          return {
+            read: async () => {
+              if (read) {
+                if (keepOpen) {
+                  // A never-resolving read keeps the connection live (waiting state persists).
+                  return new Promise<{done: true; value: undefined}>(() => {})
+                }
+                return {done: true, value: undefined}
+              }
+              read = true
+              return {done: false, value: chunk}
+            },
+            cancel: async () => {},
+          }
+        },
+      },
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  it('renders the explicit expired affordance (status + cleared output + gateway link) at no-snapshot exhaustion (rm-715)', async () => {
+    stubStreamDocument()
+    const dom = makeStreamDom()
+    const resetFrame = `event: reset\ndata: ${JSON.stringify({runId: 'run-exp-001', reason: 'no-snapshot'})}\n\n`
+    const wire =
+      `event: ready\ndata: ${JSON.stringify({contractVersion: PINNED_CONTRACT_VERSION})}\n\n` +
+      `event: status\ndata: ${JSON.stringify({...ACTIVE_STATUS, runId: 'run-exp-001'})}\n\n${
+        resetFrame.repeat(RETRY_MAX_COUNT + 1)}`
+    const fetchMock = wireFetchResponse(wire)
+    const handle = initOperatorStream({
+      runId: 'run-exp-001',
+      statusEl: dom.statusEl,
+      noticeEl: dom.noticeEl,
+      outputEl: dom.outputEl,
+      coalescedEl: dom.coalescedEl,
+      approvalsEl: dom.approvalsEl,
+      badgeEl: dom.badgeEl,
+      reasonEl: dom.reasonEl,
+      cancelEl: dom.cancelEl,
+      timestampsEl: dom.timestampsEl,
+    })
+    await vi.waitFor(() => {
+      expect(dom.statusEl.textContent).toBe('Expired')
+    })
+    expect(dom.outputEl.children).toHaveLength(0)
+    expect(dom.noticeEl.hidden).toBe(false)
+    expect(dom.noticeEl.textContent.startsWith('Run snapshot expired')).toBe(true)
+    expect(dom.noticeEl.children).toHaveLength(1)
+    const link = dom.noticeEl.children[0] as FakeElement & {href?: string}
+    expect(link.href).toBe('/operator/runs/run-exp-001')
+    expect(link.textContent).toBe('View run in the gateway')
+    handle.close()
+    expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('shows an explicit waiting notice for a live queued run (rm-717)', async () => {
+    stubStreamDocument()
+    const dom = makeStreamDom()
+    const wire =
+      `event: ready\ndata: ${JSON.stringify({contractVersion: PINNED_CONTRACT_VERSION})}\n\n` +
+      `event: status\ndata: ${JSON.stringify({
+        ...ACTIVE_STATUS,
+        runId: 'run-wait-001',
+        status: 'queued',
+        phase: 'PENDING',
+        stale: false,
+      })}\n\n`
+    wireFetchResponse(wire, true)
+    const handle = initOperatorStream({
+      runId: 'run-wait-001',
+      statusEl: dom.statusEl,
+      noticeEl: dom.noticeEl,
+      outputEl: dom.outputEl,
+      coalescedEl: dom.coalescedEl,
+      approvalsEl: dom.approvalsEl,
+      badgeEl: dom.badgeEl,
+      reasonEl: dom.reasonEl,
+      cancelEl: dom.cancelEl,
+      timestampsEl: dom.timestampsEl,
+    })
+    await vi.waitFor(() => {
+      expect(dom.noticeEl.textContent).toBe('Waiting to start\u2026')
+      expect(dom.noticeEl.hidden).toBe(false)
+    })
+    handle.close()
+  })
+
+  it('renders started and finished timestamps once for a terminal run (rm-717)', async () => {
+    stubStreamDocument()
+    const dom = makeStreamDom()
+    const wire =
+      `event: ready\ndata: ${JSON.stringify({contractVersion: PINNED_CONTRACT_VERSION})}\n\n` +
+      `event: status\ndata: ${JSON.stringify({...ACTIVE_STATUS, runId: 'run-ts-001'})}\n\n` +
+      `event: status\ndata: ${JSON.stringify({
+        ...ACTIVE_STATUS,
+        runId: 'run-ts-001',
+        status: 'failed',
+        phase: 'FAILED',
+        failureKind: 'session-error',
+      })}\n\n`
+    wireFetchResponse(wire)
+    const handle = initOperatorStream({
+      runId: 'run-ts-001',
+      statusEl: dom.statusEl,
+      noticeEl: dom.noticeEl,
+      outputEl: dom.outputEl,
+      coalescedEl: dom.coalescedEl,
+      approvalsEl: dom.approvalsEl,
+      badgeEl: dom.badgeEl,
+      reasonEl: dom.reasonEl,
+      cancelEl: dom.cancelEl,
+      timestampsEl: dom.timestampsEl,
+    })
+    await vi.waitFor(() => {
+      expect(dom.timestampsEl.children.length).toBeGreaterThan(0)
+    })
+    const before = dom.timestampsEl.children.length
+    const startedTime = dom.timestampsEl.children.find(
+      el => el.tagName === 'time' && el.getAttribute('datetime') === ACTIVE_STATUS.startedAt,
+    )
+    expect(startedTime).toBeDefined()
+    expect(dom.timestampsEl.children.filter(el => el.tagName === 'time')).toHaveLength(2)
+    // Re-render of the same terminal state must not duplicate the pair.
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(dom.timestampsEl.children.length).toBe(before)
+    handle.close()
+  })
+
+  it('tears down the cancel affordance at close() (rm-716)', async () => {
+    stubStreamDocument()
+    const dom = makeStreamDom()
+    const wire =
+      `event: ready\ndata: ${JSON.stringify({contractVersion: PINNED_CONTRACT_VERSION})}\n\n` +
+      `event: status\ndata: ${JSON.stringify({...ACTIVE_STATUS, runId: 'run-cancel-001'})}\n\n`
+    wireFetchResponse(wire)
+    const {client: cancelClient} = makeFakeCancelClient()
+    const handle = initOperatorStream({
+      runId: 'run-cancel-001',
+      statusEl: dom.statusEl,
+      noticeEl: dom.noticeEl,
+      outputEl: dom.outputEl,
+      coalescedEl: dom.coalescedEl,
+      approvalsEl: dom.approvalsEl,
+      badgeEl: dom.badgeEl,
+      reasonEl: dom.reasonEl,
+      cancelEl: dom.cancelEl,
+      timestampsEl: dom.timestampsEl,
+      cancelClient,
+    })
+    await vi.waitFor(() => {
+      expect(dom.cancelEl.children.length).toBeGreaterThan(0)
+    })
+    handle.close()
+    expect(dom.cancelEl.children).toHaveLength(0)
+    expect((dom.cancelEl as FakeElement & {hidden?: boolean}).hidden).toBe(true)
+  })
+})
 
 describe('renderCancelControl — two-step confirm interaction', () => {
   afterEach(() => {
