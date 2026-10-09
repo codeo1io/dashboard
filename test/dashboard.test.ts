@@ -649,6 +649,7 @@ describe('/api/healthz remains public', () => {
     const app = await buildTestApp(makeSnapshot())
     const res = await app.request('/api/healthz')
     expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-store') // rm-599
     const body = await res.json()
     expect(body).toEqual({ok: true, lastFetch: null, rateLimit: null})
   })
