@@ -79,7 +79,8 @@ describe('rm-678 schema half: live ledger', () => {
     // folds by content into the landed rm-698 trixie re-pin
     // (a94d0659 via ad8f21e), its def dying with the fold, so
     // the max def id is unchanged at 744 (237 defs).
-    expect(live.max).toBe(744)
+    // max id as of extension #36 (2026-10-09, run c37a857620e14531abd6be2112004c60 roadmap d5f8451f136c43629a0e87e53fefb54c): minted rm-778 above the all-lineage frontier (sibling walls through 769, PR #444 head 709, foreign-fleet spool 795-855 excluded, 777 ceiling note honored)
+    expect(live.max).toBe(778)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
