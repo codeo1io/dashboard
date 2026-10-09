@@ -635,6 +635,20 @@ function isVulnerabilityAlertsPermissionError(error: unknown): boolean {
 type GraphqlCommitTarget = NonNullable<NonNullable<NonNullable<GraphqlRepoResponse['repository']>['defaultBranchRef']>['target']>
 
 /**
+ * rm-781 U2 (detailsUrl https-only boundary): the drill-down detailsUrl is
+ * rendered as an href sink in the operator UI (web/src/views/Monitoring.tsx),
+ * so only an https URL may cross the extraction seam. GitHub's check-run
+ * detailsUrl is an absolute https URL today, but the GraphQL field is an
+ * unvalidated string — any other scheme (http:, javascript:, about:) or
+ * malformed value collapses to '' so the view renders no link instead of an
+ * unvalidated one. web/src/api/monitoring.ts mirrors this predicate and
+ * fails closed (contract-drift) on a non-https non-empty value.
+ */
+function httpsDetailsUrl(value: string | null | undefined): string {
+  return typeof value === 'string' && value.startsWith('https://') ? value : ''
+}
+
+/**
  * Extract failing-check drill-down details from the check suites of a
  * response target (rm-192). Defensive against missing/null selections —
  * legacy check suites have no workflowRun association and some check runs
@@ -653,7 +667,7 @@ function extractFailingCheckDetails(target: GraphqlCommitTarget | null | undefin
         workflowTitle,
         runAttempt,
         checkName: run.name ?? '(unnamed check)',
-        detailsUrl: run.detailsUrl ?? '',
+        detailsUrl: httpsDetailsUrl(run.detailsUrl),
       })
       if (details.length >= FAILING_CHECK_DETAILS_CAP) return details
     }
