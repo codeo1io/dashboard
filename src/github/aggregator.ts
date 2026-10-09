@@ -25,6 +25,7 @@
  */
 
 import type {Result} from '../result.ts'
+import type {CodeScanningAlertSummary, FetchCodeScanningAlertsFn} from './code-scanning.ts'
 import type {EnumerateReposResult, InstallationsClient} from './installations.ts'
 import type {MetadataError, MetadataReader, MetadataResult} from './metadata.ts'
 
@@ -107,6 +108,15 @@ export interface RepoCiStatus {
   readonly openIssueCount: number
   /** Number of open security alerts (null if permission unavailable) */
   readonly openAlertCount: number | null
+  /**
+   * Open code-scanning alerts (rm-117): count + severity buckets ONLY —
+   * never alert content (rule ids, locations, messages, advisory ids are
+   * dropped at the REST seam). null = unavailable: the optional
+   * security_events read is absent on the installation's token, or the
+   * per-repo REST probe failed / breached its deadline. Absence never marks
+   * the row stale — the CI fields are an independent data source.
+   */
+  readonly openCodeScanningAlerts: CodeScanningAlertSummary | null
   /** Whether this repo's data is stale (per-repo fetch failed) */
   readonly stale: boolean
   /** When this data was fetched (ms since epoch) */
@@ -240,6 +250,10 @@ function needsAttention(status: RepoCiStatus): boolean {
   if (status.rollupState === 'red') return true
   if (status.failingChecks > 0) return true
   if (status.openAlertCount !== null && status.openAlertCount > 0) return true
+  // rm-117: open code-scanning alerts are a needs-attention trigger on the
+  // same footing as Dependabot alerts — a repo burning with CVEs sorts with
+  // the red repos even while its CI is green.
+  if (status.openCodeScanningAlerts !== null && status.openCodeScanningAlerts.openCount > 0) return true
   if (status.openPrCount > 0) return true
   return false
 }
@@ -298,6 +312,14 @@ export interface AggregatorDeps {
    * enumeration channel. If absent, such repos are skipped (not queried).
    */
   readonly resolveInstallationIdForRepo?: (owner: string, name: string) => Promise<number>
+  /**
+   * Optional: per-repo open code-scanning alert summary via ONE REST call
+   * per repo per cycle (rm-117). Absent ⇒ openCodeScanningAlerts stays null
+   * on every row (the pre-rm-117 behavior). A null RETURN from the fn means
+   * unavailable (permission absent / transport / deadline) — graceful, never
+   * an error for the repo row.
+   */
+  readonly fetchCodeScanningAlerts?: FetchCodeScanningAlertsFn
   /**
    * Per-call-site deadline raced against each outbound call site in a refresh
    * cycle (this run's rm-222: deadline racing + stall watchdog — a second layer
@@ -680,7 +702,7 @@ export function parseRepoResponse(raw: unknown, fetchedAt: number, openAlertCoun
     // installation lost access. That is a degradation the operator must see,
     // so we fail visible (stale:true), matching the installation_id:null and
     // fetch-failure paths below. Serving a calm unknown here hid silent drift.
-    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, openCodeScanningAlerts: null, stale: true, fetchedAt}
   }
 
   const target = repo.defaultBranchRef?.target
@@ -702,7 +724,7 @@ export function parseRepoResponse(raw: unknown, fetchedAt: number, openAlertCoun
   // Use the provided openAlertCount (may be from the response or null if no-alerts variant)
   const alertCount = openAlertCount ?? (repo.vulnerabilityAlerts?.totalCount ?? null)
 
-  return {rollupState, failingChecks, failingCheckDetails, openPrCount, openIssueCount, openAlertCount: alertCount, stale: false, fetchedAt}
+  return {rollupState, failingChecks, failingCheckDetails, openPrCount, openIssueCount, openAlertCount: alertCount, openCodeScanningAlerts: null, stale: false, fetchedAt}
 }
 
 async function fetchRepoStatus(
@@ -710,17 +732,35 @@ async function fetchRepoStatus(
   graphqlQueryForInstallation: GraphqlQueryForInstallationFn,
   now: () => number,
   fetchDeadlineMs: number,
+  fetchCodeScanningAlerts: FetchCodeScanningAlertsFn | undefined,
 ): Promise<RepoCiStatus> {
   const fetchedAt = now()
 
   // installation_id must be present — if null, we cannot authenticate the query
   if (entry.installation_id === null) {
     logger.warning('No installation_id for repo; marking stale', safeRepoLogIdentity(entry))
-    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, openCodeScanningAlerts: null, stale: true, fetchedAt}
   }
 
   const installationId = entry.installation_id
   const vars = {owner: entry.owner, name: entry.name}
+
+  // rm-117: the per-repo code-scanning REST probe rides the SAME worker slot
+  // as the GraphQL status fetch, in parallel — the alert panel adds one REST
+  // call per repo per cycle of API cost (documented rate-limit cost) but no
+  // wall-clock to the walk. Every failure mode (403 permission-absent,
+  // transport error, deadline breach) resolves null: the field is omitted,
+  // never an error for this row, mirroring openAlertCount's graceful
+  // semantics. A stale row keeps a probe that DID succeed — the two data
+  // sources fail independently and the alerts number is as-of-this-cycle.
+  const codeScanningPromise: Promise<CodeScanningAlertSummary | null> =
+    fetchCodeScanningAlerts === undefined
+      ? Promise.resolve(null)
+      : withDeadline(
+          fetchCodeScanningAlerts(installationId, entry.owner, entry.name),
+          fetchDeadlineMs,
+          'per-repo code-scanning REST probe (repo identity withheld from deadline labels)',
+        ).catch(() => null)
 
   try {
     // Deadline-bounded: a hung GraphQL call degrades to a stale row for
@@ -733,7 +773,7 @@ async function fetchRepoStatus(
     if ((raw as GraphqlRepoResponse).repository == null) {
       logger.warning('Repository null in GraphQL response (deleted/renamed/private or access lost); marking stale', safeRepoLogIdentity(entry))
     }
-    return parseRepoResponse(raw, fetchedAt, null)
+    return {...parseRepoResponse(raw, fetchedAt, null), openCodeScanningAlerts: await codeScanningPromise}
   } catch (error) {
     // P1 #11: if the error is specifically about vulnerabilityAlerts permission,
     // retry without that field and set openAlertCount = null (not stale).
@@ -750,15 +790,15 @@ async function fetchRepoStatus(
           logger.warning('Repository null in GraphQL response (deleted/renamed/private or access lost); marking stale', safeRepoLogIdentity(entry))
         }
         // Parse with openAlertCount=null (alerts unavailable, not stale)
-        return parseRepoResponse(raw, fetchedAt, null)
+        return {...parseRepoResponse(raw, fetchedAt, null), openCodeScanningAlerts: await codeScanningPromise}
       } catch (retryError) {
         logger.warning('Per-repo GraphQL fetch failed (no-alerts retry); marking stale', safeRepoErrorContext(entry, retryError))
-        return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+        return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, openCodeScanningAlerts: await codeScanningPromise, stale: true, fetchedAt}
       }
     }
 
     logger.warning('Per-repo GraphQL fetch failed; marking stale', safeRepoErrorContext(entry, error))
-    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, openCodeScanningAlerts: await codeScanningPromise, stale: true, fetchedAt}
   }
 }
 
@@ -859,6 +899,9 @@ export function createAggregator(
   deps: AggregatorDeps,
 ) {
   const {graphqlQueryForInstallation} = deps
+  // rm-117: optional per-repo code-scanning REST probe — absent by default
+  // (tests opt in); production wiring injects createCodeScanningAlertsFetcher.
+  const fetchCodeScanningAlerts = deps.fetchCodeScanningAlerts
   const now = deps.now ?? (() => Date.now())
   const watchdogCeilingMs = deps.watchdogCeilingMs ?? REFRESH_WATCHDOG_CEILING_MS
   const setIntervalFn = deps.setIntervalFn ?? ((fn, ms) => setInterval(fn, ms))
@@ -1079,6 +1122,7 @@ export function createAggregator(
       openPrCount: 0,
       openIssueCount: 0,
       openAlertCount: null,
+      openCodeScanningAlerts: null,
       stale: true,
       // Review fix note: this stamp is the "never fetched, best effort"
       // placeholder for repos we have no prior data for. When the warm-empty
@@ -1222,7 +1266,7 @@ export function createAggregator(
             if (index >= workingSet.length) return
             const entry = workingSet[index]
             if (entry === undefined) continue
-            statuses[index] = await fetchRepoStatus(entry, graphqlQueryForInstallation, now, fetchDeadlineMs)
+            statuses[index] = await fetchRepoStatus(entry, graphqlQueryForInstallation, now, fetchDeadlineMs, fetchCodeScanningAlerts)
           }
         })(),
       )
@@ -1240,7 +1284,7 @@ export function createAggregator(
         // assigned before Promise.all resolves) and exists only to satisfy
         // noUncheckedIndexedAccess. failingCheckDetails required here too —
         // the drill-down sample is empty on an unfetched repo (rm-192).
-        status: statuses[index] ?? {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt: now()},
+        status: statuses[index] ?? {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, openCodeScanningAlerts: null, stale: true, fetchedAt: now()},
       })
     }
 
