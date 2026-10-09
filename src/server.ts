@@ -326,6 +326,30 @@ export function checkRateLimit(ip: string, now: number = Date.now(), pathClass?:
 }
 
 /**
+ * rm-741: seconds a denied client should wait before retrying (the HTTP
+ * Retry-After value for the limiter's 429s).
+ *
+ * The budget is per-class but the WINDOW is shared across classes (one
+ * windowStart per key, reset on expiry in checkRateLimit), so the reset time
+ * is a property of the key, not of the class that happened to trip — the
+ * three classes reset together. The value is the integer CEILING of the
+ * window's remaining milliseconds, clamped to at least 1s so a client is
+ * never told to retry in 0 or negative seconds (and never exceeds the full
+ * window).
+ *
+ * A key with NO entry — the rm-286 capacity fail-closed denial (a brand-new
+ * key denied admission has no window state at all) or a just-swept stale
+ * edge — answers the minimal honest 1s: admission failure is global churn,
+ * not this client's budget, and retrying promptly is correct there.
+ */
+export function rateLimitRetryAfterSeconds(ip: string, now: number = Date.now()): number {
+  const entry = rateLimitMap.get(ip)
+  if (entry === undefined) return 1
+  const remainingMs = entry.windowStart + RATE_LIMIT_WINDOW_MS - now
+  return Math.max(1, Math.ceil(remainingMs / 1000))
+}
+
+/**
  * Injectable config for `buildDashboardApp`.
  * All fields optional — production reads from env; tests inject fakes.
  */
@@ -824,7 +848,15 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
 
       if (!checkRateLimit(ip, Date.now(), classifyRateLimitPath(path))) {
         logger.warning('Rate limit exceeded', {ip, path})
-        return c.text('Too Many Requests', 429)
+        // rm-741: every limiter 429 carries Retry-After as integer
+        // seconds-to-window-reset (ceil, clamped >= 1). NOTE (open question,
+        // deferred with the def): the value reflects the key's SHARED window,
+        // not the class budget that tripped — if the per-class budgets ever
+        // get independent windows, compute the reset from the TRIPPING
+        // class's window instead.
+        return c.text('Too Many Requests', 429, {
+          'Retry-After': String(rateLimitRetryAfterSeconds(ip)),
+        })
       }
     }
 
