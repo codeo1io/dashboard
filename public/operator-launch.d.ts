@@ -145,7 +145,9 @@ export declare function initOperatorLaunch(opts?: {
 }): Promise<void>
 
 /**
- * Set the launch-created stream handle.
+ * Set the launch-created stream handle (overwrite-safe: replacing a stored
+ * handle closes the prior one exactly once; re-setting the same handle is a
+ * no-op; a throwing close is tolerated).
  *
  * Called internally by initOperatorLaunch after a successful launch to track
  * the stream handle so resetLaunchState() can close it. Exported for testing

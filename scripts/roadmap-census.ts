@@ -18,6 +18,51 @@ const DEFS_FLOOR = 200
 
 const defLine = /^- id: `rm-\d+` \| track: \S+ \| priority: [\d.]+ \| status: /
 
+// rm-769 citation-integrity half: ids cited anywhere in the ledger that have
+// no def line. Recorded phantoms carry their traced origin here — adding a
+// new entry REQUIRES a first-hand origin trace (git log --all -S'<id>') in
+// the comment; historical prose stays verbatim.
+export const PHANTOM_ALLOWLIST = new Set([
+  // rm-13640: cited at 9 ROADMAP sites + .github/workflows/main.yaml:33 but no
+  // def exists anywhere in any lineage ledger; the id rode in on
+  // conductor-salvage / ephemeral cloud-CI commits (3135ebf, run f9854748,
+  // 2026-09-29 timeout bump) — landed equivalents: rm-279/rm-284/rm-486.
+  'rm-13640',
+])
+
+// Citation scan: `rm-<digits>` NOT preceded by a letter/digit/hyphen — keeps
+// hyphenated prose like "container-form-2026-09-19.md" from matching.
+const citedId = /(?<![a-z0-9-])rm-\d+\b/g
+
+/**
+ * Classify every id citation in the ledger text: `phantom` = recorded and
+ * origin-traced; `foreign` = cited but never defined here (early-ledger ids
+ * retired with their defs, render-dropped ids, and other conductor lineages'
+ * unlanded ids cross-referenced in riders/merge comments — reported, not
+ * violating: the set legitimately differs per tree, so a hard pin would be
+ * red on any merge base). `defined` = def-line ids for reference.
+ */
+export function danglingCitations(content: string): {
+  phantom: string[]
+  foreign: string[]
+  defined: number
+} {
+  const defined = new Set(
+    content
+      .split('\n')
+      .map(line => line.match(/^- id: `(rm-\d+)`/)?.[1])
+      .filter(id => id !== undefined),
+  )
+  const cited = [...new Set(content.match(citedId) ?? [])]
+  return {
+    phantom: [...PHANTOM_ALLOWLIST].filter(id => cited.includes(id)),
+    foreign: cited
+      .filter(id => !defined.has(id) && !PHANTOM_ALLOWLIST.has(id))
+      .sort((a, b) => Number(a.slice(3)) - Number(b.slice(3))),
+    defined: defined.size,
+  }
+}
+
 export function census(content: string) {
   const lines = content.split('\n')
   const ids = lines
@@ -57,10 +102,14 @@ export function violations(c: ReturnType<typeof census>): string[] {
 const invoked = process.argv[1] ?? ''
 if (invoked !== '' && resolve(invoked) === resolve(import.meta.filename ?? '')) {
   const roadmap = resolve(process.cwd(), 'ROADMAP.md')
-  const c = census(readFileSync(roadmap, 'utf8'))
+  const text = readFileSync(roadmap, 'utf8')
+  const c = census(text)
+  const dc = danglingCitations(text)
   const hist = [...c.statusHistogram.entries()].map(([k, n]) => `${k}:${n}`).join(' ')
   process.stdout.write(
-    `ROADMAP census: defs=${c.defs} dups=${c.dups.length} max=rm-${c.max} statuses ${hist}\n`,
+    `ROADMAP census: defs=${c.defs} dups=${c.dups.length} max=rm-${c.max} statuses ${hist}\n` +
+    `citations: ${dc.foreign.length} foreign (early-ledger/render-dropped/other-lineage — reported), ` +
+    `${dc.phantom.length} recorded phantom (${dc.phantom.join(', ') || 'none'})\n`,
   )
   const v = violations(c)
   if (v.length > 0) {
