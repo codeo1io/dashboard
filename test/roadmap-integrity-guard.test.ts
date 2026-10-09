@@ -148,7 +148,18 @@ describe('rm-678 schema half: live ledger', () => {
     // 778 -> 780 atomically with this landing: union census
     // 245 + 2 = 247 defs / 0 dups / max rm-780, next free
     // rm-781.
-    expect(live.max).toBe(780)
+    //
+    // cycle-3 extension #37 (2026-10-09, run f72cb7ef4b8b4fe19a792e757e503d9f
+    // roadmap 2b87482225f441febfb63553f02b9ff7, repository-maintenance cycle:3
+    // at base 88e423a): minted rm-842/rm-843/rm-844 above the all-lineage
+    // def-line ceiling rm-841 (live re-probe across dashboard run walls:
+    // 1c814809d084 at rm-841, 91f3d37f3c9b at rm-835, 471d3910531e + d823703cba50
+    // at rm-833, 28cd8f6c2568 at rm-832, ba5f6d7ddd67 at rm-831, 8134eb2e6b13
+    // at rm-829; 9xx-band spool hits = agenttrace-foreign, excluded per the
+    // rm-855/894 rule); all three ids unused in main and every wall; pin moves
+    // 780 -> 844 atomically with the mints: census 247 + 3 = 250 defs / 0 dups /
+    // max rm-844, next free rm-845.
+    expect(live.max).toBe(844)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
