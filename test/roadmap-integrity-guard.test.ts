@@ -148,7 +148,23 @@ describe('rm-678 schema half: live ledger', () => {
     // 778 -> 780 atomically with this landing: union census
     // 245 + 2 = 247 defs / 0 dups / max rm-780, next free
     // rm-781.
-    expect(live.max).toBe(780)
+    // 2026-10-09 integrate of run c37a857620e1 (conflict case
+    // af70364e): that run's roadmap extension #36 minted exactly
+    // one id, rm-778 (operator monitoring failing-check
+    // annotations drill-down) — COLLIDING with main's landed
+    // rm-778 (conductor/ci-* stale-ref sweep, run 788aa489c1d5
+    // via case 366f6059). Landed meanings own ids (d00d095), so
+    // the def is RENUMBERED rm-778 → rm-781, landing above the
+    // landed rm-779/rm-780 ceiling with the renumber disclosed
+    // in its provenance (at-write rm-778 strings in its dated
+    // comments + batch doc stay verbatim, e836a18d precedent):
+    // union census 247 + 1 = 248 defs / 0 dups / max rm-781,
+    // next free rm-782 — pin 780 → 781 atomically with this
+    // landing; the run's at-write 778 pin below (its tree held
+    // 238 defs / max rm-778 at base 559642a) is superseded by
+    // this note, per the 366f6059 precedent.
+    // max id as of extension #36 (2026-10-09, run c37a857620e14531abd6be2112004c60 roadmap d5f8451f136c43629a0e87e53fefb54c): minted rm-778 above the all-lineage frontier (sibling walls through 769, PR #444 head 709, foreign-fleet spool 795-855 excluded, 777 ceiling note honored)
+    expect(live.max).toBe(781)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
