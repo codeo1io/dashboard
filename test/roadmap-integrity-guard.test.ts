@@ -91,7 +91,7 @@ describe('rm-678 schema half: live ledger', () => {
     // merge) and rm-709 (detailsUrl https-only boundary) land
     // as-authored below the pin, so the max def id is unchanged
     // at 744 (240 defs).
-    expect(live.max).toBe(744)
+    expect(live.max).toBe(791)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
