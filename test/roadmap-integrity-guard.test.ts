@@ -112,7 +112,13 @@ describe('rm-678 schema half: live ledger', () => {
     // all sit at/below rm-744) and land as-authored, so the union
     // census is 240 + 4 = 244 defs with the ceiling moving to
     // rm-778 — pin 744 → 778 atomically with this landing.
-    expect(live.max).toBe(778)
+    // 2026-10-09 roadmap extension of run 155f9770 (cycle:3):
+    // three mints above the sibling frontier rm-805 — rm-806
+    // (scanner-workflow concurrency groups), rm-807 (soak-matured
+    // dep refresh), rm-808 (dead _onSettle param) — in-file max
+    // moves 778 -> 808 with 245 -> 248 defs; the pin bump rides
+    // the spool patch and lands atomically with the defs.
+    expect(live.max).toBe(808)
     // 2026-10-09 integrate of run 9289efaa (conflict case
     // 139848e6): that run's single mint rm-703 (release.yaml
     // digest-readback SIGPIPE -- the THIRD lineage id of the
