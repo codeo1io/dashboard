@@ -15,11 +15,13 @@
 
 import type {Result} from '../result.ts'
 import type {DashboardAppClient} from './app-client.ts'
+import type {RestRequestFn} from './conditional-reads.ts'
 
 import {Octokit} from '@octokit/core'
 import {logger} from '../logger.ts'
 import {err, ok} from '../result.ts'
 import {createBoundedFetch, GITHUB_REQUEST_TIMEOUT_MS, safeErrorMessage} from './app-client.ts'
+import {ifNoneMatchHeader, normalizeEtag} from './conditional-reads.ts'
 
 // ---------------------------------------------------------------------------
 // Read-only permissions
@@ -384,6 +386,98 @@ export async function enumerateRepos(
 // Real client factory (uses DashboardAppClient)
 // ---------------------------------------------------------------------------
 
+/** rm-162: one repo-list page's last-known-good state (etag + parsed items + seen total). */
+interface RepoListPageCacheEntry {
+  readonly etag: string | null
+  readonly items: readonly Omit<RepoRecord, 'installation_id'>[]
+  readonly total_count: number
+}
+
+/**
+ * rm-162: per-(token, page) ETag cache for the installation repo-list walk.
+ * Keyed by the installation token (the authorization scope of the list), so
+ * entries die with the ≤55-minute token-cache rotation; bounded to a small
+ * fleet-sized number of tokens with insert-order eviction.
+ */
+const REPO_LIST_PAGE_CACHE_MAX_TOKENS = 16
+const repoListPageCache = new Map<string, Map<number, RepoListPageCacheEntry>>()
+
+/**
+ * Paginate GET /installation/repositories through an injectable request
+ * seam, with conditional reads (rm-162): each page carries If-None-Match
+ * from its stored ETag; a 304 reuses that page's cached items unchanged.
+ * 304s are free against the primary rate limit, so a steady-state 60s cycle
+ * pays zero full-body repo-list reads. A 200 refreshes the page's cache.
+ *
+ * GitHub only answers 304 to a matching If-None-Match (i.e. when we had a
+ * cached page); the defensive no-cache 304 branch drops the page and
+ * re-requests unconditionally rather than silently serving an empty page.
+ *
+ * Errors propagate to the caller's existing degraded-installation handling —
+ * a failed conditional read behaves exactly like a failed plain read.
+ */
+export async function listInstallationReposPages(
+  request: RestRequestFn,
+  cacheKey: string,
+): Promise<readonly Omit<RepoRecord, 'installation_id'>[]> {
+  let pages = repoListPageCache.get(cacheKey)
+  if (pages === undefined) {
+    pages = new Map()
+    repoListPageCache.set(cacheKey, pages)
+    while (repoListPageCache.size > REPO_LIST_PAGE_CACHE_MAX_TOKENS) {
+      const oldest = repoListPageCache.keys().next().value
+      if (oldest === undefined) break
+      repoListPageCache.delete(oldest)
+    }
+  }
+
+  const repos: Omit<RepoRecord, 'installation_id'>[] = []
+  let page = 1
+  let total = 0
+  while (true) {
+    const cached = pages.get(page)
+    const response = await request('GET /installation/repositories', {
+      per_page: 100,
+      page,
+      headers: ifNoneMatchHeader(cached?.etag ?? null),
+    })
+    let pageItems: readonly Omit<RepoRecord, 'installation_id'>[]
+    if (response.status === 304) {
+      if (cached === undefined) {
+        pages.delete(page)
+        continue // re-request this page without a conditional header (bounded: once)
+      }
+      logger.debug('installation repo-list page 304 Not Modified — reusing cached page (rm-162)')
+      pageItems = cached.items
+      total = cached.total_count
+    } else {
+      const data = response.data as {
+        total_count: number
+        repositories: {
+          id: number
+          node_id: string
+          owner: {login: string}
+          name: string
+          full_name: string
+        }[]
+      }
+      pageItems = data.repositories.map(repo => ({
+        node_id: repo.node_id,
+        database_id: repo.id,
+        owner: repo.owner.login,
+        name: repo.name,
+        full_name: repo.full_name,
+      }))
+      total = data.total_count
+      pages.set(page, {etag: normalizeEtag(response.headers.etag), items: pageItems, total_count: data.total_count})
+    }
+    repos.push(...pageItems)
+    if (repos.length >= total || pageItems.length < 100) break
+    page++
+  }
+  return repos
+}
+
 async function listInstallationReposWithToken(token: string): Promise<readonly Omit<RepoRecord, 'installation_id'>[]> {
   const installOctokit = new Octokit({
     auth: token,
@@ -395,37 +489,9 @@ async function listInstallationReposWithToken(token: string): Promise<readonly O
       fetch: createBoundedFetch(GITHUB_REQUEST_TIMEOUT_MS),
     },
   })
-
-  const repos: Omit<RepoRecord, 'installation_id'>[] = []
-  let page = 1
-  while (true) {
-    const response = await installOctokit.request('GET /installation/repositories', {
-      per_page: 100,
-      page,
-    })
-    const data = response.data as unknown as {
-      total_count: number
-      repositories: {
-        id: number
-        node_id: string
-        owner: {login: string}
-        name: string
-        full_name: string
-      }[]
-    }
-    for (const repo of data.repositories) {
-      repos.push({
-        node_id: repo.node_id,
-        database_id: repo.id,
-        owner: repo.owner.login,
-        name: repo.name,
-        full_name: repo.full_name,
-      })
-    }
-    if (repos.length >= data.total_count || data.repositories.length < 100) break
-    page++
-  }
-  return repos
+  // rm-162: the token doubles as the cache key — the repo-list view is
+  // scoped to the token's authorization, so entries die with token rotation.
+  return listInstallationReposPages(async (route, params) => installOctokit.request(route, params), token)
 }
 
 /**

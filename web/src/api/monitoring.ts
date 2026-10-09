@@ -14,6 +14,21 @@ export interface FailingCheckDetail {
   readonly detailsUrl: string
 }
 
+/** rm-117: open-alert counts bucketed by security severity (counts ONLY — no alert content crosses the DTO). */
+export interface CodeScanningSeverityCounts {
+  readonly critical: number
+  readonly high: number
+  readonly medium: number
+  readonly low: number
+  readonly unrated: number
+}
+
+/** rm-117: the code-scanning half of the security panel; null = unavailable (optional read absent / probe failed). */
+export interface CodeScanningAlertSummary {
+  readonly openCount: number
+  readonly severity: CodeScanningSeverityCounts
+}
+
 export interface MonitoringRepoStatus {
   readonly rollupState: CiRollupState
   readonly failingChecks: number
@@ -21,6 +36,7 @@ export interface MonitoringRepoStatus {
   readonly openPrCount: number
   readonly openIssueCount: number
   readonly openAlertCount: number | null
+  readonly openCodeScanningAlerts: CodeScanningAlertSummary | null
   readonly stale: boolean
 }
 
@@ -66,6 +82,31 @@ function parseFailingCheckDetail(item: unknown): FailingCheckDetail | null {
 
 const ROLLUP_STATES: readonly string[] = ['green', 'red', 'pending', 'unknown']
 
+/**
+ * rm-117: strict parse of the code-scanning summary. The server contract is
+ * counts only; any malformed bucket (or a missing openCount) is
+ * contract-drift → the whole payload fails closed, mirroring every other
+ * field of this parse. A null value is legal and passes through.
+ */
+function parseCodeScanningAlerts(value: unknown): CodeScanningAlertSummary | null {
+  if (value === null) return null
+  if (!isPlainObject(value)) return null
+  const {openCount, severity} = value
+  if (typeof openCount !== 'number') return null
+  if (!isPlainObject(severity)) return null
+  const {critical, high, medium, low, unrated} = severity
+  if (
+    typeof critical !== 'number' ||
+    typeof high !== 'number' ||
+    typeof medium !== 'number' ||
+    typeof low !== 'number' ||
+    typeof unrated !== 'number'
+  ) {
+    return null
+  }
+  return {openCount, severity: {critical, high, medium, low, unrated}}
+}
+
 function parseRepo(item: unknown): MonitoringRepo | null {
   if (!isPlainObject(item)) return null
   const {full_name, discovery_channel, status} = item
@@ -79,12 +120,15 @@ function parseRepo(item: unknown): MonitoringRepo | null {
     openPrCount,
     openIssueCount,
     openAlertCount,
+    openCodeScanningAlerts,
     stale,
   } = status
   if (typeof rollupState !== 'string' || !ROLLUP_STATES.includes(rollupState)) return null
   if (typeof failingChecks !== 'number') return null
   if (typeof openPrCount !== 'number' || typeof openIssueCount !== 'number') return null
   if (openAlertCount !== null && typeof openAlertCount !== 'number') return null
+  const codeScanningAlerts = parseCodeScanningAlerts(openCodeScanningAlerts)
+  if (codeScanningAlerts === null && openCodeScanningAlerts !== null) return null
   if (typeof stale !== 'boolean') return null
   if (!Array.isArray(failingCheckDetails)) return null
 
@@ -105,6 +149,7 @@ function parseRepo(item: unknown): MonitoringRepo | null {
       openPrCount,
       openIssueCount,
       openAlertCount,
+      openCodeScanningAlerts: codeScanningAlerts,
       stale,
     },
   }
