@@ -148,7 +148,22 @@ describe('rm-678 schema half: live ledger', () => {
     // 778 -> 780 atomically with this landing: union census
     // 245 + 2 = 247 defs / 0 dups / max rm-780, next free
     // rm-781.
-    expect(live.max).toBe(780)
+    // max id as of extension #36 (2026-10-09, run c37a857620e14531abd6be2112004c60 roadmap d5f8451f136c43629a0e87e53fefb54c): minted rm-778 above the all-lineage frontier (sibling walls through 769, PR #444 head 709, foreign-fleet spool 795-855 excluded, 777 ceiling note honored)
+    // 2026-10-10 integrate of run c37a857620e1 (conflict case
+    // 948897d4): that run's single mint at-write rm-778 (operator
+    // monitoring failing-check annotations drill-down) COLLIDES
+    // with landed rm-778 (run 788aa489's conductor/ci-* stale-ref
+    // sweep, landed via case 366f6059) — landed meanings own ids
+    // (d00d095), so the incoming def lands RENUMBERED as rm-781,
+    // the next free id above the e796bbf3 ceiling rm-780, with
+    // the renumber stamped in its def-line status provenance; the
+    // at-write rm-778 strings in the run's own extension #36/#37
+    // and compound comments and its batch doc stay verbatim
+    // (e836a18d) — the extension-#36 note above carries the run's
+    // at-write pin 778, superseded by this case's 781. Union
+    // census 247 + 1 = 248 defs / 0 dups / max rm-781, next free
+    // rm-782 — pin 780 → 781 atomically with this landing.
+    expect(live.max).toBe(781)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
