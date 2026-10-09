@@ -425,6 +425,50 @@ describe('aggregator — rm-192 failingChecks drill-down extraction', () => {
       },
     ])
   })
+
+  it("rm-781 U2: non-https detailsUrls collapse to '' at the extraction seam (https and '' survive)", async () => {
+    const repo = makeRepo({node_id: 'NODE_HTTPS', owner: 'org', name: 'repo-https'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_HTTPS', owner: 'org', name: 'repo-https'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({
+        rollupState: 'FAILURE',
+        failingChecks: 6,
+        checkSuites: [{
+          workflowRun: {displayTitle: 'CI', runAttempt: 1},
+          checkRuns: {
+            totalCount: 6,
+            nodes: [
+              {name: 'https-kept', detailsUrl: 'https://github.com/org/repo-https/actions/runs/1'},
+              {name: 'http-dropped', detailsUrl: 'http://github.com/org/repo-https/actions/runs/2'},
+              {name: 'javascript-dropped', detailsUrl: 'javascript:alert(1)'},
+              {name: 'about-blank-dropped', detailsUrl: 'about:blank'},
+              {name: 'scheme-relative-dropped', detailsUrl: '//github.com/org/repo-https/actions/runs/3'},
+              {name: 'empty-kept', detailsUrl: ''},
+            ],
+          },
+        }],
+      })),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const status = agg.getSnapshot().repos[0]?.status
+
+    // Entries stay in the drill-down sample (the count stays authoritative);
+    // only https URLs and the legitimate '' survive — the href sink in
+    // web/src/views/Monitoring.tsx can never see a non-https value.
+    expect(status?.failingCheckDetails).toEqual([
+      {workflowTitle: 'CI', runAttempt: 1, checkName: 'https-kept', detailsUrl: 'https://github.com/org/repo-https/actions/runs/1'},
+      {workflowTitle: 'CI', runAttempt: 1, checkName: 'http-dropped', detailsUrl: ''},
+      {workflowTitle: 'CI', runAttempt: 1, checkName: 'javascript-dropped', detailsUrl: ''},
+      {workflowTitle: 'CI', runAttempt: 1, checkName: 'about-blank-dropped', detailsUrl: ''},
+      {workflowTitle: 'CI', runAttempt: 1, checkName: 'scheme-relative-dropped', detailsUrl: ''},
+      {workflowTitle: 'CI', runAttempt: 1, checkName: 'empty-kept', detailsUrl: ''},
+    ])
+  })
 })
 
 describe('aggregator — happy path: attention-first sorting', () => {
