@@ -2933,6 +2933,52 @@ describe('review fix P2-1 — last-good snapshot re-filtered against the fresh d
     expect(snap.staleBanner).toBe(true)
   })
 
+  it('rm-838 — explicit-database-id deny entry scrubs an old-format node_id row (two-key scrub)', async () => {
+    const snapshotStore = {
+      load: vi.fn(() => ({
+        ...makeBootSnapshot(),
+        repos: [
+          makeBootSnapshotRepo({node_id: 'NODE_BOOT', full_name: 'fro-bot/agent'}),
+          // Legacy-format node_id (base64 `...Repository<databaseId>` — the
+          // encoding deriveDatabaseId decodes; same fixture form as :713)
+          makeBootSnapshotRepo({
+            node_id: Buffer.from('010:Repository123456789', 'ascii').toString('base64'),
+            full_name: 'fro-bot/legacy-private',
+          }),
+        ],
+      })),
+      persist: vi.fn(),
+    }
+    const deps = makeDeps({
+      snapshotStore,
+      // Deny entry keyed by EXPLICIT database id — the node_id sets are
+      // disjoint, so the primary key cannot catch the row; the derived
+      // databaseId secondary (buildWorkingSet's posture) must.
+      readMetadata: vi.fn().mockResolvedValue(
+        ok(
+          makeMetadataResult({
+            redactedNodeIds: ['NODE_UNRELATED'],
+            redactedDatabaseIds: [123456789],
+          }),
+        ),
+      ),
+      // Channel failure → enumerationFailed path, last-good carries forward
+      // through the scrub (warm-empty guard's serve path is out of scope)
+      enumerate: vi.fn().mockResolvedValue(err('enumeration blew up')),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    // The old-format row derives databaseId 123456789 — denylisted by the
+    // secondary key; it must NOT be served by name.
+    expect(snap.repos.map(r => r.full_name)).toEqual(['fro-bot/agent'])
+    expect(snap.staleBanner).toBe(true)
+    const persisted = snapshotStore.persist.mock.calls.at(-1)?.[0] as AggregatorSnapshot
+    expect(persisted.repos.map(r => r.node_id)).toEqual(['NODE_BOOT'])
+  })
+
   it('metadata unavailable → fail-closed semantics unchanged (no scrub possible, row carries stale-bannered)', async () => {
     const snapshotStore = {load: vi.fn(() => makeBootSnapshotWithRedactedRow()), persist: vi.fn()}
     const deps = makeDeps({
