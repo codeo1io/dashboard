@@ -145,6 +145,60 @@ describe('buildPushClient', () => {
     expect(result).toEqual(ok({pushDisabled: false, vapidKey: {publicKey: 'BNc3xVwB', keyVersion: 'v1'}}))
   })
 
+  describe('rm-163: malformed metadata payloads stay distinguishable from absence', () => {
+    const validMetadata: PushSubscriptionMetadata = {
+      endpointHash: 'a'.repeat(64),
+      keyVersion: 'v1',
+      active: true,
+      createdAt: '2026-07-08T00:00:00.000Z',
+      updatedAt: '2026-07-08T00:00:00.000Z',
+    }
+
+    it.each([
+      ['object with wrong fields', {nope: 'garbage'}],
+      ['array payload', ['array']],
+      ['string payload', 'string'],
+      ['number payload', 42],
+      ['null payload', null],
+    ])('malformed payload (%s) -> metadataMalformed:true + one warn, never a silent fold', async (_label, body) => {
+      const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, body))
+      vi.stubGlobal('fetch', fetchMock)
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      const result = await buildPushClient().getPushSubscriptionMetadata()
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.pushDisabled).toBe(false)
+        expect(result.data.metadata).toBeUndefined()
+        expect(result.data.metadataMalformed).toBe(true)
+      }
+      expect(warn).toHaveBeenCalledTimes(1)
+      warn.mockRestore()
+    })
+
+    it('the legit empty object stays genuine absence (no malformed flag); a valid payload passes through', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse(200, {}))
+        .mockResolvedValueOnce(jsonResponse(200, validMetadata))
+      vi.stubGlobal('fetch', fetchMock)
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      const client = buildPushClient()
+      const empty = await client.getPushSubscriptionMetadata()
+      const valid = await client.getPushSubscriptionMetadata()
+
+      expect(empty.success && empty.data.metadata).toBeUndefined()
+      expect(empty.success && empty.data.metadataMalformed).toBeUndefined()
+      expect(valid.success && valid.data.metadata).toEqual(validMetadata)
+      expect(valid.success && valid.data.metadataMalformed).toBeUndefined()
+      expect(warn).not.toHaveBeenCalled()
+      warn.mockRestore()
+    })
+  })
+
+
   describe('fixtureSessionId query-param parity', () => {
     it('getVapidKey: appends fixtureSessionId when provided', async () => {
       const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, {publicKey: 'BNc3xVwB', keyVersion: 'v1'}))
@@ -827,6 +881,34 @@ describe('runReconcileSweep', () => {
     const second = await runReconcileSweep(deps, first.nextCache)
     expect(second.skipped).toBe(true)
     expect(pushClient.getPushSubscriptionMetadata).toHaveBeenCalledTimes(1)
+  })
+
+  it('rm-163: a malformed metadata read is inconclusive — skipped + flagged, no derivation, no action, cache untouched', async () => {
+    const subscription = fakeSubscription('https://push.example/mine')
+    const pushClient = fakePushClient({
+      getPushSubscriptionMetadata: vi
+        .fn()
+        .mockResolvedValue(ok({pushDisabled: false, metadata: undefined, metadataMalformed: true})),
+    })
+
+    const result = await runReconcileSweep(
+      {
+        getLocalSubscription: () => Promise.resolve(subscription),
+        getPermission: () => 'granted',
+        pushClient,
+        getCurrentKeyVersion: () => 'v1',
+        now: () => 1,
+      },
+      cache,
+    )
+
+    expect(result.skipped).toBe(true)
+    expect(result.metadataMalformed).toBe(true)
+    expect(result.action).toBeUndefined()
+    expect(result.uiState).toBeUndefined()
+    // The cache object is returned UNCHANGED — a contract regression must not
+    // poison handoff-state caching or license any drift decision.
+    expect(result.nextCache).toBe(cache)
   })
 
   it('rm-600: VAPID key rotation on an open, stably-subscribed page is detected on the following sweep without a reload', async () => {

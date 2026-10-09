@@ -74,6 +74,23 @@ describe('Notifications Component', () => {
     expect(buildPushClient).toHaveBeenCalledWith(undefined)
   })
 
+  it('rm-163: a malformed metadata sweep surfaces the contract-regression notice — never folds into absence', async () => {
+    addMetaTag()
+    vi.mocked(runReconcileSweep).mockResolvedValue({
+      skipped: true,
+      action: undefined,
+      uiState: undefined,
+      nextCache: {} as any,
+      metadataMalformed: true,
+    })
+
+    await act(async () => {
+      render(<Notifications />)
+    })
+
+    expect(await screen.findByTestId('push-metadata-malformed')).toBeInTheDocument()
+  })
+
   it('builds the push client against the fixture endpoint when pushEndpointBase is passed', async () => {
     addMetaTag()
     await act(async () => {

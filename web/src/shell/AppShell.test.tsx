@@ -1,5 +1,6 @@
-import {fireEvent, render, screen} from '@testing-library/react'
+import {act, fireEvent, render, screen} from '@testing-library/react'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
+import {GET_SEAM_TIMEOUT_MS} from '../api/fetch-timeout.ts'
 import {getLogoutAbortSignal} from '../push/logout-abort.ts'
 import * as logoutPurgeModule from '../pwa/logout-purge.ts'
 import {AppShell} from './AppShell.tsx'
@@ -8,8 +9,18 @@ import {AppShell} from './AppShell.tsx'
 // `window.location.href =` assignment and never reflects the new value.
 // Stub `location` with a plain object so redirect assertions observe the
 // value the app actually set instead of jsdom's fixed default.
+//
+// rm-501: the stub must start from the PRISTINE location href captured at
+// module load. Reading `window.location.href` at call time inherits the
+// previous test's stub once it has redirected to '/auth/login', which makes
+// every later `vi.waitFor(() => href === '/auth/login')` pass vacuously on
+// the first synchronous check — racing the fetch chain and making redirect
+// assertions order/timing-dependent (surfaced when the seam-bound logout
+// chain added microtask hops to that chain).
+const PRISTINE_LOCATION_HREF = window.location.href
+
 function stubLocation(): {href: string} {
-  const stub = {href: window.location.href}
+  const stub = {href: PRISTINE_LOCATION_HREF}
   Object.defineProperty(window, 'location', {
     writable: true,
     configurable: true,
@@ -370,6 +381,82 @@ describe('AppShell', () => {
 
     await vi.waitFor(() => {
       expect(countFetchCalls(fetchMock, '/operator/auth/logout')).toBe(1)
+    })
+  })
+
+  describe('rm-501: bounded logout chain — hung exchanges fail closed and release the latch', () => {
+    const neverSettles = () => new Promise<Response>(() => {})
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('a hung gateway CSRF falls back through the Arctic contract within the seam bound and redirects', async () => {
+      spyOnPurgeOperatorCache()
+      const location = stubLocation()
+      const fetchMock = mockLogoutFetch({
+        csrf: () => neverSettles(),
+        arcticCsrf: () => nonOkResponse(404),
+      })
+
+      vi.useFakeTimers()
+      render(<AppShell>content</AppShell>)
+      const button = screen.getByTestId('logout-button')
+      fireEvent.click(button)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(GET_SEAM_TIMEOUT_MS)
+      })
+
+      // Seam timeout on the gateway probe reads as "surface unavailable":
+      // the Arctic fallback runs and fails closed to login.
+      expect(location.href).toBe('/auth/login')
+      expect(findFetchCall(fetchMock, '/auth/logout-csrf')).toBeDefined()
+      // rm-501 latch: released when the bounded chain settles.
+      expect(button).toBeEnabled()
+    })
+
+    it('a hung Arctic CSRF fails closed to login within the seam bound', async () => {
+      spyOnPurgeOperatorCache()
+      const location = stubLocation()
+      mockLogoutFetch({
+        csrf: () => nonOkResponse(404),
+        arcticCsrf: () => neverSettles(),
+      })
+
+      vi.useFakeTimers()
+      render(<AppShell>content</AppShell>)
+      const button = screen.getByTestId('logout-button')
+      fireEvent.click(button)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(GET_SEAM_TIMEOUT_MS)
+      })
+
+      expect(location.href).toBe('/auth/login')
+      expect(button).toBeEnabled()
+    })
+
+    it('a hung logout POST (CSRF ok) fails closed to login and releases the latch', async () => {
+      spyOnPurgeOperatorCache()
+      const location = stubLocation()
+      const fetchMock = mockLogoutFetch({
+        csrf: () => csrfOkResponse(),
+        logout: () => neverSettles(),
+      })
+
+      vi.useFakeTimers()
+      render(<AppShell>content</AppShell>)
+      const button = screen.getByTestId('logout-button')
+      fireEvent.click(button)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(GET_SEAM_TIMEOUT_MS)
+      })
+
+      expect(location.href).toBe('/auth/login')
+      expect(countFetchCalls(fetchMock, '/operator/auth/logout')).toBe(1)
+      expect(button).toBeEnabled()
     })
   })
 

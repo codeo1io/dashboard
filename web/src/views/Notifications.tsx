@@ -62,6 +62,10 @@ export function Notifications({
   const [metaEnabled] = useState<boolean>(readPushEnabledMeta)
   const [currentUiState, setCurrentUiState] = useState<NotificationUiState>('not-requested')
   const [inFlight, setInFlight] = useState(false)
+  // rm-163: a malformed metadata payload is a contract regression, not
+  // absence — surfaced as its own notice so it can never masquerade as
+  // "not subscribed"/"no subscription" in the UI.
+  const [metadataMalformed, setMetadataMalformed] = useState(false)
   const [isCardDismissed, setIsCardDismissed] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false
     return window.localStorage.getItem(DISMISS_SETTINGS_KEY) === '1'
@@ -173,7 +177,17 @@ export function Notifications({
       cacheRef.current,
     )
 
+    // rm-163: malformed metadata read — inconclusive sweep. Surface the
+    // regression; do not touch cache, action, or UI state (the fold into
+    // 'not subscribed' is exactly what this guard prevents).
+    if (result.metadataMalformed === true) {
+      setMetadataMalformed(true)
+      return
+    }
+
     if (result.skipped) return
+
+    setMetadataMalformed(false)
 
     cacheRef.current = result.nextCache
 
@@ -501,6 +515,21 @@ export function Notifications({
           >
             {inFlight ? 'Updating push subscription…' : `${copy.headline}: ${copy.detail}`}
           </div>
+
+          {/* rm-163: a malformed subscription-metadata payload is a contract
+              regression — distinguishable from "no subscription", never folded
+              into absence. */}
+          {metadataMalformed && (
+            <p
+              role="alert"
+              data-testid="push-metadata-malformed"
+              className="rounded border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300"
+            >
+              Push subscription metadata is unreadable — the push service
+              returned a malformed payload. Reconcile is paused and no
+              subscription state was changed.
+            </p>
+          )}
 
           {/* DEV-gated synthetic push button */}
           {import.meta.env.DEV && (

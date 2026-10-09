@@ -42,9 +42,20 @@ export interface PushClient {
    * `pushDisabled: true` is set only when the Gateway route returned HTTP
    * 404 — the synthetic push_disabled signal driven by status alone, never
    * response-body shape. A non-404 error stays a normal `PushClientError`.
+   * rm-163: `metadataMalformed: true` is set when the payload parsed but is
+   * neither the metadata shape nor the legit empty object — a contract
+   * regression that stays distinguishable from absence instead of folding
+   * into `metadata: undefined`.
    */
   getPushSubscriptionMetadata(): Promise<
-    Result<{readonly pushDisabled: boolean; readonly metadata: PushSubscriptionMetadata | undefined}, PushClientError>
+    Result<
+      {
+        readonly pushDisabled: boolean
+        readonly metadata: PushSubscriptionMetadata | undefined
+        readonly metadataMalformed?: boolean
+      },
+      PushClientError
+    >
   >
   subscribePush(
     subscriptionJson: unknown,
@@ -150,12 +161,23 @@ export function buildPushClient(opts?: BuildPushClientOptions): PushClient {
         if (res.status === 404) return ok({pushDisabled: true, metadata: undefined})
         if (!res.ok) return err({kind: 'http', status: res.status})
         const data = (await res.json()) as unknown
-        if (data === null || typeof data !== 'object') {
+        // rm-163: the legit "no subscription" response is an EMPTY object —
+        // genuine absence. Anything else that is not the metadata shape is a
+        // contract regression and must not fold into `metadata: undefined`,
+        // where it would masquerade as absence.
+        if (
+          data !== null &&
+          typeof data === 'object' &&
+          !Array.isArray(data) &&
+          Object.keys(data).length === 0
+        ) {
           return ok({pushDisabled: false, metadata: undefined})
         }
-        // Gateway returns either an empty object (no subscription) or the metadata shape.
-        if (hasValidSubscriptionMetadataShape(data) === false) {
-          return ok({pushDisabled: false, metadata: undefined})
+        if (data === null || typeof data !== 'object' || hasValidSubscriptionMetadataShape(data) === false) {
+          console.warn(
+            '[push] malformed subscription metadata payload — surfaced as a distinguishable contract-regression state, not absence',
+          )
+          return ok({pushDisabled: false, metadata: undefined, metadataMalformed: true})
         }
         return ok({pushDisabled: false, metadata: data})
       } catch {
@@ -684,6 +706,13 @@ export interface ReconcileSweepResult {
   readonly action: import('./reconcile.ts').ReconcileAction | undefined
   readonly uiState: import('./reconcile.ts').ReconcileUiState | undefined
   readonly nextCache: ReconcileSweepCache
+  /**
+   * rm-163: true when the metadata read parsed but was malformed — the
+   * sweep returned inconclusive (skipped, no derivation, no action, cache
+   * untouched). Distinct from a transport error: the payload arrived and is
+   * a contract regression the view can surface instead of "not subscribed".
+   */
+  readonly metadataMalformed?: boolean
 }
 
 const DEFAULT_MIN_INTERVAL_MS = 30_000
@@ -751,6 +780,16 @@ export async function runReconcileSweep(
   if (!metadataResult.success) {
     // Transport/protocol error — do not mutate state on an inconclusive read.
     return {skipped: true, action: undefined, uiState: undefined, nextCache: cache}
+  }
+
+  // rm-163: a malformed payload is a contract regression, not "no
+  // subscription" — the read is inconclusive. Do NOT derive a handoff state
+  // from it: the fold would report 'not_subscribed' (absence) and license a
+  // drift decision on a regression. Skip without action, keep the cache, and
+  // flag the malformed state so the view can surface it (the transport-error
+  // branch above stays the skip-without-flag shape).
+  if (metadataResult.data.metadataMalformed === true) {
+    return {skipped: true, action: undefined, uiState: undefined, nextCache: cache, metadataMalformed: true}
   }
 
   // A thrown/rejected hash computation (e.g. a transient crypto.subtle

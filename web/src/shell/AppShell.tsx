@@ -14,6 +14,7 @@
  */
 
 import {type ReactNode, useCallback, useEffect, useRef, useState} from 'react'
+import {withGetSeamTimeout} from '../api/fetch-timeout.ts'
 import {triggerLogoutAbort} from '../push/logout-abort.ts'
 import {buildPushClient, unsubscribeOptOut} from '../push/subscribe.ts'
 import {DISMISS_KEY as INSTALL_DISMISS_KEY, InstallPrompt} from '../pwa/InstallPrompt.tsx'
@@ -46,7 +47,16 @@ function teardownPushOnLogout(): Promise<unknown> {
  */
 async function arcticLogout(): Promise<void> {
   try {
-    const csrfRes = await fetch('/auth/logout-csrf', {credentials: 'same-origin'})
+    // rm-501: every fetch in the logout chain rides the wall-clock seam
+    // (fetch-timeout.ts) — a hung exchange must fail closed to the login
+    // page within the house bound, never wedge the operator affordance.
+    const csrfRes = await withGetSeamTimeout(
+      fetch('/auth/logout-csrf', {credentials: 'same-origin'}),
+    )
+    if (csrfRes === 'timeout') {
+      redirectToLogin()
+      return
+    }
     if (!csrfRes.ok) {
       redirectToLogin()
       return
@@ -65,18 +75,25 @@ async function arcticLogout(): Promise<void> {
     // Same best-effort push teardown discipline as the gateway branch:
     // bounded by Promise.allSettled so it can never block navigation.
     const [logoutSettled] = await Promise.allSettled([
-      fetch('/auth/logout', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: {'content-type': 'application/x-www-form-urlencoded'},
-        body: new URLSearchParams({csrf_token: csrfToken}).toString(),
-      }),
+      withGetSeamTimeout(
+        fetch('/auth/logout', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {'content-type': 'application/x-www-form-urlencoded'},
+          body: new URLSearchParams({csrf_token: csrfToken}).toString(),
+        }),
+      ),
       teardownPushOnLogout(),
     ])
 
     // The server answers the successful logout with a 302 to /auth/login;
-    // fetch follows it, so any non-ok outcome is a real failure.
-    if (logoutSettled.status !== 'fulfilled' || !logoutSettled.value.ok) {
+    // fetch follows it, so any non-ok outcome (or a seam timeout) is a real
+    // failure — fail closed.
+    if (
+      logoutSettled.status !== 'fulfilled' ||
+      logoutSettled.value === 'timeout' ||
+      !logoutSettled.value.ok
+    ) {
       redirectToLogin()
       return
     }
@@ -211,7 +228,17 @@ export function AppShell({
     triggerLogoutAbort()
 
     try {
-      const csrfRes = await fetch('/operator/session/csrf', {credentials: 'same-origin'})
+      // rm-501: the CSRF probe rides the same wall-clock seam as every other
+      // fetch in this chain. A hang reads as "gateway surface unavailable"
+      // — the same treatment as the 404 below — so the Arctic contract
+      // completes the logout and the whole path stays fail-closed.
+      const csrfRes = await withGetSeamTimeout(
+        fetch('/operator/session/csrf', {credentials: 'same-origin'}),
+      )
+      if (csrfRes === 'timeout') {
+        await arcticLogout()
+        return
+      }
       if (!csrfRes.ok) {
         // Arctic (default) auth mode: the gateway operator session surface is
         // not mounted here, so this fetch 404s. Complete the logout through
@@ -238,15 +265,21 @@ export function AppShell({
       // block navigation — Gateway session inactivation on logout is the
       // authoritative revocation path.
       const [logoutSettled] = await Promise.allSettled([
-        fetch('/operator/auth/logout', {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: {'x-csrf-token': csrfToken},
-        }),
+        withGetSeamTimeout(
+          fetch('/operator/auth/logout', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {'x-csrf-token': csrfToken},
+          }),
+        ),
         teardownPushOnLogout(),
       ])
 
-      if (logoutSettled.status !== 'fulfilled' || !logoutSettled.value.ok) {
+      if (
+        logoutSettled.status !== 'fulfilled' ||
+        logoutSettled.value === 'timeout' ||
+        !logoutSettled.value.ok
+      ) {
         redirectToLogin()
         return
       }
@@ -256,6 +289,12 @@ export function AppShell({
     } catch {
       // Network error — fall back to login page.
       redirectToLogin()
+    } finally {
+      // rm-501: the chain is wall-clock bounded now — release the in-flight
+      // guard and the loggingOut latch whenever it settles, hung path
+      // included. The logout button must never stay disabled forever.
+      logoutInFlight.current = false
+      setLoggingOut(false)
     }
   }, [])
 
