@@ -68,10 +68,10 @@ jobs:
       # verified locally 2026-09-30 (a bare lockfile+workspace copy audits
       # clean with no node_modules).
       - name: Install pnpm
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        uses: pnpm/action-setup@ea17c68e0bde69e1b6c0e6c1d3fdc4392c66e5e1 # v6
 
       - name: Set up Node 24
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@2028f363a52288f53a487b2451c1322c31a57e45 # v7.1.0
         with:
           node-version: '24'
 
