@@ -116,8 +116,16 @@ function MonitoringBoard({data, viewStale}: {data: MonitoringData; viewStale: bo
   )
   const remaining = data.repos.length - redRepos.length - staleRepos.length
   // rm-780: the all-clear claim is only true when nothing is stale/unknown
-  // AND the view is not running on failing refreshes.
-  const allClear = redRepos.length === 0 && staleRepos.length === 0 && !viewStale
+  // AND the view is not running on failing refreshes. rm-835: the DTO-level
+  // staleBanner also gates the claim — the aggregator's fail-closed cold-start
+  // snapshot serves repos: [] with staleBanner: true, which previously landed
+  // here as the green all-clear (an empty enumeration counted as clear).
+  const allClear =
+    redRepos.length === 0 && staleRepos.length === 0 && !viewStale && !data.staleBanner
+  // rm-835: an empty enumeration is not evidence of health — with zero rows
+  // the green claim cannot be made even on a fresh snapshot, so a distinct
+  // no-data state renders instead of the all-clear panel.
+  const noData = data.repos.length === 0
   const refreshedAt = data.refreshedAt === null ? null : new Date(data.refreshedAt).toLocaleString()
   // rm-107: measured duration of the last walk for the degraded banner — null
   // only when no cycle has ever stamped a snapshot (never while degraded).
@@ -144,7 +152,19 @@ function MonitoringBoard({data, viewStale}: {data: MonitoringData; viewStale: bo
       {staleRepos.map(repo => <StaleRepoCard key={repo.fullName} repo={repo} />)}
 
       {redRepos.length === 0 && staleRepos.length === 0 &&
-        (allClear ? (
+        (noData ? (
+          // rm-835: cold-start truth — the fail-closed DTO (repos: [] +
+          // staleBanner: true) rendered as "All repositories green" before;
+          // an empty enumeration gets a neutral no-data state instead.
+          <div data-testid="monitoring-no-data" className="operator-empty-state">
+            <div className="operator-empty-icon" aria-hidden="true" style={{opacity: 0.2}}>…</div>
+            <p className="operator-empty-title">No repository data</p>
+            <p className="operator-empty-desc">
+              No tracked repositories in the current snapshot — monitoring data has not loaded yet
+              or the enumeration is empty, so no health claim can be made.
+            </p>
+          </div>
+        ) : allClear ? (
           <div data-testid="monitoring-all-clear" className="operator-empty-state">
             <div className="operator-empty-icon" aria-hidden="true" style={{opacity: 0.2}}>✓</div>
             <p className="operator-empty-title">All repositories green</p>
@@ -156,9 +176,11 @@ function MonitoringBoard({data, viewStale}: {data: MonitoringData; viewStale: bo
         ) : (
           // rm-780: refreshes are failing — the "all green" claim cannot be
           // made about the last-good data, so a neutral summary replaces it.
+          // rm-835: the same retraction now also covers the DTO-level stale
+          // banner (rows present but the snapshot is stale).
           <div data-testid="monitoring-all-clear-suppressed" className="operator-empty-state">
             <p className="operator-empty-desc">
-              No failing checks in the last completed refresh — current state unverified while refreshes fail.
+              No failing checks in the last completed snapshot — the all-clear claim is held while data is stale or refreshes fail.
             </p>
           </div>
         ))}
