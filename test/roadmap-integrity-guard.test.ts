@@ -73,6 +73,11 @@ describe('rm-678 schema half: live ledger', () => {
     // ledger (690-692 then 744 bracket them) and are stamped into
     // validated executable surfaces, so no renumber and no bump —
     // the max def id is unchanged at 744 (235 defs).
+    // 2026-10-08 fold of run 405e9004 cycle-2 ext #21 (implement
+    // ef47317c, de0cec2 3-way onto 9aceea8): that run's four mints
+    // rm-740..rm-743 land as-authored BELOW the landed ceiling
+    // (239 defs after this fold, max still 744) — landed-main-wins
+    // on the pin, no bump.
     expect(live.max).toBe(744)
   })
 

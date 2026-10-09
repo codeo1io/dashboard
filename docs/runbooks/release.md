@@ -44,6 +44,21 @@ run at the Trivy step, so the failing step alone distinguishes all three.
   attestation-bearing indexes) — parse the default output's `Digest:` line
   instead (NOTE in the workflow).
 
+## Container HEALTHCHECK semantics (rm-743)
+
+The image carries a `HEALTHCHECK` probing `/api/healthz` and gating on HTTP
+`r.ok` only. Orchestration expectation: it is a LIVENESS signal — a
+stale-but-alive dashboard (upstream GitHub slow or degraded) stays `healthy`
+and must not be restarted by an orchestrator reacting to it. Staleness
+visibility belongs to the dashboard UI's own fields (rm-708, unlanded): once
+those land, an EXTERNAL probe may additionally gate on staleness — the
+in-container healthcheck never will.
+
+The probe URL hard-codes the `DASHBOARD_PORT` default (3000). A deployment
+overriding `DASHBOARD_PORT` must override the `HEALTHCHECK` (or the
+orchestrator's equivalent liveness command) to match, or the container will
+report unhealthy against the wrong port.
+
 ## Maintenance of this document
 
 When a new failure class is root-caused (not just a one-off), add a row with

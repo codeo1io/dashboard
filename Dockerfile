@@ -136,4 +136,23 @@ USER node
 
 EXPOSE 3000
 
+# rm-743: container-level liveness truth (was: no HEALTHCHECK — an orchestrator
+# restarting the container on a dead server was indistinguishable from one
+# restarting it for any other reason). The probe hits /api/healthz and gates on
+# HTTP `r.ok` ONLY: /api/healthz is constant-200 liveness (never touches the
+# aggregator/store, rm-205's 2026-09-19 pinning), so snapshot staleness can
+# NEVER flip the container unhealthy — staleness visibility belongs to the
+# dashboard UI's own fields (rm-708, unlanded) once they exist, never here.
+# Tuning vs the aggregator cadence (60_000ms refresh, src/github/aggregator.ts
+# DEFAULT_REFRESH_INTERVAL_MS): interval 30s is half a refresh cycle, retries 3
+# means 90s of CONSECUTIVE dead probes before unhealthy — at least one full
+# refresh cycle of noise tolerance, so a single slow cycle cannot flap the
+# container. node:24-slim ships no curl/wget, so the probe is a node fetch
+# one-liner using the runtime the CMD already uses (adding curl to the image
+# would grow the Trivy surface for no other need). The URL hard-codes the
+# DASHBOARD_PORT default (3000): a deployment overriding DASHBOARD_PORT must
+# override this HEALTHCHECK to match (documented in docs/runbooks/release.md).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:3000/api/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+
 CMD ["node", "src/server.ts"]
