@@ -64,6 +64,53 @@ by design, with the reason).
   a unilateral fork-side LICENSE would be legally hollow. When upstream
   chooses one, the fork mirrors it in the same absorb cycle.
 
+## Scheduled guard watch
+
+`rm-289` (2026-10-09): the scheduled guard layer — `audit.yaml`,
+`base-drift.yaml`, `upstream-drift.yaml`, `canary.yaml`, `scorecard.yaml`,
+`cve-tripwire.yaml` (Mondays) and `codeql.yaml` (Wednesdays) — runs on cron with
+no human reading the Actions tab, and its reds historically sat invisible for
+days (canary red 3+ days from 2026-09-28; three reds over 24h on 2026-10-07).
+The **Scheduled guard watch** workflow (`.github/workflows/scheduled-watch.yaml`,
+Mondays and Wednesdays 08:37 UTC, after the layer settles) queries each guard's
+latest watched conclusion via `scripts/scheduled-workflow-watch.ts` — a
+zero-dependency, `GITHUB_TOKEN`-only script — and routes the red set through a
+three-surface ladder:
+
+1. **The tracked issue.** One living issue labeled `scheduled-watch` carrying
+   the red table: opened on red, updated when the red set changes
+   (deduplicated by a `signature:` fingerprint in the body), closed
+   automatically on all-green. Active only when the repository's Issues
+   feature is enabled — it is disabled on this fork today (`has_issues=false`,
+   probed 2026-10-09), so this half is dormant-but-guarded: the script probes
+   and degrades with a loud log line instead of dying on the 410.
+2. **The watch run's own conclusion.** The job exits 1 whenever any guard is
+   red, so the watch itself is a red Actions run and GitHub's
+   scheduled-workflow-failure email reaches the workflow-creating account.
+   This is the authoritative alert while issues stay disabled.
+3. **The job summary.** The full red/green table is appended to
+   `GITHUB_STEP_SUMMARY` on every fire.
+
+Semantics are deliberately strict: green ONLY on conclusion `success`
+(`cancelled`, `timed_out`, `startup_failure`, `skipped`, and a guard with no
+completed run at all all count red — a guard nothing has ever verified is
+exactly the invisibility this watch removes); any API error exits 1 loudly
+rather than reporting a false green; `fro-bot.yaml` is deliberately excluded
+(disabled_manually with a documented missing-secret reason, AGENTS.md).
+
+Dry-run harness (the negative case is provable offline, no manufactured red):
+`echo '<fixture>' | node scripts/scheduled-workflow-watch.ts --dry-run -` — the
+fixture carries `hasIssues`, `openIssue`, and a `runs` map keyed by workflow
+file; the script prints the exact issue/comment it WOULD post and exits with
+the live code. Pinned by `test/scheduled-workflow-watch.test.ts` (16 tests:
+decision core, workflow statics including a completeness guard that forces new
+cron-triggered workflows to join the watch list, and the end-to-end dry-run).
+
+First live fire: Monday 2026-10-12 08:37 UTC. Expected first verdict given the
+2026-10-09 state: red — audit, canary and upstream-drift have red latest
+scheduled runs, and cve-tripwire has no completed run yet. That red watch run
+plus the failure email is the alert firing as designed.
+
 ## Maintained (time-gated)
 
 Scorecard's Maintained check wants commit activity across a ~90-day window;

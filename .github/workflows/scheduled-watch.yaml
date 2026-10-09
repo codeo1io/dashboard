@@ -1,0 +1,68 @@
+# rm-289 (2026-10-09, repository-maintenance cycle:1 run 1930644a996e):
+# the scheduled-workflow red watch — an alert route for the guard layer that
+# previously had none. Scheduled guard failures sat unwatched for days twice
+# (canary 2026-09-28 red 3+ days; three reds >24h on 2026-10-07) because a red
+# cron was observable only by manually reading the Actions tab. This watch
+# queries every scheduled guard workflow's latest watched conclusion via the
+# Actions API (GITHUB_TOKEN only, zero dependencies — no install step) and
+# routes the red set through the same signal ladder upstream-drift.yaml and
+# cve-tripwire.yaml document: ONE tracked issue while red (opened/updated,
+# closed on green, deduplicated by a red-set signature) WHENEVER the Issues
+# feature is enabled, plus the watch run's own red conclusion and the job
+# summary. Issues are DISABLED on this fork today (has_issues=false, probed
+# live 2026-10-09), so the tracked-issue half is dormant-but-guarded and the
+# red watch run (with GitHub's scheduled-failure email to the workflow-creating
+# account) is the authoritative alert until that changes.
+#
+# Watch semantics live in scripts/scheduled-workflow-watch.ts (green only on
+# 'success'; no-completed-run counts red; schedule + default-branch dispatch
+# runs only; fro-bot deliberately excluded — disabled_manually by design).
+# Dry-run harness: node scripts/scheduled-workflow-watch.ts --dry-run -
+# Runbook: docs/runbooks/security-posture.md, 'Scheduled guard watch' section.
+name: Scheduled guard watch
+
+on:
+  schedule:
+    # Mondays 08:37 UTC — after the whole Monday guard layer has fired and
+    # settled (03:37 audit, 04:13 base-drift, 05:17 upstream-drift, 05:23
+    # canary, 06:27 scorecard, 06:53 cve-tripwire; the slowest settles well
+    # inside its 10-15m timeout). Wednesdays after CodeQL's 07:31 slot (worst
+    # observed ~9.4m). Off the hour per house cron style.
+    - cron: '37 8 * * 1'
+    - cron: '37 8 * * 3'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read # checkout only
+  actions: read # list each guard workflow's runs
+  issues: write # the tracked alert issue (guarded by the has_issues probe)
+
+concurrency:
+  group: scheduled-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    # rm-188 pin: ubuntu-24.04 while ubuntu-latest still maps to 24.04;
+    # re-evaluate at the Node-26 window (2026-10-28).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # setup-node only, no pnpm install — the watch script is
+      # zero-dependency by construction (the canary's ERR_MODULE_NOT_FOUND
+      # born-broken class, rm-280/rm-288, must never recur here).
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - name: Watch the scheduled guard layer (rm-289)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node scripts/scheduled-workflow-watch.ts
