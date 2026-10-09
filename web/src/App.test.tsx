@@ -212,6 +212,10 @@ describe('App', () => {
 
       render(<App />)
       await waitFor(() => expect(screen.getByTestId('unread-auth-expired')).toBeInTheDocument())
+      // rm-651 (2026-10-09): flush pending passive effects before dispatching
+      // so the focus-listener attach cannot race the dispatch (see the
+      // fail-closed sibling test above for the full note).
+      await act(async () => {})
 
       // Re-login happened in another tab; focusing this one re-probes once.
       act(() => { window.dispatchEvent(new Event('focus')) })
@@ -235,6 +239,12 @@ describe('App', () => {
 
       render(<App />)
       await waitFor(() => expect(screen.getByTestId('unread-auth-expired')).toBeInTheDocument())
+      // rm-651 (2026-10-09): the flip that renders the expired state can land
+      // outside act, leaving the focus listener's passive effect pending when
+      // the testid is already visible — the dispatch below would then race
+      // the attach under worker contention (reproduced ~1-in-8 full-suite
+      // runs). Flush pending effects so the listener is guaranteed attached.
+      await act(async () => {})
       spy.mockClear()
 
       // Each focus probes exactly once; failures latch nothing (a network
@@ -261,6 +271,9 @@ describe('App', () => {
       await waitFor(() => expect(screen.getByTestId('unread-badge')).toHaveTextContent('5'))
 
       spy.mockResolvedValue({ok: false, reason: 'network'})
+      // rm-651 (2026-10-09): flush pending passive effects before dispatching
+      // so the hook's focus-poll attach cannot race the dispatch.
+      await act(async () => {})
       // Failure 1: outage indicator only, badge not yet marked stale.
       act(() => { window.dispatchEvent(new Event('focus')) })
       await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)) })

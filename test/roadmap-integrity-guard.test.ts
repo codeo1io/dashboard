@@ -148,7 +148,12 @@ describe('rm-678 schema half: live ledger', () => {
     // 778 -> 780 atomically with this landing: union census
     // 245 + 2 = 247 defs / 0 dups / max rm-780, next free
     // rm-781.
-    expect(live.max).toBe(780)
+    // 2026-10-09 run d823703c roadmap 1d8db60c: pin 780 -> 833 — one
+    // bare mint rm-833 (vite-plugin-pwa 2.0.0 disposition; this run's
+    // pnpm/codeql/absorb-window findings ride its rm-252 and rm-139
+    // riders, pairing run-ba5f6d7ddd67 ext #41 by content); census
+    // 247 + 1 = 248 defs / 0 dups / max rm-833, next free rm-834.
+    expect(live.max).toBe(833)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
