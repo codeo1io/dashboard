@@ -1,4 +1,4 @@
-import {render, screen, fireEvent, act} from '@testing-library/react'
+import {render, screen, fireEvent, act, waitFor} from '@testing-library/react'
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {getNotificationPermission, getPushSupport} from '../push/capability.ts'
 import {
@@ -72,6 +72,51 @@ describe('Notifications Component', () => {
       render(<Notifications />)
     })
     expect(buildPushClient).toHaveBeenCalledWith(undefined)
+  })
+
+  it('rm-163: a malformed metadata sweep surfaces the contract-regression notice — never folds into absence', async () => {
+    addMetaTag()
+    vi.mocked(runReconcileSweep).mockResolvedValue({
+      skipped: true,
+      action: undefined,
+      uiState: undefined,
+      nextCache: {} as any,
+      metadataMalformed: true,
+    })
+
+    await act(async () => {
+      render(<Notifications />)
+    })
+
+    const notice = await screen.findByTestId('push-metadata-malformed')
+    expect(notice).toBeInTheDocument()
+    expect(notice.getAttribute('role')).toBe('alert')
+  })
+
+  it('rm-163: the malformed-metadata notice clears once a later sweep returns healthy data', async () => {
+    addMetaTag()
+    vi.mocked(runReconcileSweep)
+      .mockResolvedValueOnce({
+        skipped: true,
+        action: undefined,
+        uiState: undefined,
+        nextCache: {} as any,
+        metadataMalformed: true,
+      })
+      .mockResolvedValue({
+        skipped: false,
+        action: 'none',
+        uiState: undefined,
+        nextCache: {} as any,
+      })
+
+    await act(async () => {
+      render(<Notifications />)
+    })
+    expect(await screen.findByTestId('push-metadata-malformed')).toBeInTheDocument()
+
+    window.dispatchEvent(new Event('visibilitychange'))
+    await waitFor(() => expect(screen.queryByTestId('push-metadata-malformed')).toBeNull())
   })
 
   it('builds the push client against the fixture endpoint when pushEndpointBase is passed', async () => {
