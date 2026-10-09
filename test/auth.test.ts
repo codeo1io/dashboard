@@ -5,7 +5,7 @@
  */
 import type {GitHubOAuthClient} from '../src/auth/oauth.ts'
 import {Buffer} from 'node:buffer'
-import {createHmac} from 'node:crypto'
+import {createHash, createHmac} from 'node:crypto'
 import {describe, expect, it} from 'vitest'
 import {fetchGitHubUserLogin, makeGitHubOAuthClient} from '../src/auth/oauth.ts'
 import {sanitizeErrorMessage} from '../src/logger.ts'
@@ -16,14 +16,22 @@ import {SessionManager} from '../src/session.ts'
 // 32-byte key for tests — must be non-degenerate (mixed bytes)
 const TEST_KEY = Buffer.from('testkey-ABCDEFGHIJKLMNOPQRSTUV12', 'utf8') // 32 bytes, mixed
 
+// rm-149: records the code verifier the callback forwarded to the token exchange.
+let lastCodeVerifier = ''
+
 // Minimal fake GitHub OAuth client
 function makeFakeGitHub(_login: string): GitHubOAuthClient {
   return {
-    createAuthorizationURL: (state: string, _scopes: string[]) =>
-      new URL(`https://github.com/login/oauth/authorize?state=${state}`),
-    validateAuthorizationCode: async (_code: string) => ({
-      accessToken: () => 'fake-access-token',
-    }),
+    createAuthorizationURL: (state: string, _scopes: string[], codeChallenge: string) =>
+      new URL(
+        `https://github.com/login/oauth/authorize?state=${state}&code_challenge=${codeChallenge}&code_challenge_method=S256`,
+      ),
+    validateAuthorizationCode: async (_code: string, codeVerifier: string) => {
+      lastCodeVerifier = codeVerifier
+      return {
+        accessToken: () => 'fake-access-token',
+      }
+    },
   }
 }
 
@@ -69,16 +77,68 @@ async function runOAuthFlow(
 ): Promise<{loginRes: Response; callbackRes: Response}> {
   const loginRes = await loginRequest()
   const stateCookieValue = extractCookieValue(getSetCookie(loginRes, 'oauth_state') ?? '')
+  const verifierCookieValue = extractCookieValue(getSetCookie(loginRes, 'oauth_verifier') ?? '')
   const location = loginRes.headers.get('location') ?? ''
   const stateParam = new URL(location).searchParams.get('state') ?? ''
   const callbackRes = await app.request(
     `${callbackUrlPrefix}/auth/callback?code=fake-code&state=${stateParam}`,
     {
-      headers: {cookie: `oauth_state=${stateCookieValue}`, ...callbackHeaders},
+      headers: {
+        cookie: `oauth_state=${stateCookieValue}; oauth_verifier=${verifierCookieValue}`,
+        ...callbackHeaders,
+      },
     },
   )
   return {loginRes, callbackRes}
 }
+
+describe('PKCE (rm-149): RFC 7636 S256 authorization hardening', () => {
+  it('login sets oauth_verifier cookie (HttpOnly, SameSite=Lax, path=/auth, 10-min TTL)', async () => {
+    const app = await buildTestApp({operatorLogin: 'octocat'})
+    const res = await app.request('/auth/login')
+    const verifierCookie = getSetCookie(res, 'oauth_verifier')
+    expect(verifierCookie).toBeDefined()
+    expect(verifierCookie?.toLowerCase()).toContain('httponly')
+    expect(verifierCookie?.toLowerCase()).toContain('samesite=lax')
+    expect(verifierCookie?.toLowerCase()).toContain('path=/auth')
+    expect(verifierCookie?.toLowerCase()).toContain('max-age=600')
+  })
+
+  it('login redirect carries an S256 challenge bound to the verifier cookie', async () => {
+    const app = await buildTestApp({operatorLogin: 'octocat'})
+    const res = await app.request('/auth/login')
+    const verifier = extractCookieValue(getSetCookie(res, 'oauth_verifier') ?? '')
+    expect(verifier).toMatch(/^[A-Za-z0-9_-]{43}$/)
+
+    const location = new URL(res.headers.get('location') ?? '')
+    expect(location.searchParams.get('code_challenge_method')).toBe('S256')
+    expect(location.searchParams.get('code_challenge')).toBe(
+      createHash('sha256').update(verifier).digest('base64url'),
+    )
+  })
+
+  it('callback forwards the verifier cookie value to the token exchange', async () => {
+    const app = await buildTestApp({operatorLogin: 'octocat', githubLogin: 'octocat'})
+    const {callbackRes} = await runOAuthFlow(app, () => app.request('/auth/login'), {})
+
+    expect(callbackRes.status).toBe(302)
+    expect(lastCodeVerifier).toMatch(/^[A-Za-z0-9_-]{43}$/)
+  })
+
+  it('callback rejects with 403 when the verifier cookie is missing', async () => {
+    const app = await buildTestApp({operatorLogin: 'octocat'})
+    const loginRes = await app.request('/auth/login')
+    const stateCookieValue = extractCookieValue(getSetCookie(loginRes, 'oauth_state') ?? '')
+    const location = loginRes.headers.get('location') ?? ''
+    const stateParam = new URL(location).searchParams.get('state') ?? ''
+
+    const callbackRes = await app.request(`/auth/callback?code=fake-code&state=${stateParam}`, {
+      headers: {cookie: `oauth_state=${stateCookieValue}`},
+    })
+
+    expect(callbackRes.status).toBe(403)
+  })
+})
 
 describe('auth middleware', () => {
   describe('/healthz is public', () => {
@@ -398,9 +458,9 @@ describe('OAuth flow', () => {
         operatorLogin: 'octocat',
         cookieKey: TEST_KEY,
         oauthClient: {
-          createAuthorizationURL: (state: string, _scopes: string[]) =>
+          createAuthorizationURL: (state: string, _scopes: string[], _codeChallenge: string) =>
             new URL(`https://github.com/login/oauth/authorize?state=${state}`),
-          validateAuthorizationCode: async (_code: string) => {
+          validateAuthorizationCode: async (_code: string, _codeVerifier: string) => {
             throw new Error('exchange failed')
           },
         },
@@ -413,11 +473,12 @@ describe('OAuth flow', () => {
       const loginRes = await app.request('/auth/login')
       const stateCookieHeader = getSetCookie(loginRes, 'oauth_state') ?? ''
       const stateCookieValue = extractCookieValue(stateCookieHeader)
+      const verifierCookieValue = extractCookieValue(getSetCookie(loginRes, 'oauth_verifier') ?? '')
       const location = loginRes.headers.get('location') ?? ''
       const stateParam = new URL(location).searchParams.get('state') ?? ''
 
       const res = await app.request(`/auth/callback?code=auth-code&state=${stateParam}`, {
-        headers: {cookie: `oauth_state=${stateCookieValue}`},
+        headers: {cookie: `oauth_state=${stateCookieValue}; oauth_verifier=${verifierCookieValue}`},
       })
 
       expect(res.status).toBe(401)
@@ -747,7 +808,7 @@ describe('makeGitHubOAuthClient', () => {
       'https://dashboard.example.com/auth/callback',
     )
 
-    const url = client.createAuthorizationURL('state value', ['read:user', 'repo:status'])
+    const url = client.createAuthorizationURL('state value', ['read:user', 'repo:status'], 'E9Melhoa2OwtkFrNNLxV1zDGzGgt0xJ8v')
 
     expect(url.origin).toBe('https://github.com')
     expect(url.pathname).toBe('/login/oauth/authorize')
@@ -757,6 +818,8 @@ describe('makeGitHubOAuthClient', () => {
       state: 'state value',
       scope: 'read:user repo:status',
       response_type: 'code',
+      code_challenge: 'E9Melhoa2OwtkFrNNLxV1zDGzGgt0xJ8v',
+      code_challenge_method: 'S256',
     })
   })
 
@@ -784,6 +847,7 @@ describe('makeGitHubOAuthClient', () => {
         new URLSearchParams({
           client_id: clientId,
           code,
+          code_verifier: 'E9Melhoa2OwtkFrNNLxV1zDGzGgt0xJ8v',
           redirect_uri: redirectURI,
           grant_type: 'authorization_code',
         }).toString(),
@@ -792,7 +856,7 @@ describe('makeGitHubOAuthClient', () => {
     }
 
     try {
-      const result = await client.validateAuthorizationCode(code)
+      const result = await client.validateAuthorizationCode(code, 'E9Melhoa2OwtkFrNNLxV1zDGzGgt0xJ8v')
       expect(result.accessToken()).toBe(token)
     } finally {
       globalThis.fetch = originalFetch
@@ -812,7 +876,7 @@ describe('makeGitHubOAuthClient', () => {
     }
 
     try {
-      const result = client.validateAuthorizationCode(code)
+      const result = client.validateAuthorizationCode(code, 'test-verifier')
       await expect(result).rejects.toThrow('GitHub OAuth token request failed')
       await expect(result).rejects.not.toThrow(clientSecret)
       await expect(result).rejects.not.toThrow(code)
@@ -835,7 +899,7 @@ describe('makeGitHubOAuthClient', () => {
     }
 
     try {
-      const result = client.validateAuthorizationCode(code)
+      const result = client.validateAuthorizationCode(code, 'test-verifier')
       await expect(result).rejects.toThrow('GitHub OAuth token request failed')
       await expect(result).rejects.not.toThrow(clientSecret)
       await expect(result).rejects.not.toThrow(code)
@@ -862,7 +926,7 @@ describe('makeGitHubOAuthClient', () => {
       })
 
     try {
-      const result = client.validateAuthorizationCode(code)
+      const result = client.validateAuthorizationCode(code, 'test-verifier')
       await expect(result).rejects.toThrow('bad_verification_code')
       await expect(result).rejects.not.toThrow(clientSecret)
       await expect(result).rejects.not.toThrow(code)
@@ -883,7 +947,7 @@ describe('makeGitHubOAuthClient', () => {
     globalThis.fetch = async () => new Response(clientSecret, {status: 200})
 
     try {
-      const result = client.validateAuthorizationCode(code)
+      const result = client.validateAuthorizationCode(code, 'test-verifier')
       await expect(result).rejects.toThrow('GitHub OAuth token response was not valid JSON')
       await expect(result).rejects.not.toThrow(clientSecret)
       await expect(result).rejects.not.toThrow(code)
@@ -905,7 +969,7 @@ describe('makeGitHubOAuthClient', () => {
       Response.json({error: 'bad_verification_code', access_token: token})
 
     try {
-      await expect(client.validateAuthorizationCode(code)).rejects.toThrow('bad_verification_code')
+      await expect(client.validateAuthorizationCode(code, 'test-verifier')).rejects.toThrow('bad_verification_code')
     } finally {
       globalThis.fetch = originalFetch
     }
@@ -923,7 +987,7 @@ describe('makeGitHubOAuthClient', () => {
     try {
       let message = ''
       try {
-        await client.validateAuthorizationCode(code)
+        await client.validateAuthorizationCode(code, 'test-verifier')
       } catch (error) {
         message = error instanceof Error ? error.message : ''
       }
@@ -945,7 +1009,7 @@ describe('makeGitHubOAuthClient', () => {
     globalThis.fetch = async () => Response.json({error: 42, access_token: token})
 
     try {
-      const result = client.validateAuthorizationCode(code)
+      const result = client.validateAuthorizationCode(code, 'test-verifier')
       await expect(result).rejects.toThrow('GitHub OAuth token exchange failed')
       await expect(result).rejects.not.toThrow('42')
       await expect(result).rejects.not.toThrow(clientSecret)
@@ -967,7 +1031,7 @@ describe('makeGitHubOAuthClient', () => {
     globalThis.fetch = async () => new Response(null, {status: 502})
 
     try {
-      const result = client.validateAuthorizationCode(code)
+      const result = client.validateAuthorizationCode(code, 'test-verifier')
       await expect(result).rejects.toThrow('502')
       await expect(result).rejects.not.toThrow(clientSecret)
       await expect(result).rejects.not.toThrow(code)
@@ -988,7 +1052,7 @@ describe('makeGitHubOAuthClient', () => {
     globalThis.fetch = async () => Response.json({scope: 'read:user'})
 
     try {
-      const result = client.validateAuthorizationCode(code)
+      const result = client.validateAuthorizationCode(code, 'test-verifier')
       await expect(result).rejects.toThrow(TypeError)
       await expect(result).rejects.not.toThrow(clientSecret)
       await expect(result).rejects.not.toThrow(code)
@@ -1009,7 +1073,7 @@ describe('makeGitHubOAuthClient', () => {
     globalThis.fetch = async () => Response.json({access_token: ''})
 
     try {
-      const result = client.validateAuthorizationCode(code)
+      const result = client.validateAuthorizationCode(code, 'test-verifier')
       await expect(result).rejects.toThrow(TypeError)
       await expect(result).rejects.not.toThrow(clientSecret)
       await expect(result).rejects.not.toThrow(code)
@@ -1030,7 +1094,7 @@ describe('makeGitHubOAuthClient', () => {
     globalThis.fetch = async () => Response.json({access_token: token}, {status: 201})
 
     try {
-      const result = client.validateAuthorizationCode(code)
+      const result = client.validateAuthorizationCode(code, 'test-verifier')
       await expect(result).rejects.toThrow('201')
       await expect(result).rejects.not.toThrow(clientSecret)
       await expect(result).rejects.not.toThrow(code)

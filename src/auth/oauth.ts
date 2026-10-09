@@ -29,8 +29,11 @@ const GITHUB_FETCH_TIMEOUT_MS = 10_000
  * Uses function property style (not shorthand method signatures) per lint rules.
  */
 export interface GitHubOAuthClient {
-  readonly createAuthorizationURL: (state: string, scopes: string[]) => URL
-  readonly validateAuthorizationCode: (code: string) => Promise<{accessToken: () => string}>
+  readonly createAuthorizationURL: (state: string, scopes: string[], codeChallenge: string) => URL
+  readonly validateAuthorizationCode: (
+    code: string,
+    codeVerifier: string,
+  ) => Promise<{accessToken: () => string}>
 }
 
 /**
@@ -46,7 +49,7 @@ export function makeGitHubOAuthClient(
   redirectURI: string,
 ): GitHubOAuthClient {
   return {
-    createAuthorizationURL: (state: string, scopes: string[]): URL => {
+    createAuthorizationURL: (state: string, scopes: string[], codeChallenge: string): URL => {
       const url = new URL('https://github.com/login/oauth/authorize')
       url.search = new URLSearchParams({
         client_id: clientId,
@@ -54,10 +57,17 @@ export function makeGitHubOAuthClient(
         state,
         scope: scopes.join(' '),
         response_type: 'code',
+        // rm-149: RFC 7636 PKCE — S256 only; GitHub binds the authorization
+        // code to this challenge and rejects the exchange without the verifier.
+        code_challenge: codeChallenge,
+        code_challenge_method: 'S256',
       }).toString()
       return url
     },
-    validateAuthorizationCode: async (code: string): Promise<{accessToken: () => string}> => {
+    validateAuthorizationCode: async (
+      code: string,
+      codeVerifier: string,
+    ): Promise<{accessToken: () => string}> => {
       let res: Response
       try {
         res = await fetch('https://github.com/login/oauth/access_token', {
@@ -73,6 +83,9 @@ export function makeGitHubOAuthClient(
             code,
             redirect_uri: redirectURI,
             grant_type: 'authorization_code',
+            // rm-149: RFC 7636 PKCE — the verifier proves this client
+            // initiated the authorization the code was issued for.
+            code_verifier: codeVerifier,
           }).toString(),
           redirect: 'error',
           signal: AbortSignal.timeout(GITHUB_FETCH_TIMEOUT_MS),

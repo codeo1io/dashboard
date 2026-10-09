@@ -169,3 +169,31 @@ describe('listener store', () => {
     expect(() => store.close()).not.toThrow()
   })
 })
+
+describe('listener store corruption tolerance (rm-187)', () => {
+  it('degrades a corrupt links cell to an empty list instead of failing the read', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'listener-corrupt-'))
+    const dbPath = join(dir, 'listener.db')
+    const store = createListenerStore(dbPath)
+    const {id} = store.insert({
+      source: 'agent',
+      kind: 'run.phase',
+      severity: 'info',
+      title: 'Corrupt links row',
+      body: 'body',
+      links: [],
+      dedupeKey: 'corrupt-links',
+      createdAt: '2026-01-01T00:00:00Z',
+    })
+
+    const db = new DatabaseSync(dbPath)
+    db.prepare('UPDATE messages SET links = ? WHERE id = ?').run('not-json{', id)
+    db.close()
+
+    const response = store.list({limit: 10})
+    expect(response.messages).toHaveLength(1)
+    expect(response.messages[0]?.title).toBe('Corrupt links row')
+    expect(response.messages[0]?.links).toEqual([])
+    store.close()
+  })
+})

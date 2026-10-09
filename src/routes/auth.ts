@@ -15,7 +15,7 @@
 import type {GitHubOAuthClient} from '../auth/oauth.ts'
 import type {SessionManager} from '../session.ts'
 import {Buffer} from 'node:buffer'
-import {createHmac, randomBytes, timingSafeEqual} from 'node:crypto'
+import {createHash, createHmac, randomBytes, timingSafeEqual} from 'node:crypto'
 import {Hono} from 'hono'
 import {deleteCookie, getCookie, setCookie} from 'hono/cookie'
 import {logger, sanitizeErrorMessage} from '../logger.ts'
@@ -26,6 +26,13 @@ const STATE_COOKIE_MAX_AGE = 10 * 60
 
 /** Name of the OAuth state cookie */
 const STATE_COOKIE_NAME = 'oauth_state'
+
+/**
+ * rm-149: Name of the RFC 7636 PKCE verifier cookie. Attributes and lifetime
+ * mirror `oauth_state` exactly — the verifier is consumed (and the cookie
+ * deleted) at the same callback stage as the state cookie.
+ */
+const PKCE_COOKIE_NAME = 'oauth_verifier'
 
 /** Name of the session cookie */
 const SESSION_COOKIE_NAME = 'session'
@@ -72,6 +79,13 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
   router.get('/login', c => {
     const state = randomBytes(16).toString('hex')
 
+    // rm-149: RFC 7636 PKCE (S256). 32 random bytes, base64url-encoded —
+    // 43 chars, inside the 43..128 verifier range of §4.1. The plain-text
+    // verifier never leaves the Set-Cookie header (HttpOnly, path=/auth);
+    // only its SHA-256 digest travels in the authorize redirect.
+    const verifier = randomBytes(32).toString('base64url')
+    const codeChallenge = createHash('sha256').update(verifier).digest('base64url')
+
     // Store state in a short-TTL HttpOnly cookie scoped to /auth (only read on /auth/callback).
     // CSRF check compares query param state vs cookie state (exact match).
     //
@@ -98,7 +112,18 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
       path: '/auth',
     })
 
-    const authURL = oauthClient.createAuthorizationURL(state, ['read:user'])
+    // rm-149: PKCE verifier cookie — same attributes/lifetime/scope as the
+    // state cookie (both are one-time handshake values consumed by
+    // /auth/callback; neither survives past the 10-minute window).
+    setCookie(c, PKCE_COOKIE_NAME, verifier, {
+      httpOnly: true,
+      secure: c.req.url.startsWith('https://') || c.req.header('x-forwarded-proto') === 'https',
+      sameSite: 'Lax',
+      maxAge: STATE_COOKIE_MAX_AGE,
+      path: '/auth',
+    })
+
+    const authURL = oauthClient.createAuthorizationURL(state, ['read:user'], codeChallenge)
     return c.redirect(authURL.toString(), 302)
   })
 
@@ -139,10 +164,21 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
     // Clear the state cookie immediately (one-time use)
     deleteCookie(c, STATE_COOKIE_NAME, {path: '/auth'})
 
+    // rm-149: PKCE — the verifier cookie is consumed with the state cookie.
+    // Its presence is a local handshake precondition (only /auth/login on
+    // this browser could have set it, scoped path=/auth); the cryptographic
+    // verifier↔challenge binding is enforced by GitHub at the exchange.
+    const verifier = getCookie(c, PKCE_COOKIE_NAME)
+    deleteCookie(c, PKCE_COOKIE_NAME, {path: '/auth'})
+    if (typeof verifier !== 'string' || verifier.length === 0) {
+      logger.warning('OAuth callback: missing PKCE verifier cookie')
+      return c.text('Forbidden: missing PKCE verifier', 403)
+    }
+
     // Exchange code for access token
     let accessToken: string
     try {
-      const tokens = await oauthClient.validateAuthorizationCode(code)
+      const tokens = await oauthClient.validateAuthorizationCode(code, verifier)
       accessToken = tokens.accessToken()
     } catch (error) {
       logger.error('OAuth callback: token exchange failed', {error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error))})
