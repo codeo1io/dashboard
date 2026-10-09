@@ -54,8 +54,10 @@ function collectContextSources(dockerfileText: string): CopySource[] {
 // cross-checks that no Dockerfile context source is excluded (the
 // `COPY web/` + build-in-image + `--from=builder` shape must stay copyable).
 // NOTE: the matcher implements the subset of pattern shapes this file uses
-// (literal paths, `*` wildcards, `!` negations) — it is a regression guard, not
-// a dockerignore spec implementation.
+// (literal paths, `*` wildcards, `!` negations, and — since rm-789 — a
+// leading `**/` any-depth prefix) with REAL anchoring semantics: slash-free
+// patterns match context-root entries only. It is a regression guard, not a
+// full dockerignore spec implementation.
 
 function parseDockerignore(text: string): {ignores: string[]; negations: string[]} {
   const ignores: string[] = []
@@ -80,21 +82,28 @@ function patternToRegExp(pattern: string): RegExp {
 }
 
 function isExcludedBy(path: string, {ignores, negations}: {ignores: string[]; negations: string[]}): boolean {
-  // dockerignore semantics: a pattern with no '/' matches at ANY path level
-  // (so unanchored `node_modules` also excludes `web/node_modules`, and
-  // `test-results` also excludes `web/test-results`). Test the full path, the
-  // first segment, and every individual component. rm-242: the nested case is
-  // now asserted, not just assumed.
-  const segments = path.split('/')
-  const candidates = [path, segments[0] ?? path, ...segments]
-  for (const candidate of candidates) {
-    for (const pattern of ignores) {
-      if (!patternToRegExp(pattern).test(candidate)) continue
-      const unignored = negations.some(negation => patternToRegExp(negation).test(candidate))
-      if (!unignored) return true
-    }
+  // Real dockerignore anchoring (rm-789, 2026-10-09): patterns are matched
+  // against the path relative to the context root. A slash-free pattern
+  // matches ONLY a root-level entry — `node_modules` does NOT match
+  // `web/node_modules` (verified live against a real daemon 2026-10-09,
+  // run cb1890443b05: nested copies shipped while root entries sealed fine).
+  // A path pattern (`web/dist`) anchors to its subtree, and a leading `**/`
+  // opts the pattern into matching at any depth. The pre-rm-789 matcher
+  // tested every path component — semantics real Docker does not have —
+  // which made the rm-242 nested acceptance vacuous (ROADMAP rm-186 / rm-242
+  // correction riders, 2026-10-09).
+  const anchored = (candidate: string, pattern: string): boolean => {
+    const re = patternToRegExp(pattern)
+    return re.test(candidate) || candidate.startsWith(`${pattern}/`)
   }
-  return false
+  const suffixes = path.split('/').map((_segment, index) => path.split('/').slice(index).join('/'))
+  const matches = (pattern: string): boolean => {
+    if (!pattern.startsWith('**/')) return anchored(path, pattern)
+    const rest = pattern.slice(3)
+    return rest !== '' && suffixes.some(suffix => anchored(suffix, rest))
+  }
+  if (negations.some(matches)) return false
+  return ignores.some(matches)
 }
 
 describe('Dockerfile build-context validity (rm-132)', () => {
@@ -121,33 +130,69 @@ describe('Dockerfile build-context validity (rm-132)', () => {
 
 describe('Docker build-context seal (rm-186)', () => {
   const dockerignorePath = resolve(repoRoot, '.dockerignore')
-  const requiredSecurityEntries = ['.git', 'node_modules', '.env*', '*.pem', '*.key']
+  const requiredSecurityEntries = ['.git', '**/node_modules', '**/.env*', '**/*.pem', '**/*.key']
   // rm-242: locally generated test-runner/pnpm artifacts must never reach the
-  // build context. Unanchored entries so nested copies (web/…) match too.
-  const requiredArtifactEntries = ['test-results', 'playwright-report', '.pnpm-store']
+  // build context. rm-789 (2026-10-09): entries are `**/`-anchored — dockerignore
+  // slash-free patterns are root-anchored and never sealed nested copies
+  // (web/…), which the pre-rm-789 matcher wrongly asserted they did.
+  const requiredArtifactEntries = ['**/test-results', '**/playwright-report', '**/.pnpm-store']
 
   it('.dockerignore exists in the repo root', () => {
     expect(existsSync(dockerignorePath)).toBe(true)
   })
 
-  it('keeps the minimal security entry set (.git, node_modules, .env*, *.pem, *.key)', () => {
+  it('keeps the minimal security entry set (.git, **/node_modules, **/.env*, **/*.pem, **/*.key)', () => {
     const {ignores} = parseDockerignore(readFileSync(dockerignorePath, 'utf8'))
     const missing = requiredSecurityEntries.filter(entry => !ignores.includes(entry))
     expect(missing).toEqual([])
   })
 
-  it('keeps the test-runner artifact entry set (test-results, playwright-report, .pnpm-store) — rm-242', () => {
+  it('keeps the test-runner artifact entry set (**/test-results, **/playwright-report, **/.pnpm-store) — rm-242/rm-789', () => {
     const {ignores} = parseDockerignore(readFileSync(dockerignorePath, 'utf8'))
     const missing = requiredArtifactEntries.filter(entry => !ignores.includes(entry))
     expect(missing).toEqual([])
   })
 
-  it('artifact entries actually seal nested copies (web/test-results is excluded) — rm-242', () => {
+  it('artifact entries actually seal nested copies (web/test-results is excluded) — rm-242/rm-789', () => {
     const seal = parseDockerignore(readFileSync(dockerignorePath, 'utf8'))
     for (const entry of requiredArtifactEntries) {
       expect(isExcludedBy(entry, seal), `root ${entry}/ must be excluded`).toBe(true)
-      expect(isExcludedBy(`web/${entry}`, seal), `nested web/${entry}/ must be excluded (unanchored pattern)`).toBe(true)
+      expect(isExcludedBy(`web/${entry}`, seal), `nested web/${entry}/ must be excluded (**/-anchored pattern)`).toBe(true)
     }
+  })
+
+  it('slash-free entries do NOT seal nested copies — the pre-rm-789 failure mode, pinned — rm-789', () => {
+    // Red-first pin: against a seal whose entries lack the `**/` anchor (the
+    // .dockerignore shape before rm-789), real dockerignore semantics leave
+    // nested copies IN the context. The old any-level matcher called these
+    // excluded — vacuously — which is exactly how web/node_modules shipped to
+    // a live daemon on 2026-10-09 (run cb1890443b05 assess).
+    const preRm789Seal = parseDockerignore(
+      ['node_modules', 'test-results', 'playwright-report', '.pnpm-store', '.env*', '*.pem', '*.key'].join('\n'),
+    )
+    for (const nested of ['web/node_modules', 'web/test-results', 'web/.env.local', 'web/server.pem']) {
+      expect(isExcludedBy(nested, preRm789Seal), `${nested} must NOT be sealed by a slash-free seal`).toBe(false)
+    }
+    for (const root of ['node_modules', '.env.local', 'server.pem']) {
+      expect(isExcludedBy(root, preRm789Seal), `root ${root} stays sealed`).toBe(true)
+    }
+  })
+
+  it('secrets-class nested copies stay out of the context (web/.env*, web/*.pem, web/*.key) — rm-789', () => {
+    const seal = parseDockerignore(readFileSync(dockerignorePath, 'utf8'))
+    for (const nested of ['web/.env.local', 'web/.env.production', 'web/certs/server.pem', 'web/certs/cookie.key']) {
+      expect(isExcludedBy(nested, seal), `${nested} must be excluded (**/-anchored secrets entries)`).toBe(true)
+    }
+  })
+
+  it('matcher anchoring units — root-anchored, **/-any-depth, path-anchored subtree — rm-789', () => {
+    const seal = parseDockerignore(['**/node_modules', 'web/dist', '*.md', '!README.md'].join('\n'))
+    expect(isExcludedBy('node_modules/pkg/index.js', seal)).toBe(true)
+    expect(isExcludedBy('web/node_modules/pkg/index.js', seal)).toBe(true)
+    expect(isExcludedBy('web/dist/assets/index.js', seal)).toBe(true)
+    expect(isExcludedBy('dist/assets/index.js', seal)).toBe(false)
+    expect(isExcludedBy('CHANGELOG.md', seal)).toBe(true)
+    expect(isExcludedBy('README.md', seal)).toBe(false)
   })
 
   it('never excludes a Dockerfile COPY/ADD source from the build context', () => {

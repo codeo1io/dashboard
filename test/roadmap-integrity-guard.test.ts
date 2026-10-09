@@ -79,7 +79,13 @@ describe('rm-678 schema half: live ledger', () => {
     // folds by content into the landed rm-698 trixie re-pin
     // (a94d0659 via ad8f21e), its def dying with the fold, so
     // the max def id is unchanged at 744 (237 defs).
-    expect(live.max).toBe(744)
+    // 2026-10-09 bump (repository-maintenance cycle:3 run
+    // cb1890443b05 roadmap 04a7e44f): this extension mints rm-788
+    // + rm-789 above the all-lineage def-line frontier rm-787
+    // (live sibling-worktree re-probe same day), so live.max moves
+    // 744 -> 789 (239 defs); census re-derived first-hand with
+    // scripts/roadmap-census.ts against the edited tree.
+    expect(live.max).toBe(789)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
