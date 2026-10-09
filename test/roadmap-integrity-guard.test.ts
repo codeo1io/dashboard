@@ -79,76 +79,29 @@ describe('rm-678 schema half: live ledger', () => {
     // folds by content into the landed rm-698 trixie re-pin
     // (a94d0659 via ad8f21e), its def dying with the fold, so
     // the max def id is unchanged at 744 (237 defs).
-    // 2026-10-09 integrate of run c026a644 (conflict case
-    // 46431058): that run's parallel port of the SAME upstream
-    // #570 minted rm-694 (the fourth parallel lineage, candidate
-    // only — its implement batch delivered rm-708/rm-709), deduped
-    // into rm-744 the same way, its def dying with the fold —
-    // while its rm-693 (push inactive-reason ladder, candidate),
-    // rm-708 (release.yaml END-block readback cure, byte-convergent
-    // with landed rm-691: one fix, two lineage ids per the
-    // rm-166/178 pattern, release.yaml net-diff-empty at the
-    // merge) and rm-709 (detailsUrl https-only boundary) land
-    // as-authored below the pin, so the max def id is unchanged
-    // at 744 (240 defs).
-    // 2026-10-08 extension #30 (run 788aa489c1d5): three mints above the
-    // all-lineage sibling ceiling rm-758 (745-750 5bd710d8, 751-754
-    // f266ce30, 755-758 double-claimed with divergent meanings by 89ebbf49
-    // and 9fd8bcad64a8 — reconcile by content at their integrates) —
-    // 235 → 238 defs, max rm-761.
-    // 2026-10-08 compound #12 (run 788aa489c1d5): one mint above the
-    // live-reprobed sibling ceiling rm-777 (392bad29b3d3 + a653567e at
-    // 768, c37a8576 at 771, 5bd710d8ff89 + 405e9004bd5a at 777) —
-    // 238 → 239 defs, max rm-778.
-    // 2026-10-09 integrate of run 788aa489c1d5 (conflict case
-    // 366f6059, integration 79dc3dcaec7b): that run was authored at
-    // base 9aceea8 (235 defs) while main moved through the 6277460e
-    // and c026a644 integrations — the two mints stacks above are
-    // the run's at-write counts against its own base, preserved
-    // verbatim. All four of its defs (rm-759 snapshot read-before-
-    // bound gate, rm-760 soak-cut dep refresh, rm-761 pnpm/action-
-    // setup re-pin, rm-778 conductor/ci-* stale-ref sweep) are
-    // collision-free against the landed ledger (main's additions
-    // all sit at/below rm-744) and land as-authored, so the union
-    // census is 240 + 4 = 244 defs with the ceiling moving to
-    // rm-778 — pin 744 → 778 atomically with this landing
-    // (the assertion line itself is relocated below so the pin
-    // value stays single-sourced; the note's 778 is its at-write
-    // value, superseded by this case's 780 below).
-    // 2026-10-09 integrate of run 9289efaa (conflict case
-    // 139848e6): that run's single mint rm-703 (release.yaml
-    // digest-readback SIGPIPE -- the THIRD lineage id of the
-    // same cure beside landed rm-691 and landed rm-708, one
-    // fix per the rm-166/178 pattern, convergence rider on
-    // the def) lands as-authored BELOW the pin, so the max
-    // def id is unchanged at 778 (244 -> 245 defs) and no
-    // bump is owed; the batch's at-write 703 pin (its tree
-    // held 233 defs / max rm-703 at base 5aab7c7, the
-    // 693..702 bands then unintegrated) is superseded by
-    // this note -- those bands have since landed and
-    // reconciled by content (rm-693/694 via 46431058,
-    // rm-698 via ad8f21e, rm-700..702 via 76d683f2).
-    // 2026-10-09 run cbe70604 (roadmap 32cdbb96, ext #36) mints
-    // rm-779 (cve-tripwire NODE_IMAGE reconciliation) and rm-780
-    // (Monitoring/Listener view stale-surfacing) above the
-    // all-lineage in-flight ceiling rm-778 — census 239/0/780,
-    // pin bumped atomically with the mints (the run's at-write
-    // counts against its own base 559642a, 237 defs / max
-    // rm-744 — preserved verbatim per the 366f6059 precedent).
-    // 2026-10-09 integrate of run cbe70604 (conflict case
-    // e796bbf3, completed at its re-dispatch as case
-    // 543f1e72): the run was authored at base 559642a while
-    // main moved through the 788aa489c1d5 (case 366f6059) and
-    // 9289efaa (case 139848e6) integrations, landing at 245
-    // defs / max rm-778. Its two mints rm-779/rm-780 sit ABOVE
-    // that landed ceiling and are collision-free first-hand
-    // (the 788aa489 wall's 'next free rm-779' pointer minted
-    // nothing above rm-778; rm-779/rm-780 appear in no landed
-    // def line), so both land as-authored and the pin moves
-    // 778 -> 780 atomically with this landing: union census
-    // 245 + 2 = 247 defs / 0 dups / max rm-780, next free
-    // rm-781.
-    expect(live.max).toBe(780)
+    // 2026-10-09 at-write pin note of run c37a857620e1 (roadmap
+    // attempt d5f8451f136c43629a0e87e53fefb54c, kept verbatim as
+    // a dated record — its assertion is relocated to the single
+    // tail assertion below so the pin value stays single-sourced):
+    // max id as of extension #36 (2026-10-09, run c37a857620e14531abd6be2112004c60 roadmap d5f8451f136c43629a0e87e53fefb54c): minted rm-778 above the all-lineage frontier (sibling walls through 769, PR #444 head 709, foreign-fleet spool 795-855 excluded, 777 ceiling note honored)
+    // 2026-10-09 integrate of run c37a857620e1 (conflict case
+    // fb9de0fc): that run's single mint rm-778 (operator
+    // annotations drill-down, ext #36) is a TRUE COLLISION —
+    // landed rm-778 (run 788aa489c1d5's conductor/ci-* stale-ref
+    // sweep, landed via case 366f6059) owns the id, so the
+    // d00d095 renumber convention applies (the run could not see
+    // the collision: the 788aa489 wall was still unlanded at its
+    // compose, exactly the hazard the cbe70604 ext-#36 HAZARD map
+    // named): the def is renumbered rm-778 -> rm-781, the next
+    // free id above the landed ceiling rm-780, collision-free
+    // first-hand (rm-781 in no landed def line and no unlanded
+    // sibling wall). The batch also lands the cve-tripwire
+    // NODE_IMAGE cure (rm-689 payload 1) — one fix, parallel
+    // lineage ids with landed rm-779 per the rm-166/178 pattern,
+    // convergence rider on the rm-779 def. Union census
+    // 247 + 1 = 248 defs / 0 dups / max rm-781, next free rm-782:
+    // pin 780 -> 781 atomically with the renumber.
+    expect(live.max).toBe(781)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
