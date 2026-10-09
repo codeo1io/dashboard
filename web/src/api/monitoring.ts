@@ -56,6 +56,12 @@ function parseFailingCheckDetail(item: unknown): FailingCheckDetail | null {
   if (workflowTitle !== null && typeof workflowTitle !== 'string') return null
   if (runAttempt !== null && typeof runAttempt !== 'number') return null
   if (typeof checkName !== 'string' || typeof detailsUrl !== 'string') return null
+  // rm-781 U2 (detailsUrl https-only boundary): the server extraction seam
+  // (src/github/aggregator.ts) guarantees detailsUrl is https-or-'' because
+  // the value feeds an href sink in Monitoring.tsx — a non-https non-empty
+  // value means the server contract drifted, so fail closed (contract-drift
+  // drops the whole payload) rather than render an unvalidated URL.
+  if (detailsUrl !== '' && !detailsUrl.startsWith('https://')) return null
   return {workflowTitle, runAttempt, checkName, detailsUrl}
 }
 
