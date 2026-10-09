@@ -1,3 +1,4 @@
+import type {Buffer} from 'node:buffer'
 /**
  * Dashboard app factory + server binding.
  *
@@ -17,9 +18,9 @@ import type {GitHubOAuthClient} from './auth/oauth.ts'
 import type {OperatorClient, SessionDto} from './gateway/operator-client.ts'
 import type {GatewaySessionCache} from './gateway/session-cache.ts'
 import type {AggregatorSnapshot, SnapshotStore} from './github/aggregator.ts'
+import type {FetchCodeScanningAlertsFn} from './github/code-scanning.ts'
 import type {MetadataReader} from './github/metadata.ts'
 import type {ListenerStore} from './listener/store.ts'
-import {Buffer} from 'node:buffer'
 import {createHash} from 'node:crypto'
 import {existsSync, readFileSync, realpathSync, statSync} from 'node:fs'
 import {readFile} from 'node:fs/promises'
@@ -52,8 +53,11 @@ import {
   createInstallationGraphqlQueryFn,
   GITHUB_REQUEST_TIMEOUT_MS,
 } from './github/app-client.ts'
+import {createCodeScanningAlertsFetcher} from './github/code-scanning.ts'
+import {createConditionalContentCache} from './github/conditional-reads.ts'
+import {createMemoizedInstallationResolver} from './github/installation-resolution.ts'
 import {buildInstallationsClient, enumerateRepos, mintReadOnlyToken} from './github/installations.ts'
-import {makeNotFoundError, readRepoMetadata} from './github/metadata.ts'
+import {fetchMetadataContents, readRepoMetadata} from './github/metadata.ts'
 import {createFileSnapshotStore} from './github/snapshot-store.ts'
 import {readListenerDbPath, readListenerIngestKey} from './listener/config.ts'
 import {createListenerStore} from './listener/store.ts'
@@ -1385,6 +1389,12 @@ export interface SnapshotProviderDeps {
    */
   readonly resolveInstallationIdForRepo?: (owner: string, name: string) => Promise<number>
   /**
+   * Override the per-repo code-scanning alert fetch (rm-117). Default:
+   * createCodeScanningAlertsFetcher(getReadOnlyToken) — one REST call per
+   * repo per cycle behind the optional security_events read.
+   */
+  readonly fetchCodeScanningAlerts?: FetchCodeScanningAlertsFn
+  /**
    * Optional snapshot persistence (rm-198). Default: file-backed store at
    * `DASHBOARD_SNAPSHOT_CACHE` when that env is set, disabled otherwise.
    */
@@ -1423,21 +1433,34 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
    * Resolve the installation ID for a repo using the App JWT endpoint
    * GET /repos/{owner}/{repo}/installation — the only App-JWT endpoint valid
    * for this purpose (App JWT IS valid here per GitHub docs).
+   *
+   * rm-162: the PRODUCTION resolver is wrapped in a TTL memo with an explicit
+   * 404 invalidation path, so steady-state 60s cycles make zero resolver
+   * calls — the owner/name → installation_id mapping is effectively
+   * immutable (memo + matrix pinned in test/installation-resolution.test.ts;
+   * per-cycle call-count record in the rm-162 rider). A test-injected resolver
+   * rides through UNmemoized so server tests' call-count assertions keep
+   * their exact pre-rm-162 meaning.
    */
-  const resolveInstallationIdForRepo =
-    deps.resolveInstallationIdForRepo ??
-    (async (owner: string, name: string): Promise<number> => {
-      const response = await appClient.octokit.request('GET /repos/{owner}/{repo}/installation', {
-        owner,
-        repo: name,
-      })
-      const data = response.data as unknown as {id: number}
-      return data.id
+  const resolveInstallationIdForRepoWithAppJwt = async (owner: string, name: string): Promise<number> => {
+    const response = await appClient.octokit.request('GET /repos/{owner}/{repo}/installation', {
+      owner,
+      repo: name,
     })
+    const data = response.data as unknown as {id: number}
+    return data.id
+  }
+  const resolveInstallationIdForRepo =
+    deps.resolveInstallationIdForRepo ?? createMemoizedInstallationResolver(resolveInstallationIdForRepoWithAppJwt)
 
   // Real Octokit-backed metadata reader: fetches metadata/repos.yaml from
   // codeo1io/.github at ref=data via an INSTALLATION token (not App JWT).
   // The installation is resolved via resolveInstallationIdForRepo('codeo1io', '.github').
+  // rm-162: the contents GET is CONDITIONAL — provider-scoped ETag cache,
+  // If-None-Match on every read after the first, 304 → cached content
+  // unchanged (free against the primary rate limit). Body + 304 branch live
+  // in fetchMetadataContents (test/metadata-conditional.test.ts).
+  const metadataContentsCache = createConditionalContentCache(1)
   const metadataReader: MetadataReader =
     deps.metadataReader ??
     (async (path: string, ref: string): Promise<string> => {
@@ -1458,18 +1481,12 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
         auth: token,
         request: {timeout: GITHUB_REQUEST_TIMEOUT_MS, fetch: createBoundedFetch(GITHUB_REQUEST_TIMEOUT_MS)},
       })
-      const response = await installOctokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
-        owner: 'codeo1io',
-        repo: '.github',
+      return fetchMetadataContents(
+        async (route, params) => installOctokit.request(route, params),
+        metadataContentsCache,
         path,
         ref,
-      })
-      const data = response.data as unknown as {type: string; encoding: string; content: string}
-      if (data.type !== 'file' || data.encoding !== 'base64') {
-        throw makeNotFoundError(`${path} at ref=${ref} is not a base64-encoded file`)
-      }
-      // base64-decode the content (GitHub wraps at 60 chars with newlines)
-      return Buffer.from(data.content.replaceAll('\n', ''), 'base64').toString('utf8')
+      )
     })
 
   // Real per-installation graphql query function: mints a read-only token for
@@ -1487,6 +1504,7 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
     readMetadata: readRepoMetadata,
     graphqlQueryForInstallation: graphqlQueryFn,
     resolveInstallationIdForRepo,
+    fetchCodeScanningAlerts: deps.fetchCodeScanningAlerts ?? createCodeScanningAlertsFetcher(getReadOnlyToken),
     snapshotStore: deps.snapshotStore ?? createFileSnapshotStore(process.env.DASHBOARD_SNAPSHOT_CACHE),
   })
 

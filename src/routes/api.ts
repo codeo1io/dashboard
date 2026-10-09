@@ -1,4 +1,5 @@
 import type {AggregatorSnapshot, DashboardRepo, FailingCheckDetail, RepoCiStatus} from '../github/aggregator.ts'
+import type {CodeScanningAlertSummary} from '../github/code-scanning.ts'
 import {Hono} from 'hono'
 import {COLD_START_SNAPSHOT} from '../github/aggregator.ts'
 
@@ -30,6 +31,12 @@ interface MonitoringRepoStatusDto {
   readonly openPrCount: number
   readonly openIssueCount: number
   readonly openAlertCount: number | null
+  /**
+   * Open code-scanning alerts (rm-117): count + severity buckets ONLY —
+   * counts by construction, no alert content crosses this boundary. null =
+   * unavailable (optional security_events read absent / probe failed).
+   */
+  readonly openCodeScanningAlerts: CodeScanningAlertSummary | null
   readonly stale: boolean
 }
 
@@ -63,6 +70,7 @@ function toMonitoringRepoDto(repo: DashboardRepo): MonitoringRepoDto {
       openPrCount: repo.status.openPrCount,
       openIssueCount: repo.status.openIssueCount,
       openAlertCount: repo.status.openAlertCount,
+      openCodeScanningAlerts: repo.status.openCodeScanningAlerts,
       stale: repo.status.stale,
     },
   }
