@@ -41,6 +41,9 @@ function makeRepoRow(): DashboardRepo {
       openPrCount: 0,
       openIssueCount: 0,
       openAlertCount: null,
+      // Required since the cycle-1 batch's rm-117 widening (counts + buckets
+      // only — null matches every pre-rm-117 fixture by design).
+      openCodeScanningAlerts: null,
       stale: false,
       fetchedAt: 1234,
     },
