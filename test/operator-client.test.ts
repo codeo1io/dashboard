@@ -19,6 +19,7 @@ import type {
 } from '../src/gateway/operator-client.ts'
 import {describe, expect, it} from 'vitest'
 import {createOperatorClient, validateOperatorPath} from '../src/gateway/operator-client.ts'
+import {MAX_SSE_BUFFER_BYTES} from '../src/gateway/operator-sse-reader.ts'
 
 // ---------------------------------------------------------------------------
 // Minimal mock helpers
@@ -388,7 +389,7 @@ describe('launchRun', () => {
     expect(allLogged).not.toContain('SECRET_PROMPT_VALUE')
   })
 
-  it('route template logged is /operator/runs only (no dynamic segments)', async () => {
+  it('route templates logged are static only (no dynamic segments)', async () => {
     const loggedMeta: Record<string, unknown>[] = []
     const capturingLogger = {
       info: (_msg: string, meta?: Record<string, unknown>) => { if (meta) loggedMeta.push(meta) },
@@ -402,10 +403,258 @@ describe('launchRun', () => {
       logger: capturingLogger,
     })
     await client.launchRun(validRequest)
+    // rm-485: a 400 now also drives one csrf refresh, whose own 400 failure
+    // logs — both logged routes are static templates, which is the invariant
+    // under test (no dynamic segment ever leaks into a logged route).
     for (const meta of loggedMeta) {
       if (meta.route !== undefined) {
-        expect(meta.route).toBe('/operator/runs')
+        expect(meta.route === '/operator/runs' || meta.route === '/operator/session/csrf').toBe(true)
       }
+    }
+  })
+
+  // CSRF-400 retry (rm-485): one retry, with a REFRESHED csrf token, reusing
+  // the SAME idempotency key — parity with decideRunApproval's discipline.
+
+  it('retries once on CSRF-400 with a refreshed token, reusing the same idempotency key (rm-485)', async () => {
+    const launchCalls: {idemKey: string; csrf: string}[] = []
+    let csrfCalls = 0
+    let launchCount = 0
+    const client = createOperatorClient({
+      fetch: async (input, init) => {
+        const url = typeof input === 'string' ? input : String(input)
+        if (url === '/operator/session/csrf') {
+          csrfCalls++
+          return new Response(JSON.stringify({csrfToken: 'csrf-token-fresh'}), {
+            status: 200,
+            headers: {'content-type': 'application/json'},
+          })
+        }
+        launchCount++
+        const h = init?.headers as Record<string, string> | undefined
+        launchCalls.push({idemKey: h?.['idempotency-key'] ?? '', csrf: h?.['x-csrf-token'] ?? ''})
+        if (launchCount === 1) {
+          return new Response(JSON.stringify({error: 'csrf_invalid'}), {
+            status: 400,
+            headers: {'content-type': 'application/json'},
+          })
+        }
+        return new Response(JSON.stringify({runId: 'run-retried'}), {
+          status: 202,
+          headers: {'content-type': 'application/json'},
+        })
+      },
+      createEventStream: makeEventStream([]),
+    })
+    const result = await client.launchRun(validRequest)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.runId).toBe('run-retried')
+    }
+    expect(launchCount).toBe(2)
+    expect(csrfCalls).toBe(1)
+    expect(launchCalls[0]).toEqual({idemKey: 'idem-key-abc', csrf: 'csrf-token-xyz'})
+    // The retry carries the REFRESHED token but the SAME idempotency key
+    // (retry semantics, not a duplicate launch).
+    expect(launchCalls[1]).toEqual({idemKey: 'idem-key-abc', csrf: 'csrf-token-fresh'})
+  })
+
+  it('does not retry a second time on second 400 (no third attempt) (rm-485)', async () => {
+    let launchCount = 0
+    let csrfCalls = 0
+    const client = createOperatorClient({
+      fetch: async input => {
+        const url = typeof input === 'string' ? input : String(input)
+        if (url === '/operator/session/csrf') {
+          csrfCalls++
+          return new Response(JSON.stringify({csrfToken: 'csrf-token-fresh'}), {
+            status: 200,
+            headers: {'content-type': 'application/json'},
+          })
+        }
+        launchCount++
+        return new Response(JSON.stringify({error: 'csrf_invalid'}), {
+          status: 400,
+          headers: {'content-type': 'application/json'},
+        })
+      },
+      createEventStream: makeEventStream([]),
+    })
+    const result = await client.launchRun(validRequest)
+    expect(result.success).toBe(false)
+    if (!result.success && result.error.kind === 'http') {
+      expect(result.error.status).toBe(400)
+    } else {
+      throw new Error('expected http error with status 400')
+    }
+    expect(launchCount).toBe(2) // exactly 2: initial + one retry
+    expect(csrfCalls).toBe(1) // one refresh before the single retry
+  })
+
+  it('abandons the retry and surfaces the original 400 when the csrf refresh fails (rm-485)', async () => {
+    let launchCount = 0
+    const client = createOperatorClient({
+      fetch: async input => {
+        const url = typeof input === 'string' ? input : String(input)
+        if (url === '/operator/session/csrf') {
+          return new Response(JSON.stringify({error: 'unavailable'}), {
+            status: 503,
+            headers: {'content-type': 'application/json'},
+          })
+        }
+        launchCount++
+        return new Response(JSON.stringify({error: 'csrf_invalid'}), {
+          status: 400,
+          headers: {'content-type': 'application/json'},
+        })
+      },
+      createEventStream: makeEventStream([]),
+    })
+    const result = await client.launchRun(validRequest)
+    expect(result.success).toBe(false)
+    expect(launchCount).toBe(1) // no retry POST — the refresh failed first
+    // The caller sees the ORIGINAL 400, not the refresh transport error.
+    if (!result.success && result.error.kind === 'http') {
+      expect(result.error.status).toBe(400)
+    } else {
+      throw new Error('expected http error with status 400')
+    }
+  })
+
+  it('does not retry on non-400 errors (404 is not retried) (rm-485)', async () => {
+    let launchCount = 0
+    let csrfCalls = 0
+    const client = createOperatorClient({
+      fetch: async input => {
+        const url = typeof input === 'string' ? input : String(input)
+        if (url === '/operator/session/csrf') {
+          csrfCalls++
+          return new Response(JSON.stringify({csrfToken: 'csrf-token-fresh'}), {
+            status: 200,
+            headers: {'content-type': 'application/json'},
+          })
+        }
+        launchCount++
+        return new Response(JSON.stringify({error: 'not_found'}), {
+          status: 404,
+          headers: {'content-type': 'application/json'},
+        })
+      },
+      createEventStream: makeEventStream([]),
+    })
+    const result = await client.launchRun(validRequest)
+    expect(result.success).toBe(false)
+    if (!result.success && result.error.kind === 'http') {
+      expect(result.error.status).toBe(404)
+    } else {
+      throw new Error('expected http error with status 404')
+    }
+    expect(launchCount).toBe(1)
+    expect(csrfCalls).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// fetchJson response-size cap (rm-822)
+// ---------------------------------------------------------------------------
+
+describe('fetchJson response-size cap (rm-822)', () => {
+  it('rejects with response_too_large before reading when Content-Length exceeds the cap', async () => {
+    const overCap = String(MAX_SSE_BUFFER_BYTES + 1)
+    let bodyPulled = false
+    const oversized: OperatorClientOptions['fetch'] = async () => {
+      // pull-based stream with highWaterMark 0: pull runs only when a
+      // consumer actually demands a chunk, so bodyPulled=true would mean the
+      // fence failed to short-circuit before reading.
+      const body = new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            bodyPulled = true
+            controller.enqueue(new TextEncoder().encode('{"operatorId":42}'))
+            controller.close()
+          },
+        },
+        {highWaterMark: 0},
+      )
+      const response = new Response(body, {
+        status: 200,
+        headers: {'content-type': 'application/json', 'content-length': overCap},
+      })
+      // Precondition: the declared length survives Response construction.
+      expect(response.headers.get('content-length')).toBe(overCap)
+      return response
+    }
+    const client = createOperatorClient({fetch: oversized, createEventStream: makeEventStream([])})
+    const result = await client.getCurrentSession()
+    expect(result.success).toBe(false)
+    if (result.success) throw new Error('expected response_too_large error')
+    expect(result.error.kind).toBe('response_too_large')
+    if (result.error.kind === 'response_too_large') {
+      expect(result.error.bytes).toBe(MAX_SSE_BUFFER_BYTES + 1)
+      expect(result.error.cap).toBe(MAX_SSE_BUFFER_BYTES)
+    }
+    // The declared-length fence fired before any body byte was pulled.
+    expect(bodyPulled).toBe(false)
+  })
+
+  it('rejects with response_too_large when a lying Content-Length streams past the cap', async () => {
+    // Declares a tiny length; actually delivers enough chunks to cross the cap.
+    const chunk = new TextEncoder().encode('a'.repeat(Math.ceil((MAX_SSE_BUFFER_BYTES + 1) / 2)))
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(chunk)
+        controller.enqueue(chunk)
+        controller.enqueue(chunk)
+        controller.close()
+      },
+    })
+    const response = new Response(body, {
+      status: 200,
+      headers: {'content-type': 'application/json', 'content-length': '100'},
+    })
+    const client = createOperatorClient({
+      fetch: async () => response,
+      createEventStream: makeEventStream([]),
+    })
+    const result = await client.getCurrentSession()
+    expect(result.success).toBe(false)
+    if (result.success) throw new Error('expected response_too_large error')
+    expect(result.error.kind).toBe('response_too_large')
+    if (result.error.kind === 'response_too_large') {
+      // Crossed on the second chunk: the counter, not the header, fenced it.
+      expect(result.error.bytes).toBe(chunk.byteLength * 2)
+      expect(result.error.bytes).toBeGreaterThan(MAX_SSE_BUFFER_BYTES)
+      expect(result.error.cap).toBe(MAX_SSE_BUFFER_BYTES)
+    }
+  })
+
+  it('still parses a large-but-under-cap streamed response', async () => {
+    const payload = JSON.stringify({operatorId: 42, login: 'octocat', expiresAt: 4070908800000})
+    const target = MAX_SSE_BUFFER_BYTES - 100_000
+    const padded = ' '.repeat(target - payload.length) + payload
+    expect(padded.length).toBe(target) // ASCII payload: bytes === chars
+    const encoder = new TextEncoder()
+    const whole = encoder.encode(padded)
+    const mid = Math.floor(whole.byteLength / 2)
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(whole.slice(0, mid))
+        controller.enqueue(whole.slice(mid))
+        controller.close()
+      },
+    })
+    const response = new Response(body, {
+      status: 200,
+      headers: {'content-type': 'application/json'},
+    })
+    const client = createOperatorClient({
+      fetch: async () => response,
+      createEventStream: makeEventStream([]),
+    })
+    const result = await client.getCurrentSession()
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.operatorId).toBe(42)
     }
   })
 })

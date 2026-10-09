@@ -26,6 +26,7 @@ import type {PermissionReply} from './operator-contract/approval.ts'
 import type {OperatorCsrfToken, OperatorDecisionState, OperatorSessionInfo, OperatorWebStatus, PushSubscriptionMetadata, RepoSummary, RunStreamFrame, VapidKeyResponse} from './operator-contract/index.ts'
 import {err, ok} from '../result.ts'
 import {parseLaunchRunResponse, parseOperatorCsrfToken, parseOperatorSessionInfo, parsePushSubscriptionMetadata, parseRepoSummaryList, parseRunApprovalDecisionResponse, parseRunApprovalsResponse, parseRunSnapshotResponse, parseVapidKeyResponse} from './operator-contract/index.ts'
+import {MAX_SSE_BUFFER_BYTES} from './operator-sse-reader.ts'
 
 // ---------------------------------------------------------------------------
 // Run status union
@@ -219,7 +220,27 @@ export interface GatewayProtocolError {
   readonly message: string
 }
 
-export type GatewayClientError = GatewayHttpError | GatewayValidationError | GatewayNetworkError | GatewayProtocolError
+/**
+ * rm-822: a response body crossed the operator-client hard cap — either a
+ * declared Content-Length over MAX_SSE_BUFFER_BYTES (rejected before any byte
+ * is read) or a streamed body whose running byte count crossed it mid-read.
+ * Untrusted input on the operator path is size-bounded at SSE-reader parity;
+ * the error carries the fence's own numbers so callers and logs can tell a
+ * size verdict apart from a parse failure.
+ */
+export interface GatewayResponseTooLargeError {
+  readonly kind: 'response_too_large'
+  readonly route: string
+  readonly bytes: number
+  readonly cap: number
+}
+
+export type GatewayClientError =
+  | GatewayHttpError
+  | GatewayValidationError
+  | GatewayNetworkError
+  | GatewayProtocolError
+  | GatewayResponseTooLargeError
 
 // ---------------------------------------------------------------------------
 // Client interface
@@ -229,6 +250,14 @@ export interface OperatorClient {
   readonly getCurrentSession: () => Promise<Result<SessionDto, GatewayClientError>>
   readonly refreshCsrf: () => Promise<Result<CsrfDto, GatewayClientError>>
   readonly listRepos: () => Promise<Result<RepoSummary[], GatewayClientError>>
+  /**
+   * POST /operator/runs — launch a run.
+   * CSRF-protected + idempotency-key; one CSRF-400 retry with a refreshed
+   * session token reusing the SAME idempotency key (rm-485) — retry
+   * semantics, not a duplicate launch.
+   * Response bodies on this client are byte-capped at MAX_SSE_BUFFER_BYTES
+   * parity (rm-822).
+   */
   readonly launchRun: (req: LaunchRunRequest) => Promise<Result<LaunchRunResponse, GatewayClientError>>
   readonly getRunSnapshot: (runId: string) => Promise<Result<RunSnapshotDto, GatewayClientError>>
   readonly connectRunStream: (
@@ -442,6 +471,70 @@ function requireRequestId(requestId: string): GatewayValidationError | null {
 }
 
 // ---------------------------------------------------------------------------
+// rm-822 — response-body hard cap (untrusted-buffer parity with the SSE reader)
+// ---------------------------------------------------------------------------
+
+/** Parse Content-Length into non-negative bytes; null when absent or malformed. */
+function readDeclaredContentLengthBytes(headers: Headers): number | null {
+  const raw = headers.get('content-length')
+  if (raw === null) return null
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed) || parsed < 0) return null
+  return parsed
+}
+
+/**
+ * Read an ok-response body as UTF-8 text, counting raw chunk byteLength (not
+ * decoded characters — the SSE reader's UTF-8-bytes truth) and failing closed
+ * the moment the cap is crossed: a declared Content-Length over the cap
+ * rejects before any byte is read; a lying or absent one is caught by the
+ * running counter mid-stream and the reader is cancelled. A body-less
+ * response yields '' so JSON.parse reports it as a protocol error, matching
+ * the previous response.json() behavior.
+ */
+async function readBodyTextWithCap(
+  response: Response,
+  route: string,
+  logger?: Logger,
+): Promise<Result<string, GatewayResponseTooLargeError>> {
+  if (response.body == null) return ok('')
+  const declared = readDeclaredContentLengthBytes(response.headers)
+  if (declared !== null && declared > MAX_SSE_BUFFER_BYTES) {
+    try {
+      await response.body.cancel()
+    } catch {
+      // The body is already gone; the size verdict stands either way.
+    }
+    logger?.error('operator-client: response exceeded size cap (declared)', {route, declaredBytes: declared})
+    return err({kind: 'response_too_large', route, bytes: declared, cap: MAX_SSE_BUFFER_BYTES})
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let text = ''
+  let total = 0
+  while (true) {
+    // undici-types' ReadableStream is unparameterized (reader.read() yields
+    // `any`); assert the chunk shape at this boundary.
+    const {done, value} = (await reader.read()) as {done: boolean; value?: Uint8Array}
+    if (done) break
+    if (value === undefined) continue
+    total += value.byteLength
+    if (total > MAX_SSE_BUFFER_BYTES) {
+      try {
+        await reader.cancel()
+      } catch {
+        // The stream already ended or errored; the cap verdict stands.
+      }
+      logger?.error('operator-client: response exceeded size cap (streamed)', {route, streamedBytes: total})
+      return err({kind: 'response_too_large', route, bytes: total, cap: MAX_SSE_BUFFER_BYTES})
+    }
+    text += decoder.decode(value, {stream: true})
+  }
+  text += decoder.decode()
+  return ok(text)
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -485,8 +578,14 @@ export function createOperatorClient(options: OperatorClientOptions): OperatorCl
     if (response.ok) {
       let data: T
       try {
-        // response.json() returns unknown; cast to T at the boundary
-        const raw: unknown = await response.json()
+        // rm-822: bound the untrusted body before parsing — response.json()
+        // previously buffered arbitrarily large responses unbounded. A
+        // stream abort mid-read lands in the same catch as the old json()
+        // rejection: protocol error.
+        const bodyText = await readBodyTextWithCap(response, route, logger)
+        if (!bodyText.success) return bodyText
+        // JSON.parse returns unknown; cast to T at the boundary
+        const raw: unknown = JSON.parse(bodyText.data)
         data = raw as T
       } catch {
         const protocolErr: GatewayProtocolError = {
@@ -562,18 +661,43 @@ export function createOperatorClient(options: OperatorClientOptions): OperatorCl
       prompt: req.prompt,
     })
 
-    const raw = await fetchJson<unknown>('/operator/runs', '/operator/runs', {
-      method: 'POST',
-      redirect: 'error',
-      headers: {
-        'content-type': 'application/json',
-        'x-csrf-token': req.csrfToken,
-        'idempotency-key': req.idempotencyKey,
-      },
-      body,
-    })
-    if (!raw.success) return raw
-    const parsed = parseLaunchRunResponse(raw.data)
+    // rm-485: the same refresh-then-resend-once discipline the other mutating
+    // methods run (see decideRunApproval): a 400 here most likely means the
+    // CSRF token went stale between session fetch and this launch; re-sending
+    // the identical request can never succeed in that case, so the retry
+    // mints a fresh token via the csrf refresh route first and re-sends with
+    // the SAME idempotency key — retry semantics, not a duplicate launch. If
+    // the refresh itself fails, the original error surfaces to the caller.
+    const send = async (token: string) =>
+      fetchJson<unknown>('/operator/runs', '/operator/runs', {
+        method: 'POST',
+        redirect: 'error',
+        headers: {
+          'content-type': 'application/json',
+          'x-csrf-token': token,
+          'idempotency-key': req.idempotencyKey,
+        },
+        body,
+      })
+
+    const first = await send(req.csrfToken)
+
+    if (!first.success && first.error.kind === 'http' && first.error.status === 400) {
+      const refreshed = await refreshCsrf()
+      if (!refreshed.success) return first
+      const retried = await send(refreshed.data.csrfToken)
+      if (!retried.success) return retried
+      const parsedRetry = parseLaunchRunResponse(retried.data)
+      if (!parsedRetry.success) {
+        const protocolErr: GatewayProtocolError = {kind: 'protocol', message: 'Failed to parse run launch response'}
+        logger?.error('operator-client: run launch parse error', {route: '/operator/runs'})
+        return err(protocolErr)
+      }
+      return ok(parsedRetry.data)
+    }
+
+    if (!first.success) return first
+    const parsed = parseLaunchRunResponse(first.data)
     if (!parsed.success) {
       const protocolErr: GatewayProtocolError = {kind: 'protocol', message: 'Failed to parse run launch response'}
       logger?.error('operator-client: run launch parse error', {route: '/operator/runs'})
