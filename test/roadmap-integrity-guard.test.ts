@@ -148,7 +148,27 @@ describe('rm-678 schema half: live ledger', () => {
     // 778 -> 780 atomically with this landing: union census
     // 245 + 2 = 247 defs / 0 dups / max rm-780, next free
     // rm-781.
-    expect(live.max).toBe(780)
+    // max id as of extension #36 (2026-10-09, run c37a857620e14531abd6be2112004c60 roadmap d5f8451f136c43629a0e87e53fefb54c): minted rm-778 above the all-lineage frontier (sibling walls through 769, PR #444 head 709, foreign-fleet spool 795-855 excluded, 777 ceiling note honored)
+    // 2026-10-09 integrate of run c37a857620e1 (conflict case
+    // 1aaeb335247643e99119b4f67aa8d8f5): the run was authored at
+    // base 559642a (its at-write pin 778 note above, superseded)
+    // while main moved through the 788aa489c1d5 (case 366f6059),
+    // 9289efaa (case 139848e6) and cbe70604 (case e796bbf3)
+    // integrations, landing at 247 defs / max rm-780. Its single
+    // mint — the annotations drill-down def at-written rm-778 —
+    // COLLIDES with main's landed rm-778 (conductor/ci-* stale-ref
+    // sweep, run 788aa489c1d5 compound #12), and landed meanings
+    // own ids (d00d095), so the def renumbers rm-778 -> rm-781
+    // above the landed ceiling rm-780 (rm-779/rm-780 are
+    // cbe70604's landed mints; rm-781 unused in main and every
+    // run wall). Union census 247 + 1 = 248 defs / 0 dups / max
+    // rm-781, next free rm-782 — pin 780 -> 781 atomically with
+    // this landing. The batch's rm-689/rm-117 def flips land
+    // as-authored, and rm-779's name-family cure is delivered by
+    // this landing's rm-689 payload (1) content (convergence
+    // rider on the def; its runs-on / class-fence / fire-proof
+    // halves stay candidate).
+    expect(live.max).toBe(781)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
