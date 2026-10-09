@@ -79,7 +79,17 @@ describe('rm-678 schema half: live ledger', () => {
     // folds by content into the landed rm-698 trixie re-pin
     // (a94d0659 via ad8f21e), its def dying with the fold, so
     // the max def id is unchanged at 744 (237 defs).
-    expect(live.max).toBe(744)
+    // 2026-10-09 roadmap of run e8c99e0ef7914724b2963f83188d2cee
+    // (repository-maintenance 86429d22 cycle:2): ONE mint rm-784
+    // (App.tsx focus re-probe bound, track reliability), minted
+    // above the live all-lineage sibling ceiling rm-783 (worktree
+    // def-line scan 2026-10-09 across every dashboard-864ca327c8
+    // run dir; git log --all -S 'rm-784' empty; ab16a466's same-day
+    // census comment names rm-784 as next-free — renumber-at-
+    // integrate if that lane races the id). Census re-derived
+    // first-hand via scripts/roadmap-census.ts, no suite run this
+    // phase: 238 defs / 0 dups / max rm-784.
+    expect(live.max).toBe(784)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
