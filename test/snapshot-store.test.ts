@@ -16,6 +16,7 @@ import {join} from 'node:path'
 import fc from 'fast-check'
 import {afterEach, describe, expect, it, vi} from 'vitest'
 import {createFileSnapshotStore} from '../src/github/snapshot-store.ts'
+import {logger} from '../src/logger.ts'
 
 // node:fs exports a frozen namespace, so rm-759's ordering proof mocks the
 // module with a passthrough-wrapped readFileSync (every other export is the
@@ -182,6 +183,28 @@ describe('createFileSnapshotStore — size bound measures UTF-8 bytes, not UTF-1
     expect(store.load()).toBeNull()
   })
 
+  it('rm-802: the post-read byte bound logs the numeric size (structured payload, not a flattened object)', () => {
+    const {store, file} = makeStore()
+    // The stat gate passes on a small on-disk file; readFileSync is mocked to
+    // return a payload that grew past the byte cap between stat and read —
+    // the only path that exercises the post-read bound (the TOCTOU guard).
+    writeFileSync(file, 'tiny', 'utf8')
+    const readMock = vi.mocked(readFileSync)
+    readMock.mockReturnValueOnce('x'.repeat(CAP + 1))
+    const warnSpy = vi.spyOn(logger, 'warning')
+    try {
+      expect(store.load()).toBeNull()
+      expect(warnSpy).toHaveBeenCalledTimes(1)
+      const record = warnSpy.mock.calls[0]?.[1]
+      expect(record).toBeDefined()
+      expect(record?.bytes, 'the byte count must land as a numeric field, not a flattened object').toBe(CAP + 1)
+      expect(record?.error).toBeUndefined()
+    } finally {
+      warnSpy.mockRestore()
+      readMock.mockReset()
+    }
+  })
+
   it('persist: CJK snapshot over the byte cap but under the code-unit cap is not written', () => {
     const {store, file} = makeStore()
     const padChars = Math.ceil((CAP + 32 - bytes(JSON.stringify(makeSnapshot()))) / 3)
@@ -263,6 +286,22 @@ describe('createFileSnapshotStore — size gate fires before the read (rm-759)',
       expect(store.load()).toBeNull()
     } finally {
       readMock.mockReset()
+    }
+  })
+
+  it('rm-802: the stat-side size gate logs the numeric size (structured payload, not a flattened object)', () => {
+    const {store, file} = makeStore()
+    writeFileSync(file, 'x'.repeat(1_048_577), 'utf8')
+    const warnSpy = vi.spyOn(logger, 'warning')
+    try {
+      expect(store.load()).toBeNull()
+      expect(warnSpy).toHaveBeenCalledTimes(1)
+      const record = warnSpy.mock.calls[0]?.[1]
+      expect(record).toBeDefined()
+      expect(record?.bytes, 'the byte count must land as a numeric field, not a flattened object').toBe(1_048_577)
+      expect(record?.error).toBeUndefined()
+    } finally {
+      warnSpy.mockRestore()
     }
   })
 

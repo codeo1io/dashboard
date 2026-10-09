@@ -112,7 +112,16 @@ describe('rm-678 schema half: live ledger', () => {
     // all sit at/below rm-744) and land as-authored, so the union
     // census is 240 + 4 = 244 defs with the ceiling moving to
     // rm-778 — pin 744 → 778 atomically with this landing.
-    expect(live.max).toBe(778)
+    // 2026-10-09 roadmap extension #40 (repository-maintenance
+    // debad944 cycle:3 run d8fdf8b79ad5): mints rm-802 (snapshot-
+    // store logPersistProblem structured-payload fidelity) and
+    // rm-803 (docs/solutions frontmatter guard) above the all-
+    // lineage def-line ceiling rm-801 re-probed first-hand (the
+    // integration wall of c37a8576; live lane c4617181 at rm-800;
+    // spool rm-8xx postimages verified foreign agenttrace ledgers)
+    // — union census 245 + 2 = 247 defs, pin 778 -> 803 atomically
+    // with the ledger edit.
+    expect(live.max).toBe(803)
     // 2026-10-09 integrate of run 9289efaa (conflict case
     // 139848e6): that run's single mint rm-703 (release.yaml
     // digest-readback SIGPIPE -- the THIRD lineage id of the
