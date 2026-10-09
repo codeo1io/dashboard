@@ -35,8 +35,12 @@ ARG NODE_IMAGE=node:24-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a
 
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS builder
 
-# Enable corepack for pnpm
-RUN corepack enable && corepack prepare pnpm@11.28.4 --activate
+# Enable corepack for pnpm. rm-797 (2026-10-09): the prepare spec carries the
+# sha512 of the pnpm@11.28.4 tarball (== npm dist.integrity, hex-rendered) so
+# the image build's download is hash-verified at fetch time — matching
+# package.json's packageManager pin (corepack 0.36.0 rejects the base64 form;
+# derivation: docs/solutions/workflow-issues/pnpm-package-manager-sha512-pin-2026-10-09.md).
+RUN corepack enable && corepack prepare 'pnpm@11.28.4+sha512.f905a61563f89b49a292634d3d87d024cfdea9dccf5c66b2ccc261675fa7b2774320a959db472e6caa7f9ff7314709cd50d06c8fd64addb60647377a78d250ff' --activate
 
 WORKDIR /app
 
@@ -55,8 +59,8 @@ RUN pnpm build:web
 # ── Production dependency stage ───────────────────────────────────────────────
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS prod-deps
 
-# Enable corepack for pnpm
-RUN corepack enable && corepack prepare pnpm@11.28.4 --activate
+# Enable corepack for pnpm (rm-797: hash-pinned spec, see builder-stage note)
+RUN corepack enable && corepack prepare 'pnpm@11.28.4+sha512.f905a61563f89b49a292634d3d87d024cfdea9dccf5c66b2ccc261675fa7b2774320a959db472e6caa7f9ff7314709cd50d06c8fd64addb60647377a78d250ff' --activate
 
 WORKDIR /app
 

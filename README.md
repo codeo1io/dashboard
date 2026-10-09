@@ -28,7 +28,7 @@ and names every by-design deviation in [docs/runbooks/security-posture.md](docs/
 - **Server** — [Hono](https://hono.dev) + `@hono/node-server` on Node 24 native TypeScript
   (strip-only, no backend build step). Serves the API, GitHub OAuth, and the built client.
   Pinned past the 2026-09-29 `serveStatic` double-decode fixes — `@hono/node-server` 2.1.3
-  (GHSA-rmxm-3fg6-px4f) + `hono` 4.13.11 (GHSA-5r4p-p66f-jhc7); rm-498 regression-pins this in
+  (GHSA-rmxm-3fg6-px4f) + `hono` 4.13.13 (GHSA-5r4p-p66f-jhc7); rm-498 regression-pins this in
   `test/static-assets.test.ts`. Body-reading public routes share one bounded reader
   (`src/read-body.ts` — 16 KiB wire-byte cap, ingest + logout; rm-497).
 - **Client** — [Vite](https://vite.dev) + [React 19](https://react.dev) +
@@ -36,7 +36,7 @@ and names every by-design deviation in [docs/runbooks/security-posture.md](docs/
   [vite-plugin-pwa](https://vite-pwa-org.netlify.app). The service worker is a
   kill-switch (`web/src/sw.ts`): it purges caches and unregisters itself — the
   app does no offline caching.
-- pnpm, [Vitest](https://vitest.dev).
+- pnpm (registry-integrity pinned via `packageManager`, rm-797), [Vitest](https://vitest.dev).
 
 ## Quick Start
 

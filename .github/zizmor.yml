@@ -1,0 +1,75 @@
+# zizmor workflow-SAST baseline — rm-799 (2026-10-09)
+#
+# The Check Workflows job (.github/workflows/main.yaml) runs zizmor 1.30.1
+# (container form, tag+digest pinned) beside actionlint. This file is the
+# dated triage of every finding present when the gate landed: entries below
+# are ACCEPTED with the disposition stated at each entry; any finding NOT
+# baselined here fails the gate. Mirrors the cve-tripwire's
+# standing-unfixed posture: accepted findings are recorded, not silently
+# silenced — re-triage per maintenance cycle.
+#
+# Full finding-by-finding dispositions and the re-baselining recipe:
+# docs/solutions/workflow-issues/zizmor-workflow-sast-gate-baseline-2026-10-09.md
+#
+# NOTE: line-pinned entries use zizmor's displayed 1-based line (the
+# `--> file:line` anchor it prints) — one anchor suppresses the entire
+# finding, including its secondary locations. Editing a workflow listed here
+# can shift lines and re-expose a baselined finding (gate goes red with 'line
+# N' no longer matching) — the cure is to re-derive the entry from the new
+# run's printed anchor, in the same change, per the doc.
+rules:
+  excessive-permissions:
+    ignore:
+      # base-drift.yaml:46 — 'issues: write' at workflow level IS the drift
+      # gate's purpose: it opens the drift issue on the weekly cron. Scoping
+      # it down to the reporting job only is a cycle-3 candidate, not a
+      # standing defect.
+      - 'base-drift.yaml:46'
+  template-injection:
+    ignore:
+      # release.yaml:61 — tag/version run-block interpolates github.event.*
+      # from THIS repo's own push events only (maintainer-triggered release
+      # path); every interpolation is repo-owned context, none is
+      # fork-PR-controllable (the workflow does not run untrusted branches).
+      - 'release.yaml:61'
+      # release.yaml:198 — same class: repo-owned release metadata.
+      - 'release.yaml:198'
+      # release.yaml:449/500/520/554 — docker build-arg/matrix interpolation
+      # of pinned, repo-owned values (no pull_request_target surfaces; the
+      # release workflow's triggers are push tags + workflow_dispatch).
+      - 'release.yaml:449'
+      - 'release.yaml:500'
+      - 'release.yaml:520'
+      - 'release.yaml:554'
+      # upstream-drift.yaml:42 — DEFAULT_BRANCH/env interpolation from
+      # github.event.repository.* on a schedule-triggered workflow;
+      # repo-owned context, no untrusted fork input.
+      - 'upstream-drift.yaml:42'
+      # cve-tripwire.yaml:128 — trivy version/args interpolation of the
+      # pinned TRIVY_VERSION constant; informational.
+      - 'cve-tripwire.yaml:128'
+  cache-poisoning:
+    ignore:
+      # release.yaml:173 — the publishing workflow's node/pnpm cache feeding
+      # a runtime-artifact build; installs are digest-pinned via
+      # pnpm-lock.yaml (frozen) and the base image digest, so a poisoned
+      # cache cannot alter resolution. Standing-unfixed by design.
+      - 'release.yaml:173'
+  github-app:
+    ignore:
+      # release.yaml:402 — the app token is minted for GHCR push + release
+      # creation on the maintainer-only release path; the App's effective
+      # access is bounded by the deployment. Permission-scoped inputs are a
+      # cycle-3 candidate.
+      - 'release.yaml:402'
+  self-repository:
+    ignore:
+      # All './.github/actions/setup' composite-action uses. zizmor prefers
+      # '${{ github.repository }}/...' for cross-repo reuse; this fork only
+      # ever consumes the action from the checked-out tree itself. File-level
+      # because the pattern is uniform and any new occurrence is the same
+      # accepted class.
+      - canary.yaml
+      - codeql.yaml
+      - fro-bot.yaml
+      - main.yaml
