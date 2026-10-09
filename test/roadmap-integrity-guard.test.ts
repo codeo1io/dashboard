@@ -148,7 +148,24 @@ describe('rm-678 schema half: live ledger', () => {
     // 778 -> 780 atomically with this landing: union census
     // 245 + 2 = 247 defs / 0 dups / max rm-780, next free
     // rm-781.
-    expect(live.max).toBe(780)
+    // max id as of extension #36 (2026-10-09, run c37a857620e14531abd6be2112004c60 roadmap d5f8451f136c43629a0e87e53fefb54c): minted rm-778 above the all-lineage frontier (sibling walls through 769, PR #444 head 709, foreign-fleet spool 795-855 excluded, 777 ceiling note honored)
+    // 2026-10-10 integrate of run c37a857620e1 (conflict case
+    // e7e7e7707acb4695a89242e802283e36): that run's single mint
+    // rm-778 (operator-monitoring annotations drill-down) hit a REAL
+    // collision — main landed 788aa489c1d5's rm-778 (conductor/ci-*
+    // stale-ref sweep, case 366f6059) while this run's wall stayed
+    // unlanded at base 559642aa — and landed meanings own ids
+    // (d00d095), so the annotations def renumbers rm-778 → rm-781,
+    // one above the landed ceiling rm-780, landing as-authored under
+    // the new id with the map on its def line; the extension-#36 note
+    // above keeps its at-write 778 per the e836a18d precedent (the
+    // ext-#37 and compound tail comments likewise stay verbatim —
+    // their census claims are superseded by the ROADMAP tail's
+    // 2026-10-10 INTEGRATE-MERGE record, which owns the newest-date
+    // guard slot by date, position-independent): union census
+    // 247 + 1 = 248 defs / 0 dups / max rm-781, next free rm-782 —
+    // pin 780 → 781 atomically with this landing.
+    expect(live.max).toBe(781)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
