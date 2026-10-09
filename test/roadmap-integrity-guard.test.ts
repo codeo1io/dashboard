@@ -148,7 +148,13 @@ describe('rm-678 schema half: live ledger', () => {
     // 778 -> 780 atomically with this landing: union census
     // 245 + 2 = 247 defs / 0 dups / max rm-780, next free
     // rm-781.
-    expect(live.max).toBe(780)
+    // 2026-10-09 run 91f3d37f (roadmap a268ee63, ext #37,
+    // repository-maintenance f24ea34af1b1 cycle:1) mints rm-835
+    // (Monitoring allClear DTO-level staleBanner gate, research C1)
+    // above the re-probed all-lineage def-line ceiling rm-833, with
+    // rm-834 left as same-hour collision margin — census 248 defs,
+    // 0 dups, max rm-835; pin bumped atomically with the mint.
+    expect(live.max).toBe(835)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
