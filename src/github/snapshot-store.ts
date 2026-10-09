@@ -40,11 +40,22 @@ function utf8ByteLength(value: string): number {
   return Buffer.byteLength(value, 'utf8')
 }
 
-function logPersistProblem(message: string, path: string, error: unknown): void {
-  logger.warning(message, {
-    path,
-    error: error instanceof Error ? error.message : String(error),
-  })
+function logPersistProblem(message: string, path: string, detail: unknown): void {
+  // rm-802: log the detail faithfully. Error instances contribute their
+  // message (real I/O failures stay a scalar `error` field); plain-object
+  // payloads are spread as structured fields — the size-bound call sites pass
+  // `{bytes}`, and the byte count that tripped the bound must land as a
+  // field (the persist-side shape), never as `'[object Object]'`. Anything
+  // else stringifies (same as the pre-rm-802 scalar path).
+  const fields: Record<string, unknown> = {path}
+  if (detail instanceof Error) {
+    fields.error = detail.message
+  } else if (typeof detail === 'object' && detail !== null) {
+    Object.assign(fields, detail)
+  } else {
+    fields.error = String(detail)
+  }
+  logger.warning(message, fields)
 }
 
 /**
