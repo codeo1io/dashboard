@@ -57,13 +57,23 @@ describe('fork exclusion invariants (rm-131)', () => {
     expect(existsSync(resolve(repoRoot, '.github/renovate.json5'))).toBe(false)
   })
 
-  it('Dockerfile pins pnpm 11.28.4 in both stages', () => {
-    expect(read('Dockerfile').match(/pnpm@11\.28\.4/g)?.length).toBe(2)
+  // rm-797 (2026-10-09): the pin is version + corepack-canonical sha512 —
+  // 'pnpm@11.28.4+sha512.<hex>' where the hex is the sha512 of the pnpm
+  // tarball, byte-identical to npm's `dist.integrity` base64 rendered as hex
+  // (corepack 0.36.0 rejects the base64 form: '+', '/', '==' are illegal in
+  // semver build metadata — derivation in docs/solutions/workflow-issues/
+  // pnpm-package-manager-sha512-pin-2026-10-09.md). package.json, BOTH
+  // Dockerfile corepack-prepare specs, and this guard move together.
+  const PNPM_SHA512_PIN =
+    'pnpm@11.28.4+sha512.f905a61563f89b49a292634d3d87d024cfdea9dccf5c66b2ccc261675fa7b2774320a959db472e6caa7f9ff7314709cd50d06c8fd64addb60647377a78d250ff'
+
+  it('packageManager pins pnpm 11.28.4 with its registry sha512 (rm-797)', () => {
+    const pkg = JSON.parse(read('package.json')) as {packageManager?: string}
+    expect(pkg.packageManager).toBe(PNPM_SHA512_PIN)
   })
 
-  it('package.json packageManager pins pnpm 11.28.4', () => {
-    const pkg = JSON.parse(read('package.json')) as {packageManager?: string}
-    expect(pkg.packageManager).toBe('pnpm@11.28.4')
+  it('Dockerfile corepack-prepare pins the same version + sha512 in both stages (rm-797)', () => {
+    expect(read('Dockerfile').split(PNPM_SHA512_PIN).length - 1).toBe(2)
   })
 
   it('.gitignore keeps the run-state entries guarded against upstream merges (rm-159 residue)', () => {

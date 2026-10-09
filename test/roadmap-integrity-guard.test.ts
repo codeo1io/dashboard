@@ -91,7 +91,10 @@ describe('rm-678 schema half: live ledger', () => {
     // merge) and rm-709 (detailsUrl https-only boundary) land
     // as-authored below the pin, so the max def id is unchanged
     // at 744 (240 defs).
-    expect(live.max).toBe(744)
+    // 2026-10-09 roadmap of run c4617181 (attempt 7801cab8):
+    // four mints rm-797..rm-800 above the fleet frontier rm-796
+    // (244 defs) — pin follows the mint atomically.
+    expect(live.max).toBe(800)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
