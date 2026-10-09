@@ -845,6 +845,22 @@ async function deadlineOr<T>(promise: Promise<T>, deadlineMs: number, label: str
 // ---------------------------------------------------------------------------
 
 /**
+ * Two-key denylist match for a snapshot row, buildWorkingSet's posture:
+ * node_id first, then the derived databaseId secondary. DashboardRepo rows
+ * carry no database_id, so old-format node_ids (base64 `...Repository<id>`
+ * per deriveDatabaseId) are decoded and tested against redactedDatabaseIds —
+ * a deny entry keyed by explicit database_id still scrubs a row whose
+ * node_id drifted from the denylist's node_id shape. Rows whose node_id
+ * derives no databaseId stay keyed on the primary only (new-format opaque
+ * node_ids).
+ */
+function repoDenylisted(repo: DashboardRepo, metadata: MetadataResult): boolean {
+  if (metadata.redactedNodeIds.has(repo.node_id)) return true
+  const derivedDatabaseId = deriveDatabaseId(repo.node_id)
+  return derivedDatabaseId !== null && metadata.redactedDatabaseIds.has(derivedDatabaseId)
+}
+
+/**
  * Create a dashboard aggregator.
  *
  * The aggregator is a factory — it does NOT auto-start an interval at import
@@ -972,12 +988,12 @@ export function createAggregator(
    * fail-closed semantics — when metadata is UNavailable nothing changes
    * (we cannot know the current denylist without it).
    *
-   * Matches on node_id only (DashboardRepo rows carry no database_id); this
-   * is the primary denylist guard, same key buildWorkingSet applies.
+   * Two-key match, buildWorkingSet's posture: node_id first, then the
+   * derived databaseId secondary.
    */
   function scrubLastGoodAgainstDenylist(metadata: MetadataResult): void {
     if (lastGoodSnapshot === null || lastGoodSnapshot.repos.length === 0) return
-    const denylisted = lastGoodSnapshot.repos.filter(repo => metadata.redactedNodeIds.has(repo.node_id))
+    const denylisted = lastGoodSnapshot.repos.filter(repo => repoDenylisted(repo, metadata))
     if (denylisted.length === 0) return
     const denylistedNodeIds = new Set(denylisted.map(repo => repo.node_id))
     setSnapshot({
