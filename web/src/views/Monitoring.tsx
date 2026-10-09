@@ -1,5 +1,5 @@
 import {useState} from 'react'
-import {fetchMonitoring, type FetchMonitoringResult, type MonitoringData, type MonitoringRepo} from '../api/monitoring.ts'
+import {fetchMonitoring, type FetchMonitoringResult, type MonitoringData, type MonitoringRepo, type MonitoringRepoStatus} from '../api/monitoring.ts'
 import {useBoundedPoll} from '../hooks/useBoundedPoll.ts'
 
 type ViewState =
@@ -13,10 +13,12 @@ const POLL_INTERVAL_MS = 60000
 export const MONITORING_FETCH_TIMEOUT_MS = 15000
 
 /**
- * Red-repo drill-down view (rm-192): renders the repos whose default branch
- * is failing CI, with WHICH check failed, in which workflow run and attempt.
- * Green/unknown repos are summarized in a footer count — the view's purpose
- * is the drill-down, not a full grid (the monitoring grid remains rm-104).
+ * Red-repo drill-down view (rm-192) + security panel (rm-117): renders the
+ * repos whose default branch is failing CI (with WHICH check failed, in
+ * which workflow run and attempt) and the repos with open security alerts
+ * (Dependabot + code-scanning counts). Green/clean repos are summarized in
+ * a footer count — the view's purpose is the drill-down, not a full grid
+ * (the monitoring grid remains rm-104).
  */
 export function Monitoring() {
   const [viewState, setViewState] = useState<ViewState>({state: 'loading'})
@@ -88,9 +90,31 @@ export function Monitoring() {
   )
 }
 
+/**
+ * rm-117: does this repo's security posture alone require operator attention?
+ * (open Dependabot alerts or open code-scanning alerts — independent of CI.)
+ */
+function hasSecurityAttention(status: MonitoringRepoStatus): boolean {
+  if (status.openAlertCount !== null && status.openAlertCount > 0) return true
+  if (status.openCodeScanningAlerts !== null && status.openCodeScanningAlerts.openCount > 0) return true
+  return false
+}
+
 function MonitoringBoard({data}: {data: MonitoringData}) {
   const redRepos = data.repos.filter(repo => repo.status.rollupState === 'red' || repo.status.failingChecks > 0)
-  const remaining = data.repos.length - redRepos.length
+  // rm-117: security-attention repos that are NOT CI-red get their own card —
+  // a repo burning with CVEs while its CI is green is exactly the blind spot
+  // the security panel exists to surface.
+  const securityOnlyRepos = data.repos.filter(
+    repo =>
+      (repo.status.rollupState !== 'red' && repo.status.failingChecks === 0) &&
+      hasSecurityAttention(repo.status),
+  )
+  const remaining = data.repos.length - redRepos.length - securityOnlyRepos.length
+  // rm-117: honest coverage note — repos where the code-scanning half is
+  // simply unavailable (optional read absent). 0 here means every repo's
+  // count is a real count, not a silent gap.
+  const withoutCodeScanningCoverage = data.repos.filter(repo => repo.status.openCodeScanningAlerts === null).length
   const refreshedAt = data.refreshedAt === null ? null : new Date(data.refreshedAt).toLocaleString()
   // rm-107: measured duration of the last walk for the degraded banner — null
   // only when no cycle has ever stamped a snapshot (never while degraded).
@@ -112,23 +136,31 @@ function MonitoringBoard({data}: {data: MonitoringData}) {
         </div>
       )}
 
-      {redRepos.length === 0 ? (
+      {redRepos.length === 0 && securityOnlyRepos.length === 0 ? (
         <div data-testid="monitoring-all-clear" className="operator-empty-state">
           <div className="operator-empty-icon" aria-hidden="true" style={{opacity: 0.2}}>✓</div>
           <p className="operator-empty-title">All repositories green</p>
           <p className="operator-empty-desc">
             {data.repos.length} tracked {data.repos.length === 1 ? 'repository' : 'repositories'}, no failing checks
-            on default branches.
+            on default branches, 0 open Dependabot alerts and 0 open code-scanning alerts.
           </p>
         </div>
       ) : (
-        redRepos.map(repo => <RedRepoCard key={repo.fullName} repo={repo} />)
+        <>
+          {redRepos.map(repo => <RedRepoCard key={repo.fullName} repo={repo} />)}
+          {securityOnlyRepos.map(repo => <SecurityRepoCard key={repo.fullName} repo={repo} />)}
+        </>
       )}
 
       <div data-testid="monitoring-footer" style={{fontSize: 'var(--text-body-sm)', color: 'var(--color-text-muted)'}}>
         {remaining > 0 && (
           <span>
-            {remaining} {remaining === 1 ? 'repository' : 'repositories'} not failing ·{' '}
+            {remaining} {remaining === 1 ? 'repository' : 'repositories'} without attention signals ·{' '}
+          </span>
+        )}
+        {withoutCodeScanningCoverage > 0 && (
+          <span data-testid="monitoring-codescanning-coverage">
+            {withoutCodeScanningCoverage} without code-scanning coverage ·{' '}
           </span>
         )}
         {refreshedAt !== null ? <span>refreshed {refreshedAt}</span> : <span>never refreshed</span>}
@@ -187,6 +219,85 @@ function RedRepoCard({repo}: {repo: MonitoringRepo}) {
           {status.failingChecks} failed {status.failingChecks === 1 ? 'check run' : 'check runs'} — run titles
           unavailable (count-only view).
         </div>
+      )}
+
+      {/* rm-117: security posture rides the same card — red CI and burning
+          CVEs are not mutually exclusive, and the operator triages one repo
+          in one place. */}
+      <SecuritySummary status={status} />
+    </div>
+  )
+}
+
+/**
+ * rm-117: a repo whose ONLY attention signal is security (CI green). Same
+ * card chrome as the red-repo card so the board reads as one list.
+ */
+function SecurityRepoCard({repo}: {repo: MonitoringRepo}) {
+  const {status} = repo
+  return (
+    <div data-testid="monitoring-security-repo" className="listener-message-card">
+      <div className="listener-header">
+        <h3 className="listener-title" style={{margin: 0}}>
+          {repo.fullName}
+        </h3>
+      </div>
+
+      {status.stale && (
+        <div style={{fontSize: 'var(--text-body-sm)', color: 'var(--color-text-muted)', marginBottom: 'var(--space-2)'}}>
+          Status is stale — the last fetch failed; counts are from the last successful refresh.
+        </div>
+      )}
+
+      <SecuritySummary status={status} />
+    </div>
+  )
+}
+
+/**
+ * rm-117: the per-repo security summary — open code-scanning alert count +
+ * severity buckets, plus the already-landed Dependabot count. Rendered only
+ * when at least one source has something to report; a null code-scanning
+ * half is called out as unavailable ONLY alongside a live Dependabot count,
+ * so a fleet without security_events coverage isn't buried in n/a noise.
+ */
+function SecuritySummary({status}: {status: MonitoringRepoStatus}) {
+  const cs = status.openCodeScanningAlerts
+  const dependabot = status.openAlertCount
+  const codeScanningActive = cs !== null && cs.openCount > 0
+  const dependabotActive = dependabot !== null && dependabot > 0
+  if (!codeScanningActive && !dependabotActive) return null
+  return (
+    <div
+      data-testid="monitoring-security-summary"
+      style={{marginTop: 'var(--space-2)', display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap', alignItems: 'center', fontSize: 'var(--text-body-sm)'}}
+    >
+      {codeScanningActive && (
+        <span
+          className="listener-severity severity-critical"
+          aria-label={`Open code-scanning alerts: ${cs.openCount}`}
+        >
+          {cs.openCount} open code-scanning {cs.openCount === 1 ? 'alert' : 'alerts'}
+        </span>
+      )}
+      {dependabotActive && (
+        <span
+          className="listener-severity severity-warning"
+          aria-label={`Open Dependabot alerts: ${dependabot}`}
+        >
+          {dependabot} Dependabot {dependabot === 1 ? 'alert' : 'alerts'}
+        </span>
+      )}
+      {codeScanningActive && (
+        <span data-testid="monitoring-codescanning-severity" style={{color: 'var(--color-text-muted)'}}>
+          {cs.severity.critical} critical · {cs.severity.high} high · {cs.severity.medium} medium ·{' '}
+          {cs.severity.low} low · {cs.severity.unrated} unrated
+        </span>
+      )}
+      {!codeScanningActive && cs === null && dependabotActive && (
+        <span data-testid="monitoring-codescanning-unavailable" style={{color: 'var(--color-text-muted)'}}>
+          code scanning: unavailable (no security_events read on this installation)
+        </span>
       )}
     </div>
   )

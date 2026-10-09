@@ -144,6 +144,7 @@ describe('monitoring API', () => {
               openPrCount: 0,
               openIssueCount: 0,
               openAlertCount: null,
+              openCodeScanningAlerts: null,
               stale: false,
             },
           },
@@ -179,6 +180,7 @@ describe('monitoring API', () => {
               openPrCount: 0,
               openIssueCount: 0,
               openAlertCount: null,
+              openCodeScanningAlerts: null,
               stale: false,
             },
           },
@@ -210,11 +212,126 @@ describe('monitoring API', () => {
               openPrCount: 0,
               openIssueCount: 0,
               openAlertCount: null,
+              openCodeScanningAlerts: null,
               stale: false,
             },
           },
         ])
       }
+    })
+
+    it('rm-117: parses openCodeScanningAlerts (counts + buckets) and passes null through', async () => {
+      const mockData = {
+        repos: [
+          {
+            full_name: 'org/with-cs',
+            discovery_channel: 'installation',
+            status: {
+              rollupState: 'green',
+              failingChecks: 0,
+              failingCheckDetails: [],
+              openPrCount: 0,
+              openIssueCount: 0,
+              openAlertCount: 1,
+              openCodeScanningAlerts: {
+                openCount: 3,
+                severity: {critical: 1, high: 1, medium: 0, low: 0, unrated: 1},
+              },
+              stale: false,
+            },
+          },
+          {
+            full_name: 'org/without-cs',
+            discovery_channel: 'installation',
+            status: {
+              rollupState: 'green',
+              failingChecks: 0,
+              failingCheckDetails: [],
+              openPrCount: 0,
+              openIssueCount: 0,
+              openAlertCount: null,
+              openCodeScanningAlerts: null,
+              stale: false,
+            },
+          },
+        ],
+        refreshDurationMs: null,
+        refreshDegraded: false,
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+      const res = await fetchMonitoring()
+      expect(res.ok).toBe(true)
+      if (res.ok) {
+        expect(res.data.repos[0]?.status.openCodeScanningAlerts).toEqual({
+          openCount: 3,
+          severity: {critical: 1, high: 1, medium: 0, low: 0, unrated: 1},
+        })
+        expect(res.data.repos[1]?.status.openCodeScanningAlerts).toBeNull()
+      }
+    })
+
+    it('rm-117: a malformed code-scanning summary is contract-drift (strict parse fails closed)', async () => {
+      const mockData = {
+        repos: [
+          {
+            full_name: 'org/bad-cs',
+            discovery_channel: 'installation',
+            status: {
+              rollupState: 'green',
+              failingChecks: 0,
+              failingCheckDetails: [],
+              openPrCount: 0,
+              openIssueCount: 0,
+              openAlertCount: null,
+              openCodeScanningAlerts: {openCount: 3, severity: {critical: 1}}, // missing buckets
+              stale: false,
+            },
+          },
+        ],
+        refreshDurationMs: null,
+        refreshDegraded: false,
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+      const res = await fetchMonitoring()
+      expect(res).toEqual({ ok: false, reason: 'contract-drift' })
+    })
+
+    it('rm-117: a missing openCodeScanningAlerts field is contract-drift (the server always emits it)', async () => {
+      const mockData = {
+        repos: [
+          {
+            full_name: 'org/missing-cs',
+            discovery_channel: 'installation',
+            status: {
+              rollupState: 'green',
+              failingChecks: 0,
+              failingCheckDetails: [],
+              openPrCount: 0,
+              openIssueCount: 0,
+              openAlertCount: null,
+              stale: false,
+            },
+          },
+        ],
+        refreshDurationMs: null,
+        refreshDegraded: false,
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+      const res = await fetchMonitoring()
+      expect(res).toEqual({ ok: false, reason: 'contract-drift' })
     })
   })
 })
