@@ -118,11 +118,23 @@ describe('AppShell', () => {
   beforeEach(() => {
     // Reset localStorage and data-theme before each test
     window.localStorage.clear()
+    // rm-651 (2026-10-09): also reset sessionStorage and any leftover
+    // push-enabled meta so this suite is order-independent and cannot be
+    // poisoned by a prior test's dismissal state (the rm-596 flake class).
+    window.sessionStorage.clear()
+    document
+      .querySelectorAll("meta[name='push-enabled']")
+      .forEach((meta) => meta.remove())
     document.documentElement.removeAttribute('data-theme')
     stubMatchMedia(false) // default: prefers dark
   })
 
   afterEach(() => {
+    window.localStorage.clear()
+    window.sessionStorage.clear()
+    document
+      .querySelectorAll("meta[name='push-enabled']")
+      .forEach((meta) => meta.remove())
     document.documentElement.removeAttribute('data-theme')
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
