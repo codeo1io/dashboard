@@ -9,6 +9,7 @@
  * route handler, not here.
  */
 import {Buffer} from 'node:buffer'
+import {PKCE_VERIFIER_PATTERN} from './pkce.ts'
 
 const GITHUB_OAUTH_ERROR_CODES = new Set([
   'access_denied',
@@ -29,8 +30,25 @@ const GITHUB_FETCH_TIMEOUT_MS = 10_000
  * Uses function property style (not shorthand method signatures) per lint rules.
  */
 export interface GitHubOAuthClient {
-  readonly createAuthorizationURL: (state: string, scopes: string[]) => URL
-  readonly validateAuthorizationCode: (code: string) => Promise<{accessToken: () => string}>
+  /**
+   * Build the GitHub authorization redirect URL. `codeChallenge` is the S256
+   * PKCE challenge (rm-149, RFC 7636) — always sent; GitHub supports S256
+   * (the 'plain' method is not offered).
+   */
+  readonly createAuthorizationURL: (
+    state: string,
+    scopes: string[],
+    codeChallenge: string,
+  ) => URL
+  /**
+   * Exchange the authorization code for an access token. `codeVerifier` is
+   * the PKCE verifier that produced `codeChallenge` — GitHub enforces the
+   * verifier↔challenge pairing at the exchange (mismatch → OAuth error).
+   */
+  readonly validateAuthorizationCode: (
+    code: string,
+    codeVerifier: string,
+  ) => Promise<{accessToken: () => string}>
 }
 
 /**
@@ -46,7 +64,7 @@ export function makeGitHubOAuthClient(
   redirectURI: string,
 ): GitHubOAuthClient {
   return {
-    createAuthorizationURL: (state: string, scopes: string[]): URL => {
+    createAuthorizationURL: (state: string, scopes: string[], codeChallenge: string): URL => {
       const url = new URL('https://github.com/login/oauth/authorize')
       url.search = new URLSearchParams({
         client_id: clientId,
@@ -54,10 +72,22 @@ export function makeGitHubOAuthClient(
         state,
         scope: scopes.join(' '),
         response_type: 'code',
+        // rm-149: RFC 7636 PKCE, S256 only — the challenge is
+        // BASE64URL(SHA-256(verifier)); the verifier never rides the URL.
+        code_challenge: codeChallenge,
+        code_challenge_method: 'S256',
       }).toString()
       return url
     },
-    validateAuthorizationCode: async (code: string): Promise<{accessToken: () => string}> => {
+    validateAuthorizationCode: async (
+      code: string,
+      codeVerifier: string,
+    ): Promise<{accessToken: () => string}> => {
+      if (!PKCE_VERIFIER_PATTERN.test(codeVerifier)) {
+        // RFC 7636 §4.1 shape — a junk verifier is a client bug or cookie
+        // tampering, never a GitHub-retryable condition. Reject before the wire.
+        throw new TypeError('PKCE code verifier does not match the RFC 7636 verifier shape')
+      }
       let res: Response
       try {
         res = await fetch('https://github.com/login/oauth/access_token', {
@@ -73,6 +103,9 @@ export function makeGitHubOAuthClient(
             code,
             redirect_uri: redirectURI,
             grant_type: 'authorization_code',
+            // rm-149: RFC 7636 §4.5 — the verifier that produced the S256
+            // code_challenge sent at /auth/login; GitHub rejects mismatches.
+            code_verifier: codeVerifier,
           }).toString(),
           redirect: 'error',
           signal: AbortSignal.timeout(GITHUB_FETCH_TIMEOUT_MS),

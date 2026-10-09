@@ -14,6 +14,7 @@
  */
 import type {ServerType} from '@hono/node-server'
 import type {GitHubOAuthClient} from './auth/oauth.ts'
+import type {PkcePairGenerator} from './auth/pkce.ts'
 import type {OperatorClient, SessionDto} from './gateway/operator-client.ts'
 import type {GatewaySessionCache} from './gateway/session-cache.ts'
 import type {AggregatorSnapshot, SnapshotStore} from './github/aggregator.ts'
@@ -34,6 +35,7 @@ import {Hono, type Context} from 'hono'
 import {getCookie, setCookie} from 'hono/cookie'
 import {secureHeaders} from 'hono/secure-headers'
 import {fetchGitHubUserLogin, makeGitHubOAuthClient} from './auth/oauth.ts'
+import {generatePkcePair} from './auth/pkce.ts'
 import {createOperatorClient} from './gateway/operator-client.ts'
 import {
   readGatewayOperatorOrigin,
@@ -371,6 +373,12 @@ export interface DashboardAppConfig {
    * If undefined, uses the real GitHub API.
    */
   fetchUserLogin?: ((accessToken: string) => Promise<string>) | undefined
+  /**
+   * PKCE pair generator for the operator OAuth login (rm-149). If undefined,
+   * uses crypto randomness (src/auth/pkce.ts). Tests inject a deterministic
+   * pair so the S256 binding can be asserted without hashing a cookie value.
+   */
+  pkcePairGenerator?: PkcePairGenerator | undefined
   /**
    * Key the rate limiter on the first X-Forwarded-For hop instead of the
    * direct remote address. Off by default — XFF is client-spoofable; enable
@@ -1096,6 +1104,7 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       oauthClient,
       fetchUserLogin,
       cookieKey: opts?.cookieKey as Buffer,
+      pkcePairGenerator: opts?.pkcePairGenerator ?? generatePkcePair,
     })
     app.route('/auth', authRouter)
   }

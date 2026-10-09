@@ -112,7 +112,18 @@ describe('rm-678 schema half: live ledger', () => {
     // all sit at/below rm-744) and land as-authored, so the union
     // census is 240 + 4 = 244 defs with the ceiling moving to
     // rm-778 — pin 744 → 778 atomically with this landing.
-    expect(live.max).toBe(778)
+    expect(live.max).toBe(805)
+    // 2026-10-09 repository-maintenance cycle:2 extension #38
+    // (run 8dd690c85b504dc2998808bf3e011ce1 roadmap
+    // fdc15cab6e184147b181787014983110): two mints above the
+    // all-lineage frontier -- rm-804 (operator pending-question
+    // surface, contract 1.9.0 consumer prep) and rm-805
+    // (mechanical runner-pin guard) -- take the census 245 ->
+    // 247 defs and the ceiling rm-778 -> rm-805; the 779-803
+    // band is claimed by unlanded dashboard-fleet walls and
+    // the 802 numeral is double-claimed (audit in the
+    // extension #38 header comment); foreign-fleet spool ids
+    // excluded per the extension #29 precedent.
     // 2026-10-09 integrate of run 9289efaa (conflict case
     // 139848e6): that run's single mint rm-703 (release.yaml
     // digest-readback SIGPIPE -- the THIRD lineage id of the

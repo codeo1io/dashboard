@@ -4,6 +4,11 @@
  * Security invariants:
  * - State cookie is HttpOnly, Secure, SameSite=Lax, short-TTL (~10 min), path=/auth.
  * - State mismatch → 403 (CSRF protection).
+ * - PKCE (rm-149, RFC 7636, S256): the login redirect carries a S256
+ *   code_challenge; the verifier lives in a short-TTL HttpOnly cookie that
+ *   mirrors the state cookie (same attributes, same rm-604 Secure rule);
+ *   the exchange sends code_verifier — GitHub enforces the pairing. A
+ *   callback without a well-formed verifier cookie → 403 before any exchange.
  * - Non-allowlisted login → 403, no session issued.
  * - Session cookie is HttpOnly, Secure, SameSite=Lax, 24h TTL.
  * - Operator login check is case-sensitive exact match.
@@ -13,11 +18,13 @@
  *   token expires after at most 2 windows (~2 hours). Verified with timingSafeEqual.
  */
 import type {GitHubOAuthClient} from '../auth/oauth.ts'
+import type {PkcePairGenerator} from '../auth/pkce.ts'
 import type {SessionManager} from '../session.ts'
 import {Buffer} from 'node:buffer'
 import {createHmac, randomBytes, timingSafeEqual} from 'node:crypto'
 import {Hono} from 'hono'
 import {deleteCookie, getCookie, setCookie} from 'hono/cookie'
+import {generatePkcePair, PKCE_VERIFIER_PATTERN} from '../auth/pkce.ts'
 import {logger, sanitizeErrorMessage} from '../logger.ts'
 import {MAX_REQUEST_BODY_BYTES, readBodyCapped} from '../read-body.ts'
 
@@ -26,6 +33,9 @@ const STATE_COOKIE_MAX_AGE = 10 * 60
 
 /** Name of the OAuth state cookie */
 const STATE_COOKIE_NAME = 'oauth_state'
+
+/** Name of the PKCE verifier cookie (rm-149) — mirrors the state cookie's pattern. */
+const PKCE_VERIFIER_COOKIE_NAME = 'oauth_pkce_verifier'
 
 /** Name of the session cookie */
 const SESSION_COOKIE_NAME = 'session'
@@ -41,6 +51,8 @@ export interface AuthRouteConfig {
   readonly fetchUserLogin: (accessToken: string) => Promise<string>
   /** Cookie signing key — used to derive the logout CSRF token. */
   readonly cookieKey: Buffer
+  /** PKCE pair generator (rm-149). Defaults to crypto randomness; tests inject a deterministic pair. */
+  readonly pkcePairGenerator?: PkcePairGenerator | undefined
 }
 
 /** CSRF token validity window (ms). A leaked logout token expires after at most 2 windows. */
@@ -63,6 +75,7 @@ export function deriveLogoutCsrfToken(cookieKey: Buffer, login: string, now: num
  */
 export function buildAuthRouter(config: AuthRouteConfig): Hono {
   const {operatorLogin, sessionManager, oauthClient, fetchUserLogin, cookieKey} = config
+  const pkcePairGenerator: PkcePairGenerator = config.pkcePairGenerator ?? generatePkcePair
   const router = new Hono()
 
   /**
@@ -98,7 +111,22 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
       path: '/auth',
     })
 
-    const authURL = oauthClient.createAuthorizationURL(state, ['read:user'])
+    // rm-149: PKCE (RFC 7636, S256). The verifier cookie mirrors the state
+    // cookie exactly (same short TTL, same scoping to /auth, same HttpOnly /
+    // SameSite=Lax / rm-604 Secure expression — the cookie sites must not
+    // drift). The S256 challenge rides the authorize redirect; the verifier
+    // itself never appears in any URL and only leaves the cookie inside the
+    // token-exchange POST body. One-time use: cleared at /auth/callback.
+    const {codeVerifier, codeChallenge} = pkcePairGenerator()
+    setCookie(c, PKCE_VERIFIER_COOKIE_NAME, codeVerifier, {
+      httpOnly: true,
+      secure: c.req.url.startsWith('https://') || c.req.header('x-forwarded-proto') === 'https',
+      sameSite: 'Lax',
+      maxAge: STATE_COOKIE_MAX_AGE,
+      path: '/auth',
+    })
+
+    const authURL = oauthClient.createAuthorizationURL(state, ['read:user'], codeChallenge)
     return c.redirect(authURL.toString(), 302)
   })
 
@@ -139,10 +167,25 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
     // Clear the state cookie immediately (one-time use)
     deleteCookie(c, STATE_COOKIE_NAME, {path: '/auth'})
 
-    // Exchange code for access token
+    // rm-149: PKCE is mandatory — a callback that cannot present the verifier
+    // cookie can never complete the exchange, regardless of what GitHub would
+    // do with the code (challenge-absent rejection at the exchange boundary).
+    // Shape-check per RFC 7636 §4.1 so junk never reaches the wire; the actual
+    // verifier↔challenge pairing is enforced by GitHub at the exchange.
+    const verifierCookie = getCookie(c, PKCE_VERIFIER_COOKIE_NAME)
+    if (typeof verifierCookie !== 'string' || !PKCE_VERIFIER_PATTERN.test(verifierCookie)) {
+      logger.warning('OAuth callback: PKCE verifier cookie missing or malformed')
+      return c.text('Forbidden: PKCE verifier missing', 403)
+    }
+
+    // One-time use: clear alongside the state cookie
+    deleteCookie(c, PKCE_VERIFIER_COOKIE_NAME, {path: '/auth'})
+
+    // Exchange code for access token (code_verifier rides the exchange —
+    // GitHub rejects a verifier that does not match the S256 challenge)
     let accessToken: string
     try {
-      const tokens = await oauthClient.validateAuthorizationCode(code)
+      const tokens = await oauthClient.validateAuthorizationCode(code, verifierCookie)
       accessToken = tokens.accessToken()
     } catch (error) {
       logger.error('OAuth callback: token exchange failed', {error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error))})
