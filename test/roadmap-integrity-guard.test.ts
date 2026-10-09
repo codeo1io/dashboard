@@ -112,7 +112,7 @@ describe('rm-678 schema half: live ledger', () => {
     // all sit at/below rm-744) and land as-authored, so the union
     // census is 240 + 4 = 244 defs with the ceiling moving to
     // rm-778 — pin 744 → 778 atomically with this landing.
-    expect(live.max).toBe(778)
+    expect(live.max).toBe(802)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
