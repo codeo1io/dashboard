@@ -3,7 +3,7 @@
  */
 import type {ListenerStore} from '../src/listener/store.ts'
 import {Buffer} from 'node:buffer'
-import {createHmac} from 'node:crypto'
+import {createHash, createHmac} from 'node:crypto'
 import process from 'node:process'
 import {beforeEach, describe, expect, it} from 'vitest'
 import {createListenerStore} from '../src/listener/store.ts'
@@ -87,6 +87,29 @@ describe('operator listener channel routes', () => {
     expect(getJson.messages).toHaveLength(1)
     expect(getJson.messages[0]?.id).toBe(ingestJson.id)
     expect(getJson.unreadCount).toBe(1)
+  })
+
+  it('rm-215: ingest persists delivery evidence (auth variant + verified-body digest) surfaced via GET', async () => {
+    const app = await buildTestApp({listenerStore: store, listenerIngestKey: INGEST_KEY})
+
+    const ingestRes = await app.request('/api/listener/ingest', {
+      method: 'POST',
+      headers: ingestHeaders(VALID_BODY),
+      body: VALID_BODY,
+    })
+    expect(ingestRes.status).toBe(202)
+
+    const getRes = await app.request('/api/listener/messages', {
+      headers: {cookie: sessionCookieHeader()},
+    })
+    const getJson = (await getRes.json()) as {
+      messages: {ingestVariant: string; rawDigest: string | null}[]
+    }
+    // The digest must be the plain SHA-256 of the exact raw body bytes that
+    // the HMAC verified — computable from VALID_BODY alone (unkeyed evidence).
+    const expectedDigest = createHash('sha256').update(VALID_BODY, 'utf8').digest('hex')
+    expect(getJson.messages[0]?.ingestVariant).toBe('hmac-sha256-v1')
+    expect(getJson.messages[0]?.rawDigest).toBe(expectedDigest)
   })
 
   it('POST /ingest with bad signature → 401', async () => {

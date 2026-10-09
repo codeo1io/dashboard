@@ -156,7 +156,9 @@ Response:
       "links": [{"label": "workflow run", "url": "https://..."}],
       "createdAt": "2026-07-11T12:00:00Z",
       "receivedAt": "2026-07-11T12:00:01Z",
-      "read": false
+      "read": false,
+      "ingestVariant": "hmac-sha256-v1",
+      "rawDigest": "<64-char sha256 hex>"
     }
   ],
   "unreadCount": 3,
@@ -168,6 +170,16 @@ Response:
 policy (500 rows / 30 days) since the store was created — cumulative for the
 process lifetime, count only, no content. The `messages` list above is a
 truncated view; `prunedCount` is the operator's signal that it is.
+
+Delivery evidence (rm-215): every message carries the two fields persisted
+at ingest time — `ingestVariant` names the auth scheme that authenticated the
+delivery (`hmac-sha256-v1`; `legacy` marks rows persisted before the evidence
+columns existed) and `rawDigest` is the SHA-256 hex digest of the exact raw
+body bytes that were signature-verified. When the client-side parse contract
+drops a message (counted `droppedCount` in the UI), these fields let the
+operator attribute the dropped row back to the authenticated delivery that
+produced it. Databases created before the evidence columns existed surface
+`ingestVariant: "legacy"` / `rawDigest: null` for their pre-migration rows.
 
 ## Ack — `POST /api/listener/messages/:id/ack` and `POST /api/listener/ack-all`
 
