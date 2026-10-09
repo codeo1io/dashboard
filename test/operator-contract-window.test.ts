@@ -45,4 +45,17 @@ describe('rm-157 supported-versions window', () => {
   it('every OperatorFailureKind has exactly one browser display label — no kind renders raw', () => {
     expect([...OPERATOR_FAILURE_KINDS].sort()).toEqual(Object.keys(FAILURE_REASON_LABELS).sort())
   })
+
+  it('rm-806: the retriable and non-retriable workspace-failure labels stay pairwise distinct and encode retryability', () => {
+    const retriable = FAILURE_REASON_LABELS['workspace-unreachable']
+    const nonRetriable = FAILURE_REASON_LABELS['workspace-unavailable']
+    // The vendored contract keeps the kinds apart on retryability
+    // (run-status.ts); the browser copy must stay distinct under any future
+    // copy edit and must keep carrying the retryability signal.
+    expect(retriable).not.toBe(nonRetriable)
+    expect(retriable).toMatch(/retry may succeed/i)
+    expect(nonRetriable).toMatch(/not retriable/i)
+    expect(retriable).not.toMatch(/not retriable/i)
+    expect(nonRetriable).not.toMatch(/retry may succeed/i)
+  })
 })

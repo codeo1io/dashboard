@@ -173,16 +173,19 @@ const VALID_FAILURE_KINDS = new Set([
  * Dashboard-owned display labels for known failure reasons — render labels from
  * this map, never the raw failureKind wire string. A missing or unmapped reason
  * has no entry here and falls back to generic 'Failed' at the render boundary.
- * Every OperatorFailureKind value has an explicit display decision.
+ * Every OperatorFailureKind value has an explicit display decision. The
+ * retriable 'workspace-unreachable' and non-retriable 'workspace-unavailable'
+ * labels must stay pairwise distinct — the copy encodes retryability (pinned
+ * by tests).
  */
 export const FAILURE_REASON_LABELS = {
   'inactivity-timeout': 'No recent activity',
   'max-duration-timeout': 'Run timed out',
   'stream-ended': 'Stream ended early',
-  'workspace-unreachable': 'Workspace unreachable',
+  'workspace-unreachable': 'Workspace unreachable — retry may succeed',
   'session-error': 'Session error',
   'checkout-substituted': 'Checkout mismatch',
-  'workspace-unavailable': 'Workspace unavailable',
+  'workspace-unavailable': 'Workspace unavailable — not retriable',
   unknown: 'Unknown failure',
 }
 
