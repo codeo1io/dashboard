@@ -8,6 +8,8 @@
  * - PWA SW assets: /sw.js + /registerSW.js served with correct MIME + no-cache, public pre-auth
  * - PWA manifest: /manifest.webmanifest served as application/manifest+json, public pre-auth
  * - CSP on /sw.js: no page CSP applied (workers don't inherit page CSP)
+ * - Root shell (rm-802): GET / with push disabled (the bare serveStatic arm) serves
+ *   no-cache — revalidation family, unlike the injected arm's no-store
  */
 import type {GitHubOAuthClient} from '../src/auth/oauth.ts'
 import {Buffer} from 'node:buffer'
@@ -323,6 +325,46 @@ describe('operator runtime JS caching policy (rm-478)', () => {
       expect(res.headers.get('cache-control'), asset).toBe('no-cache')
       expect(res.headers.get('etag'), asset).toMatch(/^"[0-9a-f]{32}"$/)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// '/' shell caching policy (rm-802)
+// ---------------------------------------------------------------------------
+
+describe("'/' shell caching policy (rm-802)", () => {
+  const buildRootApp = async (extra: {pushNotificationsEnabled?: boolean; webDistRoot?: string}) =>
+    buildDashboardApp({
+      operatorLogin: TEST_OPERATOR,
+      cookieKey: TEST_KEY,
+      oauthClient: makeFakeOAuthClient(),
+      fetchUserLogin: async (_token: string) => TEST_OPERATOR,
+      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
+      operatorUiEnabled: true,
+      ...extra,
+    })
+
+  it('GET / with push disabled (the bare serveStatic arm) serves Cache-Control: no-cache', async () => {
+    const app = await buildRootApp({}) // pushNotificationsEnabled unset → false → the serveStatic arm
+    const res = await authedGet(app, '/')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-cache')
+    expect((await res.text()).length).toBeGreaterThan(0)
+  })
+
+  it('the arm is status-guarded: a 404 (missing shell) carries no cache policy', async () => {
+    const app = await buildRootApp({webDistRoot: './no-such-dist'})
+    const res = await authedGet(app, '/')
+    expect(res.status).toBe(404)
+    expect(res.headers.get('cache-control')).toBeNull()
+  })
+
+  it('the injected arm (pushNotificationsEnabled=true) keeps its no-store posture', async () => {
+    const app = await buildRootApp({pushNotificationsEnabled: true})
+    const res = await authedGet(app, '/')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-store')
+    expect(await res.text()).toContain('<meta name="push-enabled"')
   })
 })
 
