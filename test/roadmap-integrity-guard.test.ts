@@ -113,6 +113,19 @@ describe('rm-678 schema half: live ledger', () => {
     // census is 240 + 4 = 244 defs with the ceiling moving to
     // rm-778 — pin 744 → 778 atomically with this landing.
     expect(live.max).toBe(778)
+    // 2026-10-09 integrate of run 9289efaa (conflict case
+    // 139848e6): that run's single mint rm-703 (release.yaml
+    // digest-readback SIGPIPE -- the THIRD lineage id of the
+    // same cure beside landed rm-691 and landed rm-708, one
+    // fix per the rm-166/178 pattern, convergence rider on
+    // the def) lands as-authored BELOW the pin, so the max
+    // def id is unchanged at 778 (244 -> 245 defs) and no
+    // bump is owed; the batch's at-write 703 pin (its tree
+    // held 233 defs / max rm-703 at base 5aab7c7, the
+    // 693..702 bands then unintegrated) is superseded by
+    // this note -- those bands have since landed and
+    // reconciled by content (rm-693/694 via 46431058,
+    // rm-698 via ad8f21e, rm-700..702 via 76d683f2).
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {

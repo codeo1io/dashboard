@@ -18,6 +18,13 @@
 export declare function validateDynamicId(id: string): boolean
 
 export declare const PINNED_CONTRACT_VERSION: string
+/**
+ * rm-157 supported-versions window: mirrors
+ * SUPPORTED_OPERATOR_CONTRACT_VERSIONS in
+ * src/gateway/operator-contract/version.ts (pinned by
+ * test/operator-contract-window.test.ts).
+ */
+export declare const SUPPORTED_CONTRACT_VERSIONS: readonly string[]
 export declare const RETRY_BASE_MS: number
 export declare const RETRY_FACTOR: number
 export declare const RETRY_MAX_COUNT: number
@@ -47,6 +54,8 @@ export type FailureKind =
   | 'stream-ended'
   | 'workspace-unreachable'
   | 'session-error'
+  | 'checkout-substituted'
+  | 'workspace-unavailable'
   | 'unknown'
 
 /**

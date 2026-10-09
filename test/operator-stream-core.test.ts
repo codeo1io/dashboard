@@ -6650,9 +6650,9 @@ describe('live failure reason updates and announcements', () => {
     await new Promise(resolve => setTimeout(resolve, 30))
 
     expect(statusEl.textContent).toBe('Failed')
-    expect(reasonEl.textContent).toBe('Workspace unavailable')
+    expect(reasonEl.textContent).toBe('Workspace unreachable')
     // noticeEl must contain the live polite announcement
-    expect(noticeEl.textContent).toBe('Run failed: Workspace unavailable')
+    expect(noticeEl.textContent).toBe('Run failed: Workspace unreachable')
     expect(noticeEl.hidden).toBe(false)
 
     handle.close()
