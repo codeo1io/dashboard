@@ -1,6 +1,13 @@
-import type {IngestMessage} from '../src/listener/contract.ts'
+import type {IngestEvidence, IngestMessage} from '../src/listener/contract.ts'
+import {mkdtempSync, rmSync} from 'node:fs'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
+import {DatabaseSync} from 'node:sqlite'
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {createListenerStore, type ListenerStore} from '../src/listener/store.ts'
+
+/** rm-215 evidence stub for this suite's shared store (constant digest; the dedicated describe below varies it). */
+const EVIDENCE: IngestEvidence = {ingestVariant: 'hmac-sha256-v1', rawDigest: 'a'.repeat(64)}
 
 function makeMessage(overrides: Partial<IngestMessage> = {}): IngestMessage {
   return {
@@ -23,8 +30,13 @@ describe('listener store', () => {
     store = createListenerStore(':memory:')
   })
 
+  // rm-215: insert now carries delivery evidence; this suite's shared store
+  // uses a constant evidence stub (the dedicated evidence describe below
+  // exercises the varying-digest paths directly against store.insert).
+  const insert = (message: IngestMessage) => store.insert(message, EVIDENCE)
+
   it('insert then list returns the message, read=false, unreadCount reflects it', () => {
-    const {id, receivedAt} = store.insert(makeMessage())
+    const {id, receivedAt} = insert(makeMessage())
     const {messages, unreadCount} = store.list({})
 
     expect(messages).toHaveLength(1)
@@ -40,11 +52,11 @@ describe('listener store', () => {
     // refreshes content but must NOT un-ack an operator-read message. This
     // expectation intentionally flipped from "reset to unread" in cycle 11 —
     // see ROADMAP rm-169 / assess finding F8.
-    const first = store.insert(makeMessage({dedupeKey: 'deploy-health-2026-07-11', title: 'First'}))
+    const first = insert(makeMessage({dedupeKey: 'deploy-health-2026-07-11', title: 'First'}))
     store.ack(first.id)
     expect(store.list({}).unreadCount).toBe(0)
 
-    const second = store.insert(
+    const second = insert(
       makeMessage({dedupeKey: 'deploy-health-2026-07-11', title: 'Second', body: 'updated body content here'}),
     )
 
@@ -60,10 +72,10 @@ describe('listener store', () => {
   })
 
   it('rm-169: replay of an UNREAD message keeps it unread (no accidental ack)', () => {
-    const first = store.insert(makeMessage({dedupeKey: 'replay-unread', title: 'First'}))
+    const first = insert(makeMessage({dedupeKey: 'replay-unread', title: 'First'}))
     expect(store.list({}).unreadCount).toBe(1)
 
-    const second = store.insert(makeMessage({dedupeKey: 'replay-unread', title: 'Second'}))
+    const second = insert(makeMessage({dedupeKey: 'replay-unread', title: 'Second'}))
 
     expect(second.id).toBe(first.id)
     const {messages, unreadCount} = store.list({})
@@ -74,16 +86,16 @@ describe('listener store', () => {
   })
 
   it('different dedupeKey or source creates a separate row', () => {
-    store.insert(makeMessage({dedupeKey: 'key-a'}))
-    store.insert(makeMessage({dedupeKey: 'key-b'}))
-    store.insert(makeMessage({source: 'agent', dedupeKey: 'key-a'}))
+    insert(makeMessage({dedupeKey: 'key-a'}))
+    insert(makeMessage({dedupeKey: 'key-b'}))
+    insert(makeMessage({source: 'agent', dedupeKey: 'key-a'}))
 
     const {messages} = store.list({limit: 200})
     expect(messages).toHaveLength(3)
   })
 
   it('ack marks read; unreadCount drops; ack unknown id → not acked', () => {
-    const {id} = store.insert(makeMessage())
+    const {id} = insert(makeMessage())
     expect(store.list({}).unreadCount).toBe(1)
 
     const result = store.ack(id)
@@ -96,9 +108,9 @@ describe('listener store', () => {
   })
 
   it('ackAll marks all read, returns count', () => {
-    store.insert(makeMessage({dedupeKey: 'a'}))
-    store.insert(makeMessage({dedupeKey: 'b'}))
-    store.insert(makeMessage({dedupeKey: 'c'}))
+    insert(makeMessage({dedupeKey: 'a'}))
+    insert(makeMessage({dedupeKey: 'b'}))
+    insert(makeMessage({dedupeKey: 'c'}))
 
     const acked = store.ackAll()
     expect(acked).toBe(3)
@@ -109,8 +121,8 @@ describe('listener store', () => {
   })
 
   it('unreadOnly filters to unread messages only', () => {
-    const {id: readId} = store.insert(makeMessage({dedupeKey: 'read-one'}))
-    store.insert(makeMessage({dedupeKey: 'unread-one'}))
+    const {id: readId} = insert(makeMessage({dedupeKey: 'read-one'}))
+    insert(makeMessage({dedupeKey: 'unread-one'}))
     store.ack(readId)
 
     const {messages} = store.list({unreadOnly: true})
@@ -120,7 +132,7 @@ describe('listener store', () => {
 
   it('retention: insert >500 rows caps stored rows at 500 newest', () => {
     for (let i = 0; i < 510; i++) {
-      store.insert(makeMessage({dedupeKey: `retain-${i}`, title: `msg-${i}`}))
+      insert(makeMessage({dedupeKey: `retain-${i}`, title: `msg-${i}`}))
     }
     const {messages} = store.list({limit: 200})
     // list() clamps to 200 max; verify by unreadCount, which is unfiltered by limit.
@@ -134,7 +146,7 @@ describe('listener store', () => {
 
     // Overflow eviction: 505 inserts → 5 pruned, and the count surfaces.
     for (let i = 0; i < 505; i++) {
-      store.insert(makeMessage({dedupeKey: `prune-${i}`, title: `msg-${i}`}))
+      insert(makeMessage({dedupeKey: `prune-${i}`, title: `msg-${i}`}))
     }
     const afterOverflow = store.list({})
     expect(afterOverflow.prunedCount).toBe(5)
@@ -142,7 +154,7 @@ describe('listener store', () => {
 
     // Cumulative: another overflow eviction adds to the same counter.
     for (let i = 0; i < 10; i++) {
-      store.insert(makeMessage({dedupeKey: `prune2-${i}`, title: `msg2-${i}`}))
+      insert(makeMessage({dedupeKey: `prune2-${i}`, title: `msg2-${i}`}))
     }
     const afterSecond = store.list({})
     expect(afterSecond.prunedCount).toBeGreaterThan(5)
@@ -154,10 +166,10 @@ describe('listener store', () => {
     // retention window, then insert again — the age prune deletes + counts.
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-08-01T00:00:00Z'))
-    store.insert(makeMessage({dedupeKey: 'ancient', title: 'ancient message'}))
+    insert(makeMessage({dedupeKey: 'ancient', title: 'ancient message'}))
 
     vi.setSystemTime(new Date('2026-09-25T00:00:00Z'))
-    store.insert(makeMessage({dedupeKey: 'fresh', title: 'fresh message'}))
+    insert(makeMessage({dedupeKey: 'fresh', title: 'fresh message'}))
     const {messages, prunedCount} = store.list({})
     vi.useRealTimers()
 
@@ -167,5 +179,87 @@ describe('listener store', () => {
 
   it('close does not throw', () => {
     expect(() => store.close()).not.toThrow()
+  })
+})
+
+describe('rm-215: delivery-evidence persistence', () => {
+  const digestA = 'a'.repeat(64)
+  const digestB = 'b'.repeat(64)
+
+  it('evidence fields round-trip through insert → list', () => {
+    const store = createListenerStore(':memory:')
+    store.insert(makeMessage({dedupeKey: 'ev-1'}), {ingestVariant: 'hmac-sha256-v1', rawDigest: digestA})
+    const msg = store.list({}).messages[0]
+    expect(msg?.ingestVariant).toBe('hmac-sha256-v1')
+    expect(msg?.rawDigest).toBe(digestA)
+    store.close()
+  })
+
+  it('dedupe replay refreshes the evidence digest (always names the LATEST verified delivery)', () => {
+    const store = createListenerStore(':memory:')
+    store.insert(makeMessage({dedupeKey: 'ev-replay', title: 'First'}), {ingestVariant: 'hmac-sha256-v1', rawDigest: digestA})
+    store.insert(makeMessage({dedupeKey: 'ev-replay', title: 'Second'}), {ingestVariant: 'hmac-sha256-v1', rawDigest: digestB})
+    const msg = store.list({}).messages[0]
+    expect(msg?.title).toBe('Second')
+    expect(msg?.rawDigest).toBe(digestB)
+    store.close()
+  })
+
+  it('pre-evidence databases migrate in place: legacy rows surface as legacy/null and new inserts still land', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'listener-store-rm215-'))
+    const dbFile = join(dir, 'messages.db')
+    const raw = new DatabaseSync(dbFile)
+    raw.exec(`
+      CREATE TABLE messages (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        links TEXT NOT NULL,
+        dedupe_key TEXT NULL,
+        created_at TEXT NOT NULL,
+        received_at TEXT NOT NULL,
+        read_at TEXT NULL
+      )
+    `)
+    raw
+      .prepare(
+        'INSERT INTO messages (id, source, kind, severity, title, body, links, dedupe_key, created_at, received_at, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        'legacy-1',
+        'infra',
+        'deploy-health',
+        'warning',
+        'Legacy row',
+        'persisted before the evidence columns existed',
+        '[]',
+        null,
+        '2026-07-11T12:00:00Z',
+        '2026-07-11T12:00:01Z',
+        null,
+      )
+    raw.close()
+
+    try {
+      const store = createListenerStore(dbFile)
+      // Read the legacy row BEFORE any insert: the first insert runs prune(),
+      // and the legacy row's received_at is older than the 30d retention
+      // window, so it would legitimately age-evict on the next insert.
+      const legacy = store.list({}).messages.find(m => m.id === 'legacy-1')
+      expect(legacy?.ingestVariant).toBe('legacy')
+      expect(legacy?.rawDigest).toBeNull()
+
+      // Migration keeps the store writable: a fresh insert lands with evidence.
+      store.insert(makeMessage({dedupeKey: 'post-migration'}), {ingestVariant: 'hmac-sha256-v1', rawDigest: digestA})
+      const fresh = store.list({}).messages.find(m => m.id !== 'legacy-1')
+      expect(fresh?.ingestVariant).toBe('hmac-sha256-v1')
+      expect(fresh?.rawDigest).toBe(digestA)
+      store.close()
+    } finally {
+      rmSync(dir, {recursive: true, force: true})
+    }
   })
 })

@@ -6,6 +6,7 @@
  * closed DTO and returns fixed, content-free error reasons.
  */
 import type {Result} from '../result.ts'
+import type {IngestVariant} from './ingest-auth.ts'
 import {Buffer} from 'node:buffer'
 import {err, ok} from '../result.ts'
 
@@ -29,11 +30,35 @@ export interface IngestMessage {
   readonly createdAt: string
 }
 
+/**
+ * Delivery evidence for a persisted message (rm-215): server-assigned at ingest
+ * time so a client-side parse drop can be attributed back to the authenticated
+ * delivery that produced it. Never producer-supplied — it is threaded from the
+ * ingest auth result into the store alongside the parsed message.
+ */
+export interface IngestEvidence {
+  /** Auth scheme that authenticated the delivery (see IngestVariant). */
+  readonly ingestVariant: IngestVariant
+  /** SHA-256 hex digest of the exact raw body bytes that were signature-verified. */
+  readonly rawDigest: string
+}
+
 /** The stored/read shape returned to the operator UI. */
 export interface ListenerMessage extends IngestMessage {
   readonly id: string
   readonly receivedAt: string
   readonly read: boolean
+  /**
+   * Delivery evidence (rm-215): the auth scheme that authenticated the ingest.
+   * `'legacy'` marks rows persisted before the evidence columns existed.
+   * Always present in current responses.
+   */
+  readonly ingestVariant: IngestVariant | 'legacy'
+  /**
+   * Delivery evidence (rm-215): SHA-256 hex digest of the raw ingested body
+   * bytes; `null` on rows persisted before the evidence columns existed.
+   */
+  readonly rawDigest: string | null
 }
 
 export interface MessagesResponse {

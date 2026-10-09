@@ -170,6 +170,104 @@ describe('listener API', () => {
       const res = await fetchListenerMessages()
       expect(res).toEqual({ ok: false, reason: 'unauthenticated' })
     })
+
+    describe('rm-790: malformed-JSON 2xx classification (drift, not network)', () => {
+      it('a 200 whose body is not valid JSON → contract-drift', async () => {
+        // An intercepting proxy or wrong-route handler answering 200 with an
+        // HTML page: res.json() throws and the pre-rm-790 code blamed the
+        // network, routing a contract regression through the retry channel.
+        vi.mocked(fetch).mockResolvedValueOnce(
+          new Response('<html>interception page</html>', { status: 200, headers: { 'content-type': 'text/html' } }),
+        )
+        const res = await fetchListenerMessages()
+        expect(res).toEqual({ ok: false, reason: 'contract-drift' })
+      })
+
+      it('a 200 with a valid body still parses (classification regression guard)', async () => {
+        vi.mocked(fetch).mockResolvedValueOnce(
+          new Response(JSON.stringify({ messages: [], unreadCount: 0 }), { status: 200 }),
+        )
+        const res = await fetchListenerMessages()
+        expect(res.ok).toBe(true)
+      })
+
+      it('a client-side abort DURING the body read stays timeout, not drift', async () => {
+        // The inner try/catch around res.json() must not swallow the caller's
+        // AbortError into the drift branch.
+        const abortingBody = {
+          ok: true,
+          redirected: false,
+          json: async () => {
+            throw new DOMException('Aborted', 'AbortError')
+          },
+        } as unknown as Response
+        vi.mocked(fetch).mockResolvedValueOnce(abortingBody)
+        const res = await fetchListenerMessages()
+        expect(res).toEqual({ ok: false, reason: 'timeout' })
+      })
+    })
+
+    describe('rm-215: delivery-evidence fields on parsed messages', () => {
+      const baseMessage = {
+        id: 'ev-1',
+        source: 'infra',
+        kind: 'deploy-health',
+        severity: 'warning',
+        title: 'Evidence',
+        body: 'body',
+        createdAt: '2026-10-09T00:00:00Z',
+        receivedAt: '2026-10-09T00:00:01Z',
+        read: false,
+        links: [],
+      }
+
+      it('carries ingestVariant/rawDigest through the parse (golden round-trip shape)', async () => {
+        const digest = 'a'.repeat(64)
+        vi.mocked(fetch).mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              messages: [{ ...baseMessage, ingestVariant: 'hmac-sha256-v1', rawDigest: digest }],
+              unreadCount: 1,
+            }),
+            { status: 200 },
+          ),
+        )
+        const res = await fetchListenerMessages()
+        expect(res.ok).toBe(true)
+        if (res.ok) {
+          expect(res.data.messages[0]?.ingestVariant).toBe('hmac-sha256-v1')
+          expect(res.data.messages[0]?.rawDigest).toBe(digest)
+          expect(res.data.droppedCount).toBe(0)
+        }
+      })
+
+      it('absent evidence fields (older server) are tolerated and normalized to null', async () => {
+        vi.mocked(fetch).mockResolvedValueOnce(
+          new Response(JSON.stringify({ messages: [baseMessage], unreadCount: 1 }), { status: 200 }),
+        )
+        const res = await fetchListenerMessages()
+        expect(res.ok).toBe(true)
+        if (res.ok) {
+          expect(res.data.messages[0]?.ingestVariant).toBeNull()
+          expect(res.data.messages[0]?.rawDigest).toBeNull()
+        }
+      })
+
+      it('a wrong-typed evidence field is a counted drop, not a silent pass-through', async () => {
+        vi.mocked(fetch).mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({ messages: [{ ...baseMessage, ingestVariant: 42 }], unreadCount: 1 }),
+            { status: 200 },
+          ),
+        )
+        const res = await fetchListenerMessages()
+        expect(res.ok).toBe(true)
+        if (res.ok) {
+          expect(res.data.messages).toHaveLength(0)
+          expect(res.data.droppedCount).toBe(1)
+        }
+      })
+    })
   })
 
   describe('ackListenerMessage', () => {

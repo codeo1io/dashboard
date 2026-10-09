@@ -17,6 +17,17 @@ export interface ListenerMessage {
   readonly createdAt: string
   readonly receivedAt: string
   readonly read: boolean
+  /**
+   * rm-215 delivery evidence: the auth scheme that authenticated the ingest
+   * ('hmac-sha256-v1'; 'legacy' marks pre-evidence rows). Absent from older
+   * server builds — normalized to null by the parser.
+   */
+  readonly ingestVariant?: string | null
+  /**
+   * rm-215 delivery evidence: SHA-256 hex digest of the signature-verified raw
+   * body. Absent from older server builds — normalized to null by the parser.
+   */
+  readonly rawDigest?: string | null
 }
 
 export interface ListenerMessagesResponse {
@@ -39,7 +50,7 @@ function isPlainObject(val: unknown): val is Record<string, unknown> {
 function parseMessage(item: unknown): ListenerMessage | null {
   if (!isPlainObject(item)) return null
 
-  const { id, source, kind, severity, title, body, createdAt, receivedAt, read, links } = item
+  const { id, source, kind, severity, title, body, createdAt, receivedAt, read, links, ingestVariant, rawDigest } = item
 
   if (typeof id !== 'string') return null
   if (source !== 'infra' && source !== 'agent') return null
@@ -50,6 +61,16 @@ function parseMessage(item: unknown): ListenerMessage | null {
   if (typeof createdAt !== 'string') return null
   if (typeof receivedAt !== 'string') return null
   if (typeof read !== 'boolean') return null
+
+  // rm-215: evidence fields are optional (older servers omit them); when
+  // present they must be string|null — a wrong-typed value is a per-message
+  // contract mismatch, so the message is a counted drop like any other field.
+  if (ingestVariant !== undefined && typeof ingestVariant !== 'string' && ingestVariant !== null) {
+    return null
+  }
+  if (rawDigest !== undefined && typeof rawDigest !== 'string' && rawDigest !== null) {
+    return null
+  }
 
   const parsedLinks: ListenerLink[] = []
   if (Array.isArray(links)) {
@@ -73,6 +94,8 @@ function parseMessage(item: unknown): ListenerMessage | null {
     receivedAt,
     read,
     links: parsedLinks,
+    ingestVariant: ingestVariant ?? null,
+    rawDigest: rawDigest ?? null,
   }
 }
 
@@ -117,7 +140,20 @@ export async function fetchListenerMessages(opts: {
       return { ok: false, reason: 'unauthenticated' }
     }
 
-    const data = await res.json()
+    let data: unknown
+    try {
+      data = await res.json()
+    } catch (err) {
+      // rm-790: a 2xx whose body is not valid JSON is a CONTRACT regression
+      // on our side of the wire (wrong-route HTML, proxy interception, a
+      // serialization change) — drift, not an outage the operator should
+      // retry through. An AbortError is the caller's timeout firing during
+      // the body read: it keeps the pre-existing 'timeout' classification.
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        return { ok: false, reason: 'timeout' }
+      }
+      return { ok: false, reason: 'contract-drift' }
+    }
     if (!isPlainObject(data) || !Array.isArray(data.messages) || typeof data.unreadCount !== 'number') {
       return { ok: false, reason: 'contract-drift' }
     }
