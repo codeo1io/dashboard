@@ -8,9 +8,15 @@ import {useBoundedPoll} from './hooks/useBoundedPoll.ts'
 import type {OperatorState} from './operator/state.ts'
 
 /** rm-155: poll cadence for the unread badge count. */
-const UNREAD_POLL_INTERVAL_MS = 30000
+export const UNREAD_POLL_INTERVAL_MS = 30000
 /** rm-155: hard ceiling on a single poll — releases the in-flight guard even if the transport never settles. */
 const UNREAD_POLL_TIMEOUT_MS = 15000
+/** rm-784 (folded into the rm-807 batch, run 8cecf1d7 cycle:1): hard ceiling
+ * on the one-shot focus re-probe below — the same 15s ceiling as the poll
+ * bound above, applied as AbortSignal.timeout (the rm-606 house shape): a
+ * probe whose transport never settles must not consume the focus's single
+ * shot forever. Exported for the re-probe bound tests in App.test.tsx. */
+export const REPROBE_TIMEOUT_MS = 15000
 /** rm-158: consecutive poll failures before the app badge is cleared (a stale badge must not lie). */
 const UNREAD_POLL_FAILURES_BEFORE_BADGE_CLEAR = 2
 
@@ -152,13 +158,25 @@ export default function App() {
    * authExpired (re-arming the loop) and feeds the result through the same
    * result half, so the badge and indicators update immediately. Fail-closed
    * by construction: on any failure nothing latches (state changes only on
-   * success), the loop stays disabled, and the next focus retries.
+   * success), the loop stays disabled, and the next focus retries. The probe
+   * fetch is time-bounded (rm-784): see REPROBE_TIMEOUT_MS — a hang reads as
+   * just another failed probe, never a consumed shot.
    */
   useEffect(() => {
     if (!authExpired) return
     const reprobeSessionOnFocus = () => {
       void (async () => {
-        const res = await fetchListenerMessages({limit: 1, unreadOnly: true})
+        // rm-784: the probe fetch is bounded — AbortSignal.timeout, the
+        // rm-606 house shape. A transport that never settles aborts at the
+        // ceiling and reads as just another failed probe: nothing latches,
+        // the loop stays disabled, the next focus retries. The abort
+        // rejection never escapes (fetchListenerMessages maps every failure
+        // to a failed Result), so this bound owns ONLY the hang case.
+        const res = await fetchListenerMessages({
+          limit: 1,
+          unreadOnly: true,
+          abortSignal: AbortSignal.timeout(REPROBE_TIMEOUT_MS),
+        })
         if (res.ok) {
           setAuthExpired(false)
           handleUnreadResult(res)

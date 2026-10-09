@@ -112,7 +112,8 @@ describe('rm-678 schema half: live ledger', () => {
     // all sit at/below rm-744) and land as-authored, so the union
     // census is 240 + 4 = 244 defs with the ceiling moving to
     // rm-778 — pin 744 → 778 atomically with this landing.
-    expect(live.max).toBe(778)
+    expect(live.max).toBe(860)
+    // 2026-10-09 compound #13 (8cecf1d7): mints rm-860 (Actions account-level disable, blocked-external; numeral chain rm-850→rm-853 by review fix 4d008056 after duplicate vs 06c667d3, then rm-853→rm-860 by review 982c8393 after the fix turn's probe missed sibling e5b718478274's live rm-853..856 band) — 246 to 247 defs; pin 807 to 860.
     // 2026-10-09 integrate of run 9289efaa (conflict case
     // 139848e6): that run's single mint rm-703 (release.yaml
     // digest-readback SIGPIPE -- the THIRD lineage id of the

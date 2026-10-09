@@ -1,6 +1,6 @@
 import {render, screen, waitFor, act} from '@testing-library/react'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
-import App from './App.tsx'
+import App, {REPROBE_TIMEOUT_MS, UNREAD_POLL_INTERVAL_MS} from './App.tsx'
 
 // jsdom doesn't implement matchMedia — stub it (same pattern as AppShell.test.tsx)
 function stubMatchMedia() {
@@ -142,6 +142,14 @@ describe('App', () => {
       Object.defineProperty(document, 'visibilityState', {value: hidden ? 'hidden' : 'visible', configurable: true, writable: true})
     }
 
+    // rm-807: the focus re-probe family below drives the clock with fake
+    // timers; restoring here (not only inside each test) keeps a mid-test
+    // failure from leaking the fake clock into the rest of the file.
+    // vi.useRealTimers() is a no-op when real timers are already installed.
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
     it('sets the app badge from the unread count and clears it at zero', async () => {
       const {setAppBadge, clearAppBadge} = stubBadgeApis()
       const listenerApi = await import('./api/listener.ts')
@@ -178,8 +186,13 @@ describe('App', () => {
       const spy = vi.mocked(listenerApi.fetchListenerMessages)
       spy.mockResolvedValue({ok: false, reason: 'unauthenticated'})
 
+      // rm-807: fake timers — the mount poll and every settle below advance
+      // on the driven clock, so no assertion races the wall clock under
+      // full-suite load (this family's flake, assess 9d18c80b).
+      vi.useFakeTimers()
       render(<App />)
-      await waitFor(() => expect(screen.getByTestId('unread-auth-expired')).toBeInTheDocument())
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      expect(screen.getByTestId('unread-auth-expired')).toBeInTheDocument()
       // Session expiry clears the platform badge (a count nobody is refreshing
       // must not linger on the dock).
       expect(clearAppBadge).toHaveBeenCalled()
@@ -188,15 +201,20 @@ describe('App', () => {
       // not fire further polls (they could only ever 401 again). rm-487
       // narrows the freeze to the loop itself — a FOCUS event now fires
       // exactly one bounded session re-probe (cross-tab re-login recovery),
-      // which here also 401s and leaves the expired state standing.
+      // which here also 401s and leaves the expired state standing. rm-807:
+      // advancing past a full poll interval is now deterministic — the old
+      // 50ms real-clock sleep only sampled the first instant.
       spy.mockClear()
       document.dispatchEvent(new Event('visibilitychange'))
-      await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(UNREAD_POLL_INTERVAL_MS + 1000) })
       expect(spy.mock.calls.length).toBe(0)
 
       act(() => { window.dispatchEvent(new Event('focus')) })
-      await waitFor(() => expect(spy.mock.calls.length).toBe(1))
-      await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)) })
+      // rm-807: the re-probe fires synchronously with the event (the listener
+      // was attached by the already-flushed effect) — assert the call count
+      // directly instead of wall-clock waitFor racing it.
+      expect(spy.mock.calls.length).toBe(1)
+      await act(async () => { await vi.advanceTimersByTimeAsync(25) })
       expect(spy.mock.calls.length).toBe(1) // the re-probe, and nothing else
       expect(screen.getByTestId('unread-auth-expired')).toBeInTheDocument()
       // The network-stale indicator is NOT the story here — sign-in is.
@@ -210,20 +228,33 @@ describe('App', () => {
       spy.mockResolvedValueOnce({ok: false, reason: 'unauthenticated'})
       spy.mockResolvedValue({ok: true, data: {messages: [], unreadCount: 4, prunedCount: 0, droppedCount: 0}})
 
+      // rm-807: fake timers — see the rm-208 dormancy test above.
+      vi.useFakeTimers()
       render(<App />)
-      await waitFor(() => expect(screen.getByTestId('unread-auth-expired')).toBeInTheDocument())
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      expect(screen.getByTestId('unread-auth-expired')).toBeInTheDocument()
 
       // Re-login happened in another tab; focusing this one re-probes once.
       act(() => { window.dispatchEvent(new Event('focus')) })
-      await waitFor(() => expect(screen.queryByTestId('unread-auth-expired')).not.toBeInTheDocument())
+      expect(spy.mock.calls.length).toBe(2) // the mount poll, then the probe
+      // rm-807: deterministic settle — the old waitFor raced the probe's
+      // resolve against the suite's load; now the clock flushes it.
+      await act(async () => { await vi.advanceTimersByTimeAsync(25) })
+      expect(screen.queryByTestId('unread-auth-expired')).not.toBeInTheDocument()
       // The fresh count flows through the result half without remount.
-      await waitFor(() => expect(screen.getByTestId('unread-badge')).toHaveTextContent('4'))
+      expect(screen.getByTestId('unread-badge')).toHaveTextContent('4')
       expect(setAppBadge).toHaveBeenCalledWith(4)
 
-      // The loop is re-armed: the hook's own focus poll flows again.
+      // The loop is re-armed: the hook's own focus poll flows again, and the
+      // interval issues its first post-recovery poll on the driven clock
+      // (rm-807: both now deterministic).
       spy.mockClear()
       act(() => { window.dispatchEvent(new Event('focus')) })
-      await waitFor(() => expect(spy.mock.calls.length).toBe(1))
+      expect(spy.mock.calls.length).toBe(1)
+      await act(async () => { await vi.advanceTimersByTimeAsync(25) })
+      expect(spy.mock.calls.length).toBe(1) // one focus, one poll — no dupes
+      await act(async () => { await vi.advanceTimersByTimeAsync(UNREAD_POLL_INTERVAL_MS) })
+      expect(spy.mock.calls.length).toBe(2) // the re-armed interval tick
     })
 
     it('rm-487: a failed focus re-probe stays fail-closed and retries on the next focus', async () => {
@@ -233,22 +264,35 @@ describe('App', () => {
       spy.mockResolvedValueOnce({ok: false, reason: 'unauthenticated'})
       spy.mockResolvedValue({ok: false, reason: 'network'})
 
+      // rm-807: fake timers — this is the test whose call-count waitFor
+      // flaked under full-suite load (assess 9d18c80b, run#1: 2 of 1203).
+      // The count is now asserted synchronously at dispatch and settled on
+      // the driven clock.
+      vi.useFakeTimers()
       render(<App />)
-      await waitFor(() => expect(screen.getByTestId('unread-auth-expired')).toBeInTheDocument())
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      expect(screen.getByTestId('unread-auth-expired')).toBeInTheDocument()
       spy.mockClear()
 
       // Each focus probes exactly once; failures latch nothing (a network
       // failure is not evidence the session is still alive — or dead).
       act(() => { window.dispatchEvent(new Event('focus')) })
-      await waitFor(() => expect(spy.mock.calls.length).toBe(1))
-      await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)) })
+      expect(spy.mock.calls.length).toBe(1)
+      await act(async () => { await vi.advanceTimersByTimeAsync(25) })
       expect(screen.getByTestId('unread-auth-expired')).toBeInTheDocument()
       expect(spy.mock.calls.length).toBe(1)
 
       // The retry affordance is the next focus itself.
       act(() => { window.dispatchEvent(new Event('focus')) })
-      await waitFor(() => expect(spy.mock.calls.length).toBe(2))
+      expect(spy.mock.calls.length).toBe(2)
+      await act(async () => { await vi.advanceTimersByTimeAsync(25) })
+      expect(spy.mock.calls.length).toBe(2)
       expect(screen.getByTestId('unread-auth-expired')).toBeInTheDocument()
+
+      // And the loop stays dead through it all: a full interval of driven
+      // time fires no further poll (rm-807: deterministic, not sampled).
+      await act(async () => { await vi.advanceTimersByTimeAsync(UNREAD_POLL_INTERVAL_MS) })
+      expect(spy.mock.calls.length).toBe(2)
     })
 
     it('rm-208: a two-failure streak marks the rendered badge stale (aria + title with the last-good timestamp)', async () => {
@@ -615,5 +659,102 @@ describe('fetchFixtureSession time bound (rm-606)', () => {
 
     expect(result?.fixtureMode).toBe(true)
     expect(result?.fixtureSessionId).toBe('fixture-session-0001')
+  })
+})
+
+// ── rm-784 (folded into rm-807, run 8cecf1d7 cycle:1): the focus re-probe
+// fetch must be time-bounded ──────────────────────────────────────────────
+// The re-probe previously carried NO bound — a transport that never settled
+// consumed the focus's single-shot probe forever. This exercises the REAL
+// fetchListenerMessages through App's focus wiring with a stubbed global
+// fetch (the rm-606 shape), driven on the fake clock.
+
+// The rm-784 test shims AbortSignal.timeout onto the faked clock (see its
+// body for why); the spy is restored by vi.restoreAllMocks in afterEach.
+
+describe('focus re-probe fetch bound (rm-784, via rm-807)', () => {
+  beforeEach(async () => {
+    stubMatchMedia()
+    window.localStorage.clear()
+    document.documentElement.removeAttribute('data-theme')
+    // Settle fixture detection without a fetch, and keep the operator runtime
+    // inert — only the listener fetch path is under test here.
+    const fixtureLoader = await import('./operator/fixture-runtime-loader.ts')
+    vi.spyOn(fixtureLoader, 'fetchFixtureSession').mockResolvedValue(null)
+    const runtimeModule = await import('./operator/runtime.ts')
+    vi.spyOn(runtimeModule, 'createOperatorRuntime').mockImplementation(() => ({
+      isMounted: true,
+      cleanup: vi.fn(),
+    }))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('a hanging re-probe aborts at the bound, latches nothing, and the next focus retries', async () => {
+    vi.useFakeTimers()
+    // jsdom's AbortSignal.timeout (AbortSignal-impl.js: globalObject.setTimeout)
+    // schedules OUTSIDE the timers vitest fakes, so the driven clock cannot
+    // fire the real static. Shim it with the same contract — abort at the
+    // bound with a TimeoutError DOMException, scheduled on the faked globals
+    // — while the wiring under test (bound value, signal forwarding, abort
+    // settle, fail-closed, retry) stays fully real. rm-606's tests cover the
+    // real static's own behavior under real timers.
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => {
+      const controller = new AbortController()
+      setTimeout(() => controller.abort(new DOMException('The operation timed out.', 'TimeoutError')), ms)
+      return controller.signal
+    })
+    const probes: {url: string; signal: AbortSignal | null}[] = []
+    vi.stubGlobal('fetch', vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = String(url)
+      if (!urlStr.includes('/api/listener/messages')) {
+        // Anything else that fetches at mount must not hang the test.
+        return Promise.resolve(new Response(null, {status: 404}))
+      }
+      probes.push({url: urlStr, signal: init?.signal ?? null})
+      if (probes.length === 1) {
+        // The mount poll: the session is expired.
+        return Promise.resolve(new Response(null, {status: 401}))
+      }
+      // Every later listener fetch (the focus re-probe): never resolves on
+      // its own, rejects on abort exactly like the real fetch — which is
+      // what proves the re-probe actually PASSES the bounded signal.
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason))
+      })
+    }))
+
+    render(<App />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByTestId('unread-auth-expired')).toBeInTheDocument()
+
+    // Focus fires the probe; its fetch carries a signal and hangs.
+    act(() => { window.dispatchEvent(new Event('focus')) })
+    const probe = probes[1]
+    expect(probe?.url).toContain('/api/listener/messages')
+    expect(probe?.signal).toBeInstanceOf(AbortSignal)
+
+    // Inside the bound: nothing has settled — the probe is still in flight
+    // and the expired state stands.
+    await act(async () => { await vi.advanceTimersByTimeAsync(REPROBE_TIMEOUT_MS - 1) })
+    expect(probe?.signal?.aborted).toBe(false)
+    expect(screen.getByTestId('unread-auth-expired')).toBeInTheDocument()
+
+    // At the bound the signal fires, the hanging fetch rejects, and the
+    // probe resolves failed — NOTHING latches: expired stands, the loop
+    // stays down. fetchListenerMessages maps the abort to a failed Result,
+    // so no rejection escapes either.
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    expect(probe?.signal?.aborted).toBe(true)
+    expect(screen.getByTestId('unread-auth-expired')).toBeInTheDocument()
+
+    // Fail-closed is not a latch: the very next focus probes again
+    // (single-shot-per-focus stands — the bound owns only the hang case).
+    act(() => { window.dispatchEvent(new Event('focus')) })
+    expect(probes.length).toBe(3)
   })
 })
