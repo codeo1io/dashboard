@@ -53,11 +53,14 @@ export function makeEnumerateSuccess(
     repos?: readonly RepoRecord[]
     installations?: readonly InstallationRecord[]
     failedInstallationIds?: readonly number[]
+    /** rm-868: true when a fixture should look like a page-ceiling partial. */
+    enumerationIncomplete?: boolean
   } = {},
 ): Result<EnumerateReposResult, FetchInstallationsError> {
   return ok({
     repos: [...(overrides.repos ?? [])],
     installations: [...(overrides.installations ?? [])],
     failedInstallationIds: [...(overrides.failedInstallationIds ?? [])],
+    enumerationIncomplete: overrides.enumerationIncomplete ?? false,
   })
 }

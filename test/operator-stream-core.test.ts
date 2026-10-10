@@ -6088,6 +6088,7 @@ describe('initOperatorStream — late-frame guard: closed stream does not mutate
     const streamStateMessages = [
       'Connecting to run stream',
       'Stream version mismatch',
+      'Stream closed before any verified frame',
       'Run stream unavailable',
       'Stream temporarily unavailable',
       'Stream connection failed',
@@ -7503,5 +7504,305 @@ describe('connection lifecycle — stranded connections abort (rm-261)', () => {
     expect(signals[0]?.aborted).toBe(true) // response body cancelled, socket released
     expect(fetchCount).toBe(1) // backoff (1s) has not fired within the tick
     expect(noticeEl.dataset.connectionState).toBeTruthy()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-866: stream-closed zero-frame truth — the first verified frame gates the
+// terminal close. A stream that ends before ANY verified frame never
+// legitimately "ended"; it must surface contract-drift with retry
+// eligibility instead of the benign terminal close.
+// ---------------------------------------------------------------------------
+
+describe('rm-866: stream-closed zero-frame truth', () => {
+  it('zero-frame terminal from INITIAL_STATE surfaces drift + retry eligibility, not the benign close', () => {
+    const next = nextStreamState(INITIAL_STATE, {type: 'stream-closed'})
+
+    expect(next.connection).toBe('drift')
+    expect(next.shouldReconnect).toBe(true)
+    expect(next.driftReason).toBe('zero-frame')
+  })
+
+  it('clean close only after a verified frame: frame-verified gates stream-closed', () => {
+    const live = nextStreamState(INITIAL_STATE, {type: 'ready', data: {contractVersion: PINNED_CONTRACT_VERSION}})
+    const verified = nextStreamState(live, {type: 'frame-verified'})
+
+    expect(verified.firstFrameSeen).toBe(true)
+
+    const closed = nextStreamState(verified, {type: 'stream-closed'})
+    expect(closed.connection).toBe('closed')
+    expect(closed.shouldReconnect).toBe(false)
+    expect(closed.driftReason).toBeUndefined()
+  })
+
+  it('ready with an unsupported contract version tags driftReason contract-version (render discrimination)', () => {
+    const next = nextStreamState(INITIAL_STATE, {type: 'ready', data: {contractVersion: '0.0.0-unknown'}})
+
+    expect(next.connection).toBe('drift')
+    expect(next.driftReason).toBe('contract-version')
+  })
+
+  it('frame-verified preserves the clean-EOF retry budget (bounding survives frames per cycle)', () => {
+    const budgeted = {...INITIAL_STATE, retryCount: 3}
+
+    const verified = nextStreamState(budgeted, {type: 'frame-verified'})
+
+    expect(verified.retryCount).toBe(3)
+    expect(verified.firstFrameSeen).toBe(true)
+  })
+
+  it('first-frame-timeout stays inert on terminal states (timer short-circuits once terminal)', () => {
+    for (const terminal of ['failed', 'closed', 'drift'] as const) {
+      const state = {...INITIAL_STATE, connection: terminal, firstFrameSeen: true}
+      const next = nextStreamState(state, {type: 'first-frame-timeout'})
+      expect(next.connection).toBe(terminal)
+    }
+  })
+
+  it('exhaustion truth survives the trailing EOF: stream-closed does not overwrite failed', () => {
+    // A budget that exhausted on a mid-stream transition (reset's own cap
+    // branch) meets the trailing clean EOF — the benign close must not
+    // repaint 'Run stream ended' over the failed notice.
+    const failed: StreamState = {
+      ...INITIAL_STATE,
+      connection: 'failed',
+      shouldReconnect: false,
+      firstFrameSeen: true,
+    }
+
+    const next = nextStreamState(failed, {type: 'stream-closed'})
+
+    expect(next.connection).toBe('failed')
+    expect(next.shouldReconnect).toBe(false)
+  })
+
+  it('contract-drift truth survives the trailing EOF (version-mismatch notice is not repainted benign)', () => {
+    const drifted = nextStreamState(INITIAL_STATE, {type: 'ready', data: {contractVersion: '0.0.0-unknown'}})
+
+    expect(drifted.connection).toBe('drift')
+
+    const next = nextStreamState(drifted, {type: 'stream-closed'})
+
+    expect(next.connection).toBe('drift')
+    expect(next.driftReason).toBe('contract-version')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-867: clean-EOF reconnect budget. The done branch used to schedule
+// reconnects whenever shouldReconnect was true WITHOUT incrementing
+// retryCount, so consecutive accept-then-EOF cycles retried forever at
+// frozen backoff. Clean-EOF-triggered reconnects now join the retry budget.
+// ---------------------------------------------------------------------------
+
+describe('rm-867: clean-EOF reconnect budget', () => {
+  it('clean-eof-reconnect increments the budget and moves to reconnecting', () => {
+    const next = nextStreamState(
+      {...INITIAL_STATE, connection: 'live', shouldReconnect: true},
+      {type: 'clean-eof-reconnect'},
+    )
+
+    expect(next.connection).toBe('reconnecting')
+    expect(next.retryCount).toBe(1)
+    expect(next.shouldReconnect).toBe(true)
+  })
+
+  it('consecutive accept-then-EOF drift cycles are bounded: exhaustion is terminal fail-closed', () => {
+    let state: StreamState = {...INITIAL_STATE, connection: 'drift', shouldReconnect: true, retryCount: 0}
+
+    let dispatches = 0
+    while (state.shouldReconnect && dispatches < 50) {
+      state = nextStreamState(state, {type: 'clean-eof-reconnect'})
+      dispatches++
+      if (state.shouldReconnect) {
+        // the reconnect attempt itself drifts again (gap-detected) and EOFs
+        state = {...state, connection: 'drift'}
+      }
+    }
+
+    expect(dispatches).toBe(RETRY_MAX_COUNT + 1)
+    expect(state.connection).toBe('failed')
+    expect(state.shouldReconnect).toBe(false)
+  })
+
+  it('a cycle already charged by reset is not double-charged by its EOF', () => {
+    // The reader marks the reset-armed cycle (frames verified, reset charged)
+    // with armedByReset — the EOF re-arms without charging.
+    const next = nextStreamState(
+      {...INITIAL_STATE, connection: 'reconnecting', retryCount: 1, shouldReconnect: true},
+      {type: 'clean-eof-reconnect', data: {armedByReset: true}},
+    )
+
+    expect(next.retryCount).toBe(1)
+    expect(next.connection).toBe('reconnecting')
+    expect(next.shouldReconnect).toBe(true)
+  })
+
+  it('a frameless EOF cycle charges the budget even from a prior-cycle reconnecting state (no frozen loop)', () => {
+    // Armed by a PREVIOUS cycle (e.g. a network-error left 'reconnecting' at
+    // retryCount 1) and this cycle verified no frame — nothing charged it, so
+    // the EOF must charge, or consecutive frameless accept-then-EOF cycles
+    // retry forever at frozen backoff.
+    const next = nextStreamState(
+      {...INITIAL_STATE, connection: 'reconnecting', retryCount: 1, shouldReconnect: true},
+      {type: 'clean-eof-reconnect'},
+    )
+
+    expect(next.retryCount).toBe(2)
+    expect(next.connection).toBe('reconnecting')
+    expect(next.shouldReconnect).toBe(true)
+  })
+})
+
+describe('rm-867: shell — consecutive accept-then-EOF reconnects are bounded', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('stops reconnecting after the budget exhausts (regression: forever at frozen backoff)', async () => {
+    vi.useFakeTimers()
+    const encoder = new TextEncoder()
+    // Every connection accepts, delivers the ready handshake plus a reset
+    // (shouldReconnect stays true), then hits clean EOF — the exact
+    // accept-then-EOF flapping shape the budget must bound.
+    const verifiedThenReset = [
+      `event: ready\ndata: {"contractVersion":"${PINNED_CONTRACT_VERSION}"}\n\n`,
+      `event: status\ndata: ${JSON.stringify({...ACTIVE_STATUS, runId: 'run-001'})}\n\n`,
+      'event: reset\ndata: {"runId":"run-001","reason":"shutdown"}\n\n',
+    ]
+    let fetchCalls = 0
+    const streamWith = (chunks: string[]) => ({
+      ok: true,
+      status: 200,
+      headers: {
+        get: (name: string) => (name.toLowerCase() === 'content-type' ? 'text/event-stream' : null),
+      },
+      body: {
+        getReader: () => {
+          let index = 0
+          return {
+            read: async () =>
+              index < chunks.length
+                ? {done: false, value: encoder.encode(chunks[index++])}
+                : {done: true, value: undefined},
+          }
+        },
+      },
+    })
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      fetchCalls++
+      return fetchCalls === 1 ? streamWith(verifiedThenReset) : streamWith(verifiedThenReset)
+    }))
+
+    const statusEl = makeFakeEl()
+    const noticeEl = makeFakeEl()
+    initOperatorStream({runId: 'run-001', statusEl, noticeEl})
+
+    // Advance virtual time generously past every backoff window
+    // (RETRY_BASE_MS * RETRY_FACTOR^n ≈ 31s for five retries).
+    for (let tick = 0; tick < 90; tick++) {
+      await vi.advanceTimersByTimeAsync(1000)
+    }
+
+    // Bounded: the seeded reset (1) plus the budgeted clean-EOF reconnects
+    // must not exceed the retry budget, and the terminal state is the
+    // fail-closed one with its "Give up" truth notice.
+    expect(fetchCalls).toBeGreaterThan(1)
+    expect(fetchCalls).toBeLessThanOrEqual(RETRY_MAX_COUNT + 3)
+    expect(noticeEl.textContent).toContain('Stream connection failed.')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-866/rm-867: shell — zero-frame and frameless-EOF flapping. Drift retry
+// eligibility must be ACTED on (a parked drift notice that says
+// "reconnecting" while nothing reconnects is the old death-lie), and an
+// armed cycle followed by frameless accept-then-EOF cycles must charge each
+// frameless cycle — the done branch's EOF handling is the only charger left.
+// ---------------------------------------------------------------------------
+
+describe('rm-866/rm-867: shell — zero-frame and frameless-EOF flapping gateways', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  const makeStream = (chunks: string[]) => {
+    const encoder = new TextEncoder()
+    return {
+      ok: true,
+      status: 200,
+      headers: {
+        get: (name: string) => (name.toLowerCase() === 'content-type' ? 'text/event-stream' : null),
+      },
+      body: {
+        getReader: () => {
+          let index = 0
+          return {
+            read: async () =>
+              index < chunks.length
+                ? {done: false, value: encoder.encode(chunks[index++])}
+                : {done: true, value: undefined},
+          }
+        },
+      },
+    }
+  }
+
+  const drainTimers = async () => {
+    for (let tick = 0; tick < 90; tick++) {
+      await vi.advanceTimersByTimeAsync(1000)
+    }
+  }
+
+  it('zero-frame EOF cycles act on drift retry eligibility: bounded retries land failed, not a parked drift notice', async () => {
+    vi.useFakeTimers()
+    let fetchCalls = 0
+    // Every connection: 200 + text/event-stream, then immediate clean EOF
+    // without a single frame — the zero-frame drift shape.
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      fetchCalls++
+      return makeStream([])
+    }))
+
+    const statusEl = makeFakeEl()
+    const noticeEl = makeFakeEl()
+    initOperatorStream({runId: 'run-001', statusEl, noticeEl})
+
+    await drainTimers()
+
+    // The drift notice promises a reconnect — one must actually happen, the
+    // budget must bound the loop (backoff grows to RETRY_MAX_COUNT), and the
+    // terminal state is the fail-closed notice.
+    expect(fetchCalls).toBeGreaterThan(1)
+    expect(fetchCalls).toBeLessThanOrEqual(RETRY_MAX_COUNT + 2)
+    expect(noticeEl.textContent).toContain('Stream connection failed.')
+  })
+
+  it('frameless accept-then-EOF cycles after an armed cycle charge every frameless EOF (frozen-backoff regression)', async () => {
+    vi.useFakeTimers()
+    const verifiedThenReset = [
+      `event: ready\ndata: {"contractVersion":"${PINNED_CONTRACT_VERSION}"}\n\n`,
+      `event: status\ndata: ${JSON.stringify({...ACTIVE_STATUS, runId: 'run-001'})}\n\n`,
+      'event: reset\ndata: {"runId":"run-001","reason":"shutdown"}\n\n',
+    ]
+    let fetchCalls = 0
+    // Cycle 1 arms the reconnect via a reset (charged); every later cycle
+    // accepts then EOFs WITHOUT any frame — only the EOF can charge.
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      fetchCalls++
+      return makeStream(fetchCalls === 1 ? verifiedThenReset : [])
+    }))
+
+    const statusEl = makeFakeEl()
+    const noticeEl = makeFakeEl()
+    initOperatorStream({runId: 'run-001', statusEl, noticeEl})
+
+    await drainTimers()
+
+    expect(fetchCalls).toBeGreaterThan(1)
+    expect(fetchCalls).toBeLessThanOrEqual(RETRY_MAX_COUNT + 2)
+    expect(noticeEl.textContent).toContain('Stream connection failed.')
   })
 })

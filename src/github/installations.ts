@@ -96,12 +96,49 @@ export interface EnumerateReposResult {
    * snapshot as complete (fail-visible enumeration).
    */
   readonly failedInstallationIds: readonly number[]
+  /**
+   * rm-868: at least one walk hit the `MAX_ENUMERATION_PAGES` ceiling and
+   * was served as a partial. Like `failedInstallationIds`, true means the
+   * union is PARTIAL — surface it, never present it as complete
+   * (fail-visible enumeration).
+   */
+  readonly enumerationIncomplete: boolean
 }
 
 export class FetchInstallationsError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'FetchInstallationsError'
+  }
+}
+
+/**
+ * rm-868: hard page ceiling for the REST walkers. GitHub pagination is
+ * unbounded upstream; a walker whose termination predicate never fires
+ * would spin forever. When the ceiling is hit the walker throws this
+ * error carrying the partial rows collected so far, so enumeration can
+ * degrade visibly (partial census + `enumerationIncomplete`) instead of
+ * hanging or silently truncating.
+ */
+export const MAX_ENUMERATION_PAGES = 20
+
+export class EnumerationPageCeilingError extends Error {
+  readonly failureReason: 'enumeration-page-ceiling'
+  readonly partialRepos: readonly Omit<RepoRecord, 'installation_id'>[]
+  readonly partialInstallations: readonly InstallationRecord[]
+
+  constructor(
+    message: string,
+    partial: {
+      repos?: readonly Omit<RepoRecord, 'installation_id'>[]
+      installations?: readonly InstallationRecord[]
+    } = {},
+  ) {
+    super(message)
+    this.name = 'EnumerationPageCeilingError'
+    this.failureReason = 'enumeration-page-ceiling'
+    this.partialRepos = partial.repos ?? []
+    this.partialInstallations = partial.installations ?? []
   }
 }
 
@@ -312,12 +349,25 @@ export async function enumerateRepos(
   client: InstallationsClient,
 ): Promise<Result<EnumerateReposResult, FetchInstallationsError>> {
   let installations: readonly InstallationRecord[]
+  let enumerationIncomplete = false
   try {
     installations = await client.listInstallations()
   } catch (error) {
-    const msg = safeErrorMessage(error)
-    logger.error('Failed to list GitHub App installations', {error: msg})
-    return err(new FetchInstallationsError(`Failed to list installations: ${msg}`))
+    // rm-868: a page-ceiling-capped census degrades visibly — serve the
+    // partial census with `enumerationIncomplete` set instead of failing
+    // the whole enumeration.
+    if (error instanceof EnumerationPageCeilingError && error.partialInstallations.length > 0) {
+      installations = error.partialInstallations
+      enumerationIncomplete = true
+      logger.warning('Installations walk hit the page ceiling; serving partial census', {
+        installations: installations.length,
+        pages: MAX_ENUMERATION_PAGES,
+      })
+    } else {
+      const msg = safeErrorMessage(error)
+      logger.error('Failed to list GitHub App installations', {error: msg})
+      return err(new FetchInstallationsError(`Failed to list installations: ${msg}`))
+    }
   }
 
   if (installations.length === 0) {
@@ -325,7 +375,7 @@ export async function enumerateRepos(
     // census means NO installations are reachable, so no cached token can
     // still be needed.
     pruneTokenCache(new Set<number>())
-    return ok({repos: [], installations: [], failedInstallationIds: []})
+    return ok({repos: [], installations: [], failedInstallationIds: [], enumerationIncomplete: false})
   }
 
   // The successful census is the ground truth for which installation tokens
@@ -355,6 +405,22 @@ export async function enumerateRepos(
     try {
       repos = await client.listInstallationRepos(token)
     } catch (repoError) {
+      // rm-868: absorb partial rows from a ceiling-capped walk — degrade
+      // visibly (flag the snapshot) instead of discarding the rows.
+      if (repoError instanceof EnumerationPageCeilingError && repoError.partialRepos.length > 0) {
+        logger.warning('Repos walk hit the page ceiling; serving partial repos', {
+          installationId: installation.id,
+          repos: repoError.partialRepos.length,
+          pages: MAX_ENUMERATION_PAGES,
+        })
+        enumerationIncomplete = true
+        for (const repo of repoError.partialRepos) {
+          if (!reposByNodeId.has(repo.node_id)) {
+            reposByNodeId.set(repo.node_id, {...repo, installation_id: installation.id})
+          }
+        }
+        continue
+      }
       logger.warning('Failed to list repos for installation; counting degraded installation', {
         installationId: installation.id,
         error: safeErrorMessage(repoError),
@@ -377,6 +443,7 @@ export async function enumerateRepos(
     repos: [...reposByNodeId.values()],
     installations,
     failedInstallationIds,
+    enumerationIncomplete,
   })
 }
 
@@ -398,7 +465,7 @@ async function listInstallationReposWithToken(token: string): Promise<readonly O
 
   const repos: Omit<RepoRecord, 'installation_id'>[] = []
   let page = 1
-  while (true) {
+  while (page <= MAX_ENUMERATION_PAGES) {
     const response = await installOctokit.request('GET /installation/repositories', {
       per_page: 100,
       page,
@@ -422,10 +489,14 @@ async function listInstallationReposWithToken(token: string): Promise<readonly O
         full_name: repo.full_name,
       })
     }
-    if (repos.length >= data.total_count || data.repositories.length < 100) break
+    if (repos.length >= data.total_count || data.repositories.length < 100) return repos
     page++
   }
-  return repos
+  // rm-868: endless/under-terminated pagination — fail with the partial rows.
+  throw new EnumerationPageCeilingError(
+    `GET /installation/repositories exceeded the ${MAX_ENUMERATION_PAGES}-page enumeration ceiling`,
+    {repos},
+  )
 }
 
 /**
@@ -436,7 +507,7 @@ export function buildInstallationsClient(appClient: DashboardAppClient): Install
   async function listInstallations(): Promise<readonly InstallationRecord[]> {
     const installations: InstallationRecord[] = []
     let page = 1
-    while (true) {
+    while (page <= MAX_ENUMERATION_PAGES) {
       const response = await appClient.octokit.request('GET /app/installations', {
         per_page: 100,
         page,
@@ -448,10 +519,14 @@ export function buildInstallationsClient(appClient: DashboardAppClient): Install
           account: install.account?.login ?? null,
         })
       }
-      if (data.length < 100) break
+      if (data.length < 100) return installations
       page++
     }
-    return installations
+    // rm-868: endless/under-terminated pagination — fail with the partial census.
+    throw new EnumerationPageCeilingError(
+      `GET /app/installations exceeded the ${MAX_ENUMERATION_PAGES}-page enumeration ceiling`,
+      {installations},
+    )
   }
 
   return {

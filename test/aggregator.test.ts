@@ -70,8 +70,9 @@ function makeMetadataResult(overrides: {
 function makeEnumerateResult(
   repos: ReturnType<typeof makeRepo>[],
   failedInstallationIds: readonly number[] = [],
+  enumerationIncomplete = false,
 ): Result<EnumerateReposResult, FetchInstallationsError> {
-  return ok({repos, installations: [{id: 1, account: 'fro-bot'}], failedInstallationIds})
+  return ok({repos, installations: [{id: 1, account: 'fro-bot'}], failedInstallationIds, enumerationIncomplete})
 }
 
 /**
@@ -889,6 +890,29 @@ describe('aggregator — fail-visible partial enumeration', () => {
     expect(snap.repos).toHaveLength(0)
     expect(snap.enumerationIncomplete).toBe(2)
     expect(snap.staleBanner).toBe(true)
+  })
+
+  it('rm-868: a page-ceiling census with zero failed installations still surfaces partial — never reads as complete', async () => {
+    // The walker hit MAX_ENUMERATION_PAGES and returned its partial with
+    // enumerationIncomplete=true but NO outright installation failure. The
+    // snapshot must still carry the degradation signal (folded to ≥1) and
+    // the banner — a capped census is partial no matter why it was capped.
+    const repo = makeRepo({node_id: 'NODE_C', owner: 'org', name: 'repo-capped'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo], [], true)),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_C', owner: 'org', name: 'repo-capped'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.enumerationIncomplete).toBe(1)
+    expect(snap.staleBanner).toBe(true)
+    expect(snap.repos).toHaveLength(1)
   })
 })
 
