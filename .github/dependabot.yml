@@ -64,6 +64,13 @@ updates:
       # Re-evaluate: 2026-10-21.
       - dependency-name: vitest
         update-types: ['version-update:semver-major']
+      # 2026-10-09 (repository-maintenance cycle:1 run d823703c, rm-833):
+      # vite-plugin-pwa 2.0.0's breaking surface is peer-surface only and we
+      # use strategies injectManifest with the hand-written sw.ts, but the
+      # bump is deferred until rm-138 decides PWA strip-or-implement —
+      # re-evaluate alongside rm-138/rm-133's 2026-10-21 window.
+      - dependency-name: vite-plugin-pwa
+        update-types: ['version-update:semver-major']
       - dependency-name: typescript
         update-types: ['version-update:semver-major']
 

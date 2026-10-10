@@ -50,8 +50,18 @@ describe('Notifications Component', () => {
     metaTag = null
   }
 
+  // rm-651 (2026-10-09): clear both storages after each test too, so a
+  // failing test cannot poison the file for whichever test runs next (the
+  // rm-596 full-suite flake class).
+  afterEach(() => {
+    localStorage.clear()
+    sessionStorage.clear()
+    removeMetaTag()
+  })
+
   beforeEach(() => {
     localStorage.clear()
+    sessionStorage.clear()
     vi.clearAllMocks()
     removeMetaTag()
 
@@ -675,9 +685,14 @@ describe('Notifications Component', () => {
     addMetaTag()
     const postMessage = vi.fn()
     const mockController = {postMessage}
-
+    // rm-651 (2026-10-09): this stub must stay configurable + be restored,
+    // otherwise a non-configurable own 'serviceWorker' survives the test and
+    // the sibling defineProperty stubs throw 'Cannot redefine property' under
+    // any non-default test ordering (reproduced with --sequence.shuffle).
+    const originalSw = Object.getOwnPropertyDescriptor(globalThis.navigator, 'serviceWorker')
     Object.defineProperty(navigator, 'serviceWorker', {
       writable: true,
+      configurable: true,
       value: {
         controller: mockController,
         ready: Promise.resolve({}),
@@ -685,19 +700,26 @@ describe('Notifications Component', () => {
         removeEventListener: vi.fn(),
       },
     })
+    try {
+      await act(async () => {
+        render(<Notifications />)
+      })
 
-    await act(async () => {
-      render(<Notifications />)
-    })
+      const syncBtn = screen.getByTestId('synthetic-push-btn')
+      expect(syncBtn).toBeInTheDocument()
 
-    const syncBtn = screen.getByTestId('synthetic-push-btn')
-    expect(syncBtn).toBeInTheDocument()
-
-    fireEvent.click(syncBtn)
-    expect(postMessage).toHaveBeenCalledWith({
-      type: 'MOCK_SYNTHETIC_PUSH',
-      payload: {type: 'approval'},
-    })
+      fireEvent.click(syncBtn)
+      expect(postMessage).toHaveBeenCalledWith({
+        type: 'MOCK_SYNTHETIC_PUSH',
+        payload: {type: 'approval'},
+      })
+    } finally {
+      if (originalSw) {
+        Object.defineProperty(globalThis.navigator, 'serviceWorker', originalSw)
+      } else {
+        Reflect.deleteProperty(globalThis.navigator, 'serviceWorker')
+      }
+    }
   })
 
   describe('rm-600 — VAPID key-version cache wiring (getCurrentKeyVersion supplier)', () => {
