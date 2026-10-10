@@ -2521,3 +2521,55 @@ describe('createOperatorSseReader — rm-157 supported-versions window', () => {
     }
   })
 })
+
+function trackZeroFrameHandlers(calls: string[], frames: string[]) {
+  return {
+    onEvent: (frame: {type: string}) => {
+      calls.push('event')
+      frames.push(frame.type)
+    },
+    onError: (error: Error) => {
+      calls.push(`error:${error.message}`)
+    },
+    onClose: () => {
+      calls.push('close')
+    },
+  }
+}
+
+describe('operator SSE reader: zero-frame streams fail closed (rm-851)', () => {
+  const route = `/operator/runs/${FIXTURE_RUN_ID_FOR_TESTS}/stream`
+
+  it('a 200 stream that ends with zero frames errors with contract-drift instead of closing cleanly', async () => {
+    const calls: string[] = []
+    const frames: string[] = []
+    const reader = createOperatorSseReader({fetchImpl: async () => makeResponse(200, [])})
+    await reader.open(route, trackZeroFrameHandlers(calls, frames))
+    expect(frames).toEqual([])
+    expect(calls).toEqual(['error:contract-drift: stream ended before a ready frame', 'close'])
+  })
+
+  it('a heartbeat-only 200 stream that never sends a ready frame also fails closed at EOF', async () => {
+    const calls: string[] = []
+    const frames: string[] = []
+    const reader = createOperatorSseReader({
+      fetchImpl: async () => makeResponse(200, [': keepalive\n\n', ': keepalive\n\n']),
+    })
+    await reader.open(route, trackZeroFrameHandlers(calls, frames))
+    expect(frames).toEqual([])
+    expect(calls).toEqual(['error:contract-drift: stream ended before a ready frame', 'close'])
+  })
+
+  it('a stream that delivered a ready frame before clean EOF still closes cleanly with no error', async () => {
+    const calls: string[] = []
+    const frames: string[] = []
+    const sseBytes = serializeScenarioToSse(FIXTURE_SCENARIO_NAMES.success, FIXTURE_RUN_ID_FOR_TESTS)
+    const reader = createOperatorSseReader({
+      fetchImpl: async () => makeResponse(200, [sseBytes.slice(0, 7), sseBytes.slice(7)]),
+    })
+    await reader.open(route, trackZeroFrameHandlers(calls, frames))
+    expect(frames).toContain('ready')
+    expect(calls.filter(c => c.startsWith('error:'))).toEqual([])
+    expect(calls.at(-1)).toBe('close')
+  })
+})

@@ -63,13 +63,15 @@ describe('listener store rm-187 (degraded links cell never 500s the messages rea
 
     expect(page.messages).toHaveLength(3)
     const degraded = page.messages.find(m => m.title === 'corrupt json row')
-    expect(degraded).toBeDefined()
-    expect(degraded!.links).toEqual([])
-    expect(degraded!.kind).toBe('deploy-health')
-    expect(degraded!.severity).toBe('warning')
-    expect(degraded!.body).toBe('b')
+    if (degraded === undefined) throw new Error('expected degraded row for corrupt json row')
+    expect(degraded.links).toEqual([])
+    expect(degraded.kind).toBe('deploy-health')
+    expect(degraded.severity).toBe('warning')
+    expect(degraded.body).toBe('b')
     // The healthy rows keep their links.
-    expect(page.messages.find(m => m.title === 'healthy row')!.links).toEqual([{label: 'L', url: 'https://example.com'}])
+    const healthy = page.messages.find(m => m.title === 'healthy row')
+    if (healthy === undefined) throw new Error('expected healthy row')
+    expect(healthy.links).toEqual([{label: 'L', url: 'https://example.com'}])
     // Observable by design: every degraded read logs once.
     expect(warn).toHaveBeenCalledTimes(1)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('degraded links cell on message'))
@@ -85,9 +87,14 @@ describe('listener store rm-187 (degraded links cell never 500s the messages rea
     const page = store.list({})
 
     expect(page.messages).toHaveLength(3)
-    expect(page.messages.find(m => m.title === 'corrupt json row')!.links).toEqual([])
-    expect(page.messages.find(m => m.title === 'non-array row')!.links).toEqual([])
-    expect(page.messages.find(m => m.title === 'healthy row')!.links).toHaveLength(1)
+    const linksByTitle = (title: string) => {
+      const row = page.messages.find(m => m.title === title)
+      if (row === undefined) throw new Error(`expected row for ${title}`)
+      return row.links
+    }
+    expect(linksByTitle('corrupt json row')).toEqual([])
+    expect(linksByTitle('non-array row')).toEqual([])
+    expect(linksByTitle('healthy row')).toHaveLength(1)
   })
 
   it('GET /api/listener/messages returns 200 with the healthy rows when a links cell is corrupt (endpoint-level)', async () => {
@@ -113,8 +120,13 @@ describe('listener store rm-187 (degraded links cell never 500s the messages rea
     expect(res.status).toBe(200)
     const body = (await res.json()) as {messages: {title: string; links: {label: string; url: string}[]}[]}
     expect(body.messages).toHaveLength(3)
-    expect(body.messages.find(m => m.title === 'corrupt json row')!.links).toEqual([])
-    expect(body.messages.find(m => m.title === 'healthy row')!.links).toEqual([{label: 'L', url: 'https://example.com'}])
+    const linksByTitle = (title: string) => {
+      const row = body.messages.find(m => m.title === title)
+      if (row === undefined) throw new Error(`expected row for ${title}`)
+      return row.links
+    }
+    expect(linksByTitle('corrupt json row')).toEqual([])
+    expect(linksByTitle('healthy row')).toEqual([{label: 'L', url: 'https://example.com'}])
     expect(warn).toHaveBeenCalled()
     warn.mockRestore()
   })
@@ -125,6 +137,97 @@ describe('listener store rm-187 (degraded links cell never 500s the messages rea
     const store = createListenerStore(dbPath)
     const page = store.list({})
     expect(page.messages).toHaveLength(3)
+    expect(warn).not.toHaveBeenCalled()
+    warn.mockRestore()
+  })
+})
+
+describe('links cell wrong-shaped elements degrade to empty (rm-187 follow-up)', () => {
+  let dir: string
+  let dbPath: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'dashboard-rm187-shape-'))
+    dbPath = join(dir, `listener-${randomUUID()}.db`)
+  })
+
+  afterEach(() => {
+    rmSync(dir, {recursive: true, force: true})
+  })
+
+  it('degrades every wrong-shaped array cell to empty links while other fields survive', () => {
+    const cases: {title: string; linksCell: string}[] = [
+      {title: 'scalar array', linksCell: '[1,2,3]'},
+      {title: 'missing url', linksCell: '[{"label":"x"}]'},
+      {title: 'non-https url', linksCell: '[{"label":"x","url":"http://example.com/x"}]'},
+      {title: 'blank label', linksCell: '[{"label":"   ","url":"https://example.com/x"}]'},
+      {title: 'mixed good and bad', linksCell: '[{"label":"ok","url":"https://example.com/ok"},{"label":"bad"}]'},
+      {title: 'null element', linksCell: '[null]'},
+    ]
+    const store = createListenerStore(dbPath)
+    const insert = (title: string) =>
+      store.insert({
+        source: 'infra',
+        kind: 'deploy-health',
+        severity: 'warning',
+        title,
+        body: 'b',
+        links: [],
+        dedupeKey: null,
+        createdAt: '2026-10-10T09:00:00Z',
+      }).id
+    const corruptViaSecondHandle = (id: string, linksValue: string): void => {
+      const handle = new DatabaseSync(dbPath)
+      try {
+        handle.prepare('UPDATE messages SET links = ? WHERE id = ?').run(linksValue, id)
+      } finally {
+        handle.close()
+      }
+    }
+    for (const c of cases) {
+      corruptViaSecondHandle(insert(c.title), c.linksCell)
+    }
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const page = store.list({})
+
+    expect(page.messages).toHaveLength(6)
+    for (const c of cases) {
+      const row = page.messages.find(m => m.title === c.title)
+      if (row === undefined) throw new Error(`expected row for ${c.title}`)
+      expect(row.links, `cell for ${c.title} should degrade to empty`).toEqual([])
+      expect(row.body).toBe('b')
+    }
+    expect(warn).toHaveBeenCalledTimes(6)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('degraded links cell on message'))
+    warn.mockRestore()
+  })
+
+  it('keeps a fully valid links array intact after the validation change', () => {
+    const store = createListenerStore(dbPath)
+    store.insert({
+      source: 'infra',
+      kind: 'deploy-health',
+      severity: 'warning',
+      title: 'valid row',
+      body: 'b',
+      links: [
+        {label: 'docs', url: 'https://example.com/docs'},
+        {label: 'run', url: 'https://example.com/run'},
+      ],
+      dedupeKey: null,
+      createdAt: '2026-10-10T09:30:00Z',
+    })
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const page = store.list({})
+
+    const row = page.messages.find(m => m.title === 'valid row')
+    if (row === undefined) throw new Error('expected valid row')
+    expect(row.links).toEqual([
+      {label: 'docs', url: 'https://example.com/docs'},
+      {label: 'run', url: 'https://example.com/run'},
+    ])
     expect(warn).not.toHaveBeenCalled()
     warn.mockRestore()
   })
