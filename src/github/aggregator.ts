@@ -218,7 +218,7 @@ interface GraphqlRepoResponse {
         statusCheckRollup: {state: string} | null
         checkSuites: {
           nodes: {
-            workflowRun?: {displayTitle?: string | null; runAttempt?: number | null; startedAt?: string | null; completedAt?: string | null} | null
+            workflowRun?: {displayTitle?: string | null; runAttempt?: number | null; startedAt?: string | null} | null
             checkRuns: {
               totalCount: number
               nodes?: readonly {name?: string | null; detailsUrl?: string | null}[] | null

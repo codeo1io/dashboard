@@ -546,6 +546,154 @@ describe('Monitoring rm-780 (stale-state surfacing: invisible rows, false all-cl
   })
 })
 
+describe('Monitoring rm-913 (mixed-fleet CI silence: green-but-silent repos become visible)', () => {
+  // Mirrors the rm-780/rm-835 naming wrappers for the same reason:
+  // makeRepo ignores its fullName override, and the partial banner's whole
+  // point is NAMING the silent repo — rows must be named here.
+  function makeRepoRm913(fullName: string, status: Partial<MonitoringRepoStatus>): MonitoringRepo {
+    return {...makeRepo({status}), fullName}
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValue({
+      ok: true,
+      data: makeData()
+    })
+  })
+
+  afterEach(() => {
+    vi.runOnlyPendingTimers()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  /** 49h before the data's own clock — one hour past the 48h floor. */
+  const SILENT_RUN_AT = DATA_AS_OF - 49 * 60 * 60 * 1000
+  /** 47h before the data's own clock — one hour inside the floor. */
+  const ALMOST_SILENT_RUN_AT = DATA_AS_OF - 47 * 60 * 60 * 1000
+
+  it('mixed fleet: one GREEN repo >48h silent + one fresh repo renders the partial CI-silence banner naming the silent repo', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+        repos: [
+          makeRepoRm913('fro-bot/silent-green', {
+            rollupState: 'green',
+            failingChecks: 0,
+            failingCheckDetails: [],
+            lastRunAt: SILENT_RUN_AT,
+          }),
+          makeRepoRm913('fro-bot/healthy', {
+            rollupState: 'green',
+            failingChecks: 0,
+            failingCheckDetails: [],
+            lastRunAt: FRESH_RUN_AT,
+          }),
+        ],
+      }),
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    // The new carrier: board-level, partial (some silent), naming repos.
+    const banner = screen.getByTestId('monitoring-ci-silence-partial-banner')
+    expect(banner).toHaveTextContent('CI silence')
+    expect(banner).toHaveTextContent('1 of 2')
+    expect(banner).toHaveTextContent('fro-bot/silent-green')
+    expect(banner).not.toHaveTextContent('fro-bot/healthy')
+    // Ages are computed against data.refreshedAt, not wall-clock: DATA_AS_OF
+    // sits ~19 months behind the fake-timer wall clock, so a wall-clock-keyed
+    // age would read BOTH repos silent and fire the enumeration banner —
+    // asserting partial-not-enumeration here pins the data-clock discipline.
+    expect(screen.queryByTestId('monitoring-ci-silence-banner')).not.toBeInTheDocument()
+    // rm-780/rm-835 retraction discipline: the all-clear claim is held while
+    // a green repo's freshness is unverified by any recent CI run.
+    expect(screen.queryByTestId('monitoring-all-clear')).not.toBeInTheDocument()
+    expect(screen.getByTestId('monitoring-all-clear-suppressed')).toBeInTheDocument()
+  })
+
+  it('boundary: a repo 47h before refreshedAt (just inside the floor) renders no silence banner and keeps the all-clear', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+        repos: [
+          makeRepoRm913('fro-bot/almost-silent', {
+            rollupState: 'green',
+            failingChecks: 0,
+            failingCheckDetails: [],
+            lastRunAt: ALMOST_SILENT_RUN_AT,
+          }),
+        ],
+      }),
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    // 47h-before-refreshedAt is NOT silent even though it is ~19 months
+    // before the wall clock — the threshold ages against the data's clock.
+    expect(screen.queryByTestId('monitoring-ci-silence-banner')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('monitoring-ci-silence-partial-banner')).not.toBeInTheDocument()
+    expect(screen.getByTestId('monitoring-all-clear')).toBeInTheDocument()
+  })
+
+  it('an empty fleet never renders the partial silence banner either — silence stays a per-repo claim', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({repos: []}),
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.queryByTestId('monitoring-ci-silence-partial-banner')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('monitoring-ci-silence-banner')).not.toBeInTheDocument()
+  })
+
+  it('an all-silent GREEN fleet keeps the enumeration banner and does not double-render the partial one', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+        repos: [
+          makeRepoRm913('fro-bot/silent-a', {
+            rollupState: 'green',
+            failingChecks: 0,
+            failingCheckDetails: [],
+            lastRunAt: SILENT_RUN_AT,
+          }),
+          makeRepoRm913('fro-bot/silent-b', {
+            rollupState: 'green',
+            failingChecks: 0,
+            failingCheckDetails: [],
+            lastRunAt: SILENT_RUN_AT,
+          }),
+        ],
+      }),
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    // Every repo silent (green included — the enumeration signal is
+    // color-blind) still routes to the ONE rm-836 enumeration banner.
+    expect(screen.getByTestId('monitoring-ci-silence-banner')).toHaveTextContent('CI silence')
+    expect(screen.queryByTestId('monitoring-ci-silence-partial-banner')).not.toBeInTheDocument()
+    // And the green claim is held here too — nothing recent verified it.
+    expect(screen.queryByTestId('monitoring-all-clear')).not.toBeInTheDocument()
+    expect(screen.getByTestId('monitoring-all-clear-suppressed')).toBeInTheDocument()
+  })
+})
+
 describe('Monitoring rm-835 (cold-start truth: DTO stale banner + empty enumeration)', () => {
   // Mirrors the rm-780 describe's naming wrapper for the same reason:
   // makeRepo ignores its fullName override, so rows are named here.
