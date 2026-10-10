@@ -429,4 +429,51 @@ describe('Monitoring rm-780 (stale-state surfacing: invisible rows, false all-cl
     expect(screen.queryByTestId('monitoring-view-stale-banner')).not.toBeInTheDocument()
     expect(screen.queryByTestId('monitoring-stale-count')).not.toBeInTheDocument()
   })
+
+  it('rm-780 cycle:3 residual: no all-clear over the fail-cold empty-board snapshot (staleBanner true, zero rows)', async () => {
+    // The aggregator's fail-closed cold-start paths serve exactly this pair
+    // (repos:[] + staleBanner:true) when the data-branch read fails — zero
+    // rows means zero stale rows, so a row-only allClear gate would render
+    // 'All repositories green · 0 tracked repositories' directly under the
+    // enumeration banner. The banner now vetoes the claim.
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({repos: [], staleBanner: true})
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.getByTestId('monitoring-stale-banner')).toBeInTheDocument()
+    expect(screen.queryByTestId('monitoring-all-clear')).not.toBeInTheDocument()
+    expect(screen.getByTestId('monitoring-all-clear-suppressed')).toBeInTheDocument()
+    expect(screen.getByTestId('monitoring-board')).not.toHaveTextContent('All repositories green')
+    expect(screen.getByTestId('monitoring-board')).not.toHaveTextContent('0 tracked')
+  })
+
+  it('rm-780 cycle:3 residual: a green-rows board under a stale banner also loses the all-clear claim', async () => {
+    // Same amendment, populated board: no red and no stale rows, but the
+    // snapshot itself is stale — the 'all green' claim is about unverified
+    // data and must not render.
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+        repos: [makeRepoRm780('fro-bot/green', {rollupState: 'green', failingChecks: 0, failingCheckDetails: []})],
+        staleBanner: true
+      })
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.getByTestId('monitoring-stale-banner')).toBeInTheDocument()
+    expect(screen.queryByTestId('monitoring-red-repo')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('monitoring-stale-repo')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('monitoring-all-clear')).not.toBeInTheDocument()
+    expect(screen.getByTestId('monitoring-all-clear-suppressed')).toBeInTheDocument()
+  })
 })
