@@ -176,6 +176,21 @@
   display: none;
 }
 
+.run-card-checkout {
+  grid-column: 2;
+  grid-row: 3;
+  align-self: start;
+  font-family: var(--font-body);
+  font-size: var(--text-body-sm);
+  color: var(--color-text-muted);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.run-card-checkout:empty {
+  display: none;
+}
+
 .run-card .run-repo {
   grid-column: 2;
   grid-row: 1 / 3;

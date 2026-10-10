@@ -39,6 +39,8 @@ export declare function appendStreamChunk(buffer: string, decoded: string): stri
 export declare const MAX_OUTPUT_TEXT_CHARS: number
 export declare const MAX_APPROVAL_TOMBSTONES: number
 export declare const MAX_OPEN_APPROVALS: number
+export declare const MAX_QUESTION_TOMBSTONES: number
+export declare const MAX_OPEN_QUESTIONS: number
 export declare const FIRST_FRAME_TIMEOUT_MS: number
 /**
  * Mirrors the gateway's PENDING_APPROVALS_MAX_RESULTS cap (50) from
@@ -121,6 +123,7 @@ export type StreamFrame =
   | {readonly type: 'reset'; readonly data: ResetFrameData}
   | {readonly type: 'output'; readonly data: OutputFrameData}
   | {readonly type: 'approval'; readonly data: ApprovalFrameData}
+  | {readonly type: 'question'; readonly data: QuestionFrameData}
 
 // ---------------------------------------------------------------------------
 // Parse result
@@ -170,6 +173,13 @@ export interface RunEntry {
    */
   readonly reasonLabel?: string
   /**
+   * One-line checkout provenance/preparation label (operator contract 1.8.0+
+   * checkout fields), e.g. `main@a1b2c3d · clean` or `checkout refused: dirty`.
+   * Built only from allowlist-gated fields at parse time; sticky like
+   * reasonLabel; absent when the gateway carried no valid checkout data.
+   */
+  readonly checkoutLabel?: string
+  /**
    * Null-prototype map of open (non-tombstoned) approval prompts, keyed by requestID.
    * Absent until the first approval frame is received for this run.
    * Use `getOpenApprovals(runEntry)` to read; never access directly.
@@ -181,6 +191,18 @@ export interface RunEntry {
    * Absent until the first settle frame is received for this run.
    */
   readonly approvalTombstones?: Readonly<Record<string, true>>
+  /**
+   * Null-prototype map of open (non-tombstoned) question prompts, keyed by
+   * requestID (operator-contract 1.9.0). Absent until the first question
+   * frame is received for this run. Use `getOpenQuestions(runEntry)` to
+   * read; never access directly.
+   */
+  readonly questionOpenPrompts?: Readonly<Record<string, QuestionFrameDataOpen>>
+  /**
+   * Null-prototype map of tombstoned question requestIDs (requestID → true).
+   * Absent until the first settle frame is received for this run.
+   */
+  readonly questionTombstones?: Readonly<Record<string, true>>
   /**
    * True while a browser-dispatched cancel POST is outstanding for this run.
    * Internal-only — set by the `cancel` action, cleared by a terminal status
@@ -234,6 +256,27 @@ export interface ApprovalReconcileEvent {
   }[]
 }
 
+/**
+ * Corrective reconcile action dispatched by the question lane on reconnect
+ * (operator-contract 1.9.0). Same explicit-diff contract as
+ * ApprovalReconcileEvent: the caller computes the diff from a pre-GET snapshot
+ * so the reducer does not re-derive it (reconcile-window race impossible).
+ *
+ * - pruneIds: requestIDs to remove from open prompts and tombstone (FIFO-capped).
+ * - addPrompts: recovered open prompts (bounded PendingQuestionDTO shape minus
+ *   runId), re-validated item-by-item against the frame bounds; a malformed
+ *   reconcile body never adds a prompt.
+ */
+export interface QuestionReconcileEvent {
+  readonly type: 'question-reconcile'
+  readonly runId: string
+  readonly pruneIds: readonly string[]
+  readonly addPrompts: readonly {
+    readonly requestID: string
+    readonly questions: readonly QuestionItem[]
+  }[]
+}
+
 // ---------------------------------------------------------------------------
 // Lifecycle events
 // ---------------------------------------------------------------------------
@@ -247,6 +290,7 @@ export type StreamEvent =
   | {readonly type: 'buffer-overflow'}
   | {readonly type: 'first-frame-timeout'}
   | ApprovalReconcileEvent
+  | QuestionReconcileEvent
   | CancelActionEvent
 
 // ---------------------------------------------------------------------------
@@ -261,6 +305,8 @@ export interface SafeRunView {
   readonly stale: boolean
   /** Pre-resolved dashboard display label for a known failure reason. Never the raw failureKind. */
   readonly reasonLabel?: string
+  /** Checkout provenance/preparation label (allowlist-gated at parse time). */
+  readonly checkoutLabel?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -280,7 +326,7 @@ export declare function nextStreamState(current: StreamState, event: StreamEvent
 
 /**
  * Map a run status object to the safe render model.
- * Returns ONLY: { runId, status, phase, startedAt, stale, reasonLabel? }
+ * Returns ONLY: { runId, status, phase, startedAt, stale, reasonLabel?, checkoutLabel? }
  */
 export declare function toSafeRunView(runStatus: {
   readonly runId: string
@@ -289,6 +335,7 @@ export declare function toSafeRunView(runStatus: {
   readonly startedAt: string
   readonly stale: boolean
   readonly reasonLabel?: string
+  readonly checkoutLabel?: string
 }): SafeRunView
 
 /**
@@ -307,6 +354,19 @@ export declare function hasOpenApprovals(runEntry: RunEntry | undefined | null):
  * Returns an empty array when there are no open prompts.
  */
 export declare function getOpenApprovals(runEntry: RunEntry | undefined | null): readonly ApprovalFrameDataOpen[]
+
+/**
+ * Returns true iff the run entry has at least one open (non-tombstoned)
+ * question prompt (operator-contract 1.9.0).
+ */
+export declare function hasOpenQuestions(runEntry: RunEntry | undefined | null): boolean
+
+/**
+ * Returns the run entry's open question prompts as a list of
+ * QuestionFrameDataOpen objects (one per open requestID). Returns an empty
+ * array when there are no open prompts.
+ */
+export declare function getOpenQuestions(runEntry: RunEntry | undefined | null): readonly QuestionFrameDataOpen[]
 
 // ---------------------------------------------------------------------------
 // DOM shell (browser-only — never called at module top-level)
@@ -341,16 +401,22 @@ export interface InitOptions {
   readonly coalescedEl?: (HTMLElement & {hidden: boolean}) | null
   /** Approval prompts container element (data-role="run-approvals"). */
   readonly approvalsEl?: (HTMLElement & {hidden: boolean}) | null
+  /** Question prompts container element (data-role="run-questions"). Defaults to approvalsEl when absent. */
+  readonly questionsEl?: (HTMLElement & {hidden: boolean}) | null
   /** Approval count badge element (data-role="approval-badge"). */
   readonly badgeEl?: (HTMLElement & {hidden: boolean}) | null
   /** Injectable approval client for testing. If absent, buildApprovalClient() is used. */
   readonly approvalClient?: ApprovalClient | null
+  /** Injectable question client for testing (operator-contract 1.9.0). If absent, buildQuestionClient() is used. */
+  readonly questionClient?: QuestionClient | null
   /** Optional endpoint base for fixture mode (default: '/operator'). */
   readonly endpointBase?: string
   /** Fixture session ID (fixture mode only). Appended as query param to stream URL and approval requests. */
   readonly fixtureSessionId?: string
   /** Secondary status metadata element (data-role="run-reason"). */
   readonly reasonEl?: Element | null
+  /** Checkout provenance/preparation line (data-role="run-checkout"), contract 1.8.0+. */
+  readonly checkoutEl?: (HTMLElement & {hidden: boolean}) | null
   /** Cancel control container element (data-role="run-cancel"). */
   readonly cancelEl?: (HTMLElement & {hidden: boolean}) | null
   /** Injectable cancel client for testing. If absent, buildCancelClient() is used. */
@@ -374,6 +440,82 @@ export declare function resetBootstrapState(): void
 
 /** Browser-direct approval client factory. Returns refreshCsrf/decideRunApproval/listRunApprovals. */
 export declare function buildApprovalClient(opts?: {readonly endpointBase?: string; readonly fixtureSessionId?: string}): ApprovalClient
+
+/** Question option (operator-contract 1.9.0, gateway v0.119.0): inert display text. */
+export interface QuestionOption {
+  readonly label: string
+  readonly description: string
+}
+
+/** One question in an open question request. */
+export interface QuestionItem {
+  readonly header: string
+  readonly text: string
+  readonly options: readonly QuestionOption[]
+  readonly multiple: boolean
+  readonly custom: boolean
+}
+
+/** Open question prompt (the settle variant is not rendered — it only dismisses). */
+export interface QuestionFrameDataOpen {
+  readonly runId: string
+  readonly requestID: string
+  readonly questions: readonly QuestionItem[]
+  readonly settled: false
+}
+
+/**
+ * Settled question frame (operator-contract 1.9.0): the gateway carries ONLY
+ * runId + requestID — everything else is ignored on settle. Dismisses the
+ * open prompt and tombstones the id.
+ */
+export interface QuestionFrameDataSettle {
+  readonly runId: string
+  readonly requestID: string
+  readonly settled: true
+}
+
+export type QuestionFrameData = QuestionFrameDataOpen | QuestionFrameDataSettle
+
+/** A 400 bad-request payload from the question decision route (request stays pending). */
+export interface QuestionBadRequest {
+  readonly reason: 'malformed' | 'arity-mismatch' | 'unknown-option' | 'multiple-not-allowed' | 'empty-value' | 'text-too-long'
+  readonly questionIndex: number | null
+}
+
+/** Outcome of decideQuestion: 200 states, or a parsed 400 (state 'bad-request'). */
+export type DecideQuestionOutcome =
+  | {readonly success: true; readonly data: {readonly state: 'claimed' | 'already_claimed' | 'already_settled' | 'failed_to_settle'}}
+  | {readonly success: true; readonly data: {readonly state: 'bad-request'; readonly badRequest: QuestionBadRequest}}
+  | {readonly success: false; readonly error: {readonly kind: 'network' | 'http' | 'protocol'; readonly status?: number}}
+
+/** Browser-direct question client (operator-contract 1.9.0). */
+export interface QuestionClient {
+  readonly refreshCsrf: () => Promise<{success: boolean; data?: {csrfToken: string}; error?: {kind: string; status?: number}}>
+  readonly decideQuestion: (
+    runId: string,
+    requestId: string,
+    decision: {decision: 'answer'; answers: readonly {options?: readonly number[]; text?: string}[]} | {decision: 'skip'},
+  ) => Promise<DecideQuestionOutcome>
+  readonly listRunQuestions: (
+    runId: string,
+  ) => Promise<
+    | {readonly success: true; readonly data: {readonly requests: readonly QuestionFrameDataOpen[]}}
+    | {readonly success: false; readonly error: {readonly kind: 'network' | 'http' | 'protocol'; readonly status?: number}}
+  >
+}
+
+/**
+ * Browser-direct question client factory (operator-contract 1.9.0, gateway
+ * v0.119.0 PR #1749).
+ *
+ * Mirrors buildApprovalClient's CSRF discipline and one-retry-on-400 posture.
+ * The question decision route carries NO idempotency-key header (the gateway
+ * route does not read one). Routes:
+ *   GET  /operator/runs/:runId/questions
+ *   POST /operator/runs/:runId/questions/:requestId/decision
+ */
+export declare function buildQuestionClient(opts?: {readonly endpointBase?: string; readonly fixtureSessionId?: string}): QuestionClient
 
 // ---------------------------------------------------------------------------
 // Browser-direct cancel client
@@ -512,5 +654,23 @@ export declare function renderApprovalPrompt(
   prompt: ApprovalFrameDataOpen,
   runId: string,
   approvalClient: ApprovalClient,
+  onSettle: () => void,
+): HTMLElement
+
+/**
+ * Render an open question prompt (operator-contract 1.9.0) with the same
+ * safe-DOM inertness guarantee as renderApprovalPrompt: every agent-supplied
+ * string (header, text, option label/description) lands via textContent only.
+ *
+ * @param prompt - An open QuestionFrameDataOpen object from getOpenQuestions.
+ * @param runId - The run ID (for the decision POST).
+ * @param questionClient - The browser-direct question client.
+ * @param onSettle - Called when the prompt is settled (settle frame/reconcile reap the element).
+ * @returns The rendered prompt element.
+ */
+export declare function renderQuestionPrompt(
+  prompt: QuestionFrameDataOpen,
+  runId: string,
+  questionClient: QuestionClient,
   onSettle: () => void,
 ): HTMLElement
