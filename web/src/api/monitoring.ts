@@ -24,6 +24,8 @@ export interface MonitoringRepoStatus {
   readonly openIssueCount: number
   readonly openAlertCount: number | null
   readonly stale: boolean
+  /** rm-836: newest workflow-run start on the repo's default-branch head (ms since epoch); null = unknown run-age, never a fabricated clock. */
+  readonly lastRunAt: number | null
 }
 
 export interface MonitoringRepo {
@@ -82,12 +84,17 @@ function parseRepo(item: unknown): MonitoringRepo | null {
     openIssueCount,
     openAlertCount,
     stale,
+    lastRunAt,
   } = status
   if (typeof rollupState !== 'string' || !ROLLUP_STATES.includes(rollupState)) return null
   if (typeof failingChecks !== 'number') return null
   if (typeof openPrCount !== 'number' || typeof openIssueCount !== 'number') return null
   if (openAlertCount !== null && typeof openAlertCount !== 'number') return null
   if (typeof stale !== 'boolean') return null
+  // rm-836: the key must be present (null = unknown run-age) — an absent key
+  // is contract drift rather than silently-unknown, so a server build
+  // predating the CI-freshness field is caught at the seam.
+  if (lastRunAt !== null && typeof lastRunAt !== 'number') return null
   if (!Array.isArray(failingCheckDetails)) return null
 
   const details: FailingCheckDetail[] = []
@@ -108,6 +115,7 @@ function parseRepo(item: unknown): MonitoringRepo | null {
       openIssueCount,
       openAlertCount,
       stale,
+      lastRunAt,
     },
   }
 }
