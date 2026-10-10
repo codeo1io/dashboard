@@ -11,6 +11,8 @@
  * - Caller-supplied init.headers are merged but the forwarded cookie wins.
  * - redirect:'error' is always set so the cookie is never forwarded across a redirect.
  * - A 10-second AbortSignal timeout is applied to every outgoing request.
+ * - A caller-supplied init.signal is COMBINED with that timeout via AbortSignal.any —
+ *   caller aborts propagate AND the timeout still fires (rm-910).
  */
 
 import {describe, expect, it} from 'vitest'
@@ -405,6 +407,87 @@ describe('createOperatorServerFetch — fetch timeout', () => {
     // The adapter must propagate the AbortError (operator client maps it to GatewayNetworkError → deny)
     await expect(fetch('/operator/session')).rejects.toThrow()
   })
+})
+
+// ---------------------------------------------------------------------------
+// rm-910: caller-supplied init.signal is combined with the timeout, never discarded
+// ---------------------------------------------------------------------------
+
+describe('createOperatorServerFetch — caller-signal contract (rm-910)', () => {
+  it('combines a caller signal instead of replacing it — caller abort propagates', async () => {
+    const {fetchImpl, calls} = makeFakeFetch()
+    const fetch = createOperatorServerFetch({
+      origin: 'https://dashboard.fro.bot',
+      cookie: 'gw=abc',
+      fetchImpl,
+    })
+    const controller = new AbortController()
+
+    await fetch('/operator/session', {signal: controller.signal})
+
+    const outgoing = calls[0]?.init?.signal
+    expect(outgoing).toBeInstanceOf(AbortSignal)
+    // Not the caller's signal object verbatim — the adapter hands downstream a
+    // COMBINED wrapper, so the discard gap (assess F8) is closed structurally.
+    expect(outgoing).not.toBe(controller.signal)
+    expect(outgoing?.aborted).toBe(false)
+
+    controller.abort(new Error('caller went away'))
+    expect(outgoing?.aborted).toBe(true)
+  })
+
+  it('an already-aborted caller signal aborts the outgoing signal', async () => {
+    const {fetchImpl, calls} = makeFakeFetch()
+    const fetch = createOperatorServerFetch({
+      origin: 'https://dashboard.fro.bot',
+      cookie: 'gw=abc',
+      fetchImpl,
+    })
+    const controller = new AbortController()
+    controller.abort()
+
+    await fetch('/operator/session', {signal: controller.signal})
+
+    expect(calls[0]?.init?.signal?.aborted).toBe(true)
+  })
+
+  it(
+    'the timeout still fires through the combined signal (real-time pin)',
+    {timeout: 20_000},
+    async () => {
+      // With a LIVE caller signal and a hanging gateway, the combined signal
+      // must abort from the TIMEOUT source at GATEWAY_FETCH_TIMEOUT_MS —
+      // proving the combine cannot mute the hang cap. The hanging fetchImpl
+      // rejects with the downstream signal's abort reason.
+      const hangingFetch = async (_url: string, init?: RequestInit): Promise<Response> =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => {
+              reject(init.signal?.reason)
+            },
+            {once: true},
+          )
+        })
+      const fetch = createOperatorServerFetch({
+        origin: 'https://dashboard.fro.bot',
+        cookie: 'gw=abc',
+        fetchImpl: hangingFetch,
+      })
+      const controller = new AbortController() // live — never aborted in this test
+
+      const started = Date.now()
+      await expect(
+        fetch('/operator/session', {signal: controller.signal}),
+      ).rejects.toThrow()
+      const waited = Date.now() - started
+      // The rejection came at/after the 10s cap (small clock-slop margin), not
+      // instantly — the timeout leg of the combine demonstrably fired.
+      expect(waited).toBeGreaterThanOrEqual(GATEWAY_FETCH_TIMEOUT_MS - 100)
+      // The timeout's abort did NOT leak back into the caller's signal.
+      expect(controller.signal.aborted).toBe(false)
+    },
+  )
 })
 
 // ---------------------------------------------------------------------------

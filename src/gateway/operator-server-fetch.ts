@@ -11,6 +11,9 @@
  * - Sets redirect:'error' so the forwarded cookie is never sent across a 3xx redirect.
  * - Applies a 10-second AbortSignal timeout so a hanging gateway maps to a network
  *   error → deny (fail-closed), never an indefinite hang.
+ * - COMBINES any caller-supplied init.signal with that timeout via AbortSignal.any —
+ *   the caller's abort propagates to the gateway fetch AND the timeout still fires;
+ *   a caller signal is never silently discarded (rm-910).
  *
  * Security invariants:
  * - Never logs the cookie value — only the resolved path template is safe to log.
@@ -18,6 +21,8 @@
  * - Any caller-supplied Authorization header is stripped (confused-deputy defense).
  * - The forwarded cookie wins over any cookie in caller-supplied init.headers.
  * - redirect:'error' is always set and cannot be overridden by caller init.
+ * - The 10s timeout is always armed and cannot be overridden by caller init — a
+ *   caller signal can only ADD an abort source (AbortSignal.any), never remove one.
  */
 
 // ---------------------------------------------------------------------------
@@ -70,7 +75,11 @@ export interface OperatorServerFetchOptions {
  * fails closed.
  *
  * Always sets redirect:'error' (cookie must never be forwarded across a redirect)
- * and applies a 10-second AbortSignal timeout (hanging gateway → deny).
+ * and applies a 10-second AbortSignal timeout (hanging gateway → deny). A caller-
+ * supplied init.signal is COMBINED with that timeout via AbortSignal.any — the
+ * caller's abort propagates and the timeout still fires; it is never replaced
+ * (rm-910: the adapter used to discard init.signal unconditionally, a silent
+ * caller-abort loss for any future server-side stream wiring).
  */
 export function createOperatorServerFetch(
   options: OperatorServerFetchOptions,
@@ -127,6 +136,18 @@ export function createOperatorServerFetch(
       mergedHeaders[key] = value
     })
 
+    // rm-910: combine any caller-supplied abort signal with the hard timeout
+    // instead of discarding it. AbortSignal.any fires when EITHER source aborts,
+    // so a caller abort propagates to the gateway fetch AND the 10s hang cap
+    // still fires — a caller can add an abort source but never remove the
+    // timeout. (Node >= 20.3; this repo's floor is Node 24.)
+    const callerSignal = init?.signal
+    const timeoutSignal = AbortSignal.timeout(GATEWAY_FETCH_TIMEOUT_MS)
+    const combinedSignal =
+      callerSignal === undefined || callerSignal === null
+        ? timeoutSignal
+        : AbortSignal.any([callerSignal, timeoutSignal])
+
     const mergedInit: RequestInit = {
       ...init,
       headers: mergedHeaders,
@@ -136,7 +157,8 @@ export function createOperatorServerFetch(
       redirect: 'error',
       // Abort after GATEWAY_FETCH_TIMEOUT_MS to prevent indefinite hangs.
       // A hanging gateway maps to an AbortError → GatewayNetworkError → deny.
-      signal: AbortSignal.timeout(GATEWAY_FETCH_TIMEOUT_MS),
+      // A caller signal is combined in, never replaced (rm-910).
+      signal: combinedSignal,
     }
 
     return fetchImpl(absoluteUrl, mergedInit)
