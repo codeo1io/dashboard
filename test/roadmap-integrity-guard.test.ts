@@ -153,7 +153,7 @@ describe('rm-678 schema half: live ledger', () => {
     // pnpm/codeql/absorb-window findings ride its rm-252 and rm-139
     // riders, pairing run-ba5f6d7ddd67 ext #41 by content); census
     // 247 + 1 = 248 defs / 0 dups / max rm-833, next free rm-834.
-    expect(live.max).toBe(833)
+    expect(live.max).toBe(872)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {

@@ -128,6 +128,11 @@ export async function fetchGitHubUserLogin(accessToken: string): Promise<string>
         Authorization: `Bearer ${accessToken}`,
         Accept: 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28',
+        // rm-872: api.github.com rejects requests without a User-Agent with
+        // 403 (verified live 2026-10-10 on /user: 403 without UA vs 200 with
+        // UA) — symmetric with the token-exchange call above, which has
+        // carried this header since it was written.
+        'User-Agent': 'fro-bot-dashboard',
       },
       redirect: 'error',
       signal: AbortSignal.timeout(GITHUB_FETCH_TIMEOUT_MS),
