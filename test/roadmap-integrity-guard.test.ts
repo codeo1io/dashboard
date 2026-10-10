@@ -148,7 +148,14 @@ describe('rm-678 schema half: live ledger', () => {
     // 778 -> 780 atomically with this landing: union census
     // 245 + 2 = 247 defs / 0 dups / max rm-780, next free
     // rm-781.
-    expect(live.max).toBe(780)
+    // 2026-10-10 extension #37 (run 633717c23b19, cycle:3, report-only
+    // spool channel): three mints rm-850/rm-851/rm-852 above the
+    // live-reprobed all-lineage ceiling rm-849 (worktree walls max 844;
+    // spool dashboard claims 838-849 with bce2654f's next-free pointer
+    // at rm-850; spool rm-850..854 tokens verified agenttrace-foreign)
+    // — 247 → 250 defs, max rm-852 — pin 780 → 852 atomically with
+    // this extension (defs floor untouched).
+    expect(live.max).toBe(852)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
