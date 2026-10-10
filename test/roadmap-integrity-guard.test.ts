@@ -276,7 +276,7 @@ describe('rm-678 schema half: live ledger', () => {
     // run's at-write 832 pin above is superseded by this note
     // exactly as 366f6059 superseded at-write pins — union census
     // 255 + 1 = 256 defs / 0 dups / max rm-866, next free rm-867.
-    expect(live.max).toBe(866)
+    expect(live.max).toBe(903)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {

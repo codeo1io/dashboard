@@ -534,6 +534,25 @@ async function readBodyTextWithCap(
   return ok(text)
 }
 
+/**
+ * rm-900 — release a response body the caller is about to discard.
+ *
+ * undici pins the socket of a response whose body was never consumed until
+ * GC reclaims the stream, so a polling loop that ignores non-ok error bodies
+ * steadily bleeds keep-alive connections; under a sustained gateway error
+ * storm that exhausts the agent's pool. Cancelling the body releases the
+ * socket immediately. Best-effort by design: a body that already errored or
+ * closed rejects here, and the caller's error verdict stands either way —
+ * this helper never throws and never changes a verdict.
+ */
+async function cancelResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel()
+  } catch {
+    // Already gone — the verdict stands either way.
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -598,6 +617,11 @@ export function createOperatorClient(options: OperatorClientOptions): OperatorCl
       return ok(data)
     }
 
+    // rm-900 — release the unread error body before returning: an
+    // unconsumed Response pins its undici socket until GC, and a polling
+    // loop that ignores non-ok bodies can exhaust the keep-alive pool under
+    // a gateway error storm. Mirrors the cap path's cancel shape.
+    await cancelResponseBody(response)
     const httpErr: GatewayHttpError = {
       kind: 'http',
       status: response.status,
