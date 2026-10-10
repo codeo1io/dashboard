@@ -229,6 +229,38 @@ const EVICT_INTERVAL = 500 // sweep every 500 calls
 const EVICT_STALE_AGE = 2 * RATE_LIMIT_WINDOW_MS
 
 /**
+ * Resolve the rate-limit store key for a request: the remote address, or —
+ * when the deployment opts into trusting its proxy — the FIRST
+ * X-Forwarded-For hop. That hop is the real client ONLY when the proxy
+ * OVERWRITES XFF (see the rateLimitTrustedProxy comment in
+ * buildDashboardApp's opts); a proxy that APPENDS puts the real client
+ * LAST, and first-hop keying there would let callers pick their own
+ * throttle keys. The hop is capped at 64 chars: a plain IP/host is
+ * ≤45 chars, so anything longer is not an address, and an unbounded
+ * token alphabet would grow rateLimitMap without bound inside the sweep
+ * window — a deterministic prefix cap keeps each spoofed token on ONE
+ * key. getConnInfo throws in test context (app.request()); fall back to
+ * 'unknown'.
+ *
+ * Shared by the pre-auth middleware and the ingest route's
+ * post-verification budget admission (rm-904) so both key a given request
+ * identically.
+ */
+export function resolveRateLimitKey(c: Context, trustedProxy: boolean): string {
+  let ip: string
+  try {
+    ip = getConnInfo(c).remote.address ?? 'unknown'
+  } catch {
+    ip = 'unknown'
+  }
+  if (trustedProxy) {
+    const firstHop = c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
+    if (firstHop !== undefined && firstHop !== '') ip = firstHop.slice(0, 64)
+  }
+  return ip
+}
+
+/**
  * Reset the rate limiter state. Tests only — prevents bleed between test cases.
  * @internal
  */
@@ -819,28 +851,16 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     const isSensitive = sensitiveRoutes.includes(path) || path.startsWith('/api/') || path.startsWith('/operator/')
 
     if (isSensitive) {
-      // getConnInfo throws in test context (app.request()); fall back to 'unknown'.
-      let ip: string
-      try {
-        ip = getConnInfo(c).remote.address ?? 'unknown'
-      } catch {
-        ip = 'unknown'
-      }
-      if (rateLimitTrustedProxy) {
-        // Trusted-proxy mode: key on the FIRST X-Forwarded-For hop. That hop
-        // is the real client ONLY when the proxy OVERWRITES XFF (see the
-        // opts comment above: enable only for an overwriting proxy). A proxy
-        // that APPENDS puts the real client LAST — first-hop keying there
-        // would let callers pick their own throttle keys.
-        const firstHop = c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
-        // Cap the key: a plain IP/host is ≤45 chars, so anything longer is
-        // not an address, and an unbounded token alphabet would grow
-        // rateLimitMap without bound inside the sweep window. A
-        // deterministic prefix cap keeps each spoofed token on ONE key.
-        if (firstHop !== undefined && firstHop !== '') ip = firstHop.slice(0, 64)
-      }
+      const ip = resolveRateLimitKey(c, rateLimitTrustedProxy)
 
-      if (!checkRateLimit(ip, Date.now(), classifyRateLimitPath(path))) {
+      // rm-904: ingest-class requests are admitted WITHOUT pre-verification
+      // budget consumption — an unsigned flood can neither consume the ingest
+      // budget nor pressure the store's key cap (rm-286), because the count
+      // for /api/listener/ingest happens only AFTER the route's HMAC
+      // verification succeeds (deps.ingestRateLimit in buildListenerRouter).
+      // Parity: fro-bot/agent #1758 (authenticated before rate-limited).
+      const pathClass = classifyRateLimitPath(path)
+      if (pathClass !== 'ingest' && !checkRateLimit(ip, Date.now(), pathClass)) {
         logger.warning('Rate limit exceeded', {ip, path})
         return c.text('Too Many Requests', 429)
       }
@@ -1113,6 +1133,13 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       buildListenerRouter({
         store: opts.listenerStore,
         ingestKey: opts.listenerIngestKey ?? null,
+        // rm-904: budget admission for VERIFIED ingest requests only — the
+        // pre-auth middleware skips the ingest class (see its rm-904 note).
+        ingestRateLimit: {
+          consume(c: Context): boolean {
+            return checkRateLimit(resolveRateLimitKey(c, rateLimitTrustedProxy), Date.now(), 'ingest')
+          },
+        },
         // Ack CSRF is active whenever an operator session is in scope. Derive
         // from the RESOLVED operatorLogin (opts with env fallback — see the
         // resolution above), never raw opts: createDashboardServer and
