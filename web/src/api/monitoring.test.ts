@@ -218,3 +218,83 @@ describe('monitoring API', () => {
     })
   })
 })
+
+describe('fetchMonitoring (rm-107 system-status surface)', () => {
+  const systemPayload = {
+    snapshot: {
+      refreshedAt: 1742000000000,
+      staleBanner: false,
+      refreshDegraded: true,
+      refreshDurationMs: 95000,
+      trackedRepos: 2,
+      driftCount: 1
+    },
+    refreshFailures: {enumerationIncomplete: null, degraded: true},
+    rateLimit: {
+      windowMs: 60000,
+      maxKeys: 10000,
+      trackedKeys: 3,
+      classes: [{cls: 'public', max: 60, hits: 7}]
+    },
+    listenerStore: {rows: 12, maxRows: 500, maxAgeMs: 2592000000, oldestReceivedAt: '2026-10-08T00:00:00.000Z', unread: 2}
+  }
+
+  it('rm-107: parses the composed system surface and whitelist-maps every signal', async () => {
+    const mockData = {
+      repos: [],
+      refreshDurationMs: 1234,
+      refreshDegraded: true,
+      staleBanner: false,
+      driftCount: 0,
+      enumerationIncomplete: null,
+      refreshedAt: 1742000000000,
+      system: systemPayload
+    }
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+    const res = await fetchMonitoring()
+    expect(res.ok).toBe(true)
+    if (res.ok) {
+      expect(res.data.system).toEqual(systemPayload)
+    }
+  })
+
+  it('rm-107: a payload without the system surface still parses (older/bare server)', async () => {
+    const mockData = {
+      repos: [],
+      refreshDurationMs: 1234,
+      refreshDegraded: false,
+      staleBanner: false,
+      driftCount: 0,
+      enumerationIncomplete: null,
+      refreshedAt: null
+    }
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+    const res = await fetchMonitoring()
+    expect(res.ok).toBe(true)
+    if (res.ok) {
+      expect(res.data.system).toBeUndefined()
+    }
+  })
+
+  it('rm-107: a present-but-malformed system surface is contract-drift (never half-rendered status)', async () => {
+    const mockData = {
+      repos: [],
+      refreshDurationMs: 1234,
+      refreshDegraded: false,
+      staleBanner: false,
+      driftCount: 0,
+      enumerationIncomplete: null,
+      refreshedAt: null,
+      system: {...systemPayload, rateLimit: {windowMs: 60000}}
+    }
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+    const res = await fetchMonitoring()
+    expect(res.ok).toBe(false)
+    if (!res.ok) {
+      expect(res.reason).toBe('contract-drift')
+    }
+  })
+})

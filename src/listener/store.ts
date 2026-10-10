@@ -10,12 +10,27 @@ import {mkdirSync} from 'node:fs'
 import {dirname} from 'node:path'
 import {DatabaseSync} from 'node:sqlite'
 
+export interface ListenerStoreStats {
+  /** Total rows currently retained (post-prune view of the table). */
+  readonly rows: number
+  /** Retention cap in rows (RETENTION_MAX_ROWS). */
+  readonly maxRows: number
+  /** Retention cap in ms (RETENTION_MAX_AGE_MS). */
+  readonly maxAgeMs: number
+  /** received_at of the oldest retained message, or null when the table is empty. */
+  readonly oldestReceivedAt: string | null
+  /** Count of unread messages. */
+  readonly unread: number
+}
+
 export interface ListenerStore {
   insert: (input: IngestMessage) => {id: string; receivedAt: string}
   list: (opts: {unreadOnly?: boolean; limit?: number}) => MessagesResponse
   ack: (id: string) => {acked: boolean; readAt: string | null}
   ackAll: () => number
   prune: () => void
+  /** Depth/age signal for the operator system-status surface (rm-107). */
+  stats: () => ListenerStoreStats
   close: () => void
 }
 
@@ -132,6 +147,8 @@ export function createListenerStore(dbPath: string): ListenerStore {
     )
   `)
   const pruneAgeStmt = db.prepare('DELETE FROM messages WHERE received_at < ?')
+  const statsCountStmt = db.prepare('SELECT COUNT(*) as n FROM messages')
+  const statsOldestStmt = db.prepare('SELECT MIN(received_at) as oldest FROM messages')
 
   // rm-244-class visibility: cumulative count of messages evicted by the
   // retention policy since the store was created. In-memory by design — it
@@ -230,5 +247,19 @@ export function createListenerStore(dbPath: string): ListenerStore {
     db.close()
   }
 
-  return {insert, list, ack, ackAll, prune, close}
+  /** Depth/age signal for the operator system-status surface (rm-107). */
+  function stats(): ListenerStoreStats {
+    const countRow = statsCountStmt.get() as unknown as {n: number}
+    const oldestRow = statsOldestStmt.get() as unknown as {oldest: string | null}
+    const unreadRow = countUnreadStmt.get() as unknown as {n: number}
+    return {
+      rows: countRow.n,
+      maxRows: RETENTION_MAX_ROWS,
+      maxAgeMs: RETENTION_MAX_AGE_MS,
+      oldestReceivedAt: oldestRow.oldest,
+      unread: unreadRow.n,
+    }
+  }
+
+  return {insert, list, ack, ackAll, prune, stats, close}
 }

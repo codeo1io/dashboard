@@ -1,9 +1,25 @@
 import type {AggregatorSnapshot, DashboardRepo, FailingCheckDetail, RepoCiStatus} from '../github/aggregator.ts'
+import type {ListenerStoreStats} from '../listener/store.ts'
+import type {RateLimitBudgetSnapshot} from '../server.ts'
 import {Hono} from 'hono'
 import {COLD_START_SNAPSHOT} from '../github/aggregator.ts'
 
 /** Injectable snapshot provider — returns the current aggregator snapshot. */
 export type SnapshotProvider = () => AggregatorSnapshot
+
+/**
+ * rm-107: server-side system-status signal sources for the monitoring DTO's
+ * composed `system` object. `rateLimit` is always available (module state in
+ * server.ts); `listenerStore` is null when the channel is not mounted.
+ * Identifier-free by construction — counts, caps, and timestamps only.
+ */
+export interface SystemStatusSignals {
+  readonly rateLimit: RateLimitBudgetSnapshot
+  readonly listenerStore: ListenerStoreStats | null
+}
+
+/** Injectable system-status provider (rm-107). */
+export type SystemStatusProvider = () => SystemStatusSignals
 
 // rm-197: this route and server.ts import the single bannered
 // COLD_START_SNAPSHOT constant from aggregator.ts (which carries the rm-156
@@ -50,6 +66,97 @@ interface MonitoringDto {
   readonly refreshDurationMs: number | null
   /** True when the last refresh attempt exceeded the watchdog ceiling (rm-156 watchdog signal) */
   readonly refreshDegraded: boolean
+  /**
+   * rm-107: composed operator system-status surface. Present only when the
+   * system-status provider is wired (production wiring in server.ts always
+   * provides it; bare-router tests omit it).
+   */
+  readonly system?: MonitoringSystemStatusDto
+}
+
+/** Rate-limit per-class budget row (rm-107) — whitelist-mapped from RateLimitBudgetSnapshot. */
+interface RateLimitClassDto {
+  readonly cls: string
+  readonly max: number
+  readonly hits: number
+}
+
+interface RateLimitBudgetDto {
+  readonly windowMs: number
+  readonly maxKeys: number
+  readonly trackedKeys: number
+  readonly classes: readonly RateLimitClassDto[]
+}
+
+interface ListenerStoreStatusDto {
+  readonly rows: number
+  readonly maxRows: number
+  readonly maxAgeMs: number
+  readonly oldestReceivedAt: string | null
+  readonly unread: number
+}
+
+/**
+ * rm-107 snapshot-freshness signal: the whitelist is explicit so internal
+ * snapshot fields cannot leak through this composition.
+ */
+interface SnapshotFreshnessDto {
+  readonly refreshedAt: number | null
+  readonly staleBanner: boolean
+  readonly refreshDegraded: boolean
+  readonly refreshDurationMs: number | null
+  readonly trackedRepos: number
+  readonly driftCount: number
+}
+
+/**
+ * rm-107 refresh-failure signal: enumeration failures are count-only by the
+ * redaction invariant; `degraded` composes the watchdog and denylist
+ * failure flags into one honest "the walk is impaired" bit.
+ */
+interface RefreshFailureDto {
+  readonly enumerationIncomplete: number | null
+  readonly degraded: boolean
+}
+
+interface MonitoringSystemStatusDto {
+  readonly snapshot: SnapshotFreshnessDto
+  readonly refreshFailures: RefreshFailureDto
+  readonly rateLimit: RateLimitBudgetDto
+  readonly listenerStore: ListenerStoreStatusDto | null
+}
+
+function toSystemStatusDto(snapshot: AggregatorSnapshot, signals: SystemStatusSignals): MonitoringSystemStatusDto {
+  return {
+    snapshot: {
+      refreshedAt: snapshot.refreshedAt,
+      staleBanner: snapshot.staleBanner,
+      refreshDegraded: snapshot.refreshDegraded,
+      refreshDurationMs: snapshot.refreshDurationMs,
+      trackedRepos: snapshot.repos.length,
+      driftCount: snapshot.driftCount,
+    },
+    refreshFailures: {
+      enumerationIncomplete: snapshot.enumerationIncomplete,
+      degraded: snapshot.refreshDegraded || snapshot.staleBanner,
+    },
+    rateLimit: {
+      windowMs: signals.rateLimit.windowMs,
+      maxKeys: signals.rateLimit.maxKeys,
+      trackedKeys: signals.rateLimit.trackedKeys,
+      classes: signals.rateLimit.classes.map(row => ({cls: row.cls, max: row.max, hits: row.hits})),
+    },
+    listenerStore:
+      signals.listenerStore === null
+        ? null
+        : {
+            rows: signals.listenerStore.rows,
+            maxRows: signals.listenerStore.maxRows,
+            maxAgeMs: signals.listenerStore.maxAgeMs,
+            oldestReceivedAt: signals.listenerStore.oldestReceivedAt,
+            unread: signals.listenerStore.unread,
+          },
+  }
 }
 
 function toMonitoringRepoDto(repo: DashboardRepo): MonitoringRepoDto {
@@ -68,7 +175,7 @@ function toMonitoringRepoDto(repo: DashboardRepo): MonitoringRepoDto {
   }
 }
 
-function toMonitoringDto(snapshot: AggregatorSnapshot): MonitoringDto {
+function toMonitoringDto(snapshot: AggregatorSnapshot, signals?: SystemStatusSignals): MonitoringDto {
   return {
     repos: snapshot.repos.map(toMonitoringRepoDto),
     staleBanner: snapshot.staleBanner,
@@ -77,6 +184,7 @@ function toMonitoringDto(snapshot: AggregatorSnapshot): MonitoringDto {
     refreshedAt: snapshot.refreshedAt,
     refreshDurationMs: snapshot.refreshDurationMs,
     refreshDegraded: snapshot.refreshDegraded,
+    ...(signals === undefined ? {} : {system: toSystemStatusDto(snapshot, signals)}),
   }
 }
 
@@ -87,7 +195,7 @@ function toMonitoringDto(snapshot: AggregatorSnapshot): MonitoringDto {
  *   In production, the real aggregator's `getSnapshot` is injected via server.ts.
  *   Tests inject a fake.
  */
-export function buildApiRouter(getSnapshot?: SnapshotProvider): Hono {
+export function buildApiRouter(getSnapshot?: SnapshotProvider, getSystemStatus?: SystemStatusProvider): Hono {
   const api = new Hono()
 
   api.get('/healthz', c => {
@@ -121,8 +229,9 @@ export function buildApiRouter(getSnapshot?: SnapshotProvider): Hono {
    */
   api.get('/monitoring', c => {
     const snapshot = getSnapshot === undefined ? COLD_START_SNAPSHOT : getSnapshot()
+    const signals = getSystemStatus === undefined ? undefined : getSystemStatus()
     c.header('Cache-Control', 'no-store')
-    return c.json(toMonitoringDto(snapshot))
+    return c.json(toMonitoringDto(snapshot, signals))
   })
 
   return api
