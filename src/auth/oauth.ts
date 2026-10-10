@@ -7,6 +7,12 @@
  * Security: tokens are never logged (redactSensitiveFields covers 'token'
  * and 'access_token' patterns). The operator allowlist check lives in the
  * route handler, not here.
+ *
+ * PKCE (rm-149, RFC 7636): every authorization request carries an S256
+ * code_challenge and every token exchange carries its code_verifier. GitHub
+ * OAuth Apps support the S256 method only — there is no plain-method
+ * fallback on this seam, and neither function is ever called without the
+ * PKCE argument.
  */
 import {Buffer} from 'node:buffer'
 
@@ -27,10 +33,18 @@ const GITHUB_FETCH_TIMEOUT_MS = 10_000
 /**
  * Minimal interface for the GitHub OAuth client.
  * Uses function property style (not shorthand method signatures) per lint rules.
+ *
+ * PKCE (rm-149): createAuthorizationURL receives the S256 code_challenge for
+ * the authorize redirect; validateAuthorizationCode receives the code_verifier
+ * for the token exchange. Both arguments are required — implementations that
+ * ignore them break the binding GitHub checks server-side.
  */
 export interface GitHubOAuthClient {
-  readonly createAuthorizationURL: (state: string, scopes: string[]) => URL
-  readonly validateAuthorizationCode: (code: string) => Promise<{accessToken: () => string}>
+  readonly createAuthorizationURL: (state: string, scopes: string[], codeChallenge: string) => URL
+  readonly validateAuthorizationCode: (
+    code: string,
+    codeVerifier: string,
+  ) => Promise<{accessToken: () => string}>
 }
 
 /**
@@ -46,7 +60,7 @@ export function makeGitHubOAuthClient(
   redirectURI: string,
 ): GitHubOAuthClient {
   return {
-    createAuthorizationURL: (state: string, scopes: string[]): URL => {
+    createAuthorizationURL: (state: string, scopes: string[], codeChallenge: string): URL => {
       const url = new URL('https://github.com/login/oauth/authorize')
       url.search = new URLSearchParams({
         client_id: clientId,
@@ -54,10 +68,17 @@ export function makeGitHubOAuthClient(
         state,
         scope: scopes.join(' '),
         response_type: 'code',
+        // rm-149 PKCE: S256 only — GitHub rejects/ignores anything else, and
+        // the plain method is never emitted (no downgrade).
+        code_challenge: codeChallenge,
+        code_challenge_method: 'S256',
       }).toString()
       return url
     },
-    validateAuthorizationCode: async (code: string): Promise<{accessToken: () => string}> => {
+    validateAuthorizationCode: async (
+      code: string,
+      codeVerifier: string,
+    ): Promise<{accessToken: () => string}> => {
       let res: Response
       try {
         res = await fetch('https://github.com/login/oauth/access_token', {
@@ -71,6 +92,10 @@ export function makeGitHubOAuthClient(
           body: new URLSearchParams({
             client_id: clientId,
             code,
+            // rm-149 PKCE: GitHub compares S256(code_verifier) with the
+            // challenge bound to this authorization code — a missing or wrong
+            // verifier fails the exchange (bad_verification_code).
+            code_verifier: codeVerifier,
             redirect_uri: redirectURI,
             grant_type: 'authorization_code',
           }).toString(),

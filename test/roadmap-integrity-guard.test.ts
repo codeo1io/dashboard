@@ -115,6 +115,14 @@ describe('rm-678 schema half: live ledger', () => {
     // (the assertion line itself is relocated below so the pin
     // value stays single-sourced; the note's 778 is its at-write
     // value, superseded by this case's 780 below).
+    // 2026-10-09 roadmap extension of run 155f9770 (cycle:3):
+    // three mints above the sibling frontier rm-805 — rm-806
+    // (scanner-workflow concurrency groups), rm-807 (soak-matured
+    // dep refresh), rm-808 (dead _onSettle param) — in-file max
+    // moves 778 -> 808 with 245 -> 248 defs (at-write counts
+    // against its own base 364272b, superseded by the 2026-10-10
+    // integrate note below per the 366f6059 precedent; the pin
+    // value stays single-sourced at the assertion below).
     // 2026-10-09 integrate of run 9289efaa (conflict case
     // 139848e6): that run's single mint rm-703 (release.yaml
     // digest-readback SIGPIPE -- the THIRD lineage id of the
@@ -153,6 +161,19 @@ describe('rm-678 schema half: live ledger', () => {
     // pnpm/codeql/absorb-window findings ride its rm-252 and rm-139
     // riders, pairing run-ba5f6d7ddd67 ext #41 by content); census
     // 247 + 1 = 248 defs / 0 dups / max rm-833, next free rm-834.
+    // 2026-10-10 integrate of run 155f9770 (conflict case
+    // 8955e66c): the run was authored at base 364272b (245 defs /
+    // max rm-778) while main moved through the cbe70604 (case
+    // 543f1e72) and d823703c integrations, landing at 248 defs /
+    // max rm-833. Its three mints rm-806 (scanner-workflow
+    // concurrency groups), rm-807 (soak-matured dep refresh) and
+    // rm-808 (dead _onSettle param) sit BELOW that landed ceiling
+    // and are collision-free first-hand against the merged ledger
+    // (rm-806..808 appear in no landed def line), so all three
+    // land as-authored and NO bump is owed: the pin stays 833 and
+    // the run's at-write 808 pin above is superseded by this note
+    // exactly as 366f6059 superseded at-write pins — union census
+    // 248 + 3 = 251 defs / 0 dups / max rm-833, next free rm-834.
     expect(live.max).toBe(833)
   })
 
