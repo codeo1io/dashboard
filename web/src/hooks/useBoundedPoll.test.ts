@@ -182,6 +182,32 @@ describe('useBoundedPoll — mount-time wiring', () => {
     expect(neverSettles).toHaveBeenCalledTimes(2)
   })
 
+  it('rm-847: the poll-bound abort cancels a still-pending fetch — the poll abort path stays live even with an equal-duration GET seam bound in the fetcher', async () => {
+    // The production seam (withGetSeamTimeout) registers its bound timer
+    // first, so at equal durations the seam fires before this poll bound —
+    // which is exactly why the seam must own the transport abort. This test
+    // pins the OTHER half: when the seam does not fire first (inverted
+    // durations — seam bound above the poll timeout), the poll latch's own
+    // abort still kills the fetcher's transport.
+    let observedAbort = false
+    const hangsUntilAborted = vi.fn((signal: AbortSignal): Promise<PollResult> => {
+      signal.addEventListener('abort', () => {
+        observedAbort = true
+      })
+      return new Promise<PollResult>(() => {})
+    })
+    const config = makeConfig({fetcher: hangsUntilAborted})
+    renderHook(() => useBoundedPoll<PollResult>(config))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000)
+    })
+    expect(config.onResult).toHaveBeenCalledWith({tag: 'timeout'})
+    expect(observedAbort).toBe(true)
+  })
+
   it('unmount aborts the in-flight fetch', async () => {
     let observedSignal: AbortSignal | undefined
     const hanging = vi.fn((signal: AbortSignal): Promise<PollResult> => {
