@@ -67,5 +67,7 @@ overrides:
   # NEWLY indexed advisory BY DESIGN and the undici 8 + jsdom 30 migration
   # rides rm-271's majors window. undici is dev-transitive via jsdom.
   undici@7: '>=7.30.0 <8.0.0'
+  # upstream 2026.10.17: new advisory floor
+  katex@0: '>=0.18.2 <1.0.0'
 
 shamefullyHoist: true
