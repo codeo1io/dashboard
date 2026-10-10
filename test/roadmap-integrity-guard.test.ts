@@ -148,7 +148,16 @@ describe('rm-678 schema half: live ledger', () => {
     // 778 -> 780 atomically with this landing: union census
     // 245 + 2 = 247 defs / 0 dups / max rm-780, next free
     // rm-781.
-    expect(live.max).toBe(780)
+    // 2026-10-10 roadmap extension #39 (run
+    // cb6061a358f24c6d85936f0035d8d0f, roadmap 4c008b36,
+    // repository-maintenance cycle:3, base 88e423a): mints
+    // rm-861/rm-862/rm-863 above the all-lineage def-line
+    // frontier rm-860 (first-hand: no spool patch or wall or
+    // landed def line carries them), so the pin moves
+    // 780 -> 863 atomically with this extension: union census
+    // 247 + 3 = 250 defs / 0 dups / max rm-863, next free
+    // rm-864.
+    expect(live.max).toBe(863)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
