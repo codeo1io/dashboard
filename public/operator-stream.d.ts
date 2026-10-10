@@ -33,9 +33,16 @@ export declare const MAX_SSE_BUFFER_BYTES: number
 /**
  * rm-477: append one decoded read() chunk to the stream buffer, holding a
  * trailing CR back so a CRLF pair split across chunks cannot forge a phantom
- * record boundary. The server reader carries the same pending-CR logic inline.
+ * record boundary. Since the rm-253 fold the server reader consumes this
+ * seam through parseSseChunk below (single bytes implementation).
  */
 export declare function appendStreamChunk(buffer: string, decoded: string): string
+/**
+ * rm-253 fold: the single record-extraction seam both twins consume — splits
+ * a stream buffer plus one decoded chunk into complete SSE records (blank-line
+ * terminated, real newlines preserved) and the unterminated tail.
+ */
+export declare function parseSseChunk(buffer: string, decoded: string): {records: string[]; buffered: string}
 export declare const MAX_OUTPUT_TEXT_CHARS: number
 export declare const MAX_APPROVAL_TOMBSTONES: number
 export declare const MAX_OPEN_APPROVALS: number

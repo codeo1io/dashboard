@@ -10,6 +10,7 @@
  */
 import fc from 'fast-check'
 import {describe, expect, it} from 'vitest'
+import {parseSseChunk as splitPublic} from '../public/operator-stream.js'
 import {OPERATOR_CONTRACT_VERSION} from '../src/gateway/operator-contract/version.ts'
 import {parseSseChunk} from '../src/gateway/operator-sse-reader.ts'
 
@@ -205,5 +206,45 @@ describe('operator SSE parser properties (rm-144)', () => {
       }),
       {numRuns: 100},
     )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-253 fold seam: the public twin's parseSseChunk is the single
+// record-extraction implementation both consumers share (the server reader
+// consumes it since the fold); these properties exercise the public seam
+// directly.
+// ---------------------------------------------------------------------------
+
+describe('public parseSseChunk — fold seam (rm-253)', () => {
+  it('extracts the same records when the stream is split at any single point', () => {
+    fc.assert(
+      fc.property(fc.array(frameArb, {minLength: 1, maxLength: 6}), frames => {
+        const whole = frames.map(f => serialize(f, '\n')).join('')
+        const expected = splitPublic('', whole).records
+        for (let i = 0; i < whole.length; i += 1) {
+          const left = splitPublic('', whole.slice(0, i))
+          const right = splitPublic(left.buffered, whole.slice(i))
+          expect([...left.records, ...right.records]).toEqual(expected)
+        }
+      }),
+      {numRuns: 50},
+    )
+  })
+
+  it('holds a pending CR across the chunk boundary (rm-477 via the fold seam)', () => {
+    const left = splitPublic('', 'event: ready\ndata: {"contractVersion":"1.6.0"}\r')
+    expect(left.records).toEqual([])
+    const right = splitPublic(left.buffered, '\n\n')
+    expect(right.records).toEqual(['event: ready\ndata: {"contractVersion":"1.6.0"}'])
+  })
+
+  it('keeps multi-line data records intact at every split point (rm-484)', () => {
+    const text = 'event: ready\ndata: {"contractVersion":\ndata: "1.6.0"}\n\n'
+    for (let i = 0; i < text.length; i += 1) {
+      const left = splitPublic('', text.slice(0, i))
+      const right = splitPublic(left.buffered, text.slice(i))
+      expect(right.records).toEqual(['event: ready\ndata: {"contractVersion":\ndata: "1.6.0"}'])
+    }
   })
 })

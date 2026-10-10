@@ -202,8 +202,10 @@ function normalizeCrlf(text) {
 // rm-477: append one decoded read() chunk to the stream buffer, holding a
 // trailing CR back so it cannot be normalized to LF before the next chunk
 // reveals whether it is half of a CRLF pair. Exported for the twin suite —
-// the server reader (src/gateway/operator-sse-reader.ts) carries the same
-// pending-CR logic inline and both are pinned by chunk-split regressions.
+// since the rm-253 fold the server reader (src/gateway/operator-sse-reader.ts)
+// consumes this seam through parseSseChunk instead of carrying the pending-CR
+// logic inline; the bytes implementation is single-sourced here and pinned by
+// chunk-split regressions.
 export function appendStreamChunk(buffer, decoded) {
   let text = buffer + decoded
   let held = ''
@@ -212,6 +214,25 @@ export function appendStreamChunk(buffer, decoded) {
     text = text.slice(0, -1)
   }
   return normalizeCrlf(text) + held
+}
+
+// rm-253 fold: the single record-extraction seam for both twins. Returns the
+// complete SSE records (blank-line terminated, real newlines preserved) plus
+// the unterminated tail; the trailing-CR hold and CRLF normalization come from
+// appendStreamChunk above (rm-477). The server reader previously carried this
+// boundary logic inline — it now consumes this export, and the twin-parity
+// property suite (test/sse-parser.property.test.ts) exercises it directly.
+export function parseSseChunk(buffer, decoded) {
+  const text = appendStreamChunk(buffer, decoded)
+  const records = []
+  let rest = text
+  let boundary = rest.indexOf('\n\n')
+  while (boundary !== -1) {
+    records.push(rest.slice(0, boundary))
+    rest = rest.slice(boundary + 2)
+    boundary = rest.indexOf('\n\n')
+  }
+  return {records, buffered: rest}
 }
 
 // ---------------------------------------------------------------------------
@@ -246,7 +267,10 @@ export function parseSseFrame(record) {
     if (line.startsWith('event:')) {
       eventName = line.slice('event:'.length).trim()
     } else if (line.startsWith('data:')) {
-      dataLine = line.slice('data:'.length).trim()
+      const dataValue = line.slice('data:'.length).trim()
+      // rm-484: SSE spec — consecutive data lines concatenate with '\n'; the
+      // previous last-wins overwrite silently dropped every earlier data line.
+      dataLine = dataLine === undefined ? dataValue : `${dataLine}\n${dataValue}`
     }
   }
 

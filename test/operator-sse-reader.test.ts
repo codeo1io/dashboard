@@ -98,6 +98,20 @@ describe('parseSseChunk — pure parser', () => {
     }
   })
 
+  it(String.raw`joins multi-line data fields with \n (rm-484)`, () => {
+    const text = 'event: ready\ndata: {"contractVersion":\ndata: "1.6.0"}\n\n'
+    const results = parseSseChunk(text)
+    expect(results).toHaveLength(1)
+    const frame = results[0]
+    expect(frame?.success).toBe(true)
+    if (frame?.success) {
+      expect(frame.frame.type).toBe('ready')
+      if (frame.frame.type === 'ready') {
+        expect(frame.frame.data.contractVersion).toBe('1.6.0')
+      }
+    }
+  })
+
   it('parses a status frame with a full OperatorRunStatus payload', () => {
     const payload = {
       runId: 'run-001',

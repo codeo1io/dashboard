@@ -148,7 +148,14 @@ describe('rm-678 schema half: live ledger', () => {
     // 778 -> 780 atomically with this landing: union census
     // 245 + 2 = 247 defs / 0 dups / max rm-780, next free
     // rm-781.
-    expect(live.max).toBe(780)
+    // 2026-10-10 extension (run 386aafb1395f roadmap bce2654fa, repository-
+    // maintenance cycle:3 at base 88e423a): ONE mint rm-849 (canary
+    // red-and-dark disposition + Monday 2026-10-12 triple-signal recovery
+    // window) above the all-lineage def-line ceiling rm-848 (live re-probe:
+    // run-f72cb7ef wall 844, spool def-lines 846-848; 855/894/9xx spool
+    // tokens agenttrace-foreign or prose per the rm-855/894 rule) —
+    // 247 -> 248 defs, pin 780 -> 849 atomically with the mint.
+    expect(live.max).toBe(849)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {

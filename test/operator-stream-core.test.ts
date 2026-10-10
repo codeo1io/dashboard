@@ -85,6 +85,19 @@ describe('parseSseFrame — pure parser', () => {
     }
   })
 
+  it(String.raw`joins multi-line data fields with \n (rm-484)`, () => {
+    const text = `event: ready\ndata: {"contractVersion":\ndata: "1.5.0"}\n\n`
+    const result = parseSseFrame(text)
+    expect(result).not.toBeNull()
+    expect(result?.success).toBe(true)
+    if (result !== null && result.success) {
+      expect(result.frame.type).toBe('ready')
+      if (result.frame.type === 'ready') {
+        expect(result.frame.data.contractVersion).toBe('1.5.0')
+      }
+    }
+  })
+
   it('parses a status frame with a full payload', () => {
     const text = `event: status\ndata: ${JSON.stringify(ACTIVE_STATUS)}\n\n`
     const result = parseSseFrame(text)

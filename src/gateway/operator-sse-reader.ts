@@ -26,6 +26,12 @@
 import type {Logger} from '../logger.ts'
 import type {OperatorApprovalFrame} from './operator-contract/approval-frame.ts'
 import type {ResetReason, RunStreamFrame} from './operator-contract/sse-frames.ts'
+// rm-253 fold: the bytes layer (rm-477 pending-CR hold + CRLF normalization
+// + blank-line record extraction) is single-sourced in the public twin
+// (public/operator-stream.js appendStreamChunk / parseSseChunk); this reader
+// consumes those seams. MAX_SSE_BUFFER_BYTES is defined there and re-exported
+// below so existing import sites stay stable.
+import {appendStreamChunk, MAX_SSE_BUFFER_BYTES, parseSseChunk as splitStreamChunk} from '../../public/operator-stream.js'
 import {parseOperatorCheckoutPreparation, parseOperatorCheckoutProvenance} from './operator-contract/provenance.ts'
 import {isOperatorFailureKind} from './operator-contract/run-status.ts'
 import {SUPPORTED_OPERATOR_CONTRACT_VERSIONS} from './operator-contract/version.ts'
@@ -41,9 +47,11 @@ import {SUPPORTED_OPERATOR_CONTRACT_VERSIONS} from './operator-contract/version.
  * incrementally (TextEncoder per appended/consumed fragment), NOT on
  * `buffer.length` — a JS string's length counts UTF-16 code units: astral
  * characters undercount 2× (3× worst case for 3-byte BMP chars), letting
- * multi-byte frames sail past a BYTES-named bound.
+ * multi-byte frames sail past a BYTES-named bound. The constant itself lives
+ * in the public twin since the rm-253 fold (same 1_000_000 value, consumed by
+ * both twins) and is re-exported here for import-site stability.
  */
-export const MAX_SSE_BUFFER_BYTES = 1_000_000
+export {MAX_SSE_BUFFER_BYTES} from '../../public/operator-stream.js'
 
 // ---------------------------------------------------------------------------
 // Allowlists for value-gated fields
@@ -125,7 +133,10 @@ function parseSseRecord(record: string): SseParseResult | null {
     if (line.startsWith('event:')) {
       eventName = line.slice('event:'.length).trim()
     } else if (line.startsWith('data:')) {
-      dataLine = line.slice('data:'.length).trim()
+      const dataValue = line.slice('data:'.length).trim()
+      // rm-484: SSE spec — consecutive data lines concatenate with '\n'; the
+      // previous last-wins overwrite silently dropped every earlier data line.
+      dataLine = dataLine === undefined ? dataValue : `${dataLine}\n${dataValue}`
     }
   }
 
@@ -541,21 +552,14 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
         if (done) break
 
         if (value !== undefined) {
-          // rm-477: a chunk ending in CR must not be normalized yet — converting
-          // the lone CR to LF here terminates its line early, so the LF that
-          // opens the NEXT chunk forges a phantom record boundary and the frame
-          // is dropped without even a parse error. Hold a trailing CR back and
-          // let it normalize together with the following chunk.
-          let text = buffer + decoder.decode(value, {stream: true})
-          let held = ''
-          if (text.endsWith('\r')) {
-            held = '\r'
-            text = text.slice(0, -1)
-          }
-          // normalizeCrlf is idempotent on already-normalized text, so
-          // re-normalizing the concatenation is safe; only the junction
-          // between a held CR and a following LF changes.
-          buffer = normalizeCrlf(text) + held
+          const decodedText = decoder.decode(value, {stream: true})
+          // rm-253 fold: the append below is the public twin's appendStreamChunk
+          // seam — the rm-477 pending-CR hold and CRLF normalization are
+          // single-sourced there (a chunk ending in CR must not be normalized
+          // yet: converting the lone CR to LF here terminates its line early,
+          // so the LF that opens the NEXT chunk would forge a phantom record
+          // boundary and the frame would drop without even a parse error).
+          buffer = appendStreamChunk(buffer, decodedText)
           bufferBytes = encoder.encode(buffer).length
         }
 
@@ -567,20 +571,18 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
           return
         }
 
-        // Extract complete SSE records (terminated by \n\n)
-        let boundary = buffer.indexOf('\n\n')
-        while (boundary !== -1) {
-          const record = buffer.slice(0, boundary)
-          buffer = buffer.slice(boundary + 2)
-          bufferBytes -= encoder.encode(`${record}\n\n`).length
-
+        // rm-253 fold: complete-record extraction (blank-line terminated) is
+        // the public twin's parseSseChunk seam — the same \n\n boundaries as
+        // the pre-fold inline loop, byte-for-byte.
+        const {records, buffered} = splitStreamChunk(buffer, '')
+        buffer = buffered
+        bufferBytes = encoder.encode(buffer).length
+        for (const record of records) {
           const results = parseSseChunk(`${record}\n\n`)
           for (const result of results) {
             const shouldContinue = handleFrame(result)
             if (!shouldContinue) return
           }
-
-          boundary = buffer.indexOf('\n\n')
         }
       }
 
