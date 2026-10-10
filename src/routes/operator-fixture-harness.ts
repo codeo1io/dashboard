@@ -26,6 +26,13 @@ import {
   FIXTURE_VAPID_PUBLIC_KEY,
 } from '../gateway/operator-fixtures.ts'
 import {logger} from '../logger.ts'
+import {
+  FIXTURE_MONITORING_SHAPES,
+  getFixtureMonitoringShape,
+  isFixtureMonitoringShape,
+  resetFixtureMonitoringShapeForTesting,
+  setFixtureMonitoringShape,
+} from './monitoring-fixture.ts'
 
 // Fixture-prefixed repo list — never real repos.
 const FIXTURE_REPOS = [
@@ -273,6 +280,44 @@ export function buildFixtureHarnessRouter(): Hono {
   router.get('/repos', c => {
     logger.debug('fixture-harness: GET /repos', {status: 200})
     const res = c.json(FIXTURE_REPOS)
+    setNoStore(res.headers)
+    return res
+  })
+
+  // rm-896: GET /monitoring — current fixture monitoring shape + shape list
+  // (introspection; the shape drives the fixture /api/monitoring seam that
+  // server.ts mounts ahead of the production /api router).
+  router.get('/monitoring', c => {
+    logger.debug('fixture-harness: GET /monitoring', {status: 200})
+    const res = c.json({shape: getFixtureMonitoringShape(), shapes: FIXTURE_MONITORING_SHAPES})
+    setNoStore(res.headers)
+    return res
+  })
+
+  // rm-896: POST /monitoring/shape — select the fixture /api/monitoring shape
+  // ({shape: 'mixed' | 'cold-start'}). Non-echoing 400 on anything else.
+  router.post('/monitoring/shape', async c => {
+    let body: unknown
+    try {
+      body = await c.req.json()
+    } catch {
+      logger.debug('fixture-harness: POST /monitoring/shape', {status: 400, errorClass: 'parse'})
+      const res = c.json({error: 'invalid-request'}, 400)
+      setNoStore(res.headers)
+      return res
+    }
+
+    const shape = (body as {shape?: unknown} | null)?.shape
+    if (!isFixtureMonitoringShape(shape)) {
+      logger.debug('fixture-harness: POST /monitoring/shape', {status: 400, errorClass: 'invalid-shape'})
+      const res = c.json({error: 'invalid-shape'}, 400)
+      setNoStore(res.headers)
+      return res
+    }
+
+    setFixtureMonitoringShape(shape)
+    logger.debug('fixture-harness: POST /monitoring/shape', {status: 200})
+    const res = c.json({shape, shapes: FIXTURE_MONITORING_SHAPES})
     setNoStore(res.headers)
     return res
   })
@@ -720,5 +765,6 @@ export function resetFixtureHarnessForTesting(): void {
   pushSessionRecordMap.clear()
   cancelIdempotencyMap.clear()
   sessionIdCounter = 0
+  resetFixtureMonitoringShapeForTesting()
   runIdCounter = 0
 }
