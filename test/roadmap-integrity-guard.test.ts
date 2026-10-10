@@ -37,6 +37,67 @@ function blocks(): string[][] {
   return starts.map((s, k) => lines.slice(s, k + 1 < starts.length ? starts[k + 1] : s + 80))
 }
 
+// rm-906 placement half: statuses that mean live work must sit in the Open
+// items section (between the '## Open items' and '## Completed items' headers).
+// Terminal statuses (implemented/completed/landed/partially/superseded/
+// declined) legitimately live past the Completed header and are unaffected.
+const PLACEMENT_OPEN_STATUSES = new Set(['open', 'candidate', 'in-progress', 'blocked-external'])
+
+function misplacedOpenDefs(content: string): string[] {
+  const lines = content.split('\n')
+  const openAt = lines.findIndex(line => line.startsWith('## Open items'))
+  const completedAt = lines.findIndex(line => line.startsWith('## Completed items'))
+  if (openAt === -1 || completedAt === -1 || completedAt <= openAt) {
+    return ['section headers missing or misordered: expected ## Open items before ## Completed items']
+  }
+  const misplaced: string[] = []
+  lines.forEach((line, i) => {
+    if (!/^- id: `rm-\d+` \| /.test(line)) return
+    const status = line.split('| status: ')[1]?.split(' ')[0] ?? 'MISSING'
+    if (!PLACEMENT_OPEN_STATUSES.has(status)) return
+    if (i <= openAt || i >= completedAt) {
+      const id = /^- id: `(rm-\d+)`/.exec(line)?.[1] ?? 'rm-?'
+      misplaced.push(`${id} (status ${status}) at line ${i + 1} sits outside the Open items section`)
+    }
+  })
+  return misplaced
+}
+
+function readBaseBlob(): string | undefined {
+  // rm-906 historical red-proof fixture: the pre-relocation base blob of run
+  // 91ddebf6 — ten candidate defs lived under the Completed header there and
+  // passed every landed guard. Mirrors the 3d07cf9 fixture pattern (skip when
+  // the blob is unavailable); the blob is ~1.1MB so maxBuffer must exceed the
+  // 1MB execFileSync default (a plain execFileSync hit ENOBUFS first-hand).
+  const sha = 'e6b6a94a6db9b1eea5414dde4e87ce8acc37be26'
+  const read = (): string | undefined => {
+    try {
+      return execFileSync('git', ['show', `${sha}:ROADMAP.md`], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        maxBuffer: 16 * 1024 * 1024,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+    } catch {
+      return undefined
+    }
+  }
+  const text = read()
+  if (text !== undefined) return text
+  // Shallow checkouts: fetch the commit on demand (GitHub serves arbitrary-SHA
+  // fetches); skip only when even that fails — offline runs keep the synthetic
+  // fixture above as the always-on regression.
+  try {
+    execFileSync('git', ['fetch', '--depth=1', '--quiet', 'origin', sha], {
+      cwd: repoRoot,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    })
+  } catch {
+    return undefined
+  }
+  return read()
+}
+
 describe('rm-678 schema half: live ledger', () => {
   it('every def id is unique', () => {
     const live = census(roadmap)
@@ -228,7 +289,7 @@ describe('rm-678 schema half: live ledger', () => {
     // as 366f6059 superseded at-write pins -- union census
     // 252 + 1 = 253 defs / 0 dups / max rm-835, next free
     // rm-836.
-    expect(live.max).toBe(835)
+    expect(live.max).toBe(911) // rm-906..911 (ext #44, run 91ddebf6 cycle:3)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
@@ -277,6 +338,81 @@ describe('rm-678 schema half: live ledger', () => {
     expect(Number(newest.claim?.[1])).toBe(live.defs)
     expect(Number(newest.claim?.[2])).toBe(live.dups.length)
     expect(Number(newest.claim?.[3])).toBe(live.max)
+  })
+})
+
+describe('rm-906 placement half: open-status defs live in the Open section', () => {
+  // rm-906 (repository-maintenance cycle 3, run 91ddebf6): every def whose
+  // status is open / candidate / in-progress / blocked-external must sit
+  // BETWEEN the '## Open items' and '## Completed items' headers. The ten-block
+  // misfiling this closes (candidate defs living under Completed) survived on
+  // live main because every landed guard looked at WHAT a def said, never WHERE
+  // it sat — Open-items surveys silently dropped the misfiled ids and completed
+  // counts overcounted. Terminal statuses (implemented/completed/landed/
+  // partially/superseded/declined) legitimately live past the Completed header
+  // and are unaffected. The assertion scopes to THIS tree's structure only.
+  it('live ledger has zero misplaced open-status defs', () => {
+    expect(misplacedOpenDefs(roadmap)).toEqual([])
+  })
+
+  it('red-proof synthetic fixture: a candidate def under the Completed header is flagged', () => {
+    // rm-906 red-first regression fixture: the minimal shape of the historical
+    // misfiling (an open-status def sitting past the Completed header) must
+    // fail this guard. Written and observed red before the placement helper
+    // existed, then green with it.
+    const synthetic = [
+      '# Roadmap',
+      '',
+      '## Open items',
+      '',
+      '### Lives in the right place',
+      '- id: `rm-001` | track: x | priority: 1.0 | status: candidate (added 2026-10-10)',
+      '- signals: s',
+      '- acceptance:',
+      '  - a',
+      '',
+      '## Completed items',
+      '',
+      '### Misfiled under Completed',
+      '- id: `rm-002` | track: x | priority: 1.0 | status: candidate (added 2026-10-10)',
+      '- signals: s',
+      '- acceptance:',
+      '  - a',
+      '',
+      '## Superseded items',
+      '',
+      '### Legitimately past Completed',
+      '- id: `rm-003` | track: x | priority: 1.0 | status: superseded (2026-10-10)',
+    ].join('\n')
+    const found = misplacedOpenDefs(synthetic)
+    expect(found).toHaveLength(1)
+    expect(found[0]).toContain('rm-002')
+  })
+
+  it('red-proof historical fixture: the e6b6a94 ten-block misfiling is flagged', () => {
+    // The pre-relocation blob (base of run 91ddebf6) carried ten candidate
+    // defs under the Completed header and passed every landed guard — no guard
+    // looked at WHERE a def sat. This fixture fails against that blob, proving
+    // the assertion actually bites on the historical bug shape.
+    const text = readBaseBlob()
+    expect(text).toBeDefined()
+    const found = misplacedOpenDefs(text ?? '')
+    const joined = found.join('\n')
+    for (const id of [
+      'rm-199',
+      'rm-215',
+      'rm-216',
+      'rm-217',
+      'rm-218',
+      'rm-162',
+      'rm-163',
+      'rm-220',
+      'rm-221',
+      'rm-224',
+    ]) {
+      expect(joined).toContain(id)
+    }
+    expect(found).toHaveLength(10)
   })
 })
 
