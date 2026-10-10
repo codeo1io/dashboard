@@ -42,6 +42,7 @@ export type OperatorWebStatus =
   | 'blocked'
   | 'running'
   | 'waiting_for_approval'
+  | 'waiting_for_question'
   | 'succeeded'
   | 'failed'
   | 'cancelled'
@@ -49,8 +50,11 @@ export type OperatorWebStatus =
 /**
  * Maps a RunPhase to its operator-facing web status.
  *
- * 'blocked' and 'waiting_for_approval' are NOT in this map — they are
- * endpoint-layer overlays, not derivable from RunPhase alone.
+ * 'blocked', 'waiting_for_approval', and 'waiting_for_question' are NOT in this
+ * map — they are endpoint-layer overlays, not derivable from RunPhase alone.
+ * 'waiting_for_question' (upstream contract 1.9.0, fro-bot/agent v0.119.0) marks
+ * a running run with a pending agent question; 'waiting_for_approval' takes
+ * precedence when both are pending.
  */
 export const PHASE_TO_WEB_STATUS: Readonly<Record<RunPhase, OperatorWebStatus>> = {
   PENDING: 'queued',

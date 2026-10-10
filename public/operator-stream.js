@@ -42,7 +42,7 @@ export const PINNED_CONTRACT_VERSION = '1.6.0'
  * (pinned by test/operator-contract-window.test.ts). '1.8.0' is additive-only
  * shape; the primary stays '1.6.0' until the deployed gateway moves.
  */
-export const SUPPORTED_CONTRACT_VERSIONS = ['1.6.0', '1.8.0']
+export const SUPPORTED_CONTRACT_VERSIONS = ['1.6.0', '1.8.0', '1.9.0']
 
 /** Base delay in milliseconds for exponential backoff. */
 export const RETRY_BASE_MS = 1000
@@ -120,6 +120,7 @@ const VALID_STATUSES = new Set([
   'blocked',
   'running',
   'waiting_for_approval',
+  'waiting_for_question',
   'succeeded',
   'failed',
   'cancelled',
@@ -148,6 +149,7 @@ const STATUS_LABELS = {
   blocked: 'Blocked',
   running: 'Running',
   waiting_for_approval: 'Waiting for approval',
+  waiting_for_question: 'Waiting for question',
   succeeded: 'Succeeded',
   failed: 'Failed',
   cancelled: 'Cancelled',
@@ -168,6 +170,163 @@ const VALID_FAILURE_KINDS = new Set([
   'workspace-unavailable',
   'unknown',
 ])
+
+// ---------------------------------------------------------------------------
+// Checkout provenance/preparation (fro-bot/agent operator contract 1.8.0+).
+// Optional fields on the status frame: `checkoutProvenance` describes what a
+// run started from (only present once a run reached EXECUTING);
+// `checkoutPreparation` explains a refused/failed preparation attempt (only
+// present when a run NEVER reached EXECUTING). Both are display supplements:
+// a malformed value is dropped (undefined) and never invalidates the status
+// frame itself — same normalization doctrine as failureKind above. The TS
+// contract layer (src/gateway/operator-contract/provenance.ts) has the full
+// structural validators; this page-side mirror validates exactly the fields
+// the display label consumes (defense in depth — the page never trusts a
+// string from the wire into the DOM without an allowlist or shape gate).
+// ---------------------------------------------------------------------------
+
+const VALID_CHECKOUT_OPERATIONS = new Set([
+  'none',
+  'merge',
+  'rebase',
+  'am',
+  'cherry-pick',
+  'revert',
+  'bisect',
+])
+
+const SHA_40_RE = /^[0-9a-f]{40}$/
+
+const CHECKOUT_REFUSAL_LABELS = {
+  'needs-recovery': 'workspace needs recovery',
+  'checkout-substituted': 'checkout differs from the default branch',
+  'unsupported-layout': 'workspace layout not supported',
+  'unsupported-config': 'workspace config not supported',
+  'operation-in-progress': 'a git operation is in progress',
+  dirty: 'workspace has uncommitted changes',
+  'submodule-initialized': 'submodules are initialized',
+  detached: 'HEAD is detached',
+  'non-default-branch': 'not on the default branch',
+  diverged: 'branch has diverged from the default branch',
+  ahead: 'branch is ahead of the default branch',
+  obstructed: 'paths would be overwritten',
+  'maintenance-hold': 'maintenance hold',
+}
+
+const CHECKOUT_FAILURE_LABELS = {
+  aborted: 'update aborted',
+  'inspection-failed': 'inspection failed',
+  'fetch-auth-rejected': 'fetch authentication rejected',
+  'fetch-not-found': 'remote repository not found',
+  'fetch-forbidden': 'fetch forbidden',
+  'fetch-rate-limited': 'fetch rate limited',
+  'fetch-unreachable': 'remote unreachable',
+  'fetch-timeout': 'fetch timed out',
+  'fetch-failed': 'fetch failed',
+  'remote-moved': 'remote moved',
+  'apply-failed': 'update could not be applied',
+  'termination-unconfirmed': 'update termination unconfirmed',
+}
+
+function isNonNegativeInt(value) {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 1_000_000
+}
+
+function isShortText(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= 200
+}
+
+function shortSha(sha) {
+  return sha.slice(0, 7)
+}
+
+function isValidSha40(value) {
+  return typeof value === 'string' && SHA_40_RE.test(value)
+}
+
+/**
+ * Validate an optional `checkoutProvenance` into a one-line display label, or
+ * `undefined` when absent/malformed. Only display-consumed fields are gated:
+ * head (branch/sha), worktree state, and the in-progress operation. The remote
+ * freshness sub-object is not displayed and therefore not validated here.
+ */
+function checkoutProvenanceLabel(value) {
+  if (typeof value !== 'object' || value === null) return undefined
+  if (value.kind === 'unavailable') return 'checkout state unavailable'
+  if (value.kind !== 'observed') return undefined
+  const observation = value.observation
+  if (typeof observation !== 'object' || observation === null) return undefined
+
+  const head = observation.head
+  if (typeof head !== 'object' || head === null) return undefined
+  let headLabel
+  if (head.kind === 'attached') {
+    if (!isShortText(head.branch) || !isValidSha40(head.sha)) return undefined
+    headLabel = `${head.branch}@${shortSha(head.sha)}`
+  } else if (head.kind === 'detached') {
+    if (!isValidSha40(head.sha)) return undefined
+    headLabel = `detached@${shortSha(head.sha)}`
+  } else {
+    return undefined
+  }
+
+  const worktree = observation.worktree
+  if (typeof worktree !== 'object' || worktree === null) return undefined
+  let worktreeLabel
+  if (worktree.kind === 'clean') {
+    worktreeLabel = 'clean'
+  } else if (worktree.kind === 'dirty') {
+    if (
+      !isNonNegativeInt(worktree.staged) ||
+      !isNonNegativeInt(worktree.unstaged) ||
+      !isNonNegativeInt(worktree.untracked) ||
+      !isNonNegativeInt(worktree.conflicted)
+    ) {
+      return undefined
+    }
+    const parts = [`${worktree.staged} staged`, `${worktree.unstaged} unstaged`, `${worktree.untracked} untracked`]
+    if (worktree.conflicted > 0) parts.push(`${worktree.conflicted} conflicted`)
+    worktreeLabel = `dirty (${parts.join(', ')})`
+  } else {
+    return undefined
+  }
+
+  const operationInProgress = observation.operationInProgress
+  if (operationInProgress !== undefined && !VALID_CHECKOUT_OPERATIONS.has(operationInProgress)) return undefined
+  const operationLabel =
+    operationInProgress !== undefined && operationInProgress !== 'none' ? ` · ${operationInProgress} in progress` : ''
+
+  return `checkout ${headLabel} · ${worktreeLabel}${operationLabel}`
+}
+
+/**
+ * Validate an optional `checkoutPreparation` into a one-line display label, or
+ * `undefined` when absent/malformed. Reasons are label-map gated (unknown
+ * reason -> undefined, fail closed); per-reason detail counts derive from
+ * array lengths only — array contents never reach the DOM.
+ */
+function checkoutPreparationLabel(value) {
+  if (typeof value !== 'object' || value === null) return undefined
+  if (value.outcome === 'refused') {
+    const label = CHECKOUT_REFUSAL_LABELS[value.reason]
+    if (label === undefined) return undefined
+    let detail = ''
+    if (Array.isArray(value.changedPaths)) detail = ` · ${value.changedPaths.length} changed paths`
+    else if (Array.isArray(value.obstructions)) detail = ` · ${value.obstructions.length} obstructed paths`
+    else if (Array.isArray(value.submodules)) detail = ` · ${value.submodules.length} submodules`
+    else if (Array.isArray(value.disallowedKeys)) detail = ` · ${value.disallowedKeys.length} disallowed config keys`
+    else if (isShortText(value.branch)) detail = ` · ${value.branch}`
+    else if (VALID_CHECKOUT_OPERATIONS.has(value.operation) && value.operation !== 'none')
+      detail = ` · ${value.operation}`
+    return `checkout refused: ${label}${detail}`
+  }
+  if (value.outcome === 'failed') {
+    const label = CHECKOUT_FAILURE_LABELS[value.reason]
+    if (label === undefined) return undefined
+    return `checkout failed: ${label}`
+  }
+  return undefined
+}
 
 /**
  * Dashboard-owned display labels for known failure reasons — render labels from
@@ -307,6 +466,13 @@ export function parseSseFrame(record) {
     // failureKind is optional and allowlist-gated; an unrecognized or absent
     // value normalizes to omitted — it never fails validity of the status frame.
     const failureKind = VALID_FAILURE_KINDS.has(parsed.failureKind) ? parsed.failureKind : undefined
+    // Checkout provenance/preparation are optional display supplements (see
+    // the checkout block above): malformed values drop to omitted, never
+    // invalidating the frame. At most one is meaningful (a run either reached
+    // EXECUTING and carries provenance, or never did and carries preparation)
+    // but both are independently normalized — first valid one wins for display.
+    const checkoutLabel =
+      checkoutProvenanceLabel(parsed.checkoutProvenance) ?? checkoutPreparationLabel(parsed.checkoutPreparation)
     return {
       success: true,
       frame: {
@@ -320,6 +486,7 @@ export function parseSseFrame(record) {
           startedAt: parsed.startedAt,
           stale: parsed.stale,
           ...(failureKind === undefined ? {} : {failureKind}),
+          ...(checkoutLabel === undefined ? {} : {checkoutLabel}),
         },
       },
     }
@@ -467,7 +634,7 @@ export function nextStreamState(current, event) {
       if (current.connection !== 'live') {
         return current
       }
-      const {runId, status, phase, startedAt, stale, failureKind} = event.data
+      const {runId, status, phase, startedAt, stale, failureKind, checkoutLabel} = event.data
       const isTerminal = TERMINAL_STATUSES.has(status)
       // Use a null-prototype object to guard against __proto__ key pollution.
       // Spread the prior entry so accumulated output fields (outputText/outputSeq/
@@ -481,6 +648,10 @@ export function nextStreamState(current, event) {
       const derivedReasonLabel =
         status === 'failed' && failureKind !== undefined ? FAILURE_REASON_LABELS[failureKind] : undefined
       const reasonLabel = derivedReasonLabel ?? prevStatusEntry?.reasonLabel
+      // Checkout label is sticky first-seen-wins: provenance describes the
+      // starting point of the run (constant across frames), and a preparation
+      // label explains a run that never executes — neither can meaningfully
+      // change, and a later frame must not clear an earlier observation.
       // On terminal status, clear all open approval prompts for this run.
       // Terminal is absorbing for approvals: once terminal, no open prompt can reappear.
       // Tombstones are preserved so that any late open frames are still ignored.
@@ -507,6 +678,7 @@ export function nextStreamState(current, event) {
           // A non-terminal frame preserves whatever the prior entry carried (spread above).
           ...(isTerminal ? {cancelInFlight: false} : {}),
           ...(reasonLabel === undefined ? {} : {reasonLabel}),
+          ...(checkoutLabel === undefined ? {} : {checkoutLabel}),
         },
       })
       // If all observed runs are terminal, close the stream
@@ -964,6 +1136,7 @@ export function toSafeRunView(runStatus) {
     startedAt: runStatus.startedAt,
     stale: runStatus.stale,
     ...(runStatus.reasonLabel === undefined ? {} : {reasonLabel: runStatus.reasonLabel}),
+    ...(runStatus.checkoutLabel === undefined ? {} : {checkoutLabel: runStatus.checkoutLabel}),
   }
 }
 
@@ -2054,7 +2227,7 @@ export function renderCancelControl(runId, cancelClient, onCancelDispatch) {
  * - Read-only: GET only for stream; approval decisions are operator-forwarded writes.
  */
 export function initOperatorStream(opts) {
-  const {runId, statusEl, noticeEl, outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, cancelEl, approvalClient: injectedApprovalClient, cancelClient: injectedCancelClient, endpointBase, fixtureSessionId} = opts
+  const {runId, statusEl, noticeEl, outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, checkoutEl, cancelEl, approvalClient: injectedApprovalClient, cancelClient: injectedCancelClient, endpointBase, fixtureSessionId} = opts
 
   // Build the approval client lazily (only if approvalsEl is present).
   // Pass endpointBase and fixtureSessionId so fixture mode uses the fixture approval routes
@@ -2198,6 +2371,25 @@ export function initOperatorStream(opts) {
           statusEl.className = `${statusEl.className.replaceAll(/\bstatus-\S+/g, '')} status-unavailable`
             .replaceAll(/\s+/g, ' ')
             .trim()
+        }
+      }
+    }
+
+    if (checkoutEl) {
+      const runEntry = state.runs[runId]
+      const runIsTerminal = runEntry !== undefined && runEntry.terminal === true
+      if (runEntry && (state.connection === 'live' || runIsTerminal)) {
+        const view = toSafeRunView(runEntry)
+        // Sticky checkout provenance/preparation label; built only from
+        // allowlist-gated fields at parse time, so it is safe for textContent.
+        if (view.checkoutLabel === undefined) {
+          checkoutEl.textContent = ''
+          checkoutEl.hidden = true
+          if (checkoutEl.dataset) delete checkoutEl.dataset.checkoutState
+        } else {
+          checkoutEl.textContent = view.checkoutLabel
+          checkoutEl.hidden = false
+          if (checkoutEl.dataset) checkoutEl.dataset.checkoutState = 'present'
         }
       }
     }

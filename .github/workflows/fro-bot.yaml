@@ -344,7 +344,7 @@ jobs:
       - name: Run Fro Bot
         if: github.event_name != 'schedule' || env.HAS_FRO_BOT_PAT == 'true'
         id: fro-bot-agent
-        uses: fro-bot/agent@378bc287c7f934c3f23cf6f805e4058972d629e3 # v0.117.5
+        uses: fro-bot/agent@2f020b402512be23fe9151d19ddb4dfeea684466 # v0.119.0
         env:
           OPENCODE_PROMPT_ARTIFACT: 'true'
           TASK_PROMPT: >-

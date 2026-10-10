@@ -170,6 +170,13 @@ export interface RunEntry {
    */
   readonly reasonLabel?: string
   /**
+   * One-line checkout provenance/preparation label (operator contract 1.8.0+
+   * checkout fields), e.g. `main@a1b2c3d · clean` or `checkout refused: dirty`.
+   * Built only from allowlist-gated fields at parse time; sticky like
+   * reasonLabel; absent when the gateway carried no valid checkout data.
+   */
+  readonly checkoutLabel?: string
+  /**
    * Null-prototype map of open (non-tombstoned) approval prompts, keyed by requestID.
    * Absent until the first approval frame is received for this run.
    * Use `getOpenApprovals(runEntry)` to read; never access directly.
@@ -261,6 +268,8 @@ export interface SafeRunView {
   readonly stale: boolean
   /** Pre-resolved dashboard display label for a known failure reason. Never the raw failureKind. */
   readonly reasonLabel?: string
+  /** Checkout provenance/preparation label (allowlist-gated at parse time). */
+  readonly checkoutLabel?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -280,7 +289,7 @@ export declare function nextStreamState(current: StreamState, event: StreamEvent
 
 /**
  * Map a run status object to the safe render model.
- * Returns ONLY: { runId, status, phase, startedAt, stale, reasonLabel? }
+ * Returns ONLY: { runId, status, phase, startedAt, stale, reasonLabel?, checkoutLabel? }
  */
 export declare function toSafeRunView(runStatus: {
   readonly runId: string
@@ -289,6 +298,7 @@ export declare function toSafeRunView(runStatus: {
   readonly startedAt: string
   readonly stale: boolean
   readonly reasonLabel?: string
+  readonly checkoutLabel?: string
 }): SafeRunView
 
 /**
@@ -351,6 +361,8 @@ export interface InitOptions {
   readonly fixtureSessionId?: string
   /** Secondary status metadata element (data-role="run-reason"). */
   readonly reasonEl?: Element | null
+  /** Checkout provenance/preparation line (data-role="run-checkout"), contract 1.8.0+. */
+  readonly checkoutEl?: (HTMLElement & {hidden: boolean}) | null
   /** Cancel control container element (data-role="run-cancel"). */
   readonly cancelEl?: (HTMLElement & {hidden: boolean}) | null
   /** Injectable cancel client for testing. If absent, buildCancelClient() is used. */

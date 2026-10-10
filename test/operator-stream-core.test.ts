@@ -7505,3 +7505,232 @@ describe('connection lifecycle — stranded connections abort (rm-261)', () => {
     expect(noticeEl.dataset.connectionState).toBeTruthy()
   })
 })
+
+// ── Status-frame checkout provenance/preparation (fro-bot/agent contract 1.8.0+ display) ────
+// These drive the REAL wire path: parseSseFrame (SSE text) → nextStreamState.
+// The reducer consumes the derived checkoutLabel only — raw payloads never
+// reach it, which is exactly what these tests pin.
+
+const SHA_40 = '0123456789abcdef0123456789abcdef01234567'
+
+const OBSERVED_CLEAN = {
+  kind: 'observed',
+  observation: {
+    head: {kind: 'attached', branch: 'main', sha: SHA_40},
+    worktree: {kind: 'clean'},
+  },
+}
+
+const liveState = (): StreamState =>
+  nextStreamState(INITIAL_STATE, {type: 'ready', data: {contractVersion: PINNED_CONTRACT_VERSION}})
+
+const stateFromWire = (statusPayload: object): StreamState => {
+  const parsed = parseSseFrame(`event: status\ndata: ${JSON.stringify(statusPayload)}\n\n`)
+  if (parsed === null || !parsed.success) {
+    throw new Error(`status frame failed to parse: ${parsed === null ? 'null' : parsed.error}`)
+  }
+  return nextStreamState(liveState(), parsed.frame)
+}
+
+describe('status frame checkout provenance label (parseSseFrame → nextStreamState)', () => {
+  it('observed + attached + clean becomes a one-line checkout label on the run entry', () => {
+    const state = stateFromWire({...ACTIVE_STATUS, checkoutProvenance: OBSERVED_CLEAN})
+    expect(state.runs['run-abc']?.checkoutLabel).toBe('checkout main@0123456 · clean')
+  })
+
+  it('detached head renders detached@shortSha', () => {
+    const state = stateFromWire({
+      ...ACTIVE_STATUS,
+      checkoutProvenance: {
+        kind: 'observed',
+        observation: {head: {kind: 'detached', sha: SHA_40}, worktree: {kind: 'clean'}},
+      },
+    })
+    expect(state.runs['run-abc']?.checkoutLabel).toBe('checkout detached@0123456 · clean')
+  })
+
+  it('dirty worktree renders per-class counts, conflicted only when non-zero', () => {
+    const state = stateFromWire({
+      ...ACTIVE_STATUS,
+      checkoutProvenance: {
+        kind: 'observed',
+        observation: {
+          head: {kind: 'attached', branch: 'dev', sha: SHA_40},
+          worktree: {kind: 'dirty', staged: 1, unstaged: 2, untracked: 3, conflicted: 4},
+        },
+      },
+    })
+    expect(state.runs['run-abc']?.checkoutLabel).toBe(
+      'checkout dev@0123456 · dirty (1 staged, 2 unstaged, 3 untracked, 4 conflicted)',
+    )
+    const zeroConflict = stateFromWire({
+      ...ACTIVE_STATUS,
+      checkoutProvenance: {
+        kind: 'observed',
+        observation: {
+          head: {kind: 'attached', branch: 'dev', sha: SHA_40},
+          worktree: {kind: 'dirty', staged: 0, unstaged: 0, untracked: 1, conflicted: 0},
+        },
+      },
+    })
+    expect(zeroConflict.runs['run-abc']?.checkoutLabel).not.toContain('conflicted')
+  })
+
+  it('operationInProgress renders when non-none and is omitted for none', () => {
+    const withOp = stateFromWire({
+      ...ACTIVE_STATUS,
+      checkoutProvenance: {
+        kind: 'observed',
+        observation: {
+          head: {kind: 'attached', branch: 'main', sha: SHA_40},
+          worktree: {kind: 'clean'},
+          operationInProgress: 'rebase',
+        },
+      },
+    })
+    expect(withOp.runs['run-abc']?.checkoutLabel).toBe('checkout main@0123456 · clean · rebase in progress')
+    const noneOp = stateFromWire({
+      ...ACTIVE_STATUS,
+      checkoutProvenance: {
+        kind: 'observed',
+        observation: {
+          head: {kind: 'attached', branch: 'main', sha: SHA_40},
+          worktree: {kind: 'clean'},
+          operationInProgress: 'none',
+        },
+      },
+    })
+    expect(noneOp.runs['run-abc']?.checkoutLabel).toBe('checkout main@0123456 · clean')
+  })
+
+  it('kind unavailable renders the unavailable label without any observation', () => {
+    const state = stateFromWire({...ACTIVE_STATUS, checkoutProvenance: {kind: 'unavailable'}})
+    expect(state.runs['run-abc']?.checkoutLabel).toBe('checkout state unavailable')
+  })
+})
+
+describe('status frame checkout preparation label (parseSseFrame → nextStreamState)', () => {
+  it('refused with a known reason renders a refusal label with count-derived detail', () => {
+    const state = stateFromWire({
+      ...ACTIVE_STATUS,
+      checkoutPreparation: {outcome: 'refused', reason: 'dirty', changedPaths: ['a', 'b', 'c']},
+    })
+    expect(state.runs['run-abc']?.checkoutLabel).toBe(
+      'checkout refused: workspace has uncommitted changes · 3 changed paths',
+    )
+  })
+
+  it('failed with a known reason renders a failure label', () => {
+    const state = stateFromWire({
+      ...ACTIVE_STATUS,
+      checkoutPreparation: {outcome: 'failed', reason: 'fetch-timeout'},
+    })
+    expect(state.runs['run-abc']?.checkoutLabel).toBe('checkout failed: fetch timed out')
+  })
+
+  it('array CONTENTS never reach the label — only lengths', () => {
+    const state = stateFromWire({
+      ...ACTIVE_STATUS,
+      checkoutPreparation: {
+        outcome: 'refused',
+        reason: 'dirty',
+        changedPaths: ['SECRET-PATH-ONE', 'SECRET-PATH-TWO'],
+      },
+    })
+    expect(state.runs['run-abc']?.checkoutLabel).toBe(
+      'checkout refused: workspace has uncommitted changes · 2 changed paths',
+    )
+    expect(state.runs['run-abc']?.checkoutLabel).not.toContain('SECRET')
+  })
+
+  it('provenance takes precedence when both are present', () => {
+    const state = stateFromWire({
+      ...ACTIVE_STATUS,
+      checkoutProvenance: OBSERVED_CLEAN,
+      checkoutPreparation: {outcome: 'failed', reason: 'fetch-timeout'},
+    })
+    expect(state.runs['run-abc']?.checkoutLabel).toBe('checkout main@0123456 · clean')
+  })
+})
+
+describe('status frame checkout payloads fail closed (label absent, frame still valid)', () => {
+  const malformedCases: readonly [string, object][] = [
+    ['non-object provenance', {checkoutProvenance: 'main@abc'}],
+    ['unknown kind', {checkoutProvenance: {kind: 'bogus'}}],
+    ['missing observation', {checkoutProvenance: {kind: 'observed'}}],
+    [
+      'bad sha',
+      {
+        checkoutProvenance: {
+          kind: 'observed',
+          observation: {head: {kind: 'attached', branch: 'main', sha: 'xyz'}, worktree: {kind: 'clean'}},
+        },
+      },
+    ],
+    [
+      'empty branch',
+      {
+        checkoutProvenance: {
+          kind: 'observed',
+          observation: {head: {kind: 'attached', branch: '', sha: SHA_40}, worktree: {kind: 'clean'}},
+        },
+      },
+    ],
+    [
+      'negative counts',
+      {
+        checkoutProvenance: {
+          kind: 'observed',
+          observation: {
+            head: {kind: 'attached', branch: 'main', sha: SHA_40},
+            worktree: {kind: 'dirty', staged: -1, unstaged: 0, untracked: 0, conflicted: 0},
+          },
+        },
+      },
+    ],
+    [
+      'unknown operation',
+      {
+        checkoutProvenance: {
+          kind: 'observed',
+          observation: {
+            head: {kind: 'attached', branch: 'main', sha: SHA_40},
+            worktree: {kind: 'clean'},
+            operationInProgress: 'time-travel',
+          },
+        },
+      },
+    ],
+    ['unknown refusal reason', {checkoutPreparation: {outcome: 'refused', reason: 'no-idea'}}],
+    ['unknown failure reason', {checkoutPreparation: {outcome: 'failed', reason: 'no-idea'}}],
+    ['unknown outcome', {checkoutPreparation: {outcome: 'maybe'}}],
+  ]
+
+  for (const [name, payload] of malformedCases) {
+    it(`${name}: run tracked, checkoutLabel absent`, () => {
+      const state = stateFromWire({...ACTIVE_STATUS, ...payload})
+      expect(state.runs['run-abc']?.status).toBe('running')
+      expect(state.runs['run-abc']?.checkoutLabel).toBeUndefined()
+    })
+  }
+
+  it('a later frame without checkout payloads keeps the earlier label (sticky)', () => {
+    const first = stateFromWire({...ACTIVE_STATUS, checkoutProvenance: OBSERVED_CLEAN})
+    const followUp = parseSseFrame(`event: status\ndata: ${JSON.stringify(ACTIVE_STATUS)}\n\n`)
+    if (followUp === null || !followUp.success) throw new Error('follow-up parse failed')
+    const second = nextStreamState(first, followUp.frame)
+    expect(second.runs['run-abc']?.checkoutLabel).toBe('checkout main@0123456 · clean')
+  })
+})
+
+describe('toSafeRunView — checkoutLabel', () => {
+  it('includes checkoutLabel when the run entry carries one', () => {
+    const view = toSafeRunView({...ACTIVE_STATUS, checkoutLabel: 'checkout main@0123456 · clean'})
+    expect(view.checkoutLabel).toBe('checkout main@0123456 · clean')
+  })
+
+  it('omits checkoutLabel when the run entry has none', () => {
+    const view = toSafeRunView(ACTIVE_STATUS)
+    expect('checkoutLabel' in view).toBe(false)
+  })
+})
