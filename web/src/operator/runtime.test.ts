@@ -547,6 +547,50 @@ describe('defaultRuntimeLoader — single-open accordion via onSelectRun/onRunLa
     return {streamMod, runIndexMod, attach, closeActive, attachCalls, closeOrder}
   }
 
+  /**
+   * Same harness as buildLoaderHarness, but forwards `questionsEl: approvalsEl`
+   * into initOperatorStream — the exact element pairing the production
+   * defaultRuntimeLoader in runtime.ts forwards (the question lane's SPA
+   * wiring). Without this pass-through the 1.9.0 question lane stays dormant
+   * and question frames silently render nowhere.
+   */
+  async function buildQuestionLaneHarness() {
+    const streamMod = await import('../../../public/operator-stream.js')
+    const runIndexMod = await import('../../../public/operator-run-index.js')
+
+    let activeHandle: {close(): void} | null = null
+
+    function closeActive() {
+      if (activeHandle !== null) {
+        activeHandle.close()
+        activeHandle = null
+      }
+    }
+
+    function attach(runId: string, statusEl: Element | null, noticeEl: Element | null) {
+      closeActive()
+      const {outputEl, coalescedEl, approvalsEl, badgeEl} = discoverCardStreamTargets(runId)
+      const handle = streamMod.initOperatorStream({
+        runId,
+        statusEl,
+        noticeEl,
+        outputEl: outputEl as unknown as (HTMLElement & {hidden: boolean}) | null,
+        coalescedEl: coalescedEl as unknown as (HTMLElement & {hidden: boolean}) | null,
+        approvalsEl: approvalsEl as unknown as (HTMLElement & {hidden: boolean}) | null,
+        questionsEl: approvalsEl as unknown as (HTMLElement & {hidden: boolean}) | null,
+        badgeEl: badgeEl as unknown as (HTMLElement & {hidden: boolean}) | null,
+      })
+      activeHandle = {
+        close() {
+          handle.close()
+        },
+      }
+      runIndexMod.markRunStreamAttached(runId)
+    }
+
+    return {streamMod, runIndexMod, attach, closeActive}
+  }
+
   it('happy path: expanding a run attaches exactly one stream', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(() => new Promise(() => {})))
     const {attach, attachCalls, closeActive} = await buildLoaderHarness()
@@ -716,6 +760,57 @@ describe('defaultRuntimeLoader — single-open accordion via onSelectRun/onRunLa
     expect(approvalsEl.childElementCount).toBeGreaterThan(0)
     expect(badgeEl.hidden).toBe(false)
     expect(badgeEl.textContent).toBe('1')
+
+    closeActive()
+  })
+
+  it('regression: a question SSE frame (1.9.0) renders into the approvals container when questionsEl rides approvalsEl (runtime.ts forwards questionsEl: approvalsEl)', async () => {
+    const card = makeCardWithSubstructure('run-q-1')
+    const statusEl = card.querySelector('[data-role="run-status"]')
+
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (typeof url === 'string' && url.includes('/runs/')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: {get: (h: string) => (h === 'content-type' ? 'text/event-stream' : null)},
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              const encoder = new TextEncoder()
+              controller.enqueue(encoder.encode('event: ready\ndata: {"contractVersion":"1.9.0"}\n\n'))
+              controller.enqueue(encoder.encode(
+                'event: question\ndata: {"runId":"run-q-1","requestID":"req-q1","settled":false,"questions":['
+                + '{"header":"Deploy?","text":"Pick one","options":[{"label":"A","description":"first"}],"multiple":false,"custom":false}]}'
+                + '\n\n',
+              ))
+              controller.close()
+            },
+          }),
+        })
+      }
+      // Question-lane reconcile GET on connect — no pending questions server-side,
+      // so the SSE-opened prompt above is the only source of truth.
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({requests: []}),
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const {attach, closeActive} = await buildQuestionLaneHarness()
+    attach('run-q-1', statusEl, null)
+
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    // The question prompt renders INSIDE the approvals container — the exact
+    // element pairing runtime.ts's production loader forwards
+    // (questionsEl: approvalsEl in defaultRuntimeLoader).
+    const approvalsEl = card.querySelector('[data-role="run-approvals"]') as HTMLElement
+    const prompt = approvalsEl.querySelector('.question-prompt')
+    expect(prompt).not.toBeNull()
+    expect(prompt?.querySelector('.question-prompt-question-header')?.textContent).toBe('Deploy?')
+    expect(prompt?.querySelector('.question-prompt-option-label')?.textContent).toBe('A')
 
     closeActive()
   })

@@ -27,8 +27,15 @@ export const OPERATOR_CONTRACT_VERSION = '1.6.0'
  * outside the window still fails closed. When the deployed gateway is
  * durably on 1.8.0, flip the primary and retire '1.6.0' from the window in
  * the same change (do not widen without that plan).
+ *
+ * '1.9.0' is likewise additive-only upstream shape (fro-bot/agent v0.119.0,
+ * 2026-10-09: `question` SSE frame + `waiting_for_question` status overlay,
+ * both optional layers over 1.8.0; verified against upstream's own version.ts
+ * changelog). Accepted so the pinned v0.119.0 deployment's frames keep
+ * flowing; the question-frame UI itself is tracked separately (rm-157 rider).
  */
 export const SUPPORTED_OPERATOR_CONTRACT_VERSIONS: readonly string[] = [
   '1.6.0',
   '1.8.0',
+  '1.9.0',
 ]

@@ -21,14 +21,14 @@ describe('rm-157 supported-versions window', () => {
     expect(OPERATOR_CONTRACT_VERSION).toBe('1.6.0')
   })
 
-  it('window is exactly the primary plus additive 1.8.0, in order', () => {
-    expect([...SUPPORTED_OPERATOR_CONTRACT_VERSIONS]).toEqual(['1.6.0', '1.8.0'])
+  it('window is exactly the primary plus additive 1.8.0 and 1.9.0, in order', () => {
+    expect([...SUPPORTED_OPERATOR_CONTRACT_VERSIONS]).toEqual(['1.6.0', '1.8.0', '1.9.0'])
   })
 
   it('window includes the primary and excludes pre-window, future, and garbage versions', () => {
     expect(SUPPORTED_OPERATOR_CONTRACT_VERSIONS).toContain(OPERATOR_CONTRACT_VERSION)
     expect(SUPPORTED_OPERATOR_CONTRACT_VERSIONS).not.toContain('1.5.0')
-    expect(SUPPORTED_OPERATOR_CONTRACT_VERSIONS).not.toContain('1.9.0')
+    expect(SUPPORTED_OPERATOR_CONTRACT_VERSIONS).not.toContain('2.0.0')
     expect(SUPPORTED_OPERATOR_CONTRACT_VERSIONS).not.toContain('')
   })
 
@@ -40,6 +40,11 @@ describe('rm-157 supported-versions window', () => {
   it('contract 1.8.0 absorb: the two new failure kinds are vendored', () => {
     expect(OPERATOR_FAILURE_KINDS.has('checkout-substituted')).toBe(true)
     expect(OPERATOR_FAILURE_KINDS.has('workspace-unavailable')).toBe(true)
+  })
+
+  it('contract 1.9.0 absorb: waiting_for_question is a vendored status in every allowlist that tracks stream statuses', async () => {
+    const {OPERATOR_WEB_STATUSES} = await import('../src/gateway/operator-contract/run-responses.ts')
+    expect(OPERATOR_WEB_STATUSES.has('waiting_for_question')).toBe(true)
   })
 
   it('every OperatorFailureKind has exactly one browser display label — no kind renders raw', () => {
