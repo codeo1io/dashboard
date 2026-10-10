@@ -11,7 +11,14 @@
  * - No console output of frame data.
  */
 
-import type {ApprovalFrameDataOpen, OutputFrameData, RunEntry, StreamState} from '../public/operator-stream.js'
+import type {
+  ApprovalFrameDataOpen,
+  OutputFrameData,
+  RunEntry,
+  StatusFrameData,
+  StreamEvent,
+  StreamState,
+} from '../public/operator-stream.js'
 import fc from 'fast-check'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {
@@ -20,6 +27,10 @@ import {
   buildApprovalClient,
   buildCancelClient,
   CANCEL_RETRY_MAX_ATTEMPTS,
+  CHECKOUT_OPERATION_LABELS,
+  CHECKOUT_REFUSAL_REASON_LABELS,
+  CHECKOUT_UPDATE_FAILURE_REASON_LABELS,
+  composeFailureReasonLabel,
   FIRST_FRAME_TIMEOUT_MS,
   GATEWAY_PENDING_APPROVALS_CAP,
   getOpenApprovals,
@@ -30,6 +41,8 @@ import {
   MAX_OUTPUT_TEXT_CHARS,
   MAX_SSE_BUFFER_BYTES,
   nextStreamState,
+  parseCheckoutPreparation,
+  parseCheckoutProvenance,
   parseSseFrame,
   PHASE_TO_WEB_STATUS,
   PINNED_CONTRACT_VERSION,
@@ -41,7 +54,13 @@ import {
   RETRY_MAX_COUNT,
   toSafeRunView,
 } from '../public/operator-stream.js'
-import {OPERATOR_CONTRACT_VERSION, PHASE_TO_WEB_STATUS as VENDORED_PHASE_TO_WEB_STATUS} from '../src/gateway/operator-contract/index.ts'
+import {
+  CHECKOUT_OPERATIONS,
+  CHECKOUT_REFUSAL_REASONS,
+  OPERATOR_CONTRACT_VERSION,
+  UPDATE_FAILURE_REASONS,
+  PHASE_TO_WEB_STATUS as VENDORED_PHASE_TO_WEB_STATUS,
+} from '../src/gateway/operator-contract/index.ts'
 import {FIXTURE_RUN_ID_FOR_TESTS, FIXTURE_SCENARIO_NAMES, serializeScenarioToSse} from '../src/gateway/operator-fixture-sse.ts'
 
 const ACTIVE_STATUS = {
@@ -1141,13 +1160,15 @@ describe('toSafeRunView — reasonLabel', () => {
     expect('reasonLabel' in view).toBe(false)
   })
 
-  it('never exposes reason, failureKind, or a raw code — only the allowed key set', () => {
+  it('never exposes reason, failureKind, checkout detail, or a raw code — only the allowed key set', () => {
     const dangerousInput = {
       ...ACTIVE_STATUS,
       status: 'failed',
       failureKind: 'workspace-unreachable',
       reason: 'workspace-unreachable',
       reasonLabel: 'Workspace unreachable',
+      checkoutProvenance: {kind: 'observed', junk: 'raw-wire-field'},
+      checkoutPreparation: {outcome: 'refused', reason: 'diverged', behind: 5, ahead: 2},
     }
     const view = toSafeRunView(dangerousInput)
     const allowedKeys = new Set(['runId', 'status', 'phase', 'startedAt', 'stale', 'reasonLabel'])
@@ -1156,6 +1177,11 @@ describe('toSafeRunView — reasonLabel', () => {
     }
     expect('failureKind' in view).toBe(false)
     expect('reason' in view).toBe(false)
+    // Review 53152fa2: checkout DTOs live on the run entry (upstream
+    // architecture — the card region reads runEntry); the safe view must
+    // never re-widen to carry them.
+    expect('checkoutProvenance' in view).toBe(false)
+    expect('checkoutPreparation' in view).toBe(false)
   })
 })
 
@@ -1227,8 +1253,8 @@ describe('backoff constants', () => {
     expect(Number.isInteger(RETRY_MAX_COUNT)).toBe(true)
   })
 
-  it('PINNED_CONTRACT_VERSION is 1.6.0', () => {
-    expect(PINNED_CONTRACT_VERSION).toBe('1.6.0')
+  it('PINNED_CONTRACT_VERSION is 1.8.0', () => {
+    expect(PINNED_CONTRACT_VERSION).toBe('1.8.0')
   })
 })
 
@@ -6152,7 +6178,7 @@ describe('initOperatorStream — late-frame guard: closed stream does not mutate
     const badgeEl = {textContent: '', hidden: true}
 
     const encoder = new TextEncoder()
-    const readyFrame = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+    const readyFrame = 'event: ready\ndata: {"contractVersion":"1.8.0"}\n\n'
     const outputFrame = `event: output\ndata: ${JSON.stringify({runId: 'run-late-frame', text: 'late output', final: false, seq: 0})}\n\n`
     const approvalFrame = `event: approval\ndata: ${JSON.stringify({runId: 'run-late-frame', requestID: 'req-late', permission: 'shell', settled: false})}\n\n`
 
@@ -6238,7 +6264,7 @@ describe('initOperatorStream — terminal run: immediate close preserves termina
     const noticeEl = {textContent: '', hidden: false, dataset: {connectionState: ''}}
 
     const encoder = new TextEncoder()
-    const readyFrame = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+    const readyFrame = 'event: ready\ndata: {"contractVersion":"1.8.0"}\n\n'
     const terminalFrame = `event: status\ndata: ${JSON.stringify({
       runId: 'run-terminal-001',
       entityRef: 'fro-bot/agent',
@@ -7503,5 +7529,211 @@ describe('connection lifecycle — stranded connections abort (rm-261)', () => {
     expect(signals[0]?.aborted).toBe(true) // response body cancelled, socket released
     expect(fetchCount).toBe(1) // backoff (1s) has not fired within the tick
     expect(noticeEl.dataset.connectionState).toBeTruthy()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-252 — 1.8.0 checkout provenance / preparation (vendored-contract mirror)
+// Ported from fro-bot/dashboard main's browser consumer; shapes and
+// vocabularies mirror src/gateway/operator-contract/provenance.ts
+// (vendored fro-bot/agent v0.118.3). Parity with the vendored vocabularies is
+// pinned here by reading the EXPORTED vocabularies from the contract module —
+// a drift in either direction fails.
+// ---------------------------------------------------------------------------
+
+const OBSERVED_SHA = 'a'.repeat(40)
+
+function observedProvenance() {
+  return {
+    kind: 'observed',
+    observation: {
+      head: {kind: 'attached', branch: 'main', sha: OBSERVED_SHA},
+      worktree: {kind: 'clean'},
+      operationInProgress: 'none',
+      observedAt: '2026-10-09T00:00:00.000Z',
+    },
+    remote: {kind: 'not-checked'},
+  }
+}
+
+describe('parseCheckoutProvenance — vendored 1.8.0 shape', () => {
+  it('normalizes a valid observed provenance', () => {
+    const parsed = parseCheckoutProvenance(observedProvenance())
+    expect(parsed).toEqual({
+      kind: 'observed',
+      head: {kind: 'attached', branch: 'main', sha: OBSERVED_SHA},
+      worktree: {kind: 'clean'},
+      operation: 'none',
+      remote: {kind: 'not-checked'},
+    })
+  })
+
+  it('keeps an unavailable provenance', () => {
+    expect(parseCheckoutProvenance({kind: 'unavailable', remote: {kind: 'not-checked'}})).toEqual({
+      kind: 'unavailable',
+      remote: {kind: 'not-checked'},
+    })
+  })
+
+  it('drops non-objects, wrong kinds, and malformed observations (never fails the frame)', () => {
+    expect(parseCheckoutProvenance('observed')).toBeUndefined()
+    expect(parseCheckoutProvenance({kind: 'nonsense'})).toBeUndefined()
+    expect(
+      parseCheckoutProvenance({
+        kind: 'observed',
+        observation: {head: {kind: 'detached'}, worktree: {kind: 'clean'}, observedAt: 'x'},
+        remote: {kind: 'not-checked'},
+      }),
+    ).toBeUndefined()
+  })
+})
+
+describe('parseCheckoutPreparation — vendored 1.8.0 refusal/failure vocabulary', () => {
+  it('keeps a refused preparation with a valid reason', () => {
+    expect(parseCheckoutPreparation({outcome: 'refused', reason: 'needs-recovery'})).toEqual({
+      outcome: 'refused',
+      reason: 'needs-recovery',
+    })
+  })
+
+  it('fills the structured refused payload', () => {
+    expect(parseCheckoutPreparation({outcome: 'refused', reason: 'diverged', behind: 5, ahead: 2})).toEqual({
+      outcome: 'refused',
+      reason: 'diverged',
+    })
+  })
+
+  it('keeps a failed preparation with a valid reason and mutation evidence', () => {
+    expect(
+      parseCheckoutPreparation({outcome: 'failed', reason: 'aborted', operation: 'merge', mutationStarted: 'possibly', permanent: true}),
+    ).toEqual({outcome: 'failed', reason: 'aborted', mutationStarted: 'possibly', permanent: true})
+  })
+
+  it('drops out-of-vocabulary reasons and non-objects (never fails the frame)', () => {
+    expect(parseCheckoutPreparation('refused')).toBeUndefined()
+    expect(parseCheckoutPreparation({outcome: 'refused', reason: 'invalid-request'})).toBeUndefined()
+    expect(parseCheckoutPreparation({outcome: 'refused'})).toBeUndefined()
+    expect(parseCheckoutPreparation({outcome: 'failed', reason: 'made-up', mutationStarted: true, permanent: false})).toBeUndefined()
+  })
+})
+
+describe('composeFailureReasonLabel — refusal vocabulary labels', () => {
+  it('fills the template from the validated payload', () => {
+    expect(
+      composeFailureReasonLabel('workspace-unavailable', parseCheckoutPreparation({outcome: 'refused', reason: 'diverged', behind: 5, ahead: 2})),
+    ).toBe('Workspace unavailable — diverged from remote')
+  })
+
+  it('returns the plain failure label without a preparation', () => {
+    expect(composeFailureReasonLabel('unknown', undefined)).toBe('Unknown failure')
+  })
+
+  it("uses fixed copy for an in-progress operation reported as 'none' (recipe step 5 exception)", () => {
+    const nonePrep = parseCheckoutPreparation({outcome: 'refused', reason: 'operation-in-progress', operation: 'none'})
+    expect(nonePrep).toEqual({outcome: 'refused', reason: 'operation-in-progress', operation: 'none'})
+    // `none` is allowlisted but has no label entry — the label must be fixed
+    // copy, never a stringified `undefined` token fill.
+    expect(composeFailureReasonLabel('workspace-unavailable', nonePrep)).toBe(
+      'Workspace unavailable — operation in progress',
+    )
+  })
+
+  it('fills the operation name for a named in-progress operation', () => {
+    const prep = parseCheckoutPreparation({outcome: 'refused', reason: 'operation-in-progress', operation: 'rebase'})
+    expect(composeFailureReasonLabel('workspace-unavailable', prep)).toBe('Workspace unavailable — Rebase in progress')
+  })
+
+  it("fills the {layout} token with the human label for 'unsupported-layout'", () => {
+    const prep = parseCheckoutPreparation({outcome: 'refused', reason: 'unsupported-layout', layoutReason: 'core-worktree'})
+    expect(prep).toEqual({outcome: 'refused', reason: 'unsupported-layout', layoutReason: 'core-worktree'})
+    // Upstream describeCheckoutPreparationReason fills
+    // CHECKOUT_LAYOUT_REASON_LABELS — never the raw machine token
+    // ('core-worktree').
+    expect(composeFailureReasonLabel('workspace-unavailable', prep)).toBe(
+      'Workspace unavailable — unsupported repository layout (custom core.worktree)',
+    )
+  })
+})
+
+describe('checkout vocabularies — parity with the vendored contract', () => {
+  it('refusal labels key exactly the vendored CHECKOUT_REFUSAL_REASONS', () => {
+    expect([...Object.keys(CHECKOUT_REFUSAL_REASON_LABELS)].sort()).toEqual([...CHECKOUT_REFUSAL_REASONS].sort())
+  })
+
+  it('update-failure labels key exactly the vendored UPDATE_FAILURE_REASONS', () => {
+    expect([...Object.keys(CHECKOUT_UPDATE_FAILURE_REASON_LABELS)].sort()).toEqual([...UPDATE_FAILURE_REASONS].sort())
+  })
+
+  it('operation labels key exactly the vendored CHECKOUT_OPERATIONS minus the idle sentinel', () => {
+    expect([...Object.keys(CHECKOUT_OPERATION_LABELS)].sort()).toEqual(
+      [...CHECKOUT_OPERATIONS].filter(op => op !== 'none').sort(),
+    )
+  })
+})
+
+describe('nextStreamState — 1.8.0 checkout fields are sticky per upstream semantics', () => {
+  // checkout fields ride `data` already-normalized (parseSseFrame's status branch
+  // validates them and puts the normalized values back onto data).
+  const statusFrame = (extra: Partial<StatusFrameData>): StreamEvent => ({
+    type: 'status',
+    data: {
+      runId: FIXTURE_RUN_ID_FOR_TESTS,
+      entityRef: 'dashboard#1',
+      surface: 'web',
+      phase: 'FAILED',
+      status: 'failed',
+      startedAt: '2026-10-09T00:00:00.000Z',
+      stale: false,
+      failureKind: 'workspace-unavailable',
+      ...extra,
+    },
+  })
+
+  it('persists preparation, retains it through a frame without checkout fields, and clears it when provenance arrives', () => {
+    let state = nextStreamState(INITIAL_STATE, {type: 'ready', data: {contractVersion: PINNED_CONTRACT_VERSION}})
+    state = nextStreamState(state, statusFrame({checkoutPreparation: parseCheckoutPreparation({outcome: 'refused', reason: 'diverged', behind: 5, ahead: 2})}))
+    let entry: RunEntry | undefined = state.runs[FIXTURE_RUN_ID_FOR_TESTS]
+    expect(entry?.checkoutPreparation).toEqual({outcome: 'refused', reason: 'diverged'})
+    expect(entry?.checkoutProvenance).toBeUndefined()
+    expect(entry?.reasonLabel).toBe('Workspace unavailable — diverged from remote')
+
+    // a later frame without checkout fields keeps the last valid pair (sticky; a
+    // terminal run entry is absorbing, and sticky retention also holds if processed)
+    state = nextStreamState(state, statusFrame({}))
+    entry = state.runs[FIXTURE_RUN_ID_FOR_TESTS]
+    expect(entry?.checkoutPreparation).toEqual({outcome: 'refused', reason: 'diverged'})
+
+    // mutual exclusivity on a NON-terminal run (fresh stream state — a terminal
+    // status closes the stream): a valid provenance clears preparation (latest
+    // valid wins), and a later preparation clears provenance back.
+    let exclusivity = nextStreamState(INITIAL_STATE, {type: 'ready', data: {contractVersion: PINNED_CONTRACT_VERSION}})
+    const otherRunFrame = (status: string, extra: Partial<StatusFrameData>): StreamEvent => ({
+      type: 'status',
+      data: {
+        runId: 'run-checkout-exclusivity',
+        entityRef: 'dashboard#2',
+        surface: 'web',
+        phase: 'RUNNING',
+        status,
+        startedAt: '2026-10-09T00:00:00.000Z',
+        stale: false,
+        ...extra,
+      },
+    })
+    exclusivity = nextStreamState(exclusivity, otherRunFrame('running', {checkoutPreparation: parseCheckoutPreparation({outcome: 'refused', reason: 'needs-recovery'})}))
+    expect(exclusivity.runs['run-checkout-exclusivity']?.checkoutPreparation).toEqual({outcome: 'refused', reason: 'needs-recovery'})
+    // sticky retention on a NON-terminal frame without checkout fields
+    exclusivity = nextStreamState(exclusivity, otherRunFrame('running', {}))
+    expect(exclusivity.runs['run-checkout-exclusivity']?.checkoutPreparation).toEqual({outcome: 'refused', reason: 'needs-recovery'})
+    exclusivity = nextStreamState(exclusivity, otherRunFrame('running', {checkoutProvenance: parseCheckoutProvenance(observedProvenance())}))
+    expect(exclusivity.runs['run-checkout-exclusivity']?.checkoutProvenance).toEqual(parseCheckoutProvenance(observedProvenance()))
+    expect(exclusivity.runs['run-checkout-exclusivity']?.checkoutPreparation).toBeUndefined()
+  })
+
+  it('reasonLabel sticks when a later failed frame omits preparation', () => {
+    let state = nextStreamState(INITIAL_STATE, {type: 'ready', data: {contractVersion: PINNED_CONTRACT_VERSION}})
+    state = nextStreamState(state, statusFrame({checkoutPreparation: parseCheckoutPreparation({outcome: 'refused', reason: 'needs-recovery'})}))
+    state = nextStreamState(state, statusFrame({}))
+    expect(state.runs[FIXTURE_RUN_ID_FOR_TESTS]?.reasonLabel).toBe('Workspace unavailable — needs recovery')
   })
 })

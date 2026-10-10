@@ -85,7 +85,7 @@ function makeCapturingLogger(): {logger: Logger; messages: string[]} {
 
 describe('parseSseChunk — pure parser', () => {
   it('parses a ready frame', () => {
-    const text = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+    const text = 'event: ready\ndata: {"contractVersion":"1.8.0"}\n\n'
     const results = parseSseChunk(text)
     expect(results).toHaveLength(1)
     const frame = results[0]
@@ -93,7 +93,7 @@ describe('parseSseChunk — pure parser', () => {
     if (frame?.success) {
       expect(frame.frame.type).toBe('ready')
       if (frame.frame.type === 'ready') {
-        expect(frame.frame.data.contractVersion).toBe('1.6.0')
+        expect(frame.frame.data.contractVersion).toBe('1.8.0')
       }
     }
   })
@@ -419,7 +419,7 @@ describe('parseSseChunk — pure parser', () => {
   })
 
   it('parses multiple frames from a single chunk', () => {
-    const readyPayload = {contractVersion: '1.6.0'}
+    const readyPayload = {contractVersion: '1.8.0'}
     const statusPayload = {
       runId: 'run-001',
       entityRef: 'fro-bot/agent',
@@ -443,7 +443,7 @@ describe('parseSseChunk — pure parser', () => {
   })
 
   it('ignores a heartbeat comment mixed with real frames', () => {
-    const readyPayload = {contractVersion: '1.6.0'}
+    const readyPayload = {contractVersion: '1.8.0'}
     const text = `event: ready\ndata: ${JSON.stringify(readyPayload)}\n\n: heartbeat\n\n`
     const results = parseSseChunk(text)
     expect(results).toHaveLength(1)
@@ -454,7 +454,7 @@ describe('parseSseChunk — pure parser', () => {
   })
 
   it('handles a frame with no event line (data-only) as a failure', () => {
-    const text = 'data: {"contractVersion":"1.6.0"}\n\n'
+    const text = 'data: {"contractVersion":"1.8.0"}\n\n'
     const results = parseSseChunk(text)
     // No event name → unknown event → typed failure
     expect(results).toHaveLength(1)
@@ -464,7 +464,7 @@ describe('parseSseChunk — pure parser', () => {
 
 describe('createOperatorSseReader — 200 happy path', () => {
   it('dispatches ready then status frames in order', async () => {
-    const readyPayload = {contractVersion: '1.6.0'}
+    const readyPayload = {contractVersion: '1.8.0'}
     const statusPayload = {
       runId: 'run-001',
       entityRef: 'fro-bot/agent',
@@ -496,7 +496,7 @@ describe('createOperatorSseReader — 200 happy path', () => {
   })
 
   it('calls onClose after stream ends', async () => {
-    const sseText = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+    const sseText = 'event: ready\ndata: {"contractVersion":"1.8.0"}\n\n'
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
 
@@ -512,7 +512,7 @@ describe('createOperatorSseReader — 200 happy path', () => {
 
   it('dispatches a reset frame', async () => {
     const resetPayload = {runId: 'run-001', reason: 'no-snapshot'}
-    const sseText = `event: ready\ndata: {"contractVersion":"1.6.0"}\n\nevent: reset\ndata: ${JSON.stringify(resetPayload)}\n\n`
+    const sseText = `event: ready\ndata: {"contractVersion":"1.8.0"}\n\nevent: reset\ndata: ${JSON.stringify(resetPayload)}\n\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
 
@@ -531,7 +531,7 @@ describe('createOperatorSseReader — 200 happy path', () => {
   })
 
   it('ignores heartbeat comments — no frame dispatched', async () => {
-    const sseText = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n: heartbeat\n\n'
+    const sseText = 'event: ready\ndata: {"contractVersion":"1.8.0"}\n\n: heartbeat\n\n'
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
 
@@ -546,7 +546,7 @@ describe('createOperatorSseReader — 200 happy path', () => {
     expect(events[0]?.type).toBe('ready')
   })
 
-  it('live stream: 1.6.0 ready + running status + output delta dispatches all three frames in order', async () => {
+  it('live stream: 1.8.0 ready + running status + output delta dispatches all three frames in order', async () => {
     const statusPayload = {
       runId: 'run-001',
       entityRef: 'fro-bot/agent',
@@ -558,7 +558,7 @@ describe('createOperatorSseReader — 200 happy path', () => {
     }
     const outputPayload = {runId: 'run-001', text: 'partial output', final: false, seq: 0}
     const sseText =
-      `event: ready\ndata: {"contractVersion":"1.6.0"}\n\n` +
+      `event: ready\ndata: {"contractVersion":"1.8.0"}\n\n` +
       `event: status\ndata: ${JSON.stringify(statusPayload)}\n\n` +
       `event: output\ndata: ${JSON.stringify(outputPayload)}\n\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
@@ -583,7 +583,7 @@ describe('createOperatorSseReader — 200 happy path', () => {
     }
   })
 
-  it('live stream: 1.6.0 ready + status + empty final output (no-output terminal guarantee)', async () => {
+  it('live stream: 1.8.0 ready + status + empty final output (no-output terminal guarantee)', async () => {
     const statusPayload = {
       runId: 'run-001',
       entityRef: 'fro-bot/agent',
@@ -595,7 +595,7 @@ describe('createOperatorSseReader — 200 happy path', () => {
     }
     const emptyFinalOutput = {runId: 'run-001', text: '', final: true, seq: 0}
     const sseText =
-      `event: ready\ndata: {"contractVersion":"1.6.0"}\n\n` +
+      `event: ready\ndata: {"contractVersion":"1.8.0"}\n\n` +
       `event: status\ndata: ${JSON.stringify(statusPayload)}\n\n` +
       `event: output\ndata: ${JSON.stringify(emptyFinalOutput)}\n\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
@@ -630,7 +630,7 @@ describe('createOperatorSseReader — contract-version gate', () => {
       startedAt: '2026-06-18T20:00:00Z',
       stale: false,
     }
-    const sseText = `event: ready\ndata: {"contractVersion":"1.6.0"}\n\nevent: status\ndata: ${JSON.stringify(statusPayload)}\n\n`
+    const sseText = `event: ready\ndata: {"contractVersion":"1.8.0"}\n\nevent: status\ndata: ${JSON.stringify(statusPayload)}\n\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
 
@@ -955,7 +955,7 @@ describe('createOperatorSseReader — logger discipline', () => {
 
 describe('createOperatorSseReader — partial-chunk reassembly', () => {
   it('reassembles a frame split across two chunks', async () => {
-    const fullFrame = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+    const fullFrame = 'event: ready\ndata: {"contractVersion":"1.8.0"}\n\n'
     const chunk1 = fullFrame.slice(0, 20)
     const chunk2 = fullFrame.slice(20)
 
@@ -976,7 +976,7 @@ describe('createOperatorSseReader — partial-chunk reassembly', () => {
   })
 
   it('reassembles a frame split at the blank-line boundary', async () => {
-    const fullFrame = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+    const fullFrame = 'event: ready\ndata: {"contractVersion":"1.8.0"}\n\n'
     const splitAt = fullFrame.length - 2
     const chunk1 = fullFrame.slice(0, splitAt)
     const chunk2 = fullFrame.slice(splitAt)
@@ -1005,7 +1005,7 @@ describe('createOperatorSseReader — partial-chunk reassembly', () => {
       startedAt: '2026-06-18T20:00:00Z',
       stale: false,
     }
-    const frame1 = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+    const frame1 = 'event: ready\ndata: {"contractVersion":"1.8.0"}\n\n'
     const frame2 = `event: status\ndata: ${JSON.stringify(statusPayload)}\n\n`
     const combined = frame1 + frame2
     const chunk1 = combined.slice(0, 15)
@@ -1069,7 +1069,7 @@ describe('createOperatorSseReader — callback discipline', () => {
   })
 
   it('calls onClose exactly once on clean stream end', async () => {
-    const sseText = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+    const sseText = 'event: ready\ndata: {"contractVersion":"1.8.0"}\n\n'
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
 
@@ -1086,7 +1086,7 @@ describe('createOperatorSseReader — callback discipline', () => {
 
 describe('parseSseChunk — CRLF normalization', () => {
   it('parses a ready frame delimited by CRLF record separators', () => {
-    const text = 'event: ready\r\ndata: {"contractVersion":"1.6.0"}\r\n\r\n'
+    const text = 'event: ready\r\ndata: {"contractVersion":"1.8.0"}\r\n\r\n'
     const results = parseSseChunk(text)
     expect(results).toHaveLength(1)
     expect(results[0]?.success).toBe(true)
@@ -1134,7 +1134,7 @@ describe('parseSseChunk — CRLF normalization', () => {
   })
 
   it('parses a ready frame with lone CR line endings', () => {
-    const text = 'event: ready\rdata: {"contractVersion":"1.6.0"}\r\r'
+    const text = 'event: ready\rdata: {"contractVersion":"1.8.0"}\r\r'
     const results = parseSseChunk(text)
     expect(results).toHaveLength(1)
     expect(results[0]?.success).toBe(true)
@@ -1156,7 +1156,7 @@ const rm265StatusPayload = {
   startedAt: '2026-06-18T20:00:00Z',
   stale: false,
 }
-const rm265ReadyText = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+const rm265ReadyText = 'event: ready\ndata: {"contractVersion":"1.8.0"}\n\n'
 const rm265StatusText = `event: status\r\ndata: ${JSON.stringify(rm265StatusPayload)}\r\n\r\n`
 
 async function collectFrames(chunks: string[]): Promise<{events: RunStreamFrame[]; errors: Error[]}> {
@@ -1184,7 +1184,7 @@ describe('createOperatorSseReader — CRLF normalization in stream', () => {
       stale: false,
     }
     const sseText =
-      `event: ready\r\ndata: {"contractVersion":"1.6.0"}\r\n\r\n` +
+      `event: ready\r\ndata: {"contractVersion":"1.8.0"}\r\n\r\n` +
       `event: status\r\ndata: ${JSON.stringify(statusPayload)}\r\n\r\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
@@ -1315,7 +1315,7 @@ describe('createOperatorSseReader — flush path contract gate', () => {
   })
 
   it('flush of a complete frame without trailing blank line dispatches the frame', async () => {
-    const sseText = 'event: ready\ndata: {"contractVersion":"1.6.0"}'
+    const sseText = 'event: ready\ndata: {"contractVersion":"1.8.0"}'
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
 
@@ -1722,7 +1722,7 @@ describe('createOperatorSseReader — allowlist gate for status/phase/surface', 
       stale: false,
     }
     const sseText =
-      `event: ready\ndata: {"contractVersion":"1.6.0"}\n\n` +
+      `event: ready\ndata: {"contractVersion":"1.8.0"}\n\n` +
       `event: status\ndata: ${JSON.stringify(payload)}\n\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
@@ -1754,7 +1754,7 @@ describe('createOperatorSseReader — allowlist gate for status/phase/surface', 
       stale: false,
     }
     const sseText =
-      `event: ready\ndata: {"contractVersion":"1.6.0"}\n\n` +
+      `event: ready\ndata: {"contractVersion":"1.8.0"}\n\n` +
       `event: status\ndata: ${JSON.stringify(payload)}\n\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
@@ -1781,7 +1781,7 @@ describe('createOperatorSseReader — allowlist gate for status/phase/surface', 
       stale: false,
     }
     const sseText =
-      `event: ready\ndata: {"contractVersion":"1.6.0"}\n\n` +
+      `event: ready\ndata: {"contractVersion":"1.8.0"}\n\n` +
       `event: status\ndata: ${JSON.stringify(payload)}\n\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
@@ -2134,7 +2134,7 @@ describe('fixture SSE scenarios — contract_drift scenario enters absorbing dri
     expect(readyResult).toBeDefined()
     if (readyResult?.success && readyResult.frame.type === 'ready') {
       // Must NOT match the pinned contract version
-      expect(readyResult.frame.data.contractVersion).not.toBe('1.6.0')
+      expect(readyResult.frame.data.contractVersion).not.toBe('1.8.0')
     }
   })
 
@@ -2293,7 +2293,7 @@ describe('fixture SSE scenarios — serializeScenarioToSse output format', () =>
 // rm-157: contract 1.8.0 absorb + supported-versions window.
 // checkoutProvenance / checkoutPreparation are parsed field-by-field by the
 // vendored validators; malformed or absent values become absent and never
-// reject the frame. The window accepts {1.6.0, 1.8.0} and fails closed for
+// reject the frame. The window is now ['1.8.0'] (rm-252 flip) and fails closed for
 // everything else. Adapted from upstream PR #573 (a82871d) test scenarios.
 // ---------------------------------------------------------------------------
 

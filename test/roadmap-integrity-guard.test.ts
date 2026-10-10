@@ -255,6 +255,27 @@ describe('rm-678 schema half: live ledger', () => {
     // rm-807) plus the collision-free rm-860 mint; the pin
     // moves 835 -> 866 atomically — union census 255 defs /
     // 0 dups / max rm-866, next free rm-867.
+    // 2026-10-09 cycle:3 roadmap of run 28cd8f6c2568 (attempt
+    // 032a73d1, ext at base 88e423a == main): one mint rm-832
+    // (Actions GitHub-side disable watch) above the all-lineage
+    // dashboard ceiling rm-831 (run-ba5f6d7ddd67 wall; agenttrace
+    // walls at 894 excluded as wrong-repo) — 247 -> 248 defs,
+    // pin 780 -> 832 atomically with the mint.
+    // 2026-10-10 integrate of run 28cd8f6c2568 (conflict case
+    // a6b4df10dd6b4e37ae5a87f8dea6b996): the run was authored at
+    // base 88e423a == the merge base (no main drift at author
+    // time) while main moved through the d823703c, 155f9770 (case
+    // 8955e66c), 91f3d37f (case a91875ba), 122a693028b8 (case
+    // ec31fce8) and 8cecf1d7f09f (case 87124eb3) integrations,
+    // landing at 255 defs / max rm-866. Its single mint rm-832
+    // (Actions GitHub-side disable: scheduled-fire + CI-validation
+    // freeze watch) is collision-free first-hand against the merged
+    // ledger (rm-832 appears in no other landed def line; census
+    // dups 0), so it lands as-authored and NO bump is owed: the pin
+    // stays 866 single-sourced at the assertion below, and the
+    // run's at-write 832 pin above is superseded by this note
+    // exactly as 366f6059 superseded at-write pins — union census
+    // 255 + 1 = 256 defs / 0 dups / max rm-866, next free rm-867.
     expect(live.max).toBe(866)
   })
 
