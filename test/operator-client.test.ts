@@ -3005,8 +3005,11 @@ describe('getPushSubscriptionMetadata', () => {
     endpointHash: 'a'.repeat(64),
     keyVersion: 'v1',
     active: true,
-    createdAt: '2026-07-01T10:00:00Z',
-    updatedAt: '2026-07-01T10:00:00Z',
+    // Epoch-millisecond numbers per the agent v0.118.x wire truth
+    // (push.ts requires safe-integer createdAt/updatedAt; ISO strings are
+    // rejected by parsePushSubscriptionMetadata).
+    createdAt: 1_782_381_600_000,
+    updatedAt: 1_782_381_600_000,
   }
 
   it('returns only safe fields on success', async () => {

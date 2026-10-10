@@ -15,7 +15,8 @@ import type {Result} from '@bfra.me/es/result'
 import {err, ok} from '@bfra.me/es/result'
 import {getNotificationPermission, getPushSupport} from './capability.ts'
 import {endpointHash} from './endpoint-hash.ts'
-import type {HandoffState, PushSubscriptionMetadata, VapidKeyResponse} from './push-types.ts'
+import type {HandoffState, OperatorPushInactiveReason, PushSubscriptionMetadata, VapidKeyResponse} from './push-types.ts'
+import {OPERATOR_PUSH_INACTIVE_REASONS} from './push-types.ts'
 import {derivePushHandoffState, reconcile} from './reconcile.ts'
 import {urlB64ToUint8Array} from './vapid-key.ts'
 
@@ -63,12 +64,18 @@ export interface BuildPushClientOptions {
 function hasValidSubscriptionMetadataShape(value: unknown): value is PushSubscriptionMetadata {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const c = value as Record<string, unknown>
+  // Wire truth (gateway tags v0.114.1/v0.118.3 verified): dates are epoch-milli
+  // numbers; inactiveReason, when present, must be a ladder member (rm-693).
   return (
     typeof c.endpointHash === 'string' &&
     typeof c.keyVersion === 'string' &&
     typeof c.active === 'boolean' &&
-    typeof c.createdAt === 'string' &&
-    typeof c.updatedAt === 'string'
+    typeof c.createdAt === 'number' &&
+    Number.isSafeInteger(c.createdAt) &&
+    typeof c.updatedAt === 'number' &&
+    Number.isSafeInteger(c.updatedAt) &&
+    ('inactiveReason' in c === false ||
+      (typeof c.inactiveReason === 'string' && OPERATOR_PUSH_INACTIVE_REASONS.has(c.inactiveReason)))
   )
 }
 
@@ -684,6 +691,14 @@ export interface ReconcileSweepResult {
   readonly action: import('./reconcile.ts').ReconcileAction | undefined
   readonly uiState: import('./reconcile.ts').ReconcileUiState | undefined
   readonly nextCache: ReconcileSweepCache
+  /**
+   * rm-693: the server-side inactive reason when the sweep derived the
+   * `inactive` handoff state. Undefined means not-inactive, a skipped sweep,
+   * or an inactive record whose gateway did not send a reason (pre-1.8.0
+   * wire or unknown value — render the generic degraded copy, never a
+   * fabricated state).
+   */
+  readonly inactiveReason: OperatorPushInactiveReason | undefined
 }
 
 const DEFAULT_MIN_INTERVAL_MS = 30_000
@@ -744,13 +759,13 @@ export async function runReconcileSweep(
   const withinMinInterval = cache.handoffState !== undefined && now() - cache.lastActionAt < minIntervalMs
 
   if (unchanged || withinMinInterval) {
-    return {skipped: true, action: undefined, uiState: undefined, nextCache: cache}
+    return {skipped: true, action: undefined, uiState: undefined, inactiveReason: undefined, nextCache: cache}
   }
 
   const metadataResult = await deps.pushClient.getPushSubscriptionMetadata()
   if (!metadataResult.success) {
     // Transport/protocol error — do not mutate state on an inconclusive read.
-    return {skipped: true, action: undefined, uiState: undefined, nextCache: cache}
+    return {skipped: true, action: undefined, uiState: undefined, inactiveReason: undefined, nextCache: cache}
   }
 
   // A thrown/rejected hash computation (e.g. a transient crypto.subtle
@@ -784,5 +799,11 @@ export async function runReconcileSweep(
     lastActionAt: now(),
   }
 
-  return {skipped: false, action, uiState, nextCache}
+  return {
+    skipped: false,
+    action,
+    uiState,
+    nextCache,
+    inactiveReason: handoffState === 'inactive' ? metadataResult.data.metadata?.inactiveReason : undefined,
+  }
 }

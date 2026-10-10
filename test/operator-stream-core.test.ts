@@ -1227,8 +1227,8 @@ describe('backoff constants', () => {
     expect(Number.isInteger(RETRY_MAX_COUNT)).toBe(true)
   })
 
-  it('PINNED_CONTRACT_VERSION is 1.6.0', () => {
-    expect(PINNED_CONTRACT_VERSION).toBe('1.6.0')
+  it('PINNED_CONTRACT_VERSION is 1.8.0', () => {
+    expect(PINNED_CONTRACT_VERSION).toBe('1.8.0')
   })
 })
 
@@ -6152,7 +6152,7 @@ describe('initOperatorStream — late-frame guard: closed stream does not mutate
     const badgeEl = {textContent: '', hidden: true}
 
     const encoder = new TextEncoder()
-    const readyFrame = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+    const readyFrame = 'event: ready\ndata: {"contractVersion":"1.8.0"}\n\n'
     const outputFrame = `event: output\ndata: ${JSON.stringify({runId: 'run-late-frame', text: 'late output', final: false, seq: 0})}\n\n`
     const approvalFrame = `event: approval\ndata: ${JSON.stringify({runId: 'run-late-frame', requestID: 'req-late', permission: 'shell', settled: false})}\n\n`
 
@@ -6238,7 +6238,7 @@ describe('initOperatorStream — terminal run: immediate close preserves termina
     const noticeEl = {textContent: '', hidden: false, dataset: {connectionState: ''}}
 
     const encoder = new TextEncoder()
-    const readyFrame = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+    const readyFrame = 'event: ready\ndata: {"contractVersion":"1.8.0"}\n\n'
     const terminalFrame = `event: status\ndata: ${JSON.stringify({
       runId: 'run-terminal-001',
       entityRef: 'fro-bot/agent',

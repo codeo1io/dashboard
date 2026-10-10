@@ -10,8 +10,8 @@ import {
 } from '../push/subscribe.ts'
 import type {MinimalServiceWorkerRegistration, ReconcileSweepCache} from '../push/subscribe.ts'
 import {buildPushClient} from '../push/subscribe.ts'
-import {getNotificationCopy} from './notifications-copy.ts'
-import type {NotificationUiState} from './notifications-copy.ts'
+import {getInactiveReasonCopy, getNotificationCopy} from './notifications-copy.ts'
+import type {InactiveReasonKey, NotificationUiState} from './notifications-copy.ts'
 
 /**
  * Persisted one-way dismiss latch for the notifications settings card.
@@ -62,6 +62,7 @@ export function Notifications({
   const [metaEnabled] = useState<boolean>(readPushEnabledMeta)
   const [currentUiState, setCurrentUiState] = useState<NotificationUiState>('not-requested')
   const [inFlight, setInFlight] = useState(false)
+  const [inactiveReasonKey, setInactiveReasonKey] = useState<InactiveReasonKey | null>(null)
   const [isCardDismissed, setIsCardDismissed] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false
     return window.localStorage.getItem(DISMISS_SETTINGS_KEY) === '1'
@@ -176,6 +177,14 @@ export function Notifications({
     if (result.skipped) return
 
     cacheRef.current = result.nextCache
+
+    // rm-693: surface the inactive-reason ladder only when the sweep actually
+    // derived `inactive`. A skipped sweep returns above and keeps the last
+    // banner; an inactive record with no (or unrecognized) reason renders the
+    // generic rung — never a fabricated state against an older gateway.
+    setInactiveReasonKey(
+      result.nextCache.handoffState === 'inactive' ? result.inactiveReason ?? 'unknown-inactive' : null,
+    )
 
     if (result.action && result.action !== 'none') {
       try {
@@ -463,6 +472,45 @@ export function Notifications({
           >
             {copy.recoveryHint}
           </p>
+        )}
+
+        {inactiveReasonKey !== null && (
+          <div
+            data-testid="notifications-inactive-banner"
+            className="flex flex-col gap-1 p-3 rounded-md border border-border bg-surface"
+          >
+            <p
+              data-testid="notifications-inactive-label"
+              className="text-label font-mono text-highlight uppercase tracking-label"
+            >
+              {getInactiveReasonCopy(inactiveReasonKey).label}
+            </p>
+            <p data-testid="notifications-inactive-detail" className="text-body-sm text-text-muted leading-relaxed">
+              {getInactiveReasonCopy(inactiveReasonKey).detail}
+            </p>
+            {getInactiveReasonCopy(inactiveReasonKey).affordance === 'resubscribe' && (
+              <button
+                type="button"
+                disabled={inFlight}
+                data-testid="notifications-inactive-affordance"
+                onClick={handleEnable}
+                className="self-start px-3 py-1.5 rounded-md border border-border bg-transparent text-text text-body-sm cursor-pointer transition-colors duration-fast hover:border-accent hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Re-enable notifications
+              </button>
+            )}
+            {getInactiveReasonCopy(inactiveReasonKey).affordance === 'purge-device' && (
+              <button
+                type="button"
+                disabled={inFlight}
+                data-testid="notifications-inactive-affordance"
+                onClick={handleDisable}
+                className="self-start px-3 py-1.5 rounded-md border border-border bg-transparent text-text text-body-sm cursor-pointer transition-colors duration-fast hover:border-accent hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Remove stale device record
+              </button>
+            )}
+          </div>
         )}
 
         <a

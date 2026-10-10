@@ -63,6 +63,15 @@ export function derivePushHandoffState(
 
   if (metadata.active === false) return 'inactive'
 
+  // rm-693 rung documentation: the ladder is TWO-AXIS and these axes never
+  // mix. `inactive` (this branch) is a SERVER-side lifecycle state; when the
+  // gateway sends `inactiveReason` it is one of the vendored
+  // OperatorPushInactiveReason values (unsubscribed/dead/revoked/
+  // session-revoked) and is surfaced to the UI by the reconcile sweep for
+  // reason-specific rendering. `stale_key` (the branch below) is NOT a rung
+  // of that ladder: it is CLIENT-derived key-version drift, always
+  // recoverable by resubscribing, and the gateway never sends it as an
+  // inactive reason. Kept a distinct handoff state by design.
   if (currentKeyVersion !== undefined && metadata.keyVersion !== currentKeyVersion) {
     return 'stale_key'
   }
