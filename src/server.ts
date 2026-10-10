@@ -305,6 +305,43 @@ function admitRateLimitKey(now: number): boolean {
 }
 
 /**
+ * rm-107: live per-class budget utilization for the operator system-status
+ * surface. `hits` sums the CURRENT-window counters across all tracked keys
+ * (entries whose window has expired are skipped — they reset lazily at the
+ * next check, so counting them would over-report). `trackedKeys` is the
+ * admission-control view (rm-286 key cap): the raw store size, stale windows
+ * included, because that is what the memory bound is measured against.
+ * Identifier-free by construction: counts and class names only, never IPs.
+ */
+export interface RateLimitBudgetSnapshot {
+  readonly windowMs: number
+  readonly maxKeys: number
+  readonly trackedKeys: number
+  readonly classes: readonly {readonly cls: RateLimitClass; readonly max: number; readonly hits: number}[]
+}
+
+/**
+ * rm-107: live per-class budget utilization for the system-status surface.
+ * Counts are summed across all tracked keys whose window is still current
+ * (expired entries reset lazily at their next check and are skipped here so
+ * the signal is a current-window view, not a lifetime total).
+ * Accepts an optional `now` for testability (defaults to Date.now()).
+ */
+export function rateLimitBudgetSnapshot(now: number = Date.now()): RateLimitBudgetSnapshot {
+  const hits: Record<RateLimitClass, number> = {public: 0, operator: 0, ingest: 0}
+  for (const entry of rateLimitMap.values()) {
+    if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS) continue
+    for (const cls of RATE_LIMIT_CLASSES) hits[cls] += entry.counts[cls]
+  }
+  return {
+    windowMs: RATE_LIMIT_WINDOW_MS,
+    maxKeys: RATE_LIMIT_MAX_KEYS,
+    trackedKeys: rateLimitMap.size,
+    classes: RATE_LIMIT_CLASSES.map(cls => ({cls, max: RATE_LIMIT_MAX_PER_CLASS[cls], hits: hits[cls]})),
+  }
+}
+
+/**
  * Check rate limit for the given IP.
  * Accepts an optional `now` for testability (defaults to Date.now()).
  * Returns true if the request is allowed, false if rate-limited.
@@ -1101,7 +1138,17 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   }
 
   // ── API routes ───────────────────────────────────────────────────────────────
-  app.route('/api', buildApiRouter(getSnapshot))
+  // rm-107: the monitoring DTO composes the operator system-status surface
+  // (snapshot freshness, rate-limit budget, listener store depth/age, refresh
+  // failures) from these two providers; the rate limiter is module state, the
+  // store is injected. When no store is mounted its signals read null.
+  app.route(
+    '/api',
+    buildApiRouter(getSnapshot, () => ({
+      rateLimit: rateLimitBudgetSnapshot(),
+      listenerStore: opts?.listenerStore === undefined ? null : opts.listenerStore.stats(),
+    })),
+  )
 
   // ── Operator listener channel ───────────────────────────────────────────────
   // Only mounted when a store is injected. /ingest is public-before-session
