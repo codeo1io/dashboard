@@ -430,3 +430,84 @@ describe('Monitoring rm-780 (stale-state surfacing: invisible rows, false all-cl
     expect(screen.queryByTestId('monitoring-stale-count')).not.toBeInTheDocument()
   })
 })
+
+describe('Monitoring rm-835 (cold-start truth: DTO stale banner + empty enumeration)', () => {
+  // Mirrors the rm-780 describe's naming wrapper for the same reason:
+  // makeRepo ignores its fullName override, so rows are named here.
+  function makeRepoRm835(fullName: string, status: Partial<MonitoringRepoStatus>): MonitoringRepo {
+    return {...makeRepo({status}), fullName}
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValue({
+      ok: true,
+      data: makeData()
+    })
+  })
+
+  afterEach(() => {
+    vi.runOnlyPendingTimers()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('pins the fail-closed cold-start DTO: stale banner renders, the green claim does not', async () => {
+    // The aggregator's fail-closed cold-start snapshot (src/github/aggregator.ts
+    // setSnapshot/getSnapshot: repos: [] + staleBanner: true) previously rendered
+    // BOTH the stale panel and the "All repositories green" claim in one frame.
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({staleBanner: true})
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.getByTestId('monitoring-board')).toBeInTheDocument()
+    expect(screen.getByTestId('monitoring-stale-banner')).toHaveTextContent('Data is stale')
+    expect(screen.getByTestId('monitoring-no-data')).toBeInTheDocument()
+    expect(screen.queryByTestId('monitoring-all-clear')).not.toBeInTheDocument()
+  })
+
+  it('an empty but fresh enumeration renders the no-data state, not the green claim', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData() // repos: [], staleBanner: false
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.getByTestId('monitoring-board')).toBeInTheDocument()
+    expect(screen.getByTestId('monitoring-no-data')).toBeInTheDocument()
+    expect(screen.queryByTestId('monitoring-all-clear')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('monitoring-stale-banner')).not.toBeInTheDocument()
+  })
+
+  it('the DTO stale banner retracts the green claim even with rows present', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+        repos: [makeRepoRm835('fro-bot/healthy', {rollupState: 'green', failingChecks: 0, failingCheckDetails: []})],
+        staleBanner: true
+      })
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.getByTestId('monitoring-board')).toBeInTheDocument()
+    expect(screen.getByTestId('monitoring-stale-banner')).toBeInTheDocument()
+    expect(screen.queryByTestId('monitoring-all-clear')).not.toBeInTheDocument()
+    expect(screen.getByTestId('monitoring-all-clear-suppressed')).toBeInTheDocument()
+    // The healthy row itself still renders (last-known state, honestly framed).
+    expect(screen.getByTestId('monitoring-footer')).toHaveTextContent('1 repository not failing')
+  })
+})

@@ -174,7 +174,28 @@ describe('rm-678 schema half: live ledger', () => {
     // the run's at-write 808 pin above is superseded by this note
     // exactly as 366f6059 superseded at-write pins — union census
     // 248 + 3 = 251 defs / 0 dups / max rm-833, next free rm-834.
-    expect(live.max).toBe(833)
+    // 2026-10-09 run 91f3d37f (roadmap a268ee63, ext #37,
+    // repository-maintenance f24ea34af1b1 cycle:1) mints rm-835
+    // (Monitoring allClear DTO-level staleBanner gate, research C1)
+    // above the re-probed all-lineage def-line ceiling rm-833, with
+    // rm-834 left as same-hour collision margin — census 248 defs,
+    // 0 dups, max rm-835; pin bumped atomically with the mint
+    // (the run's at-write counts against its own base 88e423a —
+    // preserved verbatim per the 366f6059 precedent; superseded by
+    // the 2026-10-10 integrate note below).
+    // 2026-10-10 integrate of run 91f3d37f (conflict case
+    // a91875ba6a2741a8ae2a7b38e0c3c845): the run was authored at
+    // base 88e423a while main moved through the d823703c and
+    // 155f9770 (case 8955e66c) integrations, landing at 251 defs /
+    // max rm-833. Its single mint rm-835 (Monitoring all-clear
+    // truth under the DTO-level stale banner — the !data.staleBanner
+    // gate on allClear plus a distinct no-data empty state, PR #504)
+    // sits ABOVE that landed ceiling and is collision-free first-hand
+    // against the merged ledger (rm-835 appears in no other landed
+    // def line; census dups 0), so it lands as-authored and the pin
+    // moves 833 -> 835 atomically with this landing: union census
+    // 251 + 1 = 252 defs / 0 dups / max rm-835, next free rm-836.
+    expect(live.max).toBe(835)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
