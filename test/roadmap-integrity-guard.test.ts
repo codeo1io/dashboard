@@ -148,7 +148,14 @@ describe('rm-678 schema half: live ledger', () => {
     // 778 -> 780 atomically with this landing: union census
     // 245 + 2 = 247 defs / 0 dups / max rm-780, next free
     // rm-781.
-    expect(live.max).toBe(780)
+    // 2026-10-10 run 461586feaf7d4c52affc1fd01f529a2d roadmap
+    // 851ae5d5ae074a79926ccfc4396a3cb1 (extension #42): four mints
+    // rm-865..rm-868 above the all-lineage def-line ceiling rm-864
+    // (one-pass re-probe 2026-10-10 over every run wall + spool patch +
+    // main; the 781..864 band belongs to unlanded sibling lineages and
+    // re-pins here per the atomic-with-mints rule) — 247 → 251 defs,
+    // pin 780 → 868.
+    expect(live.max).toBe(868)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
