@@ -513,7 +513,17 @@ export async function initOperatorLaunch(opts) {
       select.id = 'launch-repo-select'
       select.name = 'repo'
       select.setAttribute('aria-label', 'Select repository')
-      select.style.cssText = 'width:100%;max-width:400px;padding:6px 10px;border:1px solid #d1d5db;border-radius:4px;font-size:0.875rem;'
+      // rm-874: individual CSSOM property assignments, not cssText — CSP3
+      // treats the cssText setter as a style-ATTRIBUTE write, which the
+      // tightened style-src (no 'unsafe-inline') blocks in enforcing browsers;
+      // per-property assignment is outside style-src's scope. Same six
+      // declarations, same computed styling, CSP-safe.
+      select.style.width = '100%'
+      select.style.maxWidth = '400px'
+      select.style.padding = '6px 10px'
+      select.style.border = '1px solid #d1d5db'
+      select.style.borderRadius = '4px'
+      select.style.fontSize = '0.875rem'
 
       for (const repo of reposResult.data) {
         // Render only the safe owner/repo display string — no channelName or other fields

@@ -85,12 +85,36 @@ describe('security headers — CSP', () => {
     expect(scriptSrc).not.toContain("'unsafe-inline'")
   })
 
-  it("CSP allows inline styles (style-src has 'unsafe-inline' for SSR style attributes)", async () => {
+  it("CSP keeps style-src strict — no 'unsafe-inline' (rm-874)", async () => {
     const app = await buildTestApp(true)
     const res = await app.request('/api/healthz')
     const csp = res.headers.get('content-security-policy') ?? ''
     const styleSrc = csp.split(';').map(d => d.trim()).find(d => d.startsWith('style-src')) ?? ''
-    expect(styleSrc).toContain("'unsafe-inline'")
+    expect(styleSrc).toBe("style-src 'self'")
+  })
+
+  // rm-874 served-truth pin: the EXACT literal served header (no value
+  // synthesis) on every operator-facing surface — the SPA shell, the public
+  // policy page, the operator runtime bundle, and the API probe. The old
+  // fallback synthesized a tolerant substring check, so a future widening
+  // would have shipped silently; any directive change must now update this
+  // literal consciously.
+  it('serves the pinned literal CSP on every operator-facing surface (rm-874)', async () => {
+    const app = await buildTestApp(true)
+    const pinned =
+      "default-src 'self'; script-src 'self'; style-src 'self'; worker-src 'self'; " +
+      "manifest-src 'self'; connect-src 'self'; img-src 'self' data:; font-src 'self'; " +
+      "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    const surfaces = [
+      await authedGet(app, '/'),
+      await app.request('/privacy'),
+      await app.request('/static/operator-stream.js'),
+      await app.request('/api/healthz'),
+    ]
+    for (const res of surfaces) {
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-security-policy')).toBe(pinned)
+    }
   })
 
   it("CSP contains default-src 'self'", async () => {
