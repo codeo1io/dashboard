@@ -116,6 +116,60 @@ client address (`X-Forwarded-For`) instead of the proxy's own address.
 
 ---
 
+## Gateway upgrades — v0.116.0+ coupling facts (rm-254)
+
+Three facts from `fro-bot/agent` v0.116.0 (released 2026-09-26) change how a
+gateway upgrade behaves. Working this runbook through one without them sends
+you hunting 401s and partial-image states in the wrong places:
+
+- **Gateway and workspace images upgrade or roll back TOGETHER.** The two
+  images are coupled: a gateway past v0.114.1 paired with an older workspace
+  image (or the reverse) is a partial-image state. `bunx
+  @marcusrbrown/infra gateway deploy` moves the gateway, so confirm the
+  workspace image pin moves in the same deploy (check `/opt/gateway/deploy`'s
+  compose file on the droplet) — or roll both back together.
+- **The gateway bearer token is required on every control route except
+  `/healthz` and `/readyz`.** A request to a control route without it is a
+  401 — not an auth-cookie problem, not a proxy problem. Check the token
+  before debugging operator auth itself.
+- **Since v0.116.0 a 401 means operator-actionable workspace-unavailable, not
+  auth-required.** On the run-status surface this arrives as the
+  `workspace-unavailable` failure kind and renders as the non-retriable
+  `Workspace unavailable — not retriable` label — deliberately distinct from
+  transient `workspace-unreachable` (`Workspace unreachable — retry may
+  succeed`; rm-864). Note the split of surfaces in this dashboard: persistent
+  400/401/403 on the approval/control mutations still surfaces the
+  session-expired reload affordance; the workspace-unavailable classification
+  rides the run-status frames. A 401 during an upgrade window is expected
+  mid-deploy, not evidence of credential loss.
+
+### Pre-upgrade checklist
+
+1. **Contract support first.** The dashboard's accepted contract versions
+   (`SUPPORTED_OPERATOR_CONTRACT_VERSIONS` in `src/gateway/operator-contract/version.ts`)
+   must include the target gateway's contract version BEFORE the infra pin
+   moves — the SSE reader fail-closes on any version outside the window, so a
+   gateway serving an unsupported version darkens `/operator/*` for this
+   dashboard until the window grows (the rm-252 absorb discipline).
+2. Move gateway + workspace images in the same deploy (see coupling above).
+3. Re-verify with `bunx @marcusrbrown/infra gateway status`, then exercise
+   operator sign-in and check the `auth.start` → `auth.callback.success`
+   pairing from *Reading logs effectively* below.
+
+### Pin-parity table (as of 2026-10-09)
+
+| Surface | Where | Value | Re-verify |
+| --- | --- | --- | --- |
+| Deployed gateway | `marcusrbrown/infra` deploy | v0.118.2 (infra `faf71414`, 2026-10-07T20:11:52Z, PR #1484) — serves operator contract 1.8.0 | `bunx @marcusrbrown/infra gateway status`, or the infra repo's gateway-bump commits |
+| Fork workflow pin | `.github/workflows/fro-bot.yaml` (`Run Fro Bot` step) | `fro-bot/agent` v0.118.3 @ `d88c245f` (rm-252, 2026-10-09; the workflow itself is `disabled_manually` on this fork, so the pin records intent until re-enabled) | `grep -n 'fro-bot/agent@' .github/workflows/fro-bot.yaml` |
+| Mirror contract window | `src/gateway/operator-contract/version.ts` | primary `1.6.0`, additive window `{1.6.0, 1.8.0}` | `grep -n "1.8.0" src/gateway/operator-contract/version.ts` |
+
+Keep the table current whenever any of the three pins moves: a skew between
+the deployed gateway's contract version and the mirror window is exactly the
+dark-operator-surface failure mode the checklist prevents.
+
+---
+
 ## Traps
 
 **Wrong remote user.** `ssh "$GATEWAY_HOST"` uses your local username. With several keys in your

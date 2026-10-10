@@ -2311,6 +2311,26 @@ describe('failure reason label map parity (stream ↔ run-index)', () => {
       expect(RUN_INDEX_FAILURE_REASON_LABELS[key]).toBe(STREAM_FAILURE_REASON_LABELS[key])
     }
   })
+
+  it('rm-864: retriable and non-retriable workspace-failure labels stay pairwise distinct and encode retryability in both twins', () => {
+    const twins = [
+      ['stream', STREAM_FAILURE_REASON_LABELS],
+      ['run-index', RUN_INDEX_FAILURE_REASON_LABELS],
+    ]
+    for (const [name, labels] of twins) {
+      const retriable = labels['workspace-unreachable']
+      const nonRetriable = labels['workspace-unavailable']
+      // The contract keeps the two kinds apart (run-status.ts retryability
+      // split); the rendered copy must stay distinct under any future edit.
+      expect(retriable, `${name}: labels collapsed`).not.toBe(nonRetriable)
+      // Copy must carry the retryability signal, not just the kind name.
+      expect(retriable, `${name}: retriable copy lost its retry signal`).toMatch(/retry may succeed/i)
+      expect(nonRetriable, `${name}: non-retriable copy lost its not-retriable signal`).toMatch(/not retriable/i)
+      // And the distinction is never inverted.
+      expect(retriable).not.toMatch(/not retriable/i)
+      expect(nonRetriable).not.toMatch(/retry may succeed/i)
+    }
+  })
 })
 
 describe('failure reason label coverage gate', () => {

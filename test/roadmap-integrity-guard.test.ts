@@ -112,7 +112,15 @@ describe('rm-678 schema half: live ledger', () => {
     // all sit at/below rm-744) and land as-authored, so the union
     // census is 240 + 4 = 244 defs with the ceiling moving to
     // rm-778 — pin 744 → 778 atomically with this landing.
-    expect(live.max).toBe(778)
+    expect(live.max).toBe(864)
+    // 2026-10-10 review-fix fe7b0f47 (independent_review ea91ccc5 NEEDS_CHANGES):
+    // our mint's numeral rm-806 duplicated 155f9770's earlier 06:37:56Z unlanded
+    // mint — renumbered in place to rm-864 (hardened frontier re-probe: spool max
+    // rm-863, walls rm-860, origin/main rm-780). Historical record of the mint:
+    // 2026-10-09 cycle-2 roadmap (run aec9c3e88357, attempt fc84e56a):
+    // minted (as rm-806) above the then-re-probed fleet def-line ceiling rm-805
+    // (run-8dd690c85b50, unlanded) — pin 778 -> 806 atomically; the 806 numeral is
+    // 155f9770's workflow-concurrency item now — see ROADMAP.md repair comment #33.
     // 2026-10-09 integrate of run 9289efaa (conflict case
     // 139848e6): that run's single mint rm-703 (release.yaml
     // digest-readback SIGPIPE -- the THIRD lineage id of the
