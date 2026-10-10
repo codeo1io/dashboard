@@ -137,11 +137,12 @@ describe('GraphQL query-shape guard (rm-177)', () => {
     }
   })
 
-  it('rm-836: both templates select the CI-freshness run timestamps (startedAt anchors the newest-run signal)', () => {
+  it('rm-836/rm-913: both templates select startedAt (the newest-run anchor) and not the folded dead completion timestamp', () => {
     for (const [name, query] of Object.entries(QUERIES)) {
-      // The workflowRun selection must carry both timestamps — startedAt
-      // anchors the per-repo lastRunAt; completedAt rides the same node so a
-      // running run's context is available without another selection.
+      // startedAt anchors the per-repo lastRunAt (rm-836). The completion
+      // timestamp was selected alongside it but never consumed anywhere —
+      // rm-913's rider folded it out of both templates (dead payload on
+      // every per-repo query), and this pin keeps it from creeping back.
       expect(query.includes('workflowRun {'), `${name}: missing workflowRun selection`).toBe(true)
       expect(query.includes('checkRuns('), `${name}: missing checkRuns selection after workflowRun`).toBe(true)
       const workflowRunBlock = query.slice(query.indexOf('workflowRun {'), query.indexOf('checkRuns('))
@@ -150,9 +151,9 @@ describe('GraphQL query-shape guard (rm-177)', () => {
         `${name}: workflowRun selection missing startedAt`,
       ).toBe(true)
       expect(
-        workflowRunBlock.includes('completedAt'),
-        `${name}: workflowRun selection missing completedAt`,
-      ).toBe(true)
+        query.includes('completedAt'),
+        `${name}: completedAt is dead payload (selected, never consumed) — rm-913 folded it out`,
+      ).toBe(false)
     }
   })
 })
