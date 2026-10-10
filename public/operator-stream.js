@@ -236,7 +236,10 @@ export function parseSseFrame(record) {
   const normalized = normalizeCrlf(record)
   const lines = normalized.split('\n')
   let eventName
-  let dataLine
+  // rm-854 — WHATWG SSE 9.2.6: consecutive data lines accumulate and join with
+  // a single newline (previously last-wins, which silently misparsed conforming
+  // multi-line senders). Single-line records parse byte-identically.
+  const dataLines = []
 
   for (const line of lines) {
     if (line.startsWith(':')) {
@@ -246,9 +249,11 @@ export function parseSseFrame(record) {
     if (line.startsWith('event:')) {
       eventName = line.slice('event:'.length).trim()
     } else if (line.startsWith('data:')) {
-      dataLine = line.slice('data:'.length).trim()
+      dataLines.push(line.slice('data:'.length).trim())
     }
   }
+
+  const dataLine = dataLines.length > 0 ? dataLines.join('\n') : undefined
 
   // Comment-only record (heartbeat) — produce no frame
   if (eventName === undefined && dataLine === undefined) {
@@ -640,6 +645,22 @@ export function nextStreamState(current, event) {
       const prevCoalesced = prev?.outputCoalesced ?? false
       const coalesced = prevCoalesced || (typeof droppedCount === 'number' && droppedCount > 0)
 
+      // rm-853 — client-side gap detection: a non-final delta that skips seq values
+      // means frames never reached the reducer (parse drops, transport truncation).
+      // Latch the signal and accumulate the missing-frame count; never echo the
+      // count — the UI renders a fixed-label notice. A first-seen delta (prevSeq
+      // -1) never counts: seq may legitimately start above 0. final frames never
+      // count: they replace the text authoritatively. Duplicate/stale seqs never
+      // raise a false gap.
+      const prevGapDetected = prev?.outputGapDetected ?? false
+      const prevGapMissing = prev?.outputGapMissing ?? 0
+      let gapDetected = prevGapDetected
+      let gapMissing = prevGapMissing
+      if (!final && prevSeq >= 0 && seq > prevSeq + 1) {
+        gapDetected = true
+        gapMissing += seq - (prevSeq + 1)
+      }
+
       let nextText = prevText
       let nextSeq = prevSeq
       if (final) {
@@ -675,6 +696,8 @@ export function nextStreamState(current, event) {
           outputFinal: final ? true : (prev?.outputFinal ?? false),
           outputCoalesced: coalesced,
           outputTruncated: truncated,
+          outputGapDetected: gapDetected,
+          outputGapMissing: gapMissing,
         },
       })
       return {...current, runs: updatedRuns}
@@ -2054,7 +2077,7 @@ export function renderCancelControl(runId, cancelClient, onCancelDispatch) {
  * - Read-only: GET only for stream; approval decisions are operator-forwarded writes.
  */
 export function initOperatorStream(opts) {
-  const {runId, statusEl, noticeEl, outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, cancelEl, approvalClient: injectedApprovalClient, cancelClient: injectedCancelClient, endpointBase, fixtureSessionId} = opts
+  const {runId, statusEl, noticeEl, outputEl, coalescedEl, gapEl, approvalsEl, badgeEl, reasonEl, cancelEl, approvalClient: injectedApprovalClient, cancelClient: injectedCancelClient, endpointBase, fixtureSessionId} = opts
 
   // Build the approval client lazily (only if approvalsEl is present).
   // Pass endpointBase and fixtureSessionId so fixture mode uses the fixture approval routes
@@ -2244,8 +2267,15 @@ export function initOperatorStream(opts) {
       }
       if (coalescedEl) {
         // Show the fixed hint when output was coalesced or truncated — never an echoed count.
+        coalescedEl.textContent = 'Streamed output was coalesced or truncated; intermediate text may be missing.'
         const flagged = runEntry?.outputCoalesced === true || runEntry?.outputTruncated === true
         coalescedEl.hidden = !flagged
+      }
+      if (gapEl) {
+        // rm-853 — client-side gap signal: frames were skipped before the reducer
+        // (parse drops or transport truncation). Fixed label, never an echoed count.
+        gapEl.textContent = 'Some streamed frames were dropped; intermediate output may be missing.'
+        gapEl.hidden = runEntry?.outputGapDetected !== true
       }
     }
 
@@ -2719,10 +2749,11 @@ export function bootstrapOperatorStreams(opts) {
     const statusEl = card.querySelector('[data-role="run-status"]')
     const outputEl = card.querySelector('[data-role="run-output"]')
     const coalescedEl = card.querySelector('[data-role="run-output-coalesced"]')
+    const gapEl = card.querySelector('[data-role="run-output-gap"]')
     // Discover the approval region and badge elements
     const approvalsEl = card.querySelector('[data-role="run-approvals"]')
     const badgeEl = card.querySelector('[data-role="approval-badge"]')
-    handles.push(initOperatorStream({runId, statusEl, noticeEl, outputEl, coalescedEl, approvalsEl, badgeEl, endpointBase, fixtureSessionId}))
+    handles.push(initOperatorStream({runId, statusEl, noticeEl, outputEl, coalescedEl, gapEl, approvalsEl, badgeEl, endpointBase, fixtureSessionId}))
   }
 
   _bootstrapHandles = handles

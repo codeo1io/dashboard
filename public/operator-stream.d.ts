@@ -162,6 +162,10 @@ export interface RunEntry {
   readonly outputCoalesced?: boolean
   /** True if accumulated output exceeded the cap and was truncated. */
   readonly outputTruncated?: boolean
+  /** rm-853: true once any non-final delta skipped seq values (frames dropped before the reducer). Sticky for the run. */
+  readonly outputGapDetected?: boolean
+  /** rm-853: accumulated count of seq values skipped across the run. Never rendered as a raw number. */
+  readonly outputGapMissing?: number
   /**
    * Pre-resolved dashboard display label for a known failure reason. Set only when
    * a failed status frame carried a known failureKind; sticky across later frames
@@ -339,6 +343,8 @@ export interface InitOptions {
   readonly noticeEl: Element | null
   readonly outputEl?: (HTMLElement & {hidden: boolean}) | null
   readonly coalescedEl?: (HTMLElement & {hidden: boolean}) | null
+  /** rm-853 gap-notice element (data-role="run-output-gap"); optional like coalescedEl. */
+  readonly gapEl?: (HTMLElement & {hidden: boolean}) | null
   /** Approval prompts container element (data-role="run-approvals"). */
   readonly approvalsEl?: (HTMLElement & {hidden: boolean}) | null
   /** Approval count badge element (data-role="approval-badge"). */

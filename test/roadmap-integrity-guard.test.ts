@@ -148,7 +148,15 @@ describe('rm-678 schema half: live ledger', () => {
     // 778 -> 780 atomically with this landing: union census
     // 245 + 2 = 247 defs / 0 dups / max rm-780, next free
     // rm-781.
-    expect(live.max).toBe(780)
+    // 2026-10-10 extension #38 (run e5b71847827444268f9a5b54b9831322 cycle:3 roadmap 694f98d352f9):
+    // four mints above the all-lineage unlanded sibling ceiling rm-852
+    // (ext#37 roadmap-06c667d3, run 633717c23b19 — spool def-line scan
+    // 2026-10-10; dashboard dirty walls top at rm-849; open PRs carry no
+    // ROADMAP defs; foreign rm-871+ bands excluded — agenttrace run
+    // 2a5cdb9e, truth-family ledgers) — rm-853 seq-gap surfacing,
+    // rm-854 SSE data: join, rm-855 X-GitHub-Api-Version egress pin,
+    // rm-856 base-drift tag derivation — 247 -> 251 defs, max rm-856.
+    expect(live.max).toBe(856)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
