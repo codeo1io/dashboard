@@ -123,6 +123,27 @@ describe('rm-678 schema half: live ledger', () => {
     // against its own base 364272b, superseded by the 2026-10-10
     // integrate note below per the 366f6059 precedent; the pin
     // value stays single-sourced at the assertion below).
+    // 2026-10-10 integrate of run 8cecf1d7f09f (conflict case
+    // 87124eb3a29742ca8be48aeb36025584): the run was authored at
+    // base 364272b (245 defs / max rm-778) while main moved
+    // through the cbe70604, d823703c, 155f9770 (case 8955e66c),
+    // 91f3d37f (case a91875ba) and 122a693028b8 (case ec31fce8)
+    // integrations, landing at 253 defs / max rm-835. Its mint
+    // rm-807 (web focus re-probe test determinism + the rm-784
+    // fetch-bound fold) COLLIDES with the landed rm-807
+    // (155f9770's soak-matured dep refresh) — landed meanings
+    // own ids — so it renumbers to rm-866, minted above the
+    // re-probed all-lineage unlanded dashboard-fleet frontier
+    // (rm-850..859 sibling bands 06c667d3 / e5b718478274 /
+    // 87fa6ee8, rm-861..863 run cb6061a3, rm-865 run 0979098f;
+    // agenttrace-family 88x numerals are a foreign id space,
+    // excluded per the ext #29 adjudication); its mint rm-860
+    // (Actions account-level disable) is collision-free and
+    // lands as-authored. The run's at-write 860 pin above is
+    // superseded by this note per the 366f6059 precedent; the
+    // pin moves 835 -> 866 atomically with this landing: union
+    // census 253 + 2 = 255 defs / 0 dups / max rm-866, next
+    // free rm-867.
     // 2026-10-09 integrate of run 9289efaa (conflict case
     // 139848e6): that run's single mint rm-703 (release.yaml
     // digest-readback SIGPIPE -- the THIRD lineage id of the
@@ -228,7 +249,13 @@ describe('rm-678 schema half: live ledger', () => {
     // as 366f6059 superseded at-write pins -- union census
     // 252 + 1 = 253 defs / 0 dups / max rm-835, next free
     // rm-836.
-    expect(live.max).toBe(835)
+    // 2026-10-10 integrate of run 8cecf1d7f09f (conflict
+    // case 87124eb3a29742ca8be48aeb36025584): renumber map
+    // rm-807 -> rm-866 (collides with the landed dep-refresh
+    // rm-807) plus the collision-free rm-860 mint; the pin
+    // moves 835 -> 866 atomically — union census 255 defs /
+    // 0 dups / max rm-866, next free rm-867.
+    expect(live.max).toBe(866)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
