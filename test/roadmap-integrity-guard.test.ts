@@ -195,6 +195,39 @@ describe('rm-678 schema half: live ledger', () => {
     // def line; census dups 0), so it lands as-authored and the pin
     // moves 833 -> 835 atomically with this landing: union census
     // 251 + 1 = 252 defs / 0 dups / max rm-835, next free rm-836.
+    // 2026-10-09 roadmap of run 122a693028b8 (attempt
+    // c2a9b510): one mint rm-822 above the re-probed
+    // all-lineage ceiling (run-5989eb976c8b wall rm-821,
+    // run-155f9770aba4 wall rm-808, both live) -- 245 ->
+    // 246 defs, pin 778 -> 822 atomically with this
+    // extension; the two parallel mints stay in their
+    // unlanded lanes, reconcile by content at integrate.
+    // 2026-10-10 integrate of run 122a693028b8 (conflict
+    // case ec31fce890a6410197ee052d8745fc57, completed at
+    // its re-dispatch as case 5babc76ec082496bbd4f2edc571f5cc9
+    // -- the re-dispatch adopted the standing union unchanged
+    // (no new markered hunk) and cured the environment that
+    // killed the first validation pass: the fresh integration
+    // worktree carried no node_modules, so the impacted closure
+    // died on ERR_MODULE_NOT_FOUND 'vitest'; after a frozen-
+    // lockfile install + web/dist pretest build the closure is
+    // 8 files / 488 green re-run first-hand, guard battery 8/8):
+    // the run was
+    // authored at base 364272b (245 defs / max rm-778)
+    // while main moved through the cbe70604, d823703c,
+    // 155f9770 (case 8955e66c) and 91f3d37f (case
+    // a91875ba) integrations, landing at 252 defs / max
+    // rm-835. Its single mint rm-822 (operator-client
+    // fetchJson response-size cap at MAX_SSE_BUFFER_BYTES
+    // parity) sits BELOW that landed ceiling and is
+    // collision-free first-hand against the merged ledger
+    // (rm-822 appears in no other landed def line; census
+    // dups 0), so it lands as-authored and NO bump is
+    // owed: the pin stays 835 and the run's at-write 822
+    // assertion above is superseded by this note exactly
+    // as 366f6059 superseded at-write pins -- union census
+    // 252 + 1 = 253 defs / 0 dups / max rm-835, next free
+    // rm-836.
     expect(live.max).toBe(835)
   })
 
