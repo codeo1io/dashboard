@@ -14,6 +14,7 @@
  */
 
 import type {RunStreamFrame} from '../src/gateway/operator-contract/sse-frames.ts'
+import type {OperatorStreamStatus} from '../src/gateway/operator-sse-reader.ts'
 import type {Logger} from '../src/logger.ts'
 import fc from 'fast-check'
 import {describe, expect, it, vi} from 'vitest'
@@ -2518,6 +2519,129 @@ describe('createOperatorSseReader — rm-157 supported-versions window', () => {
       expect(errors[0]?.message).toContain('contract-drift')
       expect(events.filter(e => e.type === 'status')).toHaveLength(0)
       expect(closed).toBe(true)
+    }
+  })
+})
+
+describe('createOperatorSseReader — rm-870 observed-contract-version instrument', () => {
+  interface CapturedLog {
+    readonly level: 'debug' | 'info' | 'warning' | 'error'
+    readonly message: string
+    readonly ctx: Record<string, unknown>
+  }
+
+  function makeStructuredLogger(): {logger: Logger; captured: CapturedLog[]} {
+    const captured: CapturedLog[] = []
+    const logger: Logger = {
+      debug: (message, ctx) => { captured.push({level: 'debug', message, ctx: {...(ctx ?? {})}}) },
+      info: (message, ctx) => { captured.push({level: 'info', message, ctx: {...(ctx ?? {})}}) },
+      warning: (message, ctx) => { captured.push({level: 'warning', message, ctx: {...(ctx ?? {})}}) },
+      error: (message, ctx) => { captured.push({level: 'error', message, ctx: {...(ctx ?? {})}}) },
+    }
+    return {logger, captured}
+  }
+
+  const statusPayload = {
+    runId: 'run-001',
+    entityRef: 'fro-bot/agent',
+    surface: 'github',
+    phase: 'EXECUTING',
+    status: 'running',
+    startedAt: '2026-06-18T20:00:00Z',
+    stale: false,
+  }
+
+  it('surfaces the observed contractVersion at stream start — matching version 1.6.0', async () => {
+    const sseText = `event: ready\ndata: {"contractVersion":"1.6.0"}\n\nevent: status\ndata: ${JSON.stringify(statusPayload)}\n\n`
+    const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
+    const {logger, captured} = makeStructuredLogger()
+    const reader = createOperatorSseReader({fetchImpl, logger})
+
+    const statuses: OperatorStreamStatus[] = []
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: () => {},
+      onError: () => {},
+      onClose: () => {},
+      onStreamStatus: status => statuses.push(status),
+    })
+
+    // (a)'s SSE stream-status payload — exactly one, carrying the observed value
+    expect(statuses).toEqual([{observedContractVersion: '1.6.0'}])
+    // (b) the structured log field at stream start
+    const ready = captured.filter(e => e.message === 'sse-reader: stream ready')
+    expect(ready).toHaveLength(1)
+    expect(ready[0]?.level).toBe('info')
+    expect(ready[0]?.ctx).toEqual({
+      route: '/operator/runs/:runId/stream',
+      observedContractVersion: '1.6.0',
+    })
+  })
+
+  it('window edge (1.8.0) — the surfaced value is the edge version itself', async () => {
+    const sseText = `event: ready\ndata: {"contractVersion":"1.8.0"}\n\nevent: status\ndata: ${JSON.stringify(statusPayload)}\n\n`
+    const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
+    const {logger, captured} = makeStructuredLogger()
+    const reader = createOperatorSseReader({fetchImpl, logger})
+
+    const statuses: OperatorStreamStatus[] = []
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: () => {},
+      onError: () => {},
+      onClose: () => {},
+      onStreamStatus: status => statuses.push(status),
+    })
+
+    expect(statuses).toEqual([{observedContractVersion: '1.8.0'}])
+    const ready = captured.filter(e => e.message === 'sse-reader: stream ready')
+    expect(ready).toHaveLength(1)
+    expect(ready[0]?.ctx).toEqual({
+      route: '/operator/runs/:runId/stream',
+      observedContractVersion: '1.8.0',
+    })
+  })
+
+  it('drift — mismatch log carries the observed version, onError message stays fixed, no status payload', async () => {
+    const sseText = 'event: ready\ndata: {"contractVersion":"9.9.9"}\n\n'
+    const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
+    const {logger, captured} = makeStructuredLogger()
+    const reader = createOperatorSseReader({fetchImpl, logger})
+
+    const statuses: OperatorStreamStatus[] = []
+    const errors: Error[] = []
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: () => {},
+      onError: err => errors.push(err),
+      onClose: () => {},
+      onStreamStatus: status => statuses.push(status),
+    })
+
+    expect(statuses).toEqual([]) // no stream established — no status payload
+    expect(captured.some(e => e.message === 'sse-reader: stream ready')).toBe(false)
+    const mismatch = captured.filter(e => e.message === 'sse-reader: contract version mismatch')
+    expect(mismatch).toHaveLength(1)
+    expect(mismatch[0]?.ctx).toEqual({
+      route: '/operator/runs/:runId/stream',
+      observedContractVersion: '9.9.9',
+    })
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.message).not.toContain('9.9.9')
+  })
+
+  it('instrument never surfaces the dynamic runId (coarse-metadata contract holds)', async () => {
+    const sseText = `event: ready\ndata: {"contractVersion":"1.6.0"}\n\nevent: status\ndata: ${JSON.stringify({...statusPayload, runId: 'run-secret-id-xyz'})}\n\n`
+    const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
+    const {logger, captured} = makeStructuredLogger()
+    const reader = createOperatorSseReader({fetchImpl, logger})
+
+    await reader.open('/operator/runs/run-secret-id-xyz/stream', {
+      onEvent: () => {},
+      onError: () => {},
+      onClose: () => {},
+      onStreamStatus: () => {},
+    })
+
+    for (const entry of captured) {
+      expect(JSON.stringify(entry.ctx)).not.toContain('run-secret-id-xyz')
     }
   })
 })
