@@ -32,6 +32,49 @@ export interface MonitoringRepo {
   readonly status: MonitoringRepoStatus
 }
 
+export interface RateLimitClassData {
+  readonly cls: string
+  readonly max: number
+  readonly hits: number
+}
+
+export interface RateLimitBudgetData {
+  readonly windowMs: number
+  readonly maxKeys: number
+  readonly trackedKeys: number
+  readonly classes: readonly RateLimitClassData[]
+}
+
+export interface ListenerStoreStatusData {
+  readonly rows: number
+  readonly maxRows: number
+  readonly maxAgeMs: number
+  readonly oldestReceivedAt: string | null
+  readonly unread: number
+}
+
+export interface SnapshotFreshnessData {
+  readonly refreshedAt: number | null
+  readonly staleBanner: boolean
+  readonly refreshDegraded: boolean
+  readonly refreshDurationMs: number | null
+  readonly trackedRepos: number
+  readonly driftCount: number
+}
+
+export interface RefreshFailureData {
+  readonly enumerationIncomplete: number | null
+  readonly degraded: boolean
+}
+
+/** rm-107: composed operator system-status surface (strictly parsed; absent when the server omits it). */
+export interface SystemStatusData {
+  readonly snapshot: SnapshotFreshnessData
+  readonly refreshFailures: RefreshFailureData
+  readonly rateLimit: RateLimitBudgetData
+  readonly listenerStore: ListenerStoreStatusData | null
+}
+
 export interface MonitoringData {
   readonly repos: readonly MonitoringRepo[]
   /** Wall-clock duration (ms) of the last completed refresh attempt, or null when no cycle has stamped it yet (rm-156) */
@@ -42,6 +85,8 @@ export interface MonitoringData {
   readonly driftCount: number
   readonly enumerationIncomplete: number | null
   readonly refreshedAt: number | null
+  /** rm-107: present only when the server wired the system-status provider. */
+  readonly system?: SystemStatusData
 }
 
 export type FetchMonitoringResult =
@@ -112,6 +157,94 @@ function parseRepo(item: unknown): MonitoringRepo | null {
   }
 }
 
+function parseRateLimitClass(item: unknown): RateLimitClassData | null {
+  if (!isPlainObject(item)) return null
+  if (typeof item.cls !== 'string') return null
+  if (typeof item.max !== 'number' || typeof item.hits !== 'number') return null
+  return {cls: item.cls, max: item.max, hits: item.hits}
+}
+
+function parseRateLimitBudget(item: unknown): RateLimitBudgetData | null {
+  if (!isPlainObject(item)) return null
+  if (
+    typeof item.windowMs !== 'number' ||
+    typeof item.maxKeys !== 'number' ||
+    typeof item.trackedKeys !== 'number' ||
+    !Array.isArray(item.classes)
+  ) {
+    return null
+  }
+  const classes: RateLimitClassData[] = []
+  for (const entry of item.classes) {
+    const parsed = parseRateLimitClass(entry)
+    if (parsed === null) return null
+    classes.push(parsed)
+  }
+  return {windowMs: item.windowMs, maxKeys: item.maxKeys, trackedKeys: item.trackedKeys, classes}
+}
+
+function parseListenerStoreStatus(item: unknown): ListenerStoreStatusData | null {
+  if (!isPlainObject(item)) return null
+  if (
+    typeof item.rows !== 'number' ||
+    typeof item.maxRows !== 'number' ||
+    typeof item.maxAgeMs !== 'number' ||
+    typeof item.unread !== 'number'
+  ) {
+    return null
+  }
+  if (item.oldestReceivedAt !== null && typeof item.oldestReceivedAt !== 'string') return null
+  return {
+    rows: item.rows,
+    maxRows: item.maxRows,
+    maxAgeMs: item.maxAgeMs,
+    oldestReceivedAt: item.oldestReceivedAt,
+    unread: item.unread,
+  }
+}
+
+function parseSnapshotFreshness(item: unknown): SnapshotFreshnessData | null {
+  if (!isPlainObject(item)) return null
+  if (typeof item.staleBanner !== 'boolean' || typeof item.refreshDegraded !== 'boolean') return null
+  if (item.refreshedAt !== null && typeof item.refreshedAt !== 'number') return null
+  if (item.refreshDurationMs !== null && typeof item.refreshDurationMs !== 'number') return null
+  if (typeof item.trackedRepos !== 'number' || typeof item.driftCount !== 'number') return null
+  return {
+    refreshedAt: item.refreshedAt,
+    staleBanner: item.staleBanner,
+    refreshDegraded: item.refreshDegraded,
+    refreshDurationMs: item.refreshDurationMs,
+    trackedRepos: item.trackedRepos,
+    driftCount: item.driftCount,
+  }
+}
+
+function parseRefreshFailure(item: unknown): RefreshFailureData | null {
+  if (!isPlainObject(item)) return null
+  if (item.enumerationIncomplete !== null && typeof item.enumerationIncomplete !== 'number') return null
+  if (typeof item.degraded !== 'boolean') return null
+  return {enumerationIncomplete: item.enumerationIncomplete, degraded: item.degraded}
+}
+
+/**
+ * rm-107: strict parse of the composed system-status surface. Absent on the
+ * wire → undefined (older server); present but malformed → null (contract
+ * drift — the caller rejects the payload rather than half-rendering status).
+ */
+function parseSystemStatus(item: unknown): SystemStatusData | undefined | null {
+  if (item === undefined) return undefined
+  if (!isPlainObject(item)) return null
+  const snapshot = parseSnapshotFreshness(item.snapshot)
+  const refreshFailures = parseRefreshFailure(item.refreshFailures)
+  const rateLimit = parseRateLimitBudget(item.rateLimit)
+  if (snapshot === null || refreshFailures === null || rateLimit === null) return null
+  if (item.listenerStore === undefined) return null
+  const listenerStore =
+    item.listenerStore === null ? null : parseListenerStoreStatus(item.listenerStore)
+  if (listenerStore === null && item.listenerStore !== null) return null
+  return {snapshot, refreshFailures, rateLimit, listenerStore}
+}
+
 export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): Promise<FetchMonitoringResult> {
   try {
     // rm-780: the seam carries its own wall-clock bound (see fetch-timeout.ts)
@@ -165,6 +298,12 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
       return {ok: false, reason: 'contract-drift'}
     }
 
+    // rm-107: the composed system-status surface is optional on the wire
+    // (bare-router servers omit it), but a present-but-malformed object is
+    // contract drift — reject rather than silently dropping operator status.
+    const system = parseSystemStatus(data.system)
+    if (system === null) return {ok: false, reason: 'contract-drift'}
+
     const repos: MonitoringRepo[] = []
     for (const item of data.repos) {
       const parsed = parseRepo(item)
@@ -182,6 +321,7 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
         refreshedAt: data.refreshedAt,
         refreshDurationMs: data.refreshDurationMs,
         refreshDegraded: data.refreshDegraded,
+        ...(system === undefined ? {} : {system}),
       },
     }
   } catch (err) {

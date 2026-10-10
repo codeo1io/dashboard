@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, act } from '@testing-library/react'
+import { render, screen, within, act } from '@testing-library/react'
 import { Monitoring, MONITORING_FETCH_TIMEOUT_MS } from './Monitoring.tsx'
 import * as monitoringApi from '../api/monitoring.ts'
 import type { MonitoringData, MonitoringRepo, MonitoringRepoStatus } from '../api/monitoring.ts'
@@ -428,5 +428,129 @@ describe('Monitoring rm-780 (stale-state surfacing: invisible rows, false all-cl
     expect(screen.queryByTestId('monitoring-stale-repo')).not.toBeInTheDocument()
     expect(screen.queryByTestId('monitoring-view-stale-banner')).not.toBeInTheDocument()
     expect(screen.queryByTestId('monitoring-stale-count')).not.toBeInTheDocument()
+  })
+})
+
+describe('Monitoring (rm-107 system-status panel)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValue({
+      ok: true,
+      data: makeData()
+    })
+  })
+
+  afterEach(() => {
+    vi.runOnlyPendingTimers()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  const makeSystem = (overrides: Partial<monitoringApi.SystemStatusData> = {}): monitoringApi.SystemStatusData => ({
+    snapshot: {
+      refreshedAt: 1742000000000,
+      staleBanner: false,
+      refreshDegraded: false,
+      refreshDurationMs: 1234,
+      trackedRepos: 2,
+      driftCount: 1
+    },
+    refreshFailures: {enumerationIncomplete: 1, degraded: true},
+    rateLimit: {
+      windowMs: 60000,
+      maxKeys: 10000,
+      trackedKeys: 3,
+      classes: [
+        {cls: 'public', max: 60, hits: 7},
+        {cls: 'operator', max: 60, hits: 0}
+      ]
+    },
+    listenerStore: {rows: 12, maxRows: 500, maxAgeMs: 2592000000, oldestReceivedAt: '2026-10-08T00:00:00.000Z', unread: 2},
+    ...overrides
+  })
+
+  it('rm-107: renders the composed system-status panel with one row per signal when the server provides it', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({system: makeSystem()})
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.getByTestId('monitoring-system-status')).toBeInTheDocument()
+    // snapshot freshness
+    const snapshotRow = screen.getByTestId('monitoring-system-snapshot')
+    expect(snapshotRow.textContent).toContain('2 tracked')
+    expect(snapshotRow.textContent).toContain('1 drift')
+    // refresh failures
+    const failuresRow = screen.getByTestId('monitoring-system-refresh-failures')
+    expect(failuresRow.textContent).toContain('1 installation failed enumeration')
+    expect(failuresRow.textContent).toContain('degraded')
+    // rate-limit budget per class
+    expect(screen.getByTestId('monitoring-system-rate-limit-public').textContent).toContain('public 7/60')
+    expect(screen.getByTestId('monitoring-system-rate-limit-operator').textContent).toContain('operator 0/60')
+    expect(screen.getByTestId('monitoring-system-rate-limit').textContent).toContain('3/10000 tracked keys')
+    // listener store depth/age
+    const storeRow = screen.getByTestId('monitoring-system-listener-store')
+    expect(storeRow.textContent).toContain('12/500 rows')
+    expect(storeRow.textContent).toContain('2 unread')
+  })
+
+  it('rm-107: renders stale/degraded badges on the panel when the snapshot signals them', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+        system: makeSystem({
+          snapshot: {
+            refreshedAt: 1742000000000,
+            staleBanner: true,
+            refreshDegraded: true,
+            refreshDurationMs: 95000,
+            trackedRepos: 2,
+            driftCount: 0
+          }
+        })
+      })
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    const panel = screen.getByTestId('monitoring-system-status')
+    expect(within(panel).getByLabelText('Snapshot stale')).toBeInTheDocument()
+    expect(within(panel).getByLabelText('Refresh degraded')).toBeInTheDocument()
+  })
+
+  it('rm-107: hides the panel entirely when the server omits the system surface (bare router)', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData()
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.queryByTestId('monitoring-system-status')).not.toBeInTheDocument()
+  })
+
+  it('rm-107: renders not-mounted for the listener store row when the channel is absent', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({system: makeSystem({listenerStore: null})})
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.getByTestId('monitoring-system-listener-store').textContent).toContain('not mounted')
   })
 })

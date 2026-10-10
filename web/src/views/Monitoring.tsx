@@ -98,6 +98,8 @@ export function Monitoring() {
       )}
 
       {viewState.state === 'ready' && <MonitoringBoard data={viewState.data} viewStale={viewState.postReadyFailures > 0} />}
+
+      {viewState.state === 'ready' && <SystemStatusPanel system={viewState.data.system} />}
     </div>
   )
 }
@@ -177,6 +179,91 @@ function MonitoringBoard({data, viewStale}: {data: MonitoringData; viewStale: bo
         {refreshedAt !== null ? <span>refreshed {refreshedAt}</span> : <span>never refreshed</span>}
       </div>
     </div>
+  )
+}
+
+/**
+ * rm-107: composed operator system-status surface. Rendered only when the
+ * server wired the system-status provider (`system` present on the DTO);
+ * one row per composed signal — snapshot freshness, refresh failures,
+ * rate-limit budget, listener store depth/age. Deliberately a SEPARATE
+ * section below the board: the banner/allClear region above is
+ * sibling-owned (rm-835 fold) and this panel must not alter its logic.
+ */
+function SystemStatusPanel({system}: {system: MonitoringData['system']}) {
+  if (system === undefined) return null
+  const refreshedAt = system.snapshot.refreshedAt === null ? null : new Date(system.snapshot.refreshedAt).toLocaleString()
+  const oldest =
+    system.listenerStore === null || system.listenerStore.oldestReceivedAt === null
+      ? null
+      : new Date(system.listenerStore.oldestReceivedAt).toLocaleString()
+  return (
+    <section
+      data-testid="monitoring-system-status"
+      className="listener-message-card"
+      style={{marginTop: 'var(--space-3)'}}
+      aria-label="System status"
+    >
+      <div className="listener-header">
+        <h3 className="listener-title" style={{margin: 0}}>
+          System status
+        </h3>
+        {system.snapshot.staleBanner && (
+          <span className="listener-severity severity-warning" aria-label="Snapshot stale">
+            stale
+          </span>
+        )}
+        {system.snapshot.refreshDegraded && (
+          <span className="listener-severity severity-warning" aria-label="Refresh degraded">
+            degraded
+          </span>
+        )}
+      </div>
+
+      <div data-testid="monitoring-system-snapshot" style={{fontSize: 'var(--text-body-sm)'}}>
+        Snapshot:{' '}
+        {refreshedAt !== null ? (
+          <>refreshed {refreshedAt}</>
+        ) : (
+          <>no completed cycle yet</>
+        )}
+        {' · '}
+        {system.snapshot.trackedRepos} tracked · {system.snapshot.driftCount} drift
+      </div>
+
+      <div data-testid="monitoring-system-refresh-failures" style={{fontSize: 'var(--text-body-sm)'}}>
+        Refresh walk:{' '}
+        {system.refreshFailures.enumerationIncomplete === null
+          ? 'enumeration status unknown'
+          : `${system.refreshFailures.enumerationIncomplete} installation${
+              system.refreshFailures.enumerationIncomplete === 1 ? '' : 's'
+            } failed enumeration`}
+        {system.refreshFailures.degraded ? ' · degraded' : ' · healthy'}
+      </div>
+
+      <div data-testid="monitoring-system-rate-limit" style={{fontSize: 'var(--text-body-sm)'}}>
+        Rate limit:{' '}
+        {system.rateLimit.classes.map(row => (
+          <span key={row.cls} data-testid={`monitoring-system-rate-limit-${row.cls}`}>
+            {row.cls} {row.hits}/{row.max}
+            {' · '}
+          </span>
+        ))}
+        {system.rateLimit.trackedKeys}/{system.rateLimit.maxKeys} tracked keys
+      </div>
+
+      <div data-testid="monitoring-system-listener-store" style={{fontSize: 'var(--text-body-sm)'}}>
+        Listener store:{' '}
+        {system.listenerStore === null ? (
+          <>not mounted</>
+        ) : (
+          <>
+            {system.listenerStore.rows}/{system.listenerStore.maxRows} rows ·{' '}
+            {system.listenerStore.unread} unread · oldest {oldest !== null ? oldest : '—'}
+          </>
+        )}
+      </div>
+    </section>
   )
 }
 
