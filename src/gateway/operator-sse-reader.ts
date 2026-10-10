@@ -600,6 +600,20 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
       return
     }
 
+    // rm-851 (2026-10-10): a 200 stream that reaches clean EOF without ever
+    // producing a frame failed OPEN — the read loop breaks, the EOF flush
+    // above is gated on a non-empty buffer, and onClose fired unconditionally,
+    // so a zero-frame stream presented as a healthy empty close and the
+    // first-frame-must-be-ready contract gate never ran. The operator
+    // contract requires the server's first frame to be ready; an empty EOF
+    // is contract drift like every other truncation shape — fail closed.
+    if (!contractVerified) {
+      logger?.error('sse-reader: stream ended before a ready frame', {route: ROUTE_TEMPLATE})
+      onError(new Error('contract-drift: stream ended before a ready frame'))
+      onClose()
+      return
+    }
+
     onClose()
   }
 
