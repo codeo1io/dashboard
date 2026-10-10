@@ -302,7 +302,36 @@ describe('rm-678 schema half: live ledger', () => {
     // superseded by this note exactly as 366f6059 superseded
     // at-write pins — union census 256 + 1 = 257 defs / 0 dups /
     // max rm-866, next free rm-867.
-    expect(live.max).toBe(866)
+    // max id as of extension #36 (2026-10-09, run c37a857620e14531abd6be2112004c60 roadmap d5f8451f136c43629a0e87e53fefb54c): minted rm-778 above the all-lineage frontier (sibling walls through 769, PR #444 head 709, foreign-fleet spool 795-855 excluded, 777 ceiling note honored) — the run's at-write pin, superseded by the integrate note below per the 366f6059 precedent.
+    // 2026-10-10 integrate of run c37a857620e1 (conflict case
+    // 94718d19750141e3b9d9c1585aba965e, completed at its re-dispatch
+    // as case 211fa41c2c104078b9332967bfb75b6a — the round-1 resolver
+    // timed out after writing the resolution; the re-dispatch re-verified
+    // census 258/0/904 and every guard assertion and adopted the standing
+    // union): the run was authored at
+    // base 559642aa (its own tree 238 defs / max rm-778) while
+    // main moved through the cbe70604, 788aa489 (case 366f6059),
+    // 9289efaa, 155f9770 (case 8955e66c), d823703c, 91f3d37f
+    // (case a91875ba), 122a6930 (case ec31fce8), 8cecf1d7f09f
+    // (case 87124eb3), 28cd8f6c (case a6b4df10) and aec9c3e8
+    // (case 3b444f4a) integrations, landing at 257 defs / max
+    // rm-866. Its single mint rm-778 (operator monitoring
+    // failing-check annotations drill-down) COLLIDES with main's
+    // LANDED rm-778 (conductor/ci-* stale-ref sweep, run
+    // 788aa489 via case 366f6059) — landed meanings own ids — so
+    // it renumbers to rm-904, minted above the all-lineage
+    // def-line frontier re-probed at this integrate (landed main
+    // max rm-866; live dashboard-fleet worktree walls through
+    // rm-903 incl. run 7f03c5059e31's genuine 2026-10-10 def;
+    // delegate-spool rm-870..899 blocks excluded as a foreign
+    // fleet per the ext #29 adjudication; nothing ≥rm-904 in
+    // spool, walls, landed main, or either remote). The run's
+    // at-write 778 pin above is superseded by this note exactly
+    // as 366f6059 superseded at-write pins; the pin moves
+    // 866 -> 904 atomically with this landing: union census
+    // 257 + 1 = 258 defs / 0 dups / max rm-904, next free
+    // rm-905.
+    expect(live.max).toBe(904)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
