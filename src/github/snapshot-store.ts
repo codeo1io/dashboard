@@ -20,12 +20,16 @@
  *
  * Atomicity: persist writes to `<path>.tmp` then renames over the target, so
  * a crash mid-write can never leave a truncated file that the next boot
- * would load as garbage.
+ * would load as garbage. Since rm-902 the publish path is also non-blocking:
+ * the tmp write and rename run on the fs/promises path (thread pool),
+ * serialized through a promise chain, and the returned promise never
+ * rejects.
  */
 
 import type {AggregatorSnapshot, SnapshotStore} from './aggregator.ts'
 import {Buffer} from 'node:buffer'
-import {readFileSync, renameSync, statSync, writeFileSync} from 'node:fs'
+import {readFileSync, statSync} from 'node:fs'
+import {rename, unlink, writeFile} from 'node:fs/promises'
 import {logger} from '../logger.ts'
 
 /** 1 MiB — snapshots are repo-count * row-size bounded well under this. */
@@ -96,6 +100,9 @@ function isValidSnapshotShape(value: unknown): value is AggregatorSnapshot {
 export function createFileSnapshotStore(path: string | undefined): SnapshotStore | undefined {
   const resolved = path?.trim()
   if (resolved === undefined || resolved === '') return undefined
+  // rm-902 — serializes publishes so concurrent persist() calls can never
+  // interleave on the shared `<path>.tmp`; the newest snapshot lands last.
+  let publishChain: Promise<void> = Promise.resolve()
   return {
     load(): AggregatorSnapshot | null {
       let raw: string
@@ -134,25 +141,45 @@ export function createFileSnapshotStore(path: string | undefined): SnapshotStore
         return null
       }
     },
-    persist(snapshot: AggregatorSnapshot): void {
+    /**
+     * rm-902 — persist is non-blocking. The tmp write and atomic rename run
+     * on the fs/promises path (thread pool), serialized through a promise
+     * chain so concurrent publishes can never interleave on the shared tmp
+     * path and the newest snapshot always lands last. The returned promise
+     * resolves once this snapshot is on disk and NEVER rejects (all failures
+     * are logged and swallowed — persistence is best-effort and must never
+     * break the refresh path), so callers may ignore it.
+     */
+    async persist(snapshot: AggregatorSnapshot): Promise<void> {
       let serialized: string
       try {
         serialized = JSON.stringify(snapshot)
       } catch (error) {
         logPersistProblem('Snapshot serialization failed; skipping persist', resolved, error)
-        return
+        return Promise.resolve()
       }
       if (utf8ByteLength(serialized) > MAX_SNAPSHOT_BYTES) {
         logger.warning('Snapshot exceeds size bound; not persisted', {path: resolved, bytes: utf8ByteLength(serialized)})
-        return
+        return Promise.resolve()
       }
-      try {
-        const tmp = `${resolved}.tmp`
-        writeFileSync(tmp, serialized, 'utf8')
-        renameSync(tmp, resolved)
-      } catch (error) {
-        logPersistProblem('Snapshot persist failed; continuing in-memory only', resolved, error)
-      }
+      const tmp = `${resolved}.tmp`
+      const write = publishChain.then(async () => {
+        try {
+          await writeFile(tmp, serialized, 'utf8')
+          await rename(tmp, resolved)
+        } catch (error) {
+          logPersistProblem('Snapshot persist failed; continuing in-memory only', resolved, error)
+          // Best-effort cleanup: a failed rename can strand the tmp file,
+          // and stranded tmp files must not accumulate across failures.
+          try {
+            await unlink(tmp)
+          } catch {
+            // Already gone — nothing to clean.
+          }
+        }
+      })
+      publishChain = write
+      return write
     },
   }
 }

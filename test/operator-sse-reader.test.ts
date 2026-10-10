@@ -16,7 +16,7 @@
 import type {RunStreamFrame} from '../src/gateway/operator-contract/sse-frames.ts'
 import type {Logger} from '../src/logger.ts'
 import fc from 'fast-check'
-import {describe, expect, it, vi} from 'vitest'
+import {describe, expect, it, vi, type MockInstance} from 'vitest'
 import {FIXTURE_RUN_ID_FOR_TESTS, FIXTURE_SCENARIO_NAMES, serializeScenarioToSse} from '../src/gateway/operator-fixture-sse.ts'
 import {createOperatorSseReader, MAX_SSE_BUFFER_BYTES, parseSseChunk} from '../src/gateway/operator-sse-reader.ts'
 
@@ -1711,7 +1711,7 @@ describe('parseSseChunk — approval frame integration (open then settle in one 
 })
 
 describe('createOperatorSseReader — allowlist gate for status/phase/surface', () => {
-  it('rejects a status frame with an out-of-allowlist status value — not dispatched', async () => {
+  it('rejects a status frame with an out-of-allowlist status value — fail-closed since rm-901, and never leaks the value', async () => {
     const payload = {
       runId: 'run-001',
       entityRef: 'fro-bot/agent',
@@ -1735,7 +1735,11 @@ describe('createOperatorSseReader — allowlist gate for status/phase/surface', 
       onClose: () => {},
     })
 
-    expect(errors).toHaveLength(0)
+    // rm-901: an out-of-allowlist value is a validation failure, and a
+    // validation failure fails the stream closed — it is no longer silently
+    // skipped (a degraded stream must never render as healthy).
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.message).toContain('stream frame failed validation')
     const statusFrames = events.filter(e => e.type === 'status')
     expect(statusFrames).toHaveLength(0)
     for (const err of errors) {
@@ -2519,5 +2523,305 @@ describe('createOperatorSseReader — rm-157 supported-versions window', () => {
       expect(events.filter(e => e.type === 'status')).toHaveLength(0)
       expect(closed).toBe(true)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-900 — abandoned response bodies are released before errors surface
+// ---------------------------------------------------------------------------
+
+function makeBodiedResponse(status: number, contentType: string): Response {
+  return new Response(makeStreamBody(['{"error":"gateway_error"}']), {
+    status,
+    headers: {'content-type': contentType},
+  })
+}
+
+function spiedBodiedResponse(
+  status: number,
+  contentType: string,
+): {response: Response; cancelSpy: MockInstance<ReadableStream<Uint8Array>['cancel']>} {
+  const response = makeBodiedResponse(status, contentType)
+  const body = response.body
+  if (body === null) throw new Error('test setup: response body unexpectedly null')
+  return {response, cancelSpy: vi.spyOn(body, 'cancel')}
+}
+
+describe('non-ok and refused responses release their bodies before erroring (rm-900)', () => {
+  it('404 with a body: the body is cancelled, then the typed not-found error + close', async () => {
+    const {response, cancelSpy} = spiedBodiedResponse(404, 'application/json')
+    const events: RunStreamFrame[] = []
+    const errors: Error[] = []
+    let closed = false
+    const reader = createOperatorSseReader({fetchImpl: async () => response})
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: frame => events.push(frame),
+      onError: err => errors.push(err),
+      onClose: () => {
+        closed = true
+      },
+    })
+    expect(cancelSpy).toHaveBeenCalledTimes(1)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.message).toContain('not-found')
+    expect(closed).toBe(true)
+    expect(events).toHaveLength(0)
+  })
+
+  it('429 with a body: the body is cancelled, then the typed rate-limited error', async () => {
+    const {response, cancelSpy} = spiedBodiedResponse(429, 'application/json')
+    const errors: Error[] = []
+    let closed = false
+    const reader = createOperatorSseReader({fetchImpl: async () => response})
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: () => {},
+      onError: err => errors.push(err),
+      onClose: () => {
+        closed = true
+      },
+    })
+    expect(cancelSpy).toHaveBeenCalledTimes(1)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.message).toContain('rate-limited')
+    expect(closed).toBe(true)
+  })
+
+  it('500 with a body: the body is cancelled, then the unexpected-status error', async () => {
+    const {response, cancelSpy} = spiedBodiedResponse(500, 'application/json')
+    const errors: Error[] = []
+    let closed = false
+    const reader = createOperatorSseReader({fetchImpl: async () => response})
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: () => {},
+      onError: err => errors.push(err),
+      onClose: () => {
+        closed = true
+      },
+    })
+    expect(cancelSpy).toHaveBeenCalledTimes(1)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.message).toContain('unexpected stream status')
+    expect(closed).toBe(true)
+  })
+
+  it('200 with a non-event-stream content-type: the body is cancelled, then fail-closed', async () => {
+    const {response, cancelSpy} = spiedBodiedResponse(200, 'application/json')
+    const errors: Error[] = []
+    let closed = false
+    const reader = createOperatorSseReader({fetchImpl: async () => response})
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: () => {},
+      onError: err => errors.push(err),
+      onClose: () => {
+        closed = true
+      },
+    })
+    expect(cancelSpy).toHaveBeenCalledTimes(1)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.message).toContain('content-type')
+    expect(closed).toBe(true)
+  })
+
+  it('release precedes surfacing: body cancel runs before onError and onClose', async () => {
+    const response = makeBodiedResponse(404, 'application/json')
+    const body = response.body
+    if (body === null) throw new Error('test setup: response body unexpectedly null')
+    const order: string[] = []
+    const cancelSpy = vi.spyOn(body, 'cancel')
+    cancelSpy.mockImplementation(async () => {
+      order.push('cancel')
+    })
+    let closed = false
+    const reader = createOperatorSseReader({fetchImpl: async () => response})
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: () => {},
+      onError: () => order.push('onError'),
+      onClose: () => {
+        closed = true
+        order.push('onClose')
+      },
+    })
+    expect(order).toEqual(['cancel', 'onError', 'onClose'])
+    expect(closed).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-901 — an unparseable frame fails the stream closed
+// ---------------------------------------------------------------------------
+
+const rm901Ready = 'event: ready\ndata: {"contractVersion":"1.8.0"}\n\n'
+const rm901GoodStatus = `event: status\ndata: ${JSON.stringify({
+  runId: 'run-001',
+  entityRef: 'fro-bot/agent',
+  surface: 'github',
+  phase: 'EXECUTING',
+  status: 'running',
+  startedAt: '2026-06-18T20:00:00Z',
+  stale: false,
+})}\n\n`
+
+function makeOpenEndedSource(chunks: string[], onSourceCancel: () => void): Response {
+  const encoder = new TextEncoder()
+  const source = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk))
+      // Deliberately NOT closed: a live SSE connection keeps the socket
+      // open, so a stop-path cancel has something real to release.
+    },
+    cancel() {
+      onSourceCancel()
+    },
+  })
+  return new Response(source, {
+    status: 200,
+    headers: {'content-type': 'text/event-stream'},
+  })
+}
+
+describe('unparseable frame fails the stream closed (rm-901)', () => {
+  const ready = rm901Ready
+  const goodStatus = rm901GoodStatus
+
+  it('a corrupt frame after a valid ready frame errors the stream, closes it, and dispatches nothing further', async () => {
+    const corrupt = 'event: status\ndata: {"runId": "run-001", NOT_JSON\n\n'
+    const response = makeResponse(200, [ready + corrupt + goodStatus])
+    const events: RunStreamFrame[] = []
+    const errors: Error[] = []
+    let closed = false
+    const reader = createOperatorSseReader({fetchImpl: async () => response})
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: frame => events.push(frame),
+      onError: err => errors.push(err),
+      onClose: () => {
+        closed = true
+      },
+    })
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.message).toContain('stream frame failed validation')
+    expect(closed).toBe(true)
+    // Only the ready frame dispatched — the valid status frame AFTER the
+    // corrupt one must never arrive (fail-closed, not skip-and-continue).
+    expect(events).toHaveLength(1)
+    expect(events[0]?.type).toBe('ready')
+  })
+
+  it('the fail-closed error never echoes wire content', async () => {
+    const marker = 'LEAKMARKER_not_json'
+    const corrupt = `event: status\ndata: {"oops": "${marker}\n\n`
+    const response = makeResponse(200, [ready + corrupt])
+    const errors: Error[] = []
+    const reader = createOperatorSseReader({fetchImpl: async () => response})
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: () => {},
+      onError: err => errors.push(err),
+      onClose: () => {},
+    })
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.message).toContain('stream frame failed validation')
+    expect(errors[0]?.message).not.toContain(marker)
+  })
+
+  it('a corrupt frame in the EOF flush path also fails closed (unterminated final record)', async () => {
+    // No trailing blank line: the corrupt record stays in the buffer until
+    // the stream ends and the flush path parses it.
+    const response = makeResponse(200, [`${ready}event: status\ndata: {"runId": "run-001", NOT_JSON`])
+    const events: RunStreamFrame[] = []
+    const errors: Error[] = []
+    let closed = false
+    const reader = createOperatorSseReader({fetchImpl: async () => response})
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: frame => events.push(frame),
+      onError: err => errors.push(err),
+      onClose: () => {
+        closed = true
+      },
+    })
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.message).toContain('stream frame failed validation')
+    expect(closed).toBe(true)
+    expect(events).toHaveLength(1)
+    expect(events[0]?.type).toBe('ready')
+  })
+
+  it('conformance: the malformed_unavailable fixture scenario fails the stream closed with no status frames dispatched', async () => {
+    const sseBytes = serializeScenarioToSse(FIXTURE_SCENARIO_NAMES.malformed_unavailable, FIXTURE_RUN_ID_FOR_TESTS)
+    const response = makeResponse(200, [sseBytes])
+    const events: RunStreamFrame[] = []
+    const errors: Error[] = []
+    let closed = false
+    const reader = createOperatorSseReader({fetchImpl: async () => response})
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: frame => events.push(frame),
+      onError: err => errors.push(err),
+      onClose: () => {
+        closed = true
+      },
+    })
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.message).toContain('stream frame failed validation')
+    expect(closed).toBe(true)
+    expect(events.filter(e => e.type === 'status')).toHaveLength(0)
+  })
+
+  it('the parse-failure stop path releases the stream: the source is cancelled (rm-900)', async () => {
+    let sourceCancelled = false
+    const corrupt = 'event: status\ndata: {"runId": "run-001", NOT_JSON\n\n'
+    const response = makeOpenEndedSource([ready + corrupt + goodStatus], () => {
+      sourceCancelled = true
+    })
+    const errors: Error[] = []
+    const reader = createOperatorSseReader({fetchImpl: async () => response})
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: () => {},
+      onError: err => errors.push(err),
+      onClose: () => {},
+    })
+    expect(errors[0]?.message).toContain('stream frame failed validation')
+    expect(sourceCancelled).toBe(true)
+  })
+
+  it('the drift stop path releases the stream: the source is cancelled (rm-900)', async () => {
+    let sourceCancelled = false
+    const unsupportedReady = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+    const response = makeOpenEndedSource([unsupportedReady + goodStatus], () => {
+      sourceCancelled = true
+    })
+    const events: RunStreamFrame[] = []
+    const errors: Error[] = []
+    const reader = createOperatorSseReader({fetchImpl: async () => response})
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: frame => events.push(frame),
+      onError: err => errors.push(err),
+      onClose: () => {},
+    })
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.message).toContain('contract-drift')
+    expect(events.filter(e => e.type === 'status')).toHaveLength(0)
+    expect(sourceCancelled).toBe(true)
+  })
+
+  it('the buffer-overflow stop path releases the stream: the source is cancelled (rm-900)', async () => {
+    let sourceCancelled = false
+    // A single unterminated chunk above the hard cap, on an open-ended
+    // source: the overflow branch cancels the reader before failing closed.
+    const oversized = 'x'.repeat(MAX_SSE_BUFFER_BYTES + 1)
+    const response = makeOpenEndedSource([oversized], () => {
+      sourceCancelled = true
+    })
+    const errors: Error[] = []
+    let closed = false
+    const reader = createOperatorSseReader({fetchImpl: async () => response})
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: () => {},
+      onError: err => errors.push(err),
+      onClose: () => {
+        closed = true
+      },
+    })
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.message).toContain('buffer overflow')
+    expect(closed).toBe(true)
+    expect(sourceCancelled).toBe(true)
   })
 })
