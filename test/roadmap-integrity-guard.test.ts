@@ -195,7 +195,11 @@ describe('rm-678 schema half: live ledger', () => {
     // def line; census dups 0), so it lands as-authored and the pin
     // moves 833 -> 835 atomically with this landing: union census
     // 251 + 1 = 252 defs / 0 dups / max rm-835, next free rm-836.
-    expect(live.max).toBe(835)
+    // c07a6b75011b roadmap f6ee2269 (2026-10-10): mints rm-898 (contract 1.9.0 adoption) + rm-899
+    // (trixie census re-derivation), above the all-lineage unlanded def-line ceiling rm-897
+    // (spool def-line sweep first-hand this date; 4474e5ab 895-897, 4c0ec7a5 874-876,
+    // 33ede5 870-872, 461586fe 866-868, dirty worktrees max rm-868; landed wall was rm-835).
+    expect(live.max).toBe(899)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
