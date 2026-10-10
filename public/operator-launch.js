@@ -688,6 +688,11 @@ export async function initOperatorLaunch(opts) {
           coalescedEl.hidden = true
           card.append(coalescedEl)
 
+          const gapEl = document.createElement('div')
+          gapEl.dataset.role = 'run-output-gap'
+          gapEl.hidden = true
+          card.append(gapEl)
+
           const approvalsEl = document.createElement('div')
           approvalsEl.dataset.role = 'run-approvals'
           approvalsEl.hidden = true
