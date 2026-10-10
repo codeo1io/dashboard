@@ -17,8 +17,12 @@ import type {RunStreamFrame} from '../src/gateway/operator-contract/sse-frames.t
 import type {Logger} from '../src/logger.ts'
 import fc from 'fast-check'
 import {describe, expect, it, vi} from 'vitest'
+import {OPERATOR_CONTRACT_VERSION} from '../src/gateway/operator-contract/version.ts'
 import {FIXTURE_RUN_ID_FOR_TESTS, FIXTURE_SCENARIO_NAMES, serializeScenarioToSse} from '../src/gateway/operator-fixture-sse.ts'
 import {createOperatorSseReader, MAX_SSE_BUFFER_BYTES, parseSseChunk} from '../src/gateway/operator-sse-reader.ts'
+
+/** A version that can never equal the pin: the pinned major, incremented. Derived so a bump needs no test edit. */
+const DRIFTED_VERSION = `${Number(OPERATOR_CONTRACT_VERSION.split('.')[0]) + 1}.0.0`
 
 function makeStreamBody(chunks: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder()
@@ -85,7 +89,7 @@ function makeCapturingLogger(): {logger: Logger; messages: string[]} {
 
 describe('parseSseChunk — pure parser', () => {
   it('parses a ready frame', () => {
-    const text = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+    const text = `event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\n`
     const results = parseSseChunk(text)
     expect(results).toHaveLength(1)
     const frame = results[0]
@@ -93,7 +97,7 @@ describe('parseSseChunk — pure parser', () => {
     if (frame?.success) {
       expect(frame.frame.type).toBe('ready')
       if (frame.frame.type === 'ready') {
-        expect(frame.frame.data.contractVersion).toBe('1.6.0')
+        expect(frame.frame.data.contractVersion).toBe(OPERATOR_CONTRACT_VERSION)
       }
     }
   })
@@ -135,6 +139,8 @@ describe('parseSseChunk — pure parser', () => {
       'stream-ended',
       'workspace-unreachable',
       'session-error',
+      'checkout-substituted',
+      'workspace-unavailable',
       'unknown',
     ] as const
     for (const failureKind of kinds) {
@@ -419,7 +425,7 @@ describe('parseSseChunk — pure parser', () => {
   })
 
   it('parses multiple frames from a single chunk', () => {
-    const readyPayload = {contractVersion: '1.6.0'}
+    const readyPayload = {contractVersion: OPERATOR_CONTRACT_VERSION}
     const statusPayload = {
       runId: 'run-001',
       entityRef: 'fro-bot/agent',
@@ -443,7 +449,7 @@ describe('parseSseChunk — pure parser', () => {
   })
 
   it('ignores a heartbeat comment mixed with real frames', () => {
-    const readyPayload = {contractVersion: '1.6.0'}
+    const readyPayload = {contractVersion: OPERATOR_CONTRACT_VERSION}
     const text = `event: ready\ndata: ${JSON.stringify(readyPayload)}\n\n: heartbeat\n\n`
     const results = parseSseChunk(text)
     expect(results).toHaveLength(1)
@@ -454,7 +460,7 @@ describe('parseSseChunk — pure parser', () => {
   })
 
   it('handles a frame with no event line (data-only) as a failure', () => {
-    const text = 'data: {"contractVersion":"1.6.0"}\n\n'
+    const text = `data: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\n`
     const results = parseSseChunk(text)
     // No event name → unknown event → typed failure
     expect(results).toHaveLength(1)
@@ -464,7 +470,7 @@ describe('parseSseChunk — pure parser', () => {
 
 describe('createOperatorSseReader — 200 happy path', () => {
   it('dispatches ready then status frames in order', async () => {
-    const readyPayload = {contractVersion: '1.6.0'}
+    const readyPayload = {contractVersion: OPERATOR_CONTRACT_VERSION}
     const statusPayload = {
       runId: 'run-001',
       entityRef: 'fro-bot/agent',
@@ -496,7 +502,7 @@ describe('createOperatorSseReader — 200 happy path', () => {
   })
 
   it('calls onClose after stream ends', async () => {
-    const sseText = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+    const sseText = `event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
 
@@ -512,7 +518,7 @@ describe('createOperatorSseReader — 200 happy path', () => {
 
   it('dispatches a reset frame', async () => {
     const resetPayload = {runId: 'run-001', reason: 'no-snapshot'}
-    const sseText = `event: ready\ndata: {"contractVersion":"1.6.0"}\n\nevent: reset\ndata: ${JSON.stringify(resetPayload)}\n\n`
+    const sseText = `event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\nevent: reset\ndata: ${JSON.stringify(resetPayload)}\n\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
 
@@ -531,7 +537,7 @@ describe('createOperatorSseReader — 200 happy path', () => {
   })
 
   it('ignores heartbeat comments — no frame dispatched', async () => {
-    const sseText = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n: heartbeat\n\n'
+    const sseText = `event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\n: heartbeat\n\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
 
@@ -546,7 +552,7 @@ describe('createOperatorSseReader — 200 happy path', () => {
     expect(events[0]?.type).toBe('ready')
   })
 
-  it('live stream: 1.6.0 ready + running status + output delta dispatches all three frames in order', async () => {
+  it('live stream: matching ready + running status + output delta dispatches all three frames in order', async () => {
     const statusPayload = {
       runId: 'run-001',
       entityRef: 'fro-bot/agent',
@@ -558,7 +564,7 @@ describe('createOperatorSseReader — 200 happy path', () => {
     }
     const outputPayload = {runId: 'run-001', text: 'partial output', final: false, seq: 0}
     const sseText =
-      `event: ready\ndata: {"contractVersion":"1.6.0"}\n\n` +
+      `event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\n` +
       `event: status\ndata: ${JSON.stringify(statusPayload)}\n\n` +
       `event: output\ndata: ${JSON.stringify(outputPayload)}\n\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
@@ -583,7 +589,7 @@ describe('createOperatorSseReader — 200 happy path', () => {
     }
   })
 
-  it('live stream: 1.6.0 ready + status + empty final output (no-output terminal guarantee)', async () => {
+  it('live stream: matching ready + status + empty final output (no-output terminal guarantee)', async () => {
     const statusPayload = {
       runId: 'run-001',
       entityRef: 'fro-bot/agent',
@@ -595,7 +601,7 @@ describe('createOperatorSseReader — 200 happy path', () => {
     }
     const emptyFinalOutput = {runId: 'run-001', text: '', final: true, seq: 0}
     const sseText =
-      `event: ready\ndata: {"contractVersion":"1.6.0"}\n\n` +
+      `event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\n` +
       `event: status\ndata: ${JSON.stringify(statusPayload)}\n\n` +
       `event: output\ndata: ${JSON.stringify(emptyFinalOutput)}\n\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
@@ -630,7 +636,7 @@ describe('createOperatorSseReader — contract-version gate', () => {
       startedAt: '2026-06-18T20:00:00Z',
       stale: false,
     }
-    const sseText = `event: ready\ndata: {"contractVersion":"1.6.0"}\n\nevent: status\ndata: ${JSON.stringify(statusPayload)}\n\n`
+    const sseText = `event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\nevent: status\ndata: ${JSON.stringify(statusPayload)}\n\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
 
@@ -656,7 +662,7 @@ describe('createOperatorSseReader — contract-version gate', () => {
       startedAt: '2026-06-18T20:00:00Z',
       stale: false,
     }
-    const sseText = `event: ready\ndata: {"contractVersion":"1.0.0"}\n\nevent: status\ndata: ${JSON.stringify(statusPayload)}\n\n`
+    const sseText = `event: ready\ndata: {"contractVersion":"${DRIFTED_VERSION}"}\n\nevent: status\ndata: ${JSON.stringify(statusPayload)}\n\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
 
@@ -677,7 +683,7 @@ describe('createOperatorSseReader — contract-version gate', () => {
   })
 
   it('contract-drift error message does not echo the mismatched version', async () => {
-    const sseText = 'event: ready\ndata: {"contractVersion":"9.9.9"}\n\n'
+    const sseText = `event: ready\ndata: {"contractVersion":"${DRIFTED_VERSION}"}\n\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
 
@@ -689,10 +695,10 @@ describe('createOperatorSseReader — contract-version gate', () => {
     })
 
     expect(errors).toHaveLength(1)
-    expect(errors[0]?.message).not.toContain('9.9.9')
+    expect(errors[0]?.message).not.toContain(DRIFTED_VERSION)
   })
 
-  it('future unknown version (2.0.0) followed by status and output dispatches nothing', async () => {
+  it('a later major version followed by status and output dispatches nothing', async () => {
     const statusPayload = {
       runId: 'run-001',
       entityRef: 'fro-bot/agent',
@@ -704,7 +710,7 @@ describe('createOperatorSseReader — contract-version gate', () => {
     }
     const outputPayload = {runId: 'run-001', text: 'partial output', final: false, seq: 0}
     const sseText =
-      `event: ready\ndata: {"contractVersion":"2.0.0"}\n\n` +
+      `event: ready\ndata: {"contractVersion":"${DRIFTED_VERSION}"}\n\n` +
       `event: status\ndata: ${JSON.stringify(statusPayload)}\n\n` +
       `event: output\ndata: ${JSON.stringify(outputPayload)}\n\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
@@ -955,7 +961,7 @@ describe('createOperatorSseReader — logger discipline', () => {
 
 describe('createOperatorSseReader — partial-chunk reassembly', () => {
   it('reassembles a frame split across two chunks', async () => {
-    const fullFrame = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+    const fullFrame = `event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\n`
     const chunk1 = fullFrame.slice(0, 20)
     const chunk2 = fullFrame.slice(20)
 
@@ -976,7 +982,7 @@ describe('createOperatorSseReader — partial-chunk reassembly', () => {
   })
 
   it('reassembles a frame split at the blank-line boundary', async () => {
-    const fullFrame = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+    const fullFrame = `event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\n`
     const splitAt = fullFrame.length - 2
     const chunk1 = fullFrame.slice(0, splitAt)
     const chunk2 = fullFrame.slice(splitAt)
@@ -1005,7 +1011,7 @@ describe('createOperatorSseReader — partial-chunk reassembly', () => {
       startedAt: '2026-06-18T20:00:00Z',
       stale: false,
     }
-    const frame1 = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+    const frame1 = `event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\n`
     const frame2 = `event: status\ndata: ${JSON.stringify(statusPayload)}\n\n`
     const combined = frame1 + frame2
     const chunk1 = combined.slice(0, 15)
@@ -1069,7 +1075,7 @@ describe('createOperatorSseReader — callback discipline', () => {
   })
 
   it('calls onClose exactly once on clean stream end', async () => {
-    const sseText = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+    const sseText = `event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
 
@@ -1086,7 +1092,7 @@ describe('createOperatorSseReader — callback discipline', () => {
 
 describe('parseSseChunk — CRLF normalization', () => {
   it('parses a ready frame delimited by CRLF record separators', () => {
-    const text = 'event: ready\r\ndata: {"contractVersion":"1.6.0"}\r\n\r\n'
+    const text = `event: ready\r\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\r\n\r\n`
     const results = parseSseChunk(text)
     expect(results).toHaveLength(1)
     expect(results[0]?.success).toBe(true)
@@ -1134,7 +1140,7 @@ describe('parseSseChunk — CRLF normalization', () => {
   })
 
   it('parses a ready frame with lone CR line endings', () => {
-    const text = 'event: ready\rdata: {"contractVersion":"1.6.0"}\r\r'
+    const text = `event: ready\rdata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\r\r`
     const results = parseSseChunk(text)
     expect(results).toHaveLength(1)
     expect(results[0]?.success).toBe(true)
@@ -1184,7 +1190,7 @@ describe('createOperatorSseReader — CRLF normalization in stream', () => {
       stale: false,
     }
     const sseText =
-      `event: ready\r\ndata: {"contractVersion":"1.6.0"}\r\n\r\n` +
+      `event: ready\r\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\r\n\r\n` +
       `event: status\r\ndata: ${JSON.stringify(statusPayload)}\r\n\r\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
@@ -1315,7 +1321,7 @@ describe('createOperatorSseReader — flush path contract gate', () => {
   })
 
   it('flush of a complete frame without trailing blank line dispatches the frame', async () => {
-    const sseText = 'event: ready\ndata: {"contractVersion":"1.6.0"}'
+    const sseText = `event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
 
@@ -1722,7 +1728,7 @@ describe('createOperatorSseReader — allowlist gate for status/phase/surface', 
       stale: false,
     }
     const sseText =
-      `event: ready\ndata: {"contractVersion":"1.6.0"}\n\n` +
+      `event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\n` +
       `event: status\ndata: ${JSON.stringify(payload)}\n\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
@@ -1754,7 +1760,7 @@ describe('createOperatorSseReader — allowlist gate for status/phase/surface', 
       stale: false,
     }
     const sseText =
-      `event: ready\ndata: {"contractVersion":"1.6.0"}\n\n` +
+      `event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\n` +
       `event: status\ndata: ${JSON.stringify(payload)}\n\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
@@ -1781,7 +1787,7 @@ describe('createOperatorSseReader — allowlist gate for status/phase/surface', 
       stale: false,
     }
     const sseText =
-      `event: ready\ndata: {"contractVersion":"1.6.0"}\n\n` +
+      `event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\n` +
       `event: status\ndata: ${JSON.stringify(payload)}\n\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
@@ -2062,7 +2068,6 @@ describe('fixture SSE scenarios — success scenario parses in server reader', (
     const readyResult = results.find(r => r.success && r.frame.type === 'ready')
     expect(readyResult).toBeDefined()
     if (readyResult?.success && readyResult.frame.type === 'ready') {
-      const {OPERATOR_CONTRACT_VERSION} = await import('../src/gateway/operator-contract/version.ts')
       expect(readyResult.frame.data.contractVersion).toBe(OPERATOR_CONTRACT_VERSION)
     }
   })
@@ -2134,7 +2139,7 @@ describe('fixture SSE scenarios — contract_drift scenario enters absorbing dri
     expect(readyResult).toBeDefined()
     if (readyResult?.success && readyResult.frame.type === 'ready') {
       // Must NOT match the pinned contract version
-      expect(readyResult.frame.data.contractVersion).not.toBe('1.6.0')
+      expect(readyResult.frame.data.contractVersion).not.toBe(OPERATOR_CONTRACT_VERSION)
     }
   })
 
@@ -2290,234 +2295,486 @@ describe('fixture SSE scenarios — serializeScenarioToSse output format', () =>
 })
 
 // ---------------------------------------------------------------------------
-// rm-157: contract 1.8.0 absorb + supported-versions window.
-// checkoutProvenance / checkoutPreparation are parsed field-by-field by the
-// vendored validators; malformed or absent values become absent and never
-// reject the frame. The window accepts {1.6.0, 1.8.0} and fails closed for
-// everything else. Adapted from upstream PR #573 (a82871d) test scenarios.
+// Checkout provenance and checkout preparation — soft fields, hard core
 // ---------------------------------------------------------------------------
 
-const SHA_A = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-const SHA_B = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
-const SHA_C = 'cccccccccccccccccccccccccccccccccccccccc'
+const SHA_A = 'a'.repeat(40)
+const SHA_B = 'b'.repeat(40)
 
-const observedProvenance = {
-  kind: 'observed',
-  observation: {
-    head: {kind: 'detached', sha: SHA_A},
-    worktree: {kind: 'dirty', staged: 1, unstaged: 2, untracked: 3, conflicted: 0},
-    operationInProgress: 'none',
-    observedAt: '2026-10-07T00:00:00Z',
-  },
-  remote: {
-    kind: 'checked',
-    defaultBranch: 'main',
-    sha: SHA_B,
-    checkedAt: '2026-10-07T00:00:01Z',
-    change: 'fast-forward',
-    fromSha: SHA_C,
-  },
-}
-
-const unavailableProvenance = {kind: 'unavailable', remote: {kind: 'not-checked'}}
-
-const refusedObstructedPreparation = {
-  outcome: 'refused',
-  reason: 'obstructed',
-  obstructions: [{path: 'pkg/blocked', kind: 'exact-conflict'}],
-}
-
-const failedPreparation = {
-  outcome: 'failed',
-  reason: 'fetch-timeout',
-  mutationStarted: 'possibly',
-  permanent: true,
-}
-
-function statusText(extra: Record<string, unknown>, status = 'running', phase = 'EXECUTING'): string {
-  const payload = {
+function statusPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
     runId: 'run-001',
     entityRef: 'fro-bot/agent',
     surface: 'github',
-    phase,
-    status,
-    startedAt: '2026-10-07T00:00:00Z',
+    phase: 'EXECUTING',
+    status: 'running',
+    startedAt: '2026-06-18T20:00:00Z',
     stale: false,
-    ...extra,
+    ...overrides,
   }
-  return `event: status\ndata: ${JSON.stringify(payload)}\n\n`
 }
 
-function firstStatusData(text: string) {
-  const results = parseSseChunk(text)
-  const first = results[0]
-  if (!first?.success || first.frame.type !== 'status') {
-    throw new Error(`expected a successful status frame, got: ${JSON.stringify(results[0])}`)
+function observedProvenance(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    kind: 'observed',
+    observation: {
+      head: {kind: 'attached', branch: 'fixture-main', sha: SHA_A},
+      worktree: {kind: 'clean'},
+      operationInProgress: 'none',
+      observedAt: '2026-06-18T20:00:00Z',
+    },
+    remote: {kind: 'not-checked'},
+    ...overrides,
   }
-  return first.frame.data
 }
 
-describe('parseSseChunk — rm-157 contract 1.8.0 soft fields', () => {
-  it('carries a valid observed provenance (detached, dirty, fast-forward remote) on the status frame', () => {
-    const data = firstStatusData(statusText({checkoutProvenance: observedProvenance}))
-    expect(data.checkoutProvenance).toEqual(observedProvenance)
+function parseStatusData(payload: Record<string, unknown>) {
+  const result = parseSseChunk(`event: status\ndata: ${JSON.stringify(payload)}\n\n`)[0]
+  if (result === undefined || !result.success || result.frame.type !== 'status') {
+    return undefined
+  }
+  return result.frame.data
+}
+
+/**
+ * Deep copy that adds an extra key and an own `__proto__` key to every plain object. Serialized
+ * with JSON.stringify, the `__proto__` key reaches the parser as an own property of the JSON-parsed input.
+ */
+function withExtraKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withExtraKeys)
+  if (typeof value !== 'object' || value === null) return value
+  const copy: Record<string, unknown> = {}
+  for (const [key, entry] of Object.entries(value)) copy[key] = withExtraKeys(entry)
+  copy.fixtureExtra = 'fixture-extra'
+  Object.defineProperty(copy, '__proto__', {value: {fixturePolluted: true}, enumerable: true, configurable: true, writable: true})
+  return copy
+}
+
+/** Every own property name (enumerable or not) at every depth, sorted, with duplicates kept. */
+function ownKeysDeep(value: unknown): string[] {
+  if (typeof value !== 'object' || value === null) return []
+  const nested = Object.values(value).flatMap(ownKeysDeep)
+  return [...Object.getOwnPropertyNames(value), ...nested].sort()
+}
+
+describe('parseSseChunk — checkoutProvenance', () => {
+  it('carries a valid observed provenance on the status frame', () => {
+    const provenance = observedProvenance()
+    const data = parseStatusData(statusPayload({checkoutProvenance: provenance}))
+    expect(data).toBeDefined()
+    expect(data?.checkoutProvenance).toEqual(provenance)
+    expect(data?.checkoutPreparation).toBeUndefined()
   })
 
   it('carries an unavailable provenance', () => {
-    const data = firstStatusData(statusText({checkoutProvenance: unavailableProvenance}))
-    expect(data.checkoutProvenance).toEqual(unavailableProvenance)
+    const provenance = {kind: 'unavailable', remote: {kind: 'not-checked'}}
+    const data = parseStatusData(statusPayload({checkoutProvenance: provenance}))
+    expect(data?.checkoutProvenance).toEqual(provenance)
   })
 
-  it('drops a provenance whose head SHA is 39 characters but still accepts the frame', () => {
-    const malformed = {
-      ...observedProvenance,
+  it('carries a dirty worktree, detached head, and checked fast-forward remote', () => {
+    const provenance = {
+      kind: 'observed',
       observation: {
-        ...observedProvenance.observation,
-        head: {kind: 'detached', sha: SHA_A.slice(0, 39)},
+        head: {kind: 'detached', sha: SHA_A},
+        worktree: {kind: 'dirty', staged: 1, unstaged: 2, untracked: 3, conflicted: 0},
+        operationInProgress: 'rebase',
+        observedAt: '2026-06-18T20:00:00Z',
+      },
+      remote: {
+        kind: 'checked',
+        defaultBranch: 'main',
+        sha: SHA_B,
+        checkedAt: '2026-06-18T20:00:01Z',
+        change: 'fast-forward',
+        fromSha: SHA_A,
       },
     }
-    const data = firstStatusData(statusText({checkoutProvenance: malformed}))
-    expect(data.checkoutProvenance).toBeUndefined()
+    const data = parseStatusData(statusPayload({checkoutProvenance: provenance}))
+    expect(data?.checkoutProvenance).toEqual(provenance)
   })
 
-  it('drops a provenance with a fast-forward whose fromSha equals the remote sha', () => {
-    const malformed = structuredClone(observedProvenance)
-    if (malformed.remote.kind === 'checked' && malformed.remote.change === 'fast-forward') {
-      malformed.remote.fromSha = SHA_B
+  it('drops a provenance whose SHA is 39 characters but still accepts the frame', () => {
+    const provenance = observedProvenance({
+      observation: {
+        head: {kind: 'attached', branch: 'fixture-main', sha: 'a'.repeat(39)},
+        worktree: {kind: 'clean'},
+        operationInProgress: 'none',
+        observedAt: '2026-06-18T20:00:00Z',
+      },
+    })
+    const data = parseStatusData(statusPayload({checkoutProvenance: provenance}))
+    expect(data).toBeDefined()
+    expect(data?.runId).toBe('run-001')
+    expect(Object.prototype.hasOwnProperty.call(data, 'checkoutProvenance')).toBe(false)
+  })
+
+  it('drops a provenance with an uppercase-hex SHA', () => {
+    const provenance = observedProvenance({
+      observation: {
+        head: {kind: 'detached', sha: 'A'.repeat(40)},
+        worktree: {kind: 'clean'},
+        operationInProgress: 'none',
+        observedAt: '2026-06-18T20:00:00Z',
+      },
+    })
+    const data = parseStatusData(statusPayload({checkoutProvenance: provenance}))
+    expect(data).toBeDefined()
+    expect(data?.checkoutProvenance).toBeUndefined()
+  })
+
+  it('drops a provenance whose fast-forward has fromSha equal to sha', () => {
+    const provenance = observedProvenance({
+      remote: {
+        kind: 'checked',
+        defaultBranch: 'main',
+        sha: SHA_A,
+        checkedAt: '2026-06-18T20:00:01Z',
+        change: 'fast-forward',
+        fromSha: SHA_A,
+      },
+    })
+    const data = parseStatusData(statusPayload({checkoutProvenance: provenance}))
+    expect(data).toBeDefined()
+    expect(Object.prototype.hasOwnProperty.call(data, 'checkoutProvenance')).toBe(false)
+  })
+
+  it('drops a provenance with a fast-forward that omits fromSha', () => {
+    const provenance = observedProvenance({
+      remote: {
+        kind: 'checked',
+        defaultBranch: 'main',
+        sha: SHA_A,
+        checkedAt: '2026-06-18T20:00:01Z',
+        change: 'fast-forward',
+      },
+    })
+    const data = parseStatusData(statusPayload({checkoutProvenance: provenance}))
+    expect(data?.checkoutProvenance).toBeUndefined()
+  })
+
+  it('drops a provenance with an empty branch, an unknown head kind, an unknown operation, or a bad count', () => {
+    const base = observedProvenance().observation as Record<string, unknown>
+    const variants: unknown[] = [
+      observedProvenance({observation: {...base, head: {kind: 'attached', branch: '', sha: SHA_A}}}),
+      observedProvenance({observation: {...base, head: {kind: 'fixture-unknown-kind', sha: SHA_A}}}),
+      observedProvenance({observation: {...base, operationInProgress: 'fixture-unknown-op'}}),
+      observedProvenance({
+        observation: {...base, worktree: {kind: 'dirty', staged: -1, unstaged: 0, untracked: 0, conflicted: 0}},
+      }),
+      observedProvenance({
+        observation: {...base, worktree: {kind: 'dirty', staged: 1.5, unstaged: 0, untracked: 0, conflicted: 0}},
+      }),
+      observedProvenance({observation: {...base, observedAt: ''}}),
+      observedProvenance({remote: {kind: 'fixture-unknown-remote'}}),
+      observedProvenance({remote: undefined}),
+      {kind: 'fixture-unknown-provenance', remote: {kind: 'not-checked'}},
+      'fixture-not-an-object',
+      ['fixture-array'],
+      42,
+      null,
+    ]
+    for (const checkoutProvenance of variants) {
+      const data = parseStatusData(statusPayload({checkoutProvenance}))
+      expect(data).toBeDefined()
+      expect(Object.prototype.hasOwnProperty.call(data, 'checkoutProvenance')).toBe(false)
     }
-    const data = firstStatusData(statusText({checkoutProvenance: malformed}))
-    expect(data.checkoutProvenance).toBeUndefined()
-  })
-
-  it('drops a provenance with a negative untracked count or an unknown operation', () => {
-    const badCount = structuredClone(observedProvenance)
-    if (badCount.observation.worktree.kind === 'dirty') badCount.observation.worktree.untracked = -1
-    expect(firstStatusData(statusText({checkoutProvenance: badCount})).checkoutProvenance).toBeUndefined()
-
-    const badOp = structuredClone(observedProvenance)
-    badOp.observation.operationInProgress = 'not-an-operation'
-    expect(firstStatusData(statusText({checkoutProvenance: badOp})).checkoutProvenance).toBeUndefined()
   })
 
   it('omits the key entirely when provenance is absent', () => {
-    const data = firstStatusData(statusText({}))
-    expect('checkoutProvenance' in data).toBe(false)
+    const data = parseStatusData(statusPayload())
+    expect(data).toBeDefined()
+    expect(Object.prototype.hasOwnProperty.call(data, 'checkoutProvenance')).toBe(false)
+    expect(Object.prototype.hasOwnProperty.call(data, 'checkoutPreparation')).toBe(false)
   })
 
-  it('returns only contract fields, dropping extra provenance keys including a parsed __proto__', () => {
-    // JSON.stringify drops an object-literal `__proto__` (not an own enumerable
-    // key), so the own-key vector is exercised by seeding the wire text itself
-    // with a literal `__proto__` key: JSON.parse then hands the parser a real
-    // own data property instead of a silently-stripped fixture.
-    const base = statusText({
-      checkoutProvenance: {...observedProvenance, extraKey: 'should-not-survive'},
-    })
-    const text = base.replace(
-      '"extraKey":"should-not-survive"',
-      '"extraKey":"should-not-survive","__proto__":{"polluted":true}',
-    )
-    expect(text).toContain('"__proto__":')
-    const data = firstStatusData(text)
-    expect(data.checkoutProvenance).toEqual(observedProvenance)
-    expect(Object.hasOwn(data.checkoutProvenance as object, '__proto__')).toBe(false)
-    expect(Object.getPrototypeOf(data.checkoutProvenance as object)).toBe(Object.prototype)
-    expect(({} as {polluted?: boolean}).polluted).toBeUndefined()
-  })
-
-  it('carries a refused obstructed preparation on a FAILED frame with no failureKind', () => {
-    const data = firstStatusData(statusText({checkoutPreparation: refusedObstructedPreparation}, 'failed', 'FAILED'))
-    expect(data.checkoutPreparation).toEqual(refusedObstructedPreparation)
-    expect('failureKind' in data).toBe(false)
-  })
-
-  it('carries a failed preparation and both soft fields together with a failureKind', () => {
-    const data = firstStatusData(
-      statusText(
-        {
-          failureKind: 'workspace-unavailable',
-          checkoutProvenance: observedProvenance,
-          checkoutPreparation: failedPreparation,
+  it('returns only contract fields for every provenance variant, dropping extra keys including a parsed __proto__', () => {
+    const provenances: Record<string, unknown>[] = [
+      observedProvenance(),
+      {kind: 'unavailable', remote: {kind: 'not-checked'}},
+      {
+        kind: 'observed',
+        observation: {
+          head: {kind: 'detached', sha: SHA_A},
+          worktree: {kind: 'dirty', staged: 1, unstaged: 2, untracked: 3, conflicted: 0},
+          operationInProgress: 'rebase',
+          observedAt: '2026-06-18T20:00:00Z',
         },
-        'failed',
-        'FAILED',
-      ),
-    )
-    expect(data.failureKind).toBe('workspace-unavailable')
-    expect(data.checkoutProvenance).toEqual(observedProvenance)
-    expect(data.checkoutPreparation).toEqual(failedPreparation)
-  })
-
-  it('drops malformed preparations without rejecting the frame or losing the failureKind', () => {
-    const data = firstStatusData(
-      statusText({failureKind: 'checkout-substituted', checkoutPreparation: {outcome: 'refused', reason: 'nope'}}, 'failed', 'FAILED'),
-    )
-    expect(data.failureKind).toBe('checkout-substituted')
-    expect(data.checkoutPreparation).toBeUndefined()
-  })
-
-  it('keeps a valid provenance when only the preparation is malformed, and the reverse', () => {
-    const provenOnly = firstStatusData(
-      statusText({checkoutProvenance: observedProvenance, checkoutPreparation: {outcome: 'failed'}}, 'failed', 'FAILED'),
-    )
-    expect(provenOnly.checkoutProvenance).toEqual(observedProvenance)
-    expect(provenOnly.checkoutPreparation).toBeUndefined()
-
-    const prepOnly = firstStatusData(statusText({checkoutProvenance: {kind: 'observed'}, checkoutPreparation: failedPreparation}, 'failed', 'FAILED'))
-    expect(prepOnly.checkoutProvenance).toBeUndefined()
-    expect(prepOnly.checkoutPreparation).toEqual(failedPreparation)
-  })
-
-  it('hard core is unchanged by the soft fields: unknown status still rejects with valid provenance present', () => {
-    const results = parseSseChunk(statusText({checkoutProvenance: observedProvenance}, 'exploded', 'FAILED'))
-    expect(results).toHaveLength(1)
-    expect(results[0]?.success).toBe(false)
+        remote: {kind: 'checked', defaultBranch: 'main', sha: SHA_B, checkedAt: '2026-06-18T20:00:01Z', change: 'unchanged'},
+      },
+      {
+        kind: 'unavailable',
+        remote: {
+          kind: 'checked',
+          defaultBranch: 'main',
+          sha: SHA_B,
+          checkedAt: '2026-06-18T20:00:01Z',
+          change: 'fast-forward',
+          fromSha: SHA_A,
+        },
+      },
+    ]
+    for (const provenance of provenances) {
+      const data = parseStatusData(statusPayload({checkoutProvenance: withExtraKeys(provenance)}))
+      expect(data?.checkoutProvenance).toEqual(provenance)
+      expect(ownKeysDeep(data?.checkoutProvenance)).toEqual(ownKeysDeep(provenance))
+    }
   })
 })
 
+describe('parseSseChunk — checkoutPreparation', () => {
+  it('carries a refused obstructed preparation on a FAILED frame with no failureKind', () => {
+    const preparation = {
+      outcome: 'refused',
+      reason: 'obstructed',
+      obstructions: [
+        {path: 'fixture/a.txt', kind: 'exact-conflict'},
+        {path: 'fixture/b', kind: 'symlink-ancestor'},
+      ],
+    }
+    const data = parseStatusData(statusPayload({phase: 'FAILED', status: 'failed', checkoutPreparation: preparation}))
+    expect(data?.status).toBe('failed')
+    expect(data?.checkoutPreparation).toEqual(preparation)
+    expect(Object.prototype.hasOwnProperty.call(data, 'failureKind')).toBe(false)
+    expect(Object.prototype.hasOwnProperty.call(data, 'checkoutProvenance')).toBe(false)
+  })
+
+  it('carries every refusal shape', () => {
+    const refusals: unknown[] = [
+      {outcome: 'refused', reason: 'needs-recovery'},
+      {outcome: 'refused', reason: 'checkout-substituted'},
+      {outcome: 'refused', reason: 'unsupported-layout', layoutReason: 'shallow'},
+      {outcome: 'refused', reason: 'unsupported-config', disallowedKeys: ['fixture.key']},
+      {outcome: 'refused', reason: 'operation-in-progress', operation: 'merge'},
+      {outcome: 'refused', reason: 'dirty', changedPaths: ['fixture/a', 'fixture/b']},
+      {outcome: 'refused', reason: 'submodule-initialized', submodules: ['fixture-sub']},
+      {outcome: 'refused', reason: 'detached'},
+      {outcome: 'refused', reason: 'non-default-branch', branch: 'fixture-feature'},
+      {outcome: 'refused', reason: 'diverged'},
+      {outcome: 'refused', reason: 'ahead'},
+      {outcome: 'refused', reason: 'obstructed', obstructions: []},
+      {outcome: 'refused', reason: 'maintenance-hold'},
+    ]
+    for (const checkoutPreparation of refusals) {
+      const data = parseStatusData(statusPayload({phase: 'FAILED', status: 'failed', checkoutPreparation}))
+      expect(data?.checkoutPreparation).toEqual(checkoutPreparation)
+    }
+  })
+
+  it('carries a failed preparation with each flag combination', () => {
+    for (const mutationStarted of [true, false, 'possibly'] as const) {
+      for (const permanent of [true, false]) {
+        const checkoutPreparation = {outcome: 'failed', reason: 'fetch-timeout', mutationStarted, permanent}
+        const data = parseStatusData(statusPayload({phase: 'FAILED', status: 'failed', checkoutPreparation}))
+        expect(data?.checkoutPreparation).toEqual(checkoutPreparation)
+      }
+    }
+  })
+
+  it('carries both a failureKind and a preparation together', () => {
+    const checkoutPreparation = {outcome: 'refused', reason: 'checkout-substituted'}
+    const data = parseStatusData(
+      statusPayload({
+        phase: 'FAILED',
+        status: 'failed',
+        failureKind: 'checkout-substituted',
+        checkoutPreparation,
+      }),
+    )
+    expect(data?.failureKind).toBe('checkout-substituted')
+    expect(data?.checkoutPreparation).toEqual(checkoutPreparation)
+  })
+
+  it('drops malformed preparations without rejecting the frame or losing failureKind', () => {
+    const variants: unknown[] = [
+      {outcome: 'refused', reason: 'fixture-unknown-reason'},
+      {outcome: 'refused', reason: 'unsupported-layout', layoutReason: 'fixture-unknown-layout'},
+      {outcome: 'refused', reason: 'dirty', changedPaths: 'fixture/not-an-array'},
+      {outcome: 'refused', reason: 'dirty', changedPaths: ['fixture/a', 7]},
+      {outcome: 'refused', reason: 'non-default-branch', branch: ''},
+      {outcome: 'refused', reason: 'operation-in-progress', operation: 'fixture-unknown-op'},
+      {outcome: 'refused', reason: 'obstructed', obstructions: [{path: 'fixture/a', kind: 'fixture-unknown-kind'}]},
+      {outcome: 'failed', reason: 'fixture-unknown-failure', mutationStarted: false, permanent: false},
+      {outcome: 'failed', reason: 'fetch-failed', mutationStarted: 'maybe', permanent: false},
+      {outcome: 'failed', reason: 'fetch-failed', mutationStarted: false, permanent: 'yes'},
+      {outcome: 'fixture-unknown-outcome'},
+      'fixture-not-an-object',
+      ['fixture-array'],
+      null,
+    ]
+    for (const checkoutPreparation of variants) {
+      const data = parseStatusData(
+        statusPayload({phase: 'FAILED', status: 'failed', failureKind: 'workspace-unavailable', checkoutPreparation}),
+      )
+      expect(data).toBeDefined()
+      expect(data?.status).toBe('failed')
+      expect(data?.failureKind).toBe('workspace-unavailable')
+      expect(Object.prototype.hasOwnProperty.call(data, 'checkoutPreparation')).toBe(false)
+    }
+  })
+
+  it('returns only contract fields for failed and refused preparations, dropping extra keys including a parsed __proto__', () => {
+    const preparations: Record<string, unknown>[] = [
+      {outcome: 'failed', reason: 'fetch-timeout', mutationStarted: 'possibly', permanent: true},
+      {outcome: 'refused', reason: 'detached'},
+      {outcome: 'refused', reason: 'unsupported-layout', layoutReason: 'shallow'},
+      {outcome: 'refused', reason: 'unsupported-config', disallowedKeys: ['fixture.key']},
+      {outcome: 'refused', reason: 'operation-in-progress', operation: 'merge'},
+      {outcome: 'refused', reason: 'dirty', changedPaths: ['fixture/a']},
+      {outcome: 'refused', reason: 'submodule-initialized', submodules: ['fixture-sub']},
+      {outcome: 'refused', reason: 'non-default-branch', branch: 'fixture-feature'},
+      {outcome: 'refused', reason: 'obstructed', obstructions: [{path: 'fixture/a', kind: 'exact-conflict'}]},
+    ]
+    for (const preparation of preparations) {
+      const data = parseStatusData(
+        statusPayload({phase: 'FAILED', status: 'failed', checkoutPreparation: withExtraKeys(preparation)}),
+      )
+      expect(data?.checkoutPreparation).toEqual(preparation)
+      expect(ownKeysDeep(data?.checkoutPreparation)).toEqual(ownKeysDeep(preparation))
+    }
+  })
+
+  it('keeps a valid provenance when only the preparation is malformed, and the reverse', () => {
+    const provenance = observedProvenance()
+    const dropPrep = parseStatusData(
+      statusPayload({checkoutProvenance: provenance, checkoutPreparation: {outcome: 'fixture-bogus'}}),
+    )
+    expect(dropPrep?.checkoutProvenance).toEqual(provenance)
+    expect(dropPrep?.checkoutPreparation).toBeUndefined()
+
+    const preparation = {outcome: 'refused', reason: 'detached'}
+    const dropProv = parseStatusData(
+      statusPayload({checkoutProvenance: {kind: 'fixture-bogus'}, checkoutPreparation: preparation}),
+    )
+    expect(dropProv?.checkoutProvenance).toBeUndefined()
+    expect(dropProv?.checkoutPreparation).toEqual(preparation)
+  })
+})
+
+describe('parseSseChunk — hard core is unchanged by the soft fields', () => {
+  it('still rejects an unknown status even with a valid provenance', () => {
+    const result = parseSseChunk(
+      `event: status\ndata: ${JSON.stringify(statusPayload({status: 'fixture-unknown-status', checkoutProvenance: observedProvenance()}))}\n\n`,
+    )[0]
+    expect(result?.success).toBe(false)
+  })
+
+  it('still rejects an unknown phase or surface even with a valid preparation', () => {
+    const preparation = {outcome: 'refused', reason: 'detached'}
+    for (const override of [{phase: 'FIXTURE_UNKNOWN'}, {surface: 'fixture-unknown'}]) {
+      const result = parseSseChunk(
+        `event: status\ndata: ${JSON.stringify(statusPayload({...override, checkoutPreparation: preparation}))}\n\n`,
+      )[0]
+      expect(result?.success).toBe(false)
+    }
+  })
+})
+
+async function readFrames(sseText: string): Promise<{events: RunStreamFrame[]; errors: Error[]}> {
+  const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
+  const reader = createOperatorSseReader({fetchImpl})
+  const events: RunStreamFrame[] = []
+  const errors: Error[] = []
+  await reader.open('/operator/runs/run-001/stream', {
+    onEvent: frame => events.push(frame),
+    onError: err => errors.push(err),
+    onClose: () => {},
+  })
+  return {events, errors}
+}
+
+describe('createOperatorSseReader — checkout fields through the reader', () => {
+  const readyText = `event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\n`
+
+  it('dispatches a status frame carrying provenance after a matching ready frame', async () => {
+    const provenance = observedProvenance()
+    const {events, errors} = await readFrames(
+      `${readyText}event: status\ndata: ${JSON.stringify(statusPayload({checkoutProvenance: provenance}))}\n\n`,
+    )
+    expect(errors).toHaveLength(0)
+    const status = events.find(e => e.type === 'status')
+    expect(status?.type === 'status' ? status.data.checkoutProvenance : undefined).toEqual(provenance)
+  })
+
+  it('dispatches a FAILED status frame carrying preparation and no failureKind', async () => {
+    const preparation = {outcome: 'refused', reason: 'dirty', changedPaths: ['fixture/a']}
+    const {events, errors} = await readFrames(
+      `${readyText}event: status\ndata: ${JSON.stringify(statusPayload({phase: 'FAILED', status: 'failed', checkoutPreparation: preparation}))}\n\n`,
+    )
+    expect(errors).toHaveLength(0)
+    const status = events.find(e => e.type === 'status')
+    expect(status?.type === 'status' ? status.data.checkoutPreparation : undefined).toEqual(preparation)
+  })
+
+  it('accepts the frame and omits invalid provenance and preparation', async () => {
+    const {events, errors} = await readFrames(
+      `${readyText}event: status\ndata: ${JSON.stringify(
+        statusPayload({checkoutProvenance: {kind: 'fixture-bogus'}, checkoutPreparation: {outcome: 'fixture-bogus'}}),
+      )}\n\n`,
+    )
+    expect(errors).toHaveLength(0)
+    const status = events.find(e => e.type === 'status')
+    expect(status).toBeDefined()
+    if (status?.type === 'status') {
+      expect(Object.prototype.hasOwnProperty.call(status.data, 'checkoutProvenance')).toBe(false)
+      expect(Object.prototype.hasOwnProperty.call(status.data, 'checkoutPreparation')).toBe(false)
+    }
+  })
+
+  it('fails closed on a version mismatch and dispatches no provenance-bearing frame', async () => {
+    const {events, errors} = await readFrames(
+      `event: ready\ndata: {"contractVersion":"${DRIFTED_VERSION}"}\n\n` +
+      `event: status\ndata: ${JSON.stringify(statusPayload({checkoutProvenance: observedProvenance()}))}\n\n`,
+    )
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.message).toContain('contract-drift')
+    expect(events.filter(e => e.type === 'status')).toHaveLength(0)
+  })
+
+  it('rejects an unknown status through the reader even with valid provenance', async () => {
+    const {events, errors} = await readFrames(
+      `${readyText}event: status\ndata: ${JSON.stringify(
+        statusPayload({status: 'fixture-unknown-status', checkoutProvenance: observedProvenance()}),
+      )}\n\n`,
+    )
+    expect(errors).toHaveLength(0)
+    expect(events.filter(e => e.type === 'status')).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-157 supported-versions window (fork discipline): the reader accepts any
+// version in SUPPORTED_OPERATOR_CONTRACT_VERSIONS — primary '1.6.0' plus
+// '1.8.0' — and fails closed outside it. Upstream a82871d pins a single exact
+// version; this fork keeps the window until the deployed gateway durably
+// reports 1.8.0, so the window edges stay pinned here (adapted from the
+// fork-landed rm-157 suite, fixtures rewritten onto this block's helpers).
+// ---------------------------------------------------------------------------
+
 describe('createOperatorSseReader — rm-157 supported-versions window', () => {
   it('dispatches a 1.8.0 ready frame and a provenance-bearing status frame', async () => {
-    const sseText = `event: ready\ndata: {"contractVersion":"1.8.0"}\n\n${statusText({checkoutProvenance: observedProvenance})}`
-    const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
-    const reader = createOperatorSseReader({fetchImpl})
-
-    const events: RunStreamFrame[] = []
-    const errors: Error[] = []
-    await reader.open('/operator/runs/run-001/stream', {
-      onEvent: frame => events.push(frame),
-      onError: err => errors.push(err),
-      onClose: () => {},
-    })
-
+    const provenance = observedProvenance()
+    const {events, errors} = await readFrames(
+      `event: ready\ndata: {"contractVersion":"1.8.0"}\n\n` +
+      `event: status\ndata: ${JSON.stringify(statusPayload({checkoutProvenance: provenance}))}\n\n`,
+    )
     expect(errors).toHaveLength(0)
-    expect(events).toHaveLength(2)
-    const statusFrame = events.find(e => e.type === 'status')
-    expect(statusFrame).toBeDefined()
-    if (statusFrame?.type === 'status') {
-      expect(statusFrame.data.checkoutProvenance).toEqual(observedProvenance)
-    }
+    const ready = events.find(e => e.type === 'ready')
+    expect(ready).toBeDefined()
+    const status = events.find(e => e.type === 'status')
+    expect(status).toBeDefined()
+    expect(status?.type === 'status' ? status.data.checkoutProvenance : undefined).toEqual(provenance)
   })
 
   it('fails closed on 1.9.0 (future) and on 1.5.0 (pre-window) ready frames', async () => {
     for (const version of ['1.9.0', '1.5.0']) {
-      const sseText = `event: ready\ndata: {"contractVersion":"${version}"}\n\n${statusText({})}`
-      const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
-      const reader = createOperatorSseReader({fetchImpl})
-
-      const events: RunStreamFrame[] = []
-      const errors: Error[] = []
-      let closed = false
-      await reader.open('/operator/runs/run-001/stream', {
-        onEvent: frame => events.push(frame),
-        onError: err => errors.push(err),
-        onClose: () => {
-          closed = true
-        },
-      })
-
+      const {events, errors} = await readFrames(
+        `event: ready\ndata: {"contractVersion":"${version}"}\n\n` +
+        `event: status\ndata: ${JSON.stringify(statusPayload({}))}\n\n`,
+      )
       expect(errors).toHaveLength(1)
       expect(errors[0]?.message).toContain('contract-drift')
       expect(events.filter(e => e.type === 'status')).toHaveLength(0)
-      expect(closed).toBe(true)
     }
   })
 })

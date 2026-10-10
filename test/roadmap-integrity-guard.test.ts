@@ -148,7 +148,10 @@ describe('rm-678 schema half: live ledger', () => {
     // 778 -> 780 atomically with this landing: union census
     // 245 + 2 = 247 defs / 0 dups / max rm-780, next free
     // rm-781.
-    expect(live.max).toBe(780)
+    // ext #37 (2026-10-10, run 08a0abac): mints rm-842/rm-843 above the
+    // wall ceiling rm-835 and spool frontier rm-841 -> 247 + 2 = 249
+    // defs / max rm-843, next free rm-844; pin 780 -> 843.
+    expect(live.max).toBe(843)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {

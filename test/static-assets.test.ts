@@ -1155,3 +1155,60 @@ describe('rm-690 — Cache-Control policy for static surfaces', () => {
     expect(res.headers.get('cache-control')).toBe('no-cache, no-store, must-revalidate')
   })
 })
+
+describe('security — operator-stream.js contract pin and checkout-field boundary', () => {
+  it('holds only the version literals it declares (the pin and the rm-157 window), and imports no server code', async () => {
+    const fs = await import('node:fs/promises')
+    const src = await fs.readFile('public/operator-stream.js', 'utf8')
+    // Strip comments so prose that names a version cannot hide a second pin.
+    const code = src.replaceAll(/\/\*[\s\S]*?\*\//g, '').replaceAll(/(^|[^:])\/\/.*$/gm, '$1')
+    const literals = (code.match(/['"`]\d+\.\d+\.\d+['"`]/g) ?? []).map(literal => literal.slice(1, -1))
+    // Fork adaptation: upstream a82871d pins exactly one literal; this fork
+    // carries the rm-157 supported-versions window beside the pin (the
+    // primary stays the pin, '1.8.0' rides the window until the deployed
+    // gateway moves). The upstream intent survives unchanged — NO version
+    // literal may exist outside the two declared constants.
+    const pinned = code.match(/export const PINNED_CONTRACT_VERSION = ['"](\d+\.\d+\.\d+)['"]/)?.[1]
+    const windowDeclaration = code.match(/export const SUPPORTED_CONTRACT_VERSIONS = \[([^\]]*)\]/)
+    const windowValues = windowDeclaration?.[1]?.match(/\d+\.\d+\.\d+/g) ?? []
+    expect(pinned).toBeDefined()
+    expect(new Set(literals)).toEqual(new Set([pinned, ...windowValues]))
+    expect(windowValues).toContain(pinned)
+    expect(code).not.toMatch(/from\s+['"][^'"]*(?:src\/|\.ts['"])/)
+    expect(code).not.toMatch(/\bimport\s*\(/)
+  })
+
+  it('renders checkout provenance and preparation through no HTML sink and puts no raw field in a class or CSS variable', async () => {
+    const fs = await import('node:fs/promises')
+    for (const filePath of ['public/operator-stream.js', 'public/operator-run-index.js']) {
+      const src = await fs.readFile(filePath, 'utf8')
+      expect(src).not.toMatch(/(?:innerHTML|outerHTML|insertAdjacentHTML)\s*=/)
+      expect(src).not.toMatch(/classList\.add\([^)]*checkout(?:Provenance|Preparation)/)
+      expect(src).not.toMatch(/className[^;\n]*checkout(?:Provenance|Preparation)/)
+      expect(src).not.toMatch(/setProperty\([^)]*checkout(?:Provenance|Preparation)/)
+      expect(src).not.toMatch(/dataset\.[A-Za-z]+\s*=[^;\n]*checkout(?:Provenance|Preparation)/)
+    }
+  })
+
+  it('the run-index module never reads checkout fields (summaries do not carry them)', async () => {
+    const fs = await import('node:fs/promises')
+    const src = await fs.readFile('public/operator-run-index.js', 'utf8')
+    expect(src).not.toMatch(/checkout(?:Provenance|Preparation)/)
+  })
+})
+
+describe('checkout detail styling — selector/emitter parity', () => {
+  it('styles every checkout detail class emitted by operator-stream.js', async () => {
+    const fs = await import('node:fs/promises')
+    const [js, css] = await Promise.all([
+      fs.readFile('public/operator-stream.js', 'utf8'),
+      fs.readFile('web/src/index.css', 'utf8'),
+    ])
+    const emitted = [...js.matchAll(/\bcheckout-detail(?:__[a-z-]+)?\b/g)]
+      .map(match => match[0])
+    expect(emitted.length).toBeGreaterThan(0)
+    for (const className of emitted) {
+      expect(css, `missing CSS rule for .${className}`).toMatch(new RegExp(String.raw`\.${className}(?![\w-])`))
+    }
+  })
+})

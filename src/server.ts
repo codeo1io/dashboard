@@ -1556,8 +1556,14 @@ export function readServerBindConfig(env: NodeJS.ProcessEnv = process.env): Serv
   const rawPort = env.DASHBOARD_PORT?.trim()
   let port = 3000
   if (rawPort !== undefined && rawPort !== '') {
-    const parsed = Number(rawPort)
-    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    // rm-180 port-path rider (2026-10-10): whole-string decimal grammar, the
+    // house convention used by envIntOrDefault above — a bare Number() here
+    // accepted '0x10'/'1e2' spellings as valid ports. Fail-loud stays.
+    if (!/^\d+$/.test(rawPort)) {
+      throw new Error(`DASHBOARD_PORT must be an integer in 1-65535, got: ${rawPort}`)
+    }
+    const parsed = Number.parseInt(rawPort, 10)
+    if (parsed < 1 || parsed > 65535) {
       throw new Error(`DASHBOARD_PORT must be an integer in 1-65535, got: ${rawPort}`)
     }
     port = parsed
