@@ -33,16 +33,19 @@
  * the supported-versions window below (rm-157). Kept exported so the parity
  * test can pin it to the vendored OPERATOR_CONTRACT_VERSION.
  */
-export const PINNED_CONTRACT_VERSION = '1.6.0'
+export const PINNED_CONTRACT_VERSION = '1.8.0'
 
 /**
  * rm-157 supported-versions window: ready frames with any of these versions
  * are dispatched; everything else fails closed to drift. Mirrors
  * SUPPORTED_OPERATOR_CONTRACT_VERSIONS in src/gateway/operator-contract/version.ts
- * (pinned by test/operator-contract-window.test.ts). '1.8.0' is additive-only
- * shape; the primary stays '1.6.0' until the deployed gateway moves.
+ * (pinned by test/operator-contract-window.test.ts). rm-252 flip (2026-10-09):
+ * the deployed gateway (infra faf71414 -> v0.118.2) has served 1.8.0 durably
+ * since 2026-10-07 with no rollback, so the primary moved to '1.8.0' and
+ * '1.6.0' retired from the window in the same change (the rm-157 retirement
+ * rule) — a pre-flip gateway now fails closed to drift, by design.
  */
-export const SUPPORTED_CONTRACT_VERSIONS = ['1.6.0', '1.8.0']
+export const SUPPORTED_CONTRACT_VERSIONS = ['1.8.0']
 
 /** Base delay in milliseconds for exponential backoff. */
 export const RETRY_BASE_MS = 1000
@@ -186,6 +189,413 @@ export const FAILURE_REASON_LABELS = {
   unknown: 'Unknown failure',
 }
 
+// Checkout provenance / checkout preparation — vendored 1.8.0 contract mirror
+// ---------------------------------------------------------------------------
+// Ported from fro-bot/dashboard main public/operator-stream.js:178-557 (the
+// working browser consumer of the same gateway contract this repo vendors at
+// src/gateway/operator-contract/provenance.ts, fro-bot/agent v0.118.3).
+// Shapes, vocabularies, sanitization (strip-then-cap, bounded lists), and
+// allowlist semantics are mirrored from upstream; parity with the vendored
+// contract's exported vocabularies is pinned by test/operator-stream-core.test.ts.
+// ---------------------------------------------------------------------------
+// Checkout provenance / checkout preparation — labels
+//
+// Dashboard-owned copy. Every vendored value has a label here; tests compare each
+// map's keys with the vocabularies exported by the vendored contract. Labels are
+// only ever rendered through textContent. A `{name}` token is filled by
+// fillLabelTemplate() from sanitized values — never from raw wire text.
+// ---------------------------------------------------------------------------
+
+/** Display labels for checkout refusal reasons. Doubles as the refusal-reason allowlist. */
+export const CHECKOUT_REFUSAL_REASON_LABELS = {
+  'needs-recovery': 'needs recovery',
+  'checkout-substituted': 'checkout mismatch',
+  'unsupported-layout': 'unsupported repository layout ({layout})',
+  'unsupported-config': 'disallowed git config',
+  'operation-in-progress': '{operation} in progress',
+  dirty: 'uncommitted changes',
+  'submodule-initialized': 'submodules initialized',
+  detached: 'detached HEAD',
+  'non-default-branch': 'on branch {branch}, not the default',
+  diverged: 'diverged from remote',
+  ahead: 'local commits not on remote',
+  obstructed: 'files in the way',
+  'maintenance-hold': 'maintenance hold',
+}
+
+/** Display labels for checkout update-failure reasons. Doubles as the update-failure allowlist. */
+export const CHECKOUT_UPDATE_FAILURE_REASON_LABELS = {
+  aborted: 'aborted',
+  'inspection-failed': 'inspection failed',
+  'fetch-auth-rejected': 'fetch rejected credentials',
+  'fetch-not-found': 'repository not found',
+  'fetch-forbidden': 'fetch forbidden',
+  'fetch-rate-limited': 'fetch rate limited',
+  'fetch-unreachable': 'remote unreachable',
+  'fetch-timeout': 'fetch timed out',
+  'fetch-failed': 'fetch failed',
+  'remote-moved': 'remote changed during update',
+  'apply-failed': "couldn't apply update",
+  'termination-unconfirmed': 'stop not confirmed',
+}
+
+/** Display labels for unsupported-layout reasons. Doubles as the layout-reason allowlist. */
+export const CHECKOUT_LAYOUT_REASON_LABELS = {
+  'core-worktree': 'custom core.worktree',
+  gitfile: '.git is a file',
+  'symlinked-git-dir': 'symlinked .git directory',
+  'symlinked-config': 'symlinked git config',
+  alternates: 'object alternates',
+  'replace-refs': 'replace refs',
+  grafts: 'grafts',
+  shallow: 'shallow clone',
+  'partial-clone': 'partial clone',
+  'linked-worktree': 'linked worktree',
+  'unsupported-index-flag': 'unsupported index flag',
+  'bare-repository': 'bare repository',
+}
+
+/** Display labels for obstruction kinds. Doubles as the obstruction-kind allowlist. */
+export const CHECKOUT_OBSTRUCTION_KIND_LABELS = {
+  'exact-conflict': 'conflicts with a file',
+  'prefix-conflict': 'conflicts with a directory',
+  'identical-content': 'identical file present',
+  'symlink-ancestor': 'behind a symlink',
+}
+
+/**
+ * Display labels for in-progress git operations. `none` is deliberately absent: it is a
+ * valid wire value that renders nothing. Tests pin this exception explicitly.
+ */
+export const CHECKOUT_OPERATION_LABELS = {
+  merge: 'Merge',
+  rebase: 'Rebase',
+  am: 'Patch apply',
+  'cherry-pick': 'Cherry-pick',
+  revert: 'Revert',
+  bisect: 'Bisect',
+}
+
+/**
+ * Refusal copy when the contract reports an in-progress operation as `none`
+ * (no operation name to fill in) — the recipe's one label-less vocabulary value
+ * (its step 5 `none` exception). The render-only label maps upstream carries for
+ * its per-card checkout region (preparation headlines, failure flags, provenance
+ * lines) are NOT ported: this fork's card has no checkout region yet, and
+ * vocabulary without a carrier is exactly the defect class review 3b6cf864
+ * struck from public/operator-run-index.js. Port them with the region when the
+ * card adopts one (recipe step 6).
+ */
+const CHECKOUT_UNNAMED_OPERATION_REASON = 'operation in progress'
+
+/**
+ * Fill `{name}` tokens in a label template in a single pass. Substituted text is never
+ * re-scanned, and the replacement is applied through a function so `$&`-style patterns in
+ * a value stay literal. A token with no value is left as written.
+ */
+export function fillLabelTemplate(template, values) {
+  return template.replaceAll(/\{(\w+)\}/g, (token, name) =>
+    Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : token,
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Checkout provenance / checkout preparation — validation, caps and sanitizing
+//
+// The browser is the sanitization boundary. Validation ports the vendored
+// contract's rules (src/gateway/operator-contract/provenance.ts); on top of
+// those, every free-form string is stripped of control and bidi characters and
+// capped, lists are bounded, and the result is a closed DTO. Anything invalid
+// becomes undefined ("absent"), and one bad nested field drops the whole
+// object — it never rejects the status frame.
+// ---------------------------------------------------------------------------
+
+/** Per-string cap for every free-form checkout string (branches, paths, keys). */
+export const MAX_CHECKOUT_STRING_CHARS = 256
+
+/** Entries kept per free-form list; the remainder is reported as a count. */
+export const MAX_CHECKOUT_LIST_ENTRIES = 10
+
+const CHECKOUT_SHA_RE = /^[0-9a-f]{40}$/
+
+/** Allowed values — the label maps are the allowlists, so an unlabeled value cannot be accepted. */
+const CHECKOUT_REFUSAL_REASONS = new Set(Object.keys(CHECKOUT_REFUSAL_REASON_LABELS))
+const CHECKOUT_UPDATE_FAILURE_REASONS = new Set(Object.keys(CHECKOUT_UPDATE_FAILURE_REASON_LABELS))
+const CHECKOUT_LAYOUT_REASONS = new Set(Object.keys(CHECKOUT_LAYOUT_REASON_LABELS))
+const CHECKOUT_OBSTRUCTION_KINDS = new Set(Object.keys(CHECKOUT_OBSTRUCTION_KIND_LABELS))
+const CHECKOUT_OPERATIONS = new Set(['none', ...Object.keys(CHECKOUT_OPERATION_LABELS)])
+
+// C0 controls and DEL, C1 controls, and every Unicode bidi control: embeddings and
+// overrides (U+202A–U+202E), isolates (U+2066–U+2069), and marks (U+200E, U+200F, U+061C).
+// eslint-disable-next-line no-control-regex
+const CHECKOUT_STRIPPED_CHARS = /[\u0000-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g
+
+function stripCheckoutText(value) {
+  return value.replaceAll(CHECKOUT_STRIPPED_CHARS, '')
+}
+
+function capCheckoutText(stripped, cap) {
+  if (stripped.length <= cap) return stripped
+  let head = stripped.slice(0, cap - 1)
+  // Never leave half a surrogate pair at the cut.
+  const last = head.charCodeAt(head.length - 1)
+  if (last >= 0xD800 && last <= 0xDBFF) head = head.slice(0, -1)
+  return `${head}…`
+}
+
+/**
+ * Strip control and bidi characters, then truncate to `cap` characters (the trailing
+ * ellipsis counts toward the cap). Total: any string in, a string out.
+ */
+export function sanitizeCheckoutText(value, cap = MAX_CHECKOUT_STRING_CHARS) {
+  return capCheckoutText(stripCheckoutText(value), cap)
+}
+
+function isObjectLike(value) {
+  return typeof value === 'object' && value !== null
+}
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.length > 0
+}
+
+function isValidSha(value) {
+  return typeof value === 'string' && CHECKOUT_SHA_RE.test(value)
+}
+
+function isNonNegativeSafeInteger(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+/** A required free-form scalar: non-empty on the wire AND non-empty after sanitizing, else undefined. */
+function sanitizeRequiredText(value) {
+  if (!isNonEmptyString(value)) return undefined
+  const sanitized = sanitizeCheckoutText(value)
+  return sanitized === '' ? undefined : sanitized
+}
+
+/**
+ * Bound a list of free-form strings: sanitize each entry, drop entries that are empty
+ * afterwards, keep the first MAX_CHECKOUT_LIST_ENTRIES and count the rest. The caller has
+ * already validated that every entry is a string.
+ */
+function boundTextList(entries, toText) {
+  const items = []
+  let more = 0
+  for (const entry of entries) {
+    const stripped = stripCheckoutText(toText(entry))
+    if (stripped === '') continue
+    if (items.length < MAX_CHECKOUT_LIST_ENTRIES) {
+      items.push({entry, text: capCheckoutText(stripped, MAX_CHECKOUT_STRING_CHARS)})
+    } else {
+      more += 1
+    }
+  }
+  return {items, more}
+}
+
+function normalizeStringList(value) {
+  if (!Array.isArray(value) || !value.every(entry => typeof entry === 'string')) return undefined
+  const {items, more} = boundTextList(value, entry => entry)
+  return {items: items.map(item => item.text), more}
+}
+
+function normalizeObstructions(value) {
+  if (!Array.isArray(value)) return undefined
+  const valid = value.every(
+    entry =>
+      isObjectLike(entry) &&
+      typeof entry.path === 'string' &&
+      typeof entry.kind === 'string' &&
+      CHECKOUT_OBSTRUCTION_KINDS.has(entry.kind),
+  )
+  if (!valid) return undefined
+  const {items, more} = boundTextList(value, entry => entry.path)
+  return {items: items.map(item => ({path: item.text, kind: item.entry.kind})), more}
+}
+
+function normalizeRemoteFreshness(value) {
+  if (!isObjectLike(value)) return undefined
+  if (value.kind === 'not-checked') return {kind: 'not-checked'}
+  if (value.kind !== 'checked') return undefined
+  // checkedAt is validated but not carried into browser state.
+  if (!isNonEmptyString(value.checkedAt) || !isValidSha(value.sha)) return undefined
+  const defaultBranch = sanitizeRequiredText(value.defaultBranch)
+  if (defaultBranch === undefined) return undefined
+  if (value.change === 'unchanged') {
+    return {kind: 'checked', change: 'unchanged', defaultBranch, sha: value.sha}
+  }
+  if (value.change === 'fast-forward') {
+    if (!isValidSha(value.fromSha) || value.fromSha === value.sha) return undefined
+    return {kind: 'checked', change: 'fast-forward', defaultBranch, sha: value.sha, fromSha: value.fromSha}
+  }
+  return undefined
+}
+
+function normalizeCheckoutHead(value) {
+  if (!isObjectLike(value)) return undefined
+  if (value.kind === 'attached') {
+    const branch = sanitizeRequiredText(value.branch)
+    return branch !== undefined && isValidSha(value.sha) ? {kind: 'attached', branch, sha: value.sha} : undefined
+  }
+  if (value.kind === 'detached') {
+    return isValidSha(value.sha) ? {kind: 'detached', sha: value.sha} : undefined
+  }
+  // Unknown kind — a missing branch must never be read as "detached".
+  return undefined
+}
+
+function normalizeWorktreeState(value) {
+  if (!isObjectLike(value)) return undefined
+  if (value.kind === 'clean') return {kind: 'clean'}
+  if (
+    value.kind === 'dirty' &&
+    isNonNegativeSafeInteger(value.staged) &&
+    isNonNegativeSafeInteger(value.unstaged) &&
+    isNonNegativeSafeInteger(value.untracked) &&
+    isNonNegativeSafeInteger(value.conflicted)
+  ) {
+    return {
+      kind: 'dirty',
+      staged: value.staged,
+      unstaged: value.unstaged,
+      untracked: value.untracked,
+      conflicted: value.conflicted,
+    }
+  }
+  return undefined
+}
+
+/**
+ * Validate and close a wire `checkoutProvenance` into a DTO, or undefined.
+ * observedAt / checkedAt are validated for presence but never carried.
+ */
+function normalizeCheckoutProvenance(value) {
+  if (!isObjectLike(value)) return undefined
+  const remote = normalizeRemoteFreshness(value.remote)
+  if (remote === undefined) return undefined
+  if (value.kind === 'unavailable') return {kind: 'unavailable', remote}
+  if (value.kind !== 'observed') return undefined
+  const observation = value.observation
+  if (!isObjectLike(observation)) return undefined
+  const head = normalizeCheckoutHead(observation.head)
+  const worktree = normalizeWorktreeState(observation.worktree)
+  if (
+    head === undefined ||
+    worktree === undefined ||
+    typeof observation.operationInProgress !== 'string' ||
+    !CHECKOUT_OPERATIONS.has(observation.operationInProgress) ||
+    !isNonEmptyString(observation.observedAt)
+  ) {
+    return undefined
+  }
+  return {kind: 'observed', head, worktree, operation: observation.operationInProgress, remote}
+}
+
+function normalizeCheckoutPreparationRefused(value) {
+  const {reason} = value
+  if (typeof reason !== 'string' || !CHECKOUT_REFUSAL_REASONS.has(reason)) return undefined
+  switch (reason) {
+    case 'unsupported-layout': {
+      return typeof value.layoutReason === 'string' && CHECKOUT_LAYOUT_REASONS.has(value.layoutReason)
+        ? {outcome: 'refused', reason, layoutReason: value.layoutReason}
+        : undefined
+    }
+    case 'unsupported-config': {
+      const disallowedKeys = normalizeStringList(value.disallowedKeys)
+      return disallowedKeys === undefined ? undefined : {outcome: 'refused', reason, disallowedKeys}
+    }
+    case 'operation-in-progress': {
+      return typeof value.operation === 'string' && CHECKOUT_OPERATIONS.has(value.operation)
+        ? {outcome: 'refused', reason, operation: value.operation}
+        : undefined
+    }
+    case 'dirty': {
+      const changedPaths = normalizeStringList(value.changedPaths)
+      return changedPaths === undefined ? undefined : {outcome: 'refused', reason, changedPaths}
+    }
+    case 'submodule-initialized': {
+      const submodules = normalizeStringList(value.submodules)
+      return submodules === undefined ? undefined : {outcome: 'refused', reason, submodules}
+    }
+    case 'non-default-branch': {
+      const branch = sanitizeRequiredText(value.branch)
+      return branch === undefined ? undefined : {outcome: 'refused', reason, branch}
+    }
+    case 'obstructed': {
+      const obstructions = normalizeObstructions(value.obstructions)
+      return obstructions === undefined ? undefined : {outcome: 'refused', reason, obstructions}
+    }
+    default: {
+      // needs-recovery, checkout-substituted, detached, diverged, ahead, maintenance-hold
+      return {outcome: 'refused', reason}
+    }
+  }
+}
+
+/** Validate and close a wire `checkoutPreparation` into a DTO, or undefined. */
+function normalizeCheckoutPreparation(value) {
+  if (!isObjectLike(value)) return undefined
+  if (value.outcome === 'refused') return normalizeCheckoutPreparationRefused(value)
+  if (value.outcome !== 'failed') return undefined
+  if (typeof value.reason !== 'string' || !CHECKOUT_UPDATE_FAILURE_REASONS.has(value.reason)) return undefined
+  if (value.mutationStarted !== true && value.mutationStarted !== false && value.mutationStarted !== 'possibly') {
+    return undefined
+  }
+  if (typeof value.permanent !== 'boolean') return undefined
+  return {
+    outcome: 'failed',
+    reason: value.reason,
+    mutationStarted: value.mutationStarted,
+    permanent: value.permanent,
+  }
+}
+
+/**
+ * Top-level validated entry points for the 1.8.0 status-frame checkout
+ * fields (names match the vendored contract's parseOperatorCheckoutProvenance /
+ * parseOperatorCheckoutPreparation). Invalid input normalizes to undefined; it
+ * never fails validity of the status frame (same posture as failureKind).
+ */
+export function parseCheckoutProvenance(value) {
+  return normalizeCheckoutProvenance(value)
+}
+
+export function parseCheckoutPreparation(value) {
+  return normalizeCheckoutPreparation(value)
+}
+
+/**
+ * Compose the display label for a failed status: the failure-kind label, and —
+ * when the 1.8.0 checkoutPreparation detail carries a validated refusal (the
+ * 13-reason vendored vocabulary) — the refusal label, with any {token} filled
+ * from the preparation's own sanitized payload fields (never raw wire text).
+ * All parts come from allowlist-validated values; the render boundary writes
+ * textContent, so nothing is ever parsed as HTML.
+ */
+export function composeFailureReasonLabel(failureKind, checkoutPreparation) {
+  const base = FAILURE_REASON_LABELS[failureKind]
+  if (base === undefined) return undefined
+  if (checkoutPreparation === undefined || checkoutPreparation.outcome !== 'refused') return base
+  const template = CHECKOUT_REFUSAL_REASON_LABELS[checkoutPreparation.reason]
+  if (template === undefined) return base
+  const p = checkoutPreparation
+  // `none` parses (it is in the operation allowlist) but has no label entry;
+  // filling the template would stringify undefined. Fixed copy instead — the
+  // recipe's step 5 `none` exception, mirroring upstream.
+  if (p.reason === 'operation-in-progress' && p.operation === 'none') {
+    return `${base} — ${CHECKOUT_UNNAMED_OPERATION_REASON}`
+  }
+  const label = fillLabelTemplate(template, {
+    // Upstream parity (describeCheckoutPreparationReason): fill the human
+    // label, never the raw machine token ('core-worktree').
+    layout: CHECKOUT_LAYOUT_REASON_LABELS[p.layoutReason] ?? p.layoutReason,
+    operation: CHECKOUT_OPERATION_LABELS[p.operation],
+    branch: p.branch,
+  })
+  return `${base} — ${label}`
+}
+
 // ---------------------------------------------------------------------------
 // CRLF normalization
 // ---------------------------------------------------------------------------
@@ -307,6 +717,17 @@ export function parseSseFrame(record) {
     // failureKind is optional and allowlist-gated; an unrecognized or absent
     // value normalizes to omitted — it never fails validity of the status frame.
     const failureKind = VALID_FAILURE_KINDS.has(parsed.failureKind) ? parsed.failureKind : undefined
+    // rm-252: the 1.8.0 optional checkout fields — defensively shape-gated the
+    // same way; a malformed or absent value (1.6.0/1.7.0 frames carry neither)
+    // normalizes to omitted and never fails validity of the status frame.
+    const checkoutProvenance =
+      parsed.checkoutProvenance === undefined
+        ? undefined
+        : parseCheckoutProvenance(parsed.checkoutProvenance)
+    const checkoutPreparation =
+      parsed.checkoutPreparation === undefined
+        ? undefined
+        : parseCheckoutPreparation(parsed.checkoutPreparation)
     return {
       success: true,
       frame: {
@@ -320,6 +741,8 @@ export function parseSseFrame(record) {
           startedAt: parsed.startedAt,
           stale: parsed.stale,
           ...(failureKind === undefined ? {} : {failureKind}),
+          ...(checkoutProvenance === undefined ? {} : {checkoutProvenance}),
+          ...(checkoutPreparation === undefined ? {} : {checkoutPreparation}),
         },
       },
     }
@@ -467,7 +890,7 @@ export function nextStreamState(current, event) {
       if (current.connection !== 'live') {
         return current
       }
-      const {runId, status, phase, startedAt, stale, failureKind} = event.data
+      const {runId, status, phase, startedAt, stale, failureKind, checkoutProvenance, checkoutPreparation} = event.data
       const isTerminal = TERMINAL_STATUSES.has(status)
       // Use a null-prototype object to guard against __proto__ key pollution.
       // Spread the prior entry so accumulated output fields (outputText/outputSeq/
@@ -479,8 +902,25 @@ export function nextStreamState(current, event) {
       // is sticky — a later non-terminal frame for the same run (e.g. a stale/duplicate
       // frame) must not clear a previously stored terminal-failure label.
       const derivedReasonLabel =
-        status === 'failed' && failureKind !== undefined ? FAILURE_REASON_LABELS[failureKind] : undefined
+        status === 'failed' && failureKind !== undefined
+          ? composeFailureReasonLabel(failureKind, checkoutPreparation ?? prevStatusEntry?.checkoutPreparation)
+          : undefined
       const reasonLabel = derivedReasonLabel ?? prevStatusEntry?.reasonLabel
+      // rm-252: sticky 1.8.0 checkout fields with upstream semantics (fro-bot/dashboard
+      // main public/operator-stream.js:864-870 is the working reference): latest
+      // VALID value wins per field, a valid value for one clears the other, and
+      // if both arrive in one frame (contract-impossible) preparation is applied
+      // last. A frame carrying neither keeps the last valid pair (sticky retention).
+      let entryProvenance = prevStatusEntry?.checkoutProvenance
+      let entryPreparation = prevStatusEntry?.checkoutPreparation
+      if (checkoutProvenance !== undefined) {
+        entryProvenance = checkoutProvenance
+        entryPreparation = undefined
+      }
+      if (checkoutPreparation !== undefined) {
+        entryPreparation = checkoutPreparation
+        entryProvenance = undefined
+      }
       // On terminal status, clear all open approval prompts for this run.
       // Terminal is absorbing for approvals: once terminal, no open prompt can reappear.
       // Tombstones are preserved so that any late open frames are still ignored.
@@ -493,21 +933,32 @@ export function nextStreamState(current, event) {
             approvalOpenPrompts: prevStatusEntry?.approvalOpenPrompts,
             approvalTombstones: prevStatusEntry?.approvalTombstones,
           }
+      const nextEntry = {
+        ...prevStatusEntry,
+        ...approvalFields,
+        runId,
+        status,
+        phase,
+        startedAt,
+        stale,
+        terminal: isTerminal,
+        // Terminal-wins: a terminal status frame from ANY source clears cancelInFlight.
+        // A non-terminal frame preserves whatever the prior entry carried (spread above).
+        ...(isTerminal ? {cancelInFlight: false} : {}),
+        ...(reasonLabel === undefined ? {} : {reasonLabel}),
+      }
+      if (entryProvenance === undefined) {
+        delete nextEntry.checkoutProvenance
+      } else {
+        nextEntry.checkoutProvenance = entryProvenance
+      }
+      if (entryPreparation === undefined) {
+        delete nextEntry.checkoutPreparation
+      } else {
+        nextEntry.checkoutPreparation = entryPreparation
+      }
       const updatedRuns = Object.assign(Object.create(null), current.runs, {
-        [runId]: {
-          ...prevStatusEntry,
-          ...approvalFields,
-          runId,
-          status,
-          phase,
-          startedAt,
-          stale,
-          terminal: isTerminal,
-          // Terminal-wins: a terminal status frame from ANY source clears cancelInFlight.
-          // A non-terminal frame preserves whatever the prior entry carried (spread above).
-          ...(isTerminal ? {cancelInFlight: false} : {}),
-          ...(reasonLabel === undefined ? {} : {reasonLabel}),
-        },
+        [runId]: nextEntry,
       })
       // If all observed runs are terminal, close the stream
       const allTerminal =
@@ -955,6 +1406,11 @@ export function nextStreamState(current, event) {
  * never the raw failureKind wire value — and is present only when the run
  * entry carries one (set by nextStreamState on a failed status with a known
  * failureKind, and sticky across later frames for the same run).
+ *
+ * checkoutProvenance/checkoutPreparation (rm-252 1.8.0) stay on the RUN ENTRY
+ * (runEntry carries them sticky); the future run-card checkout region reads
+ * them from runEntry per upstream. Do NOT re-widen this whitelist — a review
+ * fix (2026-10-10) reverted exactly that widening.
  */
 export function toSafeRunView(runStatus) {
   return {

@@ -148,7 +148,13 @@ describe('rm-678 schema half: live ledger', () => {
     // 778 -> 780 atomically with this landing: union census
     // 245 + 2 = 247 defs / 0 dups / max rm-780, next free
     // rm-781.
-    expect(live.max).toBe(780)
+    // 2026-10-09 cycle:3 roadmap of run 28cd8f6c2568 (attempt
+    // 032a73d1, ext at base 88e423a == main): one mint rm-832
+    // (Actions GitHub-side disable watch) above the all-lineage
+    // dashboard ceiling rm-831 (run-ba5f6d7ddd67 wall; agenttrace
+    // walls at 894 excluded as wrong-repo) — 247 -> 248 defs,
+    // pin 780 -> 832 atomically with the mint.
+    expect(live.max).toBe(832)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {

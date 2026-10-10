@@ -59,11 +59,208 @@ export type FailureKind =
   | 'unknown'
 
 /**
- * Dashboard-owned display labels for known failure reasons, keyed by FailureKind.
- * Must stay identical (keys and label values) to the map exported from
- * public/operator-run-index.js — parity is enforced by tests.
+ * rm-252 checkout provenance/preparation — browser mirror of the vendored 1.8.0
+ * gateway contract in src/gateway/operator-contract/provenance.ts
+ * (fro-bot/agent v0.118.3), ported from the working upstream consumer
+ * (fro-bot/dashboard main public/operator-stream.js). Provenance is a head
+ * OBSERVATION or an UNAVAILABLE marker; preparation is the refused/failed
+ * checkout DETAIL. The browser module is the sanitization boundary: free-form
+ * strings are stripped of control/bidi characters and capped
+ * (MAX_CHECKOUT_STRING_CHARS), lists are bounded (MAX_CHECKOUT_LIST_ENTRIES +
+ * a `more` count), and parse results are closed DTOs — never the wire object.
+ * These types describe the SHIPPED browser DTOs (which flatten the vendored
+ * `observation` wrapper and drop not-rendered timestamps); vocabulary parity
+ * with the vendored exports is pinned by test/operator-stream-core.test.ts.
+ */
+
+/** Refusal reasons a workspace can be in (13, vendored CHECKOUT_REFUSAL_REASONS). */
+export type CheckoutRefusalReason =
+  | 'needs-recovery'
+  | 'checkout-substituted'
+  | 'unsupported-layout'
+  | 'unsupported-config'
+  | 'operation-in-progress'
+  | 'dirty'
+  | 'submodule-initialized'
+  | 'detached'
+  | 'non-default-branch'
+  | 'diverged'
+  | 'ahead'
+  | 'obstructed'
+  | 'maintenance-hold'
+
+/** Update failures a failed checkout update can report (12, vendored UPDATE_FAILURE_REASONS). */
+export type CheckoutUpdateFailureReason =
+  | 'aborted'
+  | 'inspection-failed'
+  | 'fetch-auth-rejected'
+  | 'fetch-not-found'
+  | 'fetch-forbidden'
+  | 'fetch-rate-limited'
+  | 'fetch-unreachable'
+  | 'fetch-timeout'
+  | 'fetch-failed'
+  | 'remote-moved'
+  | 'apply-failed'
+  | 'termination-unconfirmed'
+
+/** Git operations a checkout can report in progress (vendored CHECKOUT_OPERATIONS; `none` = no operation). */
+export type CheckoutOperation =
+  | 'none'
+  | 'merge'
+  | 'rebase'
+  | 'am'
+  | 'cherry-pick'
+  | 'revert'
+  | 'bisect'
+
+/** Normalized checkout head: attached (on a branch) or detached. */
+export type OperatorCheckoutHead =
+  | {readonly kind: 'attached'; readonly branch: string; readonly sha: string}
+  | {readonly kind: 'detached'; readonly sha: string}
+
+/** Normalized worktree state (mirrors the vendored OperatorWorktreeState). */
+export type OperatorCheckoutWorktreeState =
+  | {readonly kind: 'clean'}
+  | {
+    readonly kind: 'dirty'
+    readonly staged: number
+    readonly unstaged: number
+    readonly untracked: number
+    readonly conflicted: number
+  }
+
+/**
+ * Freshness check outcome of the workspace remote. `checkedAt` is validated on
+ * the wire but not carried into browser state; `fromSha` exists only on the
+ * `fast-forward` variant (mirrors the vendored OperatorRemoteFreshness).
+ */
+export type OperatorCheckoutRemoteFreshness =
+  | {readonly kind: 'not-checked'}
+  | {readonly kind: 'checked'; readonly change: 'unchanged'; readonly defaultBranch: string; readonly sha: string}
+  | {
+    readonly kind: 'checked'
+    readonly change: 'fast-forward'
+    readonly defaultBranch: string
+    readonly sha: string
+    readonly fromSha: string
+  }
+
+/**
+ * Normalized checkout provenance (rm-252 / contract 1.8.0): what a run started
+ * from. The browser DTO flattens the vendored `observation` wrapper
+ * (`observedAt` is validated but not carried).
+ */
+export type OperatorCheckoutProvenance =
+  | {
+    readonly kind: 'observed'
+    readonly head: OperatorCheckoutHead
+    readonly worktree: OperatorCheckoutWorktreeState
+    readonly operation: CheckoutOperation
+    readonly remote: OperatorCheckoutRemoteFreshness
+  }
+  | {readonly kind: 'unavailable'; readonly remote: OperatorCheckoutRemoteFreshness}
+
+/** A bounded list of sanitized free-form strings: kept entries plus an overflow count. */
+export interface BoundedCheckoutTextList {
+  readonly items: readonly string[]
+  readonly more: number
+}
+
+/** Bounded obstruction list: sanitized paths keyed by their vendored kind. */
+export interface BoundedCheckoutObstructionList {
+  readonly items: readonly {readonly path: string; readonly kind: string}[]
+  readonly more: number
+}
+
+/**
+ * Normalized refused-checkout detail — a per-reason union mirroring the
+ * vendored OperatorCheckoutPreparationRefused; free-form strings are sanitized
+ * and the vendored arrays are carried as bounded `items` + `more` lists.
+ */
+export type OperatorCheckoutPreparationRefused =
+  | {readonly outcome: 'refused'; readonly reason: 'needs-recovery'}
+  | {readonly outcome: 'refused'; readonly reason: 'checkout-substituted'}
+  | {readonly outcome: 'refused'; readonly reason: 'unsupported-layout'; readonly layoutReason: string}
+  | {readonly outcome: 'refused'; readonly reason: 'unsupported-config'; readonly disallowedKeys: BoundedCheckoutTextList}
+  | {readonly outcome: 'refused'; readonly reason: 'operation-in-progress'; readonly operation: CheckoutOperation}
+  | {readonly outcome: 'refused'; readonly reason: 'dirty'; readonly changedPaths: BoundedCheckoutTextList}
+  | {readonly outcome: 'refused'; readonly reason: 'submodule-initialized'; readonly submodules: BoundedCheckoutTextList}
+  | {readonly outcome: 'refused'; readonly reason: 'detached'}
+  | {readonly outcome: 'refused'; readonly reason: 'non-default-branch'; readonly branch: string}
+  | {readonly outcome: 'refused'; readonly reason: 'diverged'}
+  | {readonly outcome: 'refused'; readonly reason: 'ahead'}
+  | {readonly outcome: 'refused'; readonly reason: 'obstructed'; readonly obstructions: BoundedCheckoutObstructionList}
+  | {readonly outcome: 'refused'; readonly reason: 'maintenance-hold'}
+
+/** Normalized failed-checkout detail (mirrors the vendored OperatorCheckoutPreparationFailed). */
+export interface OperatorCheckoutPreparationFailed {
+  readonly outcome: 'failed'
+  readonly reason: CheckoutUpdateFailureReason
+  readonly mutationStarted: boolean | 'possibly'
+  readonly permanent: boolean
+}
+
+/** Normalized checkout preparation (rm-252 / contract 1.8.0). */
+export type OperatorCheckoutPreparation = OperatorCheckoutPreparationRefused | OperatorCheckoutPreparationFailed
+
+/**
+ * Display labels for the failure kinds (stream + run-list share this vocabulary).
+ * Only these labels render for a failed run without a checkout preparation.
  */
 export declare const FAILURE_REASON_LABELS: Readonly<Record<FailureKind, string>>
+
+/**
+ * Dashboard display labels for the 13 refusal reasons — {token} templates
+ * filled from the preparation's own validated payload fields. Doubles as the
+ * refusal-reason parsing allowlist (a value with no label does not parse).
+ */
+export declare const CHECKOUT_REFUSAL_REASON_LABELS: Readonly<Record<CheckoutRefusalReason, string>>
+
+/** Update-failure labels. Doubles as the update-failure parsing allowlist. */
+export declare const CHECKOUT_UPDATE_FAILURE_REASON_LABELS: Readonly<Record<CheckoutUpdateFailureReason, string>>
+
+/** Layout-refusal labels. Doubles as the layout-reason parsing allowlist. */
+export declare const CHECKOUT_LAYOUT_REASON_LABELS: Readonly<Record<string, string>>
+
+/** Obstruction-kind labels. Doubles as the obstruction-kind parsing allowlist. */
+export declare const CHECKOUT_OBSTRUCTION_KIND_LABELS: Readonly<Record<string, string>>
+
+/**
+ * Checkout-operation labels ({operation} template values). `none` is the one
+ * allowlisted value with NO entry — the recipe's step 5 exception (fixed copy
+ * instead, see composeFailureReasonLabel).
+ */
+export declare const CHECKOUT_OPERATION_LABELS: Readonly<Record<Exclude<CheckoutOperation, 'none'>, string>>
+
+/** Per-string cap for every free-form checkout string (branches, paths, keys). */
+export declare const MAX_CHECKOUT_STRING_CHARS: number
+
+/** Entries kept per free-form checkout list; the rest are reported as a count. */
+export declare const MAX_CHECKOUT_LIST_ENTRIES: number
+
+/** Fill `{name}` tokens in a label template in one pass; a token with no value is left as written. */
+export declare function fillLabelTemplate(
+  template: string,
+  values: Readonly<Record<string, string | undefined>>,
+): string
+
+/** rm-252: 1.8.0 optional status-frame checkout provenance (validated shape). */
+export declare function parseCheckoutProvenance(value: unknown): OperatorCheckoutProvenance | undefined
+
+/** rm-252: 1.8.0 optional status-frame checkout preparation (validated shape). */
+export declare function parseCheckoutPreparation(value: unknown): OperatorCheckoutPreparation | undefined
+
+/**
+ * rm-252: compose the display label for a failed status — the failure-kind
+ * label, enriched with the filled refusal-reason template when the 1.8.0
+ * preparation detail is a validated refusal (the checkout-substituted /
+ * needs-recovery / diverged renders).
+ */
+export declare function composeFailureReasonLabel(
+  failureKind: FailureKind,
+  checkoutPreparation?: OperatorCheckoutPreparation,
+): string | undefined
 
 // ---------------------------------------------------------------------------
 // Frame types (mirrors src/gateway/operator-contract/sse-frames.ts shapes)
@@ -83,6 +280,13 @@ export interface StatusFrameData {
   readonly stale: boolean
   /** Operator-safe failure-reason code. Optional; failed statuses only. */
   readonly failureKind?: FailureKind
+  /**
+   * rm-252 optional 1.8.0 additions — checkout detail on the status frame.
+   * Absent on 1.6.0/1.7.0 frames; shape-gated: malformed values normalize to
+   * omitted and never fail frame validity.
+   */
+  readonly checkoutProvenance?: OperatorCheckoutProvenance
+  readonly checkoutPreparation?: OperatorCheckoutPreparation
 }
 
 export interface ResetFrameData {
@@ -169,6 +373,14 @@ export interface RunEntry {
    * raw failureKind wire value.
    */
   readonly reasonLabel?: string
+  /**
+   * rm-252 sticky 1.8.0 checkout detail for this run (from status frames).
+   * Provenance accompanies a checkout-substituted refusal (and enriches
+   * reasonLabel); preparation accompanies a successful workspace checkout.
+   * Absent on pre-1.8.0 streams.
+   */
+  readonly checkoutProvenance?: OperatorCheckoutProvenance
+  readonly checkoutPreparation?: OperatorCheckoutPreparation
   /**
    * Null-prototype map of open (non-tombstoned) approval prompts, keyed by requestID.
    * Absent until the first approval frame is received for this run.
@@ -281,6 +493,10 @@ export declare function nextStreamState(current: StreamState, event: StreamEvent
 /**
  * Map a run status object to the safe render model.
  * Returns ONLY: { runId, status, phase, startedAt, stale, reasonLabel? }
+ *
+ * Checkout provenance/preparation stay on the run entry (RunEntry); the
+ * future run-card checkout region reads them from runEntry per upstream —
+ * do NOT re-widen this whitelist.
  */
 export declare function toSafeRunView(runStatus: {
   readonly runId: string
