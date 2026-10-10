@@ -331,7 +331,33 @@ describe('rm-678 schema half: live ledger', () => {
     // 837 assertion above is superseded by this note exactly as
     // 366f6059 superseded at-write pins — union census 257 + 2 =
     // 259 defs / 0 dups / max rm-866, next free rm-867.
-    expect(live.max).toBe(866)
+    // 2026-10-10 run 4c0ec7a58ade roadmap fe481375 + prioritize acd1bcce236d: pin 833 -> 876
+    // (three mints rm-874/875/876 above the re-probed unlanded dashboard wall rm-872 with
+    // margin rm-873; all three selected for the cycle:1 served-truth batch, statuses open);
+    // census 248 + 3 = 251 defs / 0 dups / max rm-876, next free rm-877.
+    // (At-write note, superseded by the integrate note below per the
+    // 366f6059 precedent — the run authored against base cb4da55's
+    // 248-def ledger while main advanced.)
+    // 2026-10-10 integrate of run 4c0ec7a58ade (conflict case
+    // 7eda1b249e0141c0a42ee5a29c1f0d2f): the run was authored at
+    // base cb4da55 (248 defs / max rm-833) while main moved through
+    // the d823703c, 155f9770 (case 8955e66c), 91f3d37f (case
+    // a91875ba), 122a693028b8 (case ec31fce8), 8cecf1d7f09f (case
+    // 87124eb3), 28cd8f6c2568 (case a6b4df10), aec9c3e88357 (case
+    // 3b444f4a) and 159ec0eba87d (case bc4dbcf8) integrations,
+    // landing at 259 defs / max rm-866. Its three mints rm-874 (CSP
+    // style-src 'unsafe-inline' stale + literal served-header pin),
+    // rm-875 (operator-copy.ts orphan fold) and rm-876 (OAuth/
+    // cookie-key boot fail-fast) sit ABOVE that landed ceiling and
+    // are collision-free first-hand against the merged ledger
+    // (rm-874/875/876 appear in no other landed def line; census
+    // dups 0), so all three land as-authored and the pin moves
+    // 866 -> 876 atomically with this landing, single-sourced at the
+    // assertion below; the run's at-write 876 assertion above is
+    // corroborated (same numeral, different basis) and the at-write
+    // 251-def count is superseded by this note — union census
+    // 259 + 3 = 262 defs / 0 dups / max rm-876, next free rm-877.
+    expect(live.max).toBe(876)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {

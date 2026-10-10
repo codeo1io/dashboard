@@ -744,7 +744,15 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   })
 
   // ── Security headers + CSP (applied to all responses) ──────────────────────
-  // style-src allows 'unsafe-inline' because SSR pages use inline style attributes.
+  // rm-874: style-src is strict ('self', no 'unsafe-inline') — the client is
+  // a Tailwind v4 PWA and every audited source ships zero inline styles
+  // (web/index.html, web/privacy.html, web/src, src, public/operator-*.js:
+  // zero 'style="' / '<style' / setAttribute('style' hits at landing; the 47
+  // JSX style={{ sites in web/src (rider-inventoried) apply via the CSSOM
+  // (Element.style), CSP-exempt by design; the landing rider records the audit
+  // inventory. The old 'SSR style attributes' rationale predates the SPA-only
+  // client and was stale. Re-run that audit before ever re-widening this
+  // directive.
   // script-src stays strict ('self', no inline) — inline script is the XSS vector.
   app.use(
     '*',
@@ -758,7 +766,7 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       contentSecurityPolicy: {
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'"],
-        styleSrc: ["'self'", "'unsafe-inline'"],
+        styleSrc: ["'self'"],
         workerSrc: ["'self'"],
         manifestSrc: ["'self'"],
         connectSrc: ["'self'"],
@@ -1567,6 +1575,51 @@ export function readServerBindConfig(env: NodeJS.ProcessEnv = process.env): Serv
 }
 
 /**
+ * rm-876: production boot-time validation of the operator GitHub OAuth
+ * credentials. A deployment missing DASHBOARD_OAUTH_CLIENT_ID or
+ * DASHBOARD_OAUTH_CLIENT_SECRET used to boot green (buildDashboardApp
+ * coalesces both to '') and fail only when the operator first
+ * authenticated, wasting a deploy cycle on a condition diagnosable at
+ * boot — createDashboardServer calls this before wiring anything. Dev/test
+ * boot paths keep the lazy behavior where the credentials are intentionally
+ * absent: NODE_ENV=development or NODE_ENV=test opts out (an UNSET NODE_ENV
+ * stays fail-closed, the same direction as the devAutoLogin guard).
+ */
+export function validateProductionBootEnv(env: NodeJS.ProcessEnv = process.env): void {
+  if (env.NODE_ENV === 'development' || env.NODE_ENV === 'test') return
+  const missing: string[] = []
+  if ((env.DASHBOARD_OAUTH_CLIENT_ID ?? '').trim() === '') missing.push('DASHBOARD_OAUTH_CLIENT_ID')
+  if ((env.DASHBOARD_OAUTH_CLIENT_SECRET ?? '').trim() === '') missing.push('DASHBOARD_OAUTH_CLIENT_SECRET')
+  if (missing.length === 0) return
+  const are = missing.length === 1 ? 'is' : 'are'
+  throw new Error(
+    `dashboard boot failed: ${missing.join(' and ')} ${are} not set — operator GitHub OAuth ` +
+    'cannot work without them, so the server would boot green and only fail at the ' +
+    "operator's first sign-in. Set the OAuth App credentials (README 'Configuration' table), " +
+    'or boot with NODE_ENV=development or NODE_ENV=test when they are intentionally absent.',
+  )
+}
+
+/**
+ * rm-876: one actionable message for a cookie-key boot failure. Only the raw
+ * key-file miss (no DASHBOARD_COOKIE_KEY and the DASHBOARD_COOKIE_KEY_FILE /
+ * default '/data/cookie.key' file does not exist — a bare ENOENT) is
+ * translated; every other loadCookieKey failure (undecodable key, too-short
+ * key) already names its own remediation and passes through untouched.
+ */
+export function toBootCookieKeyFailure(error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error)
+  if (!message.includes('ENOENT')) return error instanceof Error ? error : new Error(message)
+  const attempted = process.env.DASHBOARD_COOKIE_KEY_FILE ?? '/data/cookie.key'
+  return new Error(
+    'dashboard boot failed: no cookie signing key available — DASHBOARD_COOKIE_KEY is unset ' +
+    `and the key file ${JSON.stringify(attempted)} does not exist. Set DASHBOARD_COOKIE_KEY ` +
+    '(hex or base64, decoding to at least 32 bytes) or point DASHBOARD_COOKIE_KEY_FILE at a ' +
+    'readable key file.',
+  )
+}
+
+/**
  * Binds the app to `DASHBOARD_HOST:DASHBOARD_PORT` (default `0.0.0.0:3000`) via
  * @hono/node-server. Loads the cookie key asynchronously before starting.
  *
@@ -1577,7 +1630,20 @@ export function readServerBindConfig(env: NodeJS.ProcessEnv = process.env): Serv
  * serve requests (including /api/healthz) within ~1-2s, not 15-20s.
  */
 async function createDashboardServer(): Promise<ServerType> {
-  const cookieKey = await loadCookieKey()
+  // rm-876: fail fast on operator-auth misconfiguration BEFORE wiring
+  // anything — one actionable message naming the exact missing env var(s);
+  // NODE_ENV=development|test boots keep the lazy seam by design.
+  validateProductionBootEnv()
+
+  // rm-876: loadCookieKey already fails closed, but a missing key FILE
+  // surfaces as a raw ENOENT — translate that one case into actionable copy
+  // naming the env vars (decode/length failures keep their own messages).
+  let cookieKey: Buffer
+  try {
+    cookieKey = await loadCookieKey()
+  } catch (error) {
+    throw toBootCookieKeyFailure(error)
+  }
 
   // Wire the real GitHub data layer when credentials are present.
   // If creds are absent (dev/test context), fall back to the empty provider

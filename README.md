@@ -129,7 +129,7 @@ missing `_FILE` path silently falls back to the environment variable).
 
 | Variable | Read at | Default | Purpose |
 |---|---|---|---|
-| `DASHBOARD_COOKIE_KEY` | `src/session.ts` | — (falls through to file) | Cookie-signing key: hex or padded base64 decoding to ≥32 bytes, else load throws (fail-closed). |
+| `DASHBOARD_COOKIE_KEY` | `src/session.ts` | — (falls through to file) | Cookie-signing key: hex or padded base64 decoding to ≥32 bytes, else load throws (fail-closed). A missing env+file pair now also fails production startup with an actionable message naming both vars (rm-876). |
 | `DASHBOARD_COOKIE_KEY_FILE` | `src/session.ts` | `/data/cookie.key` | File fallback for the cookie key (text-encoded or raw ≥32 bytes). |
 | `DASHBOARD_DEV_AUTOLOGIN` | `src/server.ts` | unset (off) | Dev/test-only auth bypass; refused unless `NODE_ENV` is `development`/`test` and the bind host is loopback. |
 | `DASHBOARD_FIXTURE_HARNESS_ENABLED` | `src/gateway/operator-fixture-config.ts` | off | Operator fixture-harness flag; only the exact value `true` enables (fail-closed). |
@@ -142,8 +142,8 @@ missing `_FILE` path silently falls back to the environment variable).
 | `DASHBOARD_LISTENER_DB` | `src/listener/config.ts` | `/data/listener/messages.db` | SQLite file path for the listener message store. |
 | `DASHBOARD_LISTENER_INGEST_KEY` | `src/listener/config.ts` | unset (route unmounted) | HMAC key for `POST /api/listener/ingest`; when unset the ingest route is not mounted at all (fail-closed). |
 | `DASHBOARD_MONITORING_REFRESH` | `src/server.ts` | on | Set to `false`/`0`/`off`/`no` (case-insensitive) to skip the aggregator refresh loop entirely — empty snapshot, no token minting, no GitHub queries (rm-223; same fail-closed posture as missing credentials). |
-| `DASHBOARD_OAUTH_CLIENT_ID` | `src/server.ts` | `''` | GitHub OAuth app client id. |
-| `DASHBOARD_OAUTH_CLIENT_SECRET` | `src/server.ts` | `''` | GitHub OAuth app client secret. |
+| `DASHBOARD_OAUTH_CLIENT_ID` | `src/server.ts` | `''` | GitHub OAuth app client id. **Validated at production boot** (rm-876): unset or blank (with `NODE_ENV` anything other than `development`/`test`) fails startup with an actionable message instead of surfacing as a first-sign-in surprise. |
+| `DASHBOARD_OAUTH_CLIENT_SECRET` | `src/server.ts` | `''` | GitHub OAuth app client secret; validated together with the id at production boot (rm-876) — a missing secret is named in the same startup failure. |
 | `DASHBOARD_OAUTH_REDIRECT_URI` | `src/server.ts` | `http://localhost:3000/auth/callback` | OAuth callback URL. |
 | `DASHBOARD_OPERATOR_LOGIN` | `src/server.ts` | unset | The single-operator allowlist login (exact, case-sensitive match); a whitespace-only value throws at construction (fail-closed). |
 | `DASHBOARD_OPERATOR_PUSH_ENABLED` | `src/gateway/operator-config.ts` | off | Push-notification delivery flag; only the exact value `true` enables (fail-closed). |
