@@ -13,8 +13,16 @@
  * preserves (bare calls count against every class budget).
  */
 import {Buffer} from 'node:buffer'
+import {createHmac} from 'node:crypto'
 import {afterEach, describe, expect, it} from 'vitest'
-import {buildDashboardApp, checkRateLimit, classifyRateLimitPath, resetRateLimitForTesting} from '../src/server.ts'
+import {createListenerStore} from '../src/listener/store.ts'
+import {
+  buildDashboardApp,
+  checkRateLimit,
+  classifyRateLimitPath,
+  rateLimitStoreSize,
+  resetRateLimitForTesting,
+} from '../src/server.ts'
 
 const TEST_KEY = Buffer.from('testkey-ABCDEFGHIJKLMNOPQRSTUV12', 'utf8') // 32 bytes
 
@@ -194,11 +202,18 @@ describe('rm-129: flood on public cannot starve the operator surface (middleware
     expect(operatorRes.status).toBe(302)
   })
 
-  it('flood on the ingest route does not starve the operator or public classes', async () => {
+  it('rm-904: an unauthenticated ingest flood never throttles — other classes stay independent', async () => {
     const app = await buildTestApp()
-    // /api/listener/ingest is HMAC-gated: requests fail auth (401) but every
-    // attempt still consumes the ingest budget.
-    for (let i = 0; i < 60; i++) {
+    // /api/listener/ingest is HMAC-gated. Pre-rm-904 every attempt consumed
+    // the ingest budget BEFORE verification, so an unsigned flood exhausted
+    // the budget and 429'd at the 61st request — letting a flood evict the
+    // legitimate producer. rm-904 exempts ingest-class ADMISSIONS from
+    // pre-verification counting entirely (the count happens only after the
+    // route's HMAC verification succeeds, via deps.ingestRateLimit in
+    // buildListenerRouter), so an unauthenticated flood is answered by the
+    // auth gate itself (401 with a store mounted; 404 here because
+    // buildTestApp mounts no listenerStore), never by the limiter:
+    for (let i = 0; i < 72; i++) {
       const res = await app.request('/api/listener/ingest', {
         method: 'POST',
         headers: {'content-type': 'application/json'},
@@ -206,17 +221,8 @@ describe('rm-129: flood on public cannot starve the operator surface (middleware
       })
       expect(res.status).not.toBe(429)
     }
-    expect(
-      (
-        await app.request('/api/listener/ingest', {
-          method: 'POST',
-          headers: {'content-type': 'application/json'},
-          body: JSON.stringify({events: []}),
-        })
-      ).status,
-    ).toBe(429)
 
-    // Both other classes still have their full budgets.
+    // The flood consumed nothing: both other classes keep their full budgets.
     expect((await app.request('/api/status')).status).toBe(302) // operator auth redirect, not 429
     expect((await app.request('/auth/login')).status).not.toBe(429) // public, not exhausted
   })
@@ -274,5 +280,108 @@ describe('rm-129: X-Forwarded-For handling', () => {
       await app.request('/auth/login')
     }
     expect((await app.request('/auth/login')).status).toBe(429) // remote-address fallback bucket
+  })
+})
+
+function rm904GarbageSignatureHeaders(): Record<string, string> {
+  return {
+    'content-type': 'application/json',
+    'x-listener-timestamp': String(Math.floor(Date.now() / 1000)),
+    'x-listener-signature': 'sha256=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+  }
+}
+
+describe('rm-904: ingest auth-before-ratelimit — auth-failed admissions are budget-exempt', () => {
+  const INGEST_KEY = 'rm904-ingest-key-for-tests'
+  const VALID_BODY = JSON.stringify({
+    source: 'infra',
+    kind: 'deploy-health',
+    severity: 'warning',
+    title: 'rm-904 flood probe',
+    body: 'unsigned flood + verified producer regression for the ingest budget.',
+    createdAt: '2026-10-10T12:00:00Z',
+  })
+
+  function signedHeaders(rawBody: string, timestamp = Math.floor(Date.now() / 1000)): Record<string, string> {
+    const ts = String(timestamp)
+    return {
+      'content-type': 'application/json',
+      'x-listener-timestamp': ts,
+      'x-listener-signature': `sha256=${createHmac('sha256', INGEST_KEY).update(`${ts}.${rawBody}`).digest('hex')}`,
+    }
+  }
+
+  async function buildIngestApp() {
+    return buildDashboardApp({
+      operatorLogin: 'octocat',
+      cookieKey: TEST_KEY,
+      listenerStore: createListenerStore(':memory:'),
+      listenerIngestKey: INGEST_KEY,
+    })
+  }
+
+  it('an unsigned/expired flood never 429s and never touches the rate-limit store (rm-286 cap unpressured)', async () => {
+    const app = await buildIngestApp()
+    for (let i = 0; i < 72; i++) {
+      // Alternate bad-signature and expired-timestamp rejections — both are
+      // auth failures and must stay exempt from budget consumption.
+      const headers = i % 2 === 0 ? rm904GarbageSignatureHeaders() : signedHeaders(VALID_BODY, Math.floor(Date.now() / 1000) - 600)
+      const res = await app.request('/api/listener/ingest', {method: 'POST', headers, body: VALID_BODY})
+      expect(res.status).toBe(401)
+    }
+    expect(rateLimitStoreSize()).toBe(0)
+  })
+
+  it('the verified producer is unaffected by an unsigned flood from the same client', async () => {
+    const app = await buildIngestApp()
+    for (let i = 0; i < 72; i++) {
+      const res = await app.request('/api/listener/ingest', {
+        method: 'POST',
+        headers: rm904GarbageSignatureHeaders(),
+        body: VALID_BODY,
+      })
+      expect(res.status).toBe(401)
+    }
+    const res = await app.request('/api/listener/ingest', {
+      method: 'POST',
+      headers: signedHeaders(VALID_BODY),
+      body: VALID_BODY,
+    })
+    expect(res.status).toBe(202)
+  })
+
+  it('verified floods still consume the ingest budget: the 61st verified request 429s', async () => {
+    const app = await buildIngestApp()
+    for (let i = 0; i < 60; i++) {
+      const res = await app.request('/api/listener/ingest', {
+        method: 'POST',
+        headers: signedHeaders(VALID_BODY),
+        body: VALID_BODY,
+      })
+      expect(res.status).toBe(202)
+    }
+    const res = await app.request('/api/listener/ingest', {
+      method: 'POST',
+      headers: signedHeaders(VALID_BODY),
+      body: VALID_BODY,
+    })
+    expect(res.status).toBe(429)
+    expect(await res.text()).toBe('Too Many Requests')
+    expect(rateLimitStoreSize()).toBe(1)
+  })
+
+  it('an unsigned ingest flood leaves the public class budget untouched', async () => {
+    const app = await buildIngestApp()
+    for (let i = 0; i < 72; i++) {
+      const res = await app.request('/api/listener/ingest', {
+        method: 'POST',
+        headers: rm904GarbageSignatureHeaders(),
+        body: VALID_BODY,
+      })
+      expect(res.status).toBe(401)
+    }
+    // Public-class admission behaves normally after the flood (auth shape,
+    // not a 429) — the flood consumed nothing.
+    expect((await app.request('/auth/login')).status).not.toBe(429)
   })
 })

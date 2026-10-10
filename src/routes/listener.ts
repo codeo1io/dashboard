@@ -13,7 +13,7 @@ import type {ListenerStore} from '../listener/store.ts'
 
 import {Buffer} from 'node:buffer'
 import {createHmac, timingSafeEqual} from 'node:crypto'
-import {Hono} from 'hono'
+import {Hono, type Context} from 'hono'
 import {parseIngestBody} from '../listener/contract.ts'
 import {verifyIngestSignature} from '../listener/ingest-auth.ts'
 import {logger} from '../logger.ts'
@@ -96,6 +96,15 @@ export interface ListenerRouterDeps {
    * it whenever an operator session is in scope (auth active).
    */
   readonly ackCsrf: AckCsrfConfig | null
+  /**
+   * rm-904: post-verification ingest budget admission. Counts a VERIFIED
+   * request against the ingest path-class budget (server.ts's checkRateLimit,
+   * keyed identically to the pre-auth middleware) and returns false when the
+   * budget is exhausted. Optional so direct test constructions can omit it;
+   * the real app always supplies it (absent === admit — the auth seam itself
+   * never fails closed on a bookkeeping dependency).
+   */
+  readonly ingestRateLimit?: {consume: (c: Context) => boolean}
 }
 
 export function buildListenerRouter(deps: ListenerRouterDeps): Hono {
@@ -120,6 +129,14 @@ export function buildListenerRouter(deps: ListenerRouterDeps): Hono {
     })
     if (!authResult.success) {
       return c.json({error: 'unauthorized'}, 401)
+    }
+
+    // rm-904: budget admission only for VERIFIED requests — auth-failed
+    // admissions no longer consume the ingest budget anywhere (the pre-auth
+    // middleware skips the ingest class), so an unsigned flood cannot evict
+    // or block the legitimate producer's key.
+    if (deps.ingestRateLimit !== undefined && !deps.ingestRateLimit.consume(c)) {
+      return c.text('Too Many Requests', 429)
     }
 
     let parsedJson: unknown
