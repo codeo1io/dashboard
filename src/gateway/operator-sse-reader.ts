@@ -115,7 +115,10 @@ function normalizeCrlf(text: string): string {
 function parseSseRecord(record: string): SseParseResult | null {
   const lines = record.split('\n')
   let eventName: string | undefined
-  let dataLine: string | undefined
+  // rm-854 — WHATWG SSE 9.2.6: consecutive data lines accumulate and join with a
+  // single newline (previously last-wins, which misparsed conforming multi-line
+  // senders). Single-line records parse byte-identically.
+  const dataLines: string[] = []
 
   for (const line of lines) {
     if (line.startsWith(':')) {
@@ -125,9 +128,11 @@ function parseSseRecord(record: string): SseParseResult | null {
     if (line.startsWith('event:')) {
       eventName = line.slice('event:'.length).trim()
     } else if (line.startsWith('data:')) {
-      dataLine = line.slice('data:'.length).trim()
+      dataLines.push(line.slice('data:'.length).trim())
     }
   }
+
+  const dataLine: string | undefined = dataLines.length > 0 ? dataLines.join('\n') : undefined
 
   // A record with only comment lines produces no frame
   if (eventName === undefined && dataLine === undefined) {

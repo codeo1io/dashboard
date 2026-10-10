@@ -7505,3 +7505,165 @@ describe('connection lifecycle — stranded connections abort (rm-261)', () => {
     expect(noticeEl.dataset.connectionState).toBeTruthy()
   })
 })
+
+describe('rm-854 — parseSseFrame joins consecutive data lines (WHATWG SSE 9.2.6)', () => {
+  it('joins two data lines with a newline instead of last-wins', () => {
+    // A conforming sender splits the record at a JSON token boundary; only the
+    // spec's join-with-newline recovers the full object (last-wins yields a
+    // fragment that fails JSON.parse).
+    const record = 'event: output\ndata: {"runId":\ndata: "run-a","text":"multi line","final":false,"seq":0}\n\n'
+    const result = parseSseFrame(record)
+    expect(result?.success).toBe(true)
+    if (result?.success) {
+      expect(result.frame.type).toBe('output')
+      if (result.frame.type === 'output') {
+        expect(result.frame.data.runId).toBe('run-a')
+        expect(result.frame.data.text).toBe('multi line')
+        expect(result.frame.data.final).toBe(false)
+        expect(result.frame.data.seq).toBe(0)
+      }
+    }
+  })
+
+  it('single data line parses identically to the pre-join behavior', () => {
+    const record = 'event: output\ndata: {"runId":"run-a","text":"one","final":false,"seq":0}\n\n'
+    const result = parseSseFrame(record)
+    expect(result?.success).toBe(true)
+    if (result?.success && result.frame.type === 'output') {
+      expect(result.frame.data.text).toBe('one')
+    }
+  })
+
+  it('a multi-line record whose joined payload is invalid JSON is a parse failure (dropped downstream, rm-853 territory)', () => {
+    const record = 'event: output\ndata: not-json-first\ndata: not-json-second\n\n'
+    const result = parseSseFrame(record)
+    expect(result?.success).toBe(false)
+  })
+})
+
+describe('rm-853 — nextStreamState output seq-gap detection', () => {
+  const live = (): StreamState =>
+    nextStreamState(INITIAL_STATE, {type: 'ready', data: {contractVersion: PINNED_CONTRACT_VERSION}})
+  const applyOutput = (state: StreamState, data: OutputFrameData): StreamState =>
+    nextStreamState(state, {type: 'output', data})
+  const runOf = (state: StreamState, runId: string): RunEntry => {
+    const entry = state.runs[runId]
+    if (entry === undefined) throw new Error(`expected run ${runId} in state`)
+    return entry
+  }
+
+  it('flags a gap and accumulates the missing-frame count when a delta skips seqs', () => {
+    let state = live()
+    state = applyOutput(state, {runId: 'run-gap', text: 'a', final: false, seq: 0})
+    state = applyOutput(state, {runId: 'run-gap', text: 'c', final: false, seq: 2})
+    const run = runOf(state, 'run-gap')
+    expect(run.outputGapDetected).toBe(true)
+    expect(run.outputGapMissing).toBe(1)
+  })
+
+  it('accumulates across multiple gaps', () => {
+    let state = live()
+    state = applyOutput(state, {runId: 'run-gap', text: 'a', final: false, seq: 0})
+    state = applyOutput(state, {runId: 'run-gap', text: 'd', final: false, seq: 5})
+    const run = runOf(state, 'run-gap')
+    expect(run.outputGapMissing).toBe(4)
+  })
+
+  it('duplicate and stale seqs never raise a false gap', () => {
+    let state = live()
+    state = applyOutput(state, {runId: 'run-dup', text: 'a', final: false, seq: 0})
+    state = applyOutput(state, {runId: 'run-dup', text: 'a', final: false, seq: 0})
+    state = applyOutput(state, {runId: 'run-dup', text: 'b', final: false, seq: 1})
+    state = applyOutput(state, {runId: 'run-dup', text: 'a', final: false, seq: 0})
+    const run = runOf(state, 'run-dup')
+    expect(run.outputGapDetected).toBe(false)
+    expect(run.outputGapMissing).toBe(0)
+  })
+
+  it('a first-seen delta above seq 0 is not a gap (no prior frame to count from)', () => {
+    let state = live()
+    state = applyOutput(state, {runId: 'run-late', text: 'x', final: false, seq: 4})
+    const run = runOf(state, 'run-late')
+    expect(run.outputGapDetected).toBe(false)
+    expect(run.outputGapMissing).toBe(0)
+  })
+
+  it('the gap latch survives a status frame and a final output frame (final replaces text but not the signal)', () => {
+    let state = live()
+    state = applyOutput(state, {runId: 'run-latch', text: 'a', final: false, seq: 0})
+    state = applyOutput(state, {runId: 'run-latch', text: 'c', final: false, seq: 2})
+    state = nextStreamState(state, {
+      type: 'status',
+      data: {runId: 'run-latch', entityRef: 'fro-bot/agent', surface: 'operator', phase: 'session', status: 'running', stale: false, startedAt: '2026-10-10T00:00:00Z'},
+    })
+    let run = runOf(state, 'run-latch')
+    expect(run.outputGapDetected).toBe(true)
+    expect(run.outputGapMissing).toBe(1)
+    state = applyOutput(state, {runId: 'run-latch', text: 'final', final: true, seq: 9})
+    run = runOf(state, 'run-latch')
+    expect(run.outputFinal).toBe(true)
+    expect(run.outputText).toBe('final')
+    expect(run.outputGapDetected).toBe(true)
+    expect(run.outputGapMissing).toBe(1)
+  })
+
+  it('a final frame alone never counts a gap (authoritative replace, seq not delta-compared)', () => {
+    let state = live()
+    state = applyOutput(state, {runId: 'run-fin', text: 'a', final: false, seq: 0})
+    state = applyOutput(state, {runId: 'run-fin', text: 'FINAL', final: true, seq: 12})
+    const run = runOf(state, 'run-fin')
+    expect(run.outputGapDetected).toBe(false)
+  })
+
+  it('the surfaced signal renders: gap element shows with a fixed label, coalesced stays hidden (no coalesce/truncate)', async () => {
+    // Mirrors the late-frame render harness: drive updateDOM with a gapped stream.
+    const noticeEl = {textContent: '', hidden: false, dataset: {connectionState: ''}}
+    const statusEl = {textContent: 'Pending', className: '', classList: {add: () => {}}, dataset: {}, hidden: false}
+    const outputEl = {textContent: '', hidden: true}
+    const coalescedEl = {textContent: '', hidden: true}
+    const gapEl = {textContent: '', hidden: true}
+    const approvalsEl = {hidden: true, append: () => {}}
+    const badgeEl = {textContent: '', hidden: true}
+
+    const encoder = new TextEncoder()
+    const readyFrame = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+    const frameA = `event: output\ndata: ${JSON.stringify({runId: 'run-gap-render', text: 'a', final: false, seq: 0})}\n\n`
+    const frameC = `event: output\ndata: ${JSON.stringify({runId: 'run-gap-render', text: 'c', final: false, seq: 2})}\n\n`
+    let readCount = 0
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: {get: () => 'text/event-stream'},
+      body: {
+        getReader: () => ({
+          read: async () => {
+            readCount++
+            if (readCount === 1) return {done: false, value: encoder.encode(readyFrame)}
+            if (readCount === 2) return {done: false, value: encoder.encode(frameA + frameC)}
+            return {done: true}
+          },
+        }),
+      },
+    }))
+
+    const handle = initOperatorStream({
+      runId: 'run-gap-render',
+      statusEl,
+      noticeEl,
+      outputEl,
+      coalescedEl,
+      gapEl,
+      approvalsEl,
+      badgeEl,
+      endpointBase: '/operator',
+    })
+    await new Promise(resolve => setTimeout(resolve, 40))
+    handle.close()
+    vi.unstubAllGlobals()
+
+    expect(outputEl.textContent).toBe('ac')
+    expect(gapEl.hidden).toBe(false)
+    expect(gapEl.textContent).not.toBe('')
+    expect(coalescedEl.hidden).toBe(true)
+  })
+})
