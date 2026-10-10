@@ -144,6 +144,14 @@ describe('rm-678 schema half: live ledger', () => {
     // pin moves 835 -> 866 atomically with this landing: union
     // census 253 + 2 = 255 defs / 0 dups / max rm-866, next
     // free rm-867.
+    // 2026-10-10 review-fix fe7b0f47 (independent_review ea91ccc5 NEEDS_CHANGES):
+    // our mint's numeral rm-806 duplicated 155f9770's earlier 06:37:56Z unlanded
+    // mint — renumbered in place to rm-864 (hardened frontier re-probe: spool max
+    // rm-863, walls rm-860, origin/main rm-780). Historical record of the mint:
+    // 2026-10-09 cycle-2 roadmap (run aec9c3e88357, attempt fc84e56a):
+    // minted (as rm-806) above the then-re-probed fleet def-line ceiling rm-805
+    // (run-8dd690c85b50, unlanded) — pin 778 -> 806 atomically; the 806 numeral is
+    // 155f9770's workflow-concurrency item now — see ROADMAP.md repair comment #33.
     // 2026-10-09 integrate of run 9289efaa (conflict case
     // 139848e6): that run's single mint rm-703 (release.yaml
     // digest-readback SIGPIPE -- the THIRD lineage id of the
@@ -276,6 +284,24 @@ describe('rm-678 schema half: live ledger', () => {
     // run's at-write 832 pin above is superseded by this note
     // exactly as 366f6059 superseded at-write pins — union census
     // 255 + 1 = 256 defs / 0 dups / max rm-866, next free rm-867.
+    // 2026-10-10 integrate of run aec9c3e88357 (conflict case
+    // 3b444f4ac00f4e519d0a442ca38e630a): the run was authored at
+    // base 364272b (245 defs / max rm-778) while main moved
+    // through the cbe70604, d823703c, 155f9770 (case 8955e66c),
+    // 91f3d37f (case a91875ba), 122a693028b8 (case ec31fce8),
+    // 8cecf1d7f09f (case 87124eb3) and 28cd8f6c2568 (case
+    // a6b4df10) integrations, landing at 256 defs / max rm-866.
+    // Its single mint rm-864 (operator failure-label retryability
+    // — renumbered from its rm-806 birth numeral by review fix
+    // fe7b0f47 per the landed-meaning-owns-ids rule) sits BELOW
+    // that landed ceiling and is collision-free first-hand against
+    // the merged ledger (rm-864 appears in no other landed def
+    // line; census dups 0), so it lands as-authored and NO bump
+    // is owed: the pin stays 866 single-sourced at the assertion
+    // below, and the run's at-write 864 assertion above is
+    // superseded by this note exactly as 366f6059 superseded
+    // at-write pins — union census 256 + 1 = 257 defs / 0 dups /
+    // max rm-866, next free rm-867.
     expect(live.max).toBe(866)
   })
 

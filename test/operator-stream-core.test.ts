@@ -1166,7 +1166,7 @@ describe('toSafeRunView — reasonLabel', () => {
       status: 'failed',
       failureKind: 'workspace-unreachable',
       reason: 'workspace-unreachable',
-      reasonLabel: 'Workspace unreachable',
+      reasonLabel: 'Workspace unreachable — retry may succeed',
       checkoutProvenance: {kind: 'observed', junk: 'raw-wire-field'},
       checkoutPreparation: {outcome: 'refused', reason: 'diverged', behind: 5, ahead: 2},
     }
@@ -6676,9 +6676,89 @@ describe('live failure reason updates and announcements', () => {
     await new Promise(resolve => setTimeout(resolve, 30))
 
     expect(statusEl.textContent).toBe('Failed')
-    expect(reasonEl.textContent).toBe('Workspace unreachable')
+    expect(reasonEl.textContent).toBe('Workspace unreachable — retry may succeed')
     // noticeEl must contain the live polite announcement
-    expect(noticeEl.textContent).toBe('Run failed: Workspace unreachable')
+    expect(noticeEl.textContent).toBe('Run failed: Workspace unreachable — retry may succeed')
+    expect(noticeEl.hidden).toBe(false)
+
+    handle.close()
+  })
+
+  it('live terminal failure with the non-retriable workspace-unavailable kind renders distinct not-retriable copy (rm-864)', async () => {
+    const noticeEl = {textContent: '', hidden: true, dataset: {connectionState: ''}}
+    const statusEl = {textContent: 'Pending', className: '', classList: {add: () => {}, remove: () => {}}, dataset: {}, hidden: false}
+    const reasonEl = {textContent: ''}
+
+    const encoder = new TextEncoder()
+    const readyFrame = `event: ready\ndata: {"contractVersion":"${PINNED_CONTRACT_VERSION}"}\n\n`
+    const runningFrame = `event: status\ndata: ${JSON.stringify({
+      runId: 'run-live-fail-002',
+      entityRef: 'fro-bot/agent',
+      surface: 'github',
+      phase: 'EXECUTING',
+      status: 'running',
+      startedAt: '2026-06-29T10:00:00Z',
+      stale: false,
+    })}\n\n`
+    const failedFrame = `event: status\ndata: ${JSON.stringify({
+      runId: 'run-live-fail-002',
+      entityRef: 'fro-bot/agent',
+      surface: 'github',
+      phase: 'FAILED',
+      status: 'failed',
+      startedAt: '2026-06-29T10:02:00Z',
+      stale: false,
+      failureKind: 'workspace-unavailable',
+    })}\n\n`
+
+    let readCount = 0
+    let resolveSecondFrame: ((value: {done: boolean; value?: Uint8Array}) => void) | undefined
+    const secondFramePromise = new Promise<{done: boolean; value?: Uint8Array}>(resolve => {
+      resolveSecondFrame = resolve
+    })
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: {get: () => 'text/event-stream'},
+      body: {
+        getReader: () => ({
+          read: async () => {
+            if (readCount === 0) {
+              readCount++
+              return {done: false, value: encoder.encode(readyFrame + runningFrame)}
+            }
+            if (readCount === 1) {
+              readCount++
+              return secondFramePromise
+            }
+            return {done: true}
+          },
+        }),
+      },
+    }))
+
+    const handle = initOperatorStream({
+      runId: 'run-live-fail-002',
+      statusEl,
+      noticeEl,
+      reasonEl,
+      endpointBase: '/operator',
+    })
+
+    // Process ready + running
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(statusEl.textContent).toBe('Running')
+
+    // Transition to failed with the NON-retriable workspace kind
+    resolveSecondFrame?.({done: false, value: encoder.encode(failedFrame)})
+    await new Promise(resolve => setTimeout(resolve, 30))
+
+    expect(statusEl.textContent).toBe('Failed')
+    // rm-864: the two workspace-failure kinds render distinct, meaning-bearing
+    // copy — this one is the non-retriable twin of the test above.
+    expect(reasonEl.textContent).toBe('Workspace unavailable — not retriable')
+    expect(noticeEl.textContent).toBe('Run failed: Workspace unavailable — not retriable')
     expect(noticeEl.hidden).toBe(false)
 
     handle.close()

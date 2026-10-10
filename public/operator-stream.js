@@ -176,9 +176,21 @@ const VALID_FAILURE_KINDS = new Set([
  * Dashboard-owned display labels for known failure reasons — render labels from
  * this map, never the raw failureKind wire string. A missing or unmapped reason
  * has no entry here and falls back to generic 'Failed' at the render boundary.
- * Every OperatorFailureKind value has an explicit display decision.
+ * Every OperatorFailureKind value has an explicit display decision. The
+ * retriable 'workspace-unreachable' and non-retriable 'workspace-unavailable'
+ * labels must stay pairwise distinct — the copy encodes retryability (pinned
+ * by tests).
+ *
+ * Single-sourced from the bare base map below plus the rm-864 retryability
+ * clauses: the bare base is what composeFailureReasonLabel() appends a
+ * validated refusal detail to, so a refusal-composed label is
+ * 'Workspace unavailable — diverged from remote' — the retryability clause
+ * rides the bare kind label (rendered whenever no validated refusal detail is
+ * present) and never doubles the em-dash chain in the composed form (the
+ * 3b444f4a integrate reconciliation: rm-864's map-level encoding and the
+ * 28cd8f6c composition contract coexist, both pinned).
  */
-export const FAILURE_REASON_LABELS = {
+const FAILURE_REASON_BARE_LABELS = {
   'inactivity-timeout': 'No recent activity',
   'max-duration-timeout': 'Run timed out',
   'stream-ended': 'Stream ended early',
@@ -187,6 +199,18 @@ export const FAILURE_REASON_LABELS = {
   'checkout-substituted': 'Checkout mismatch',
   'workspace-unavailable': 'Workspace unavailable',
   unknown: 'Unknown failure',
+}
+
+/** rm-864 retryability clauses — only the two workspace kinds carry one. */
+const FAILURE_REASON_RETRYABILITY_CLAUSES = {
+  'workspace-unreachable': 'retry may succeed',
+  'workspace-unavailable': 'not retriable',
+}
+
+export const FAILURE_REASON_LABELS = {
+  ...FAILURE_REASON_BARE_LABELS,
+  'workspace-unreachable': `${FAILURE_REASON_BARE_LABELS['workspace-unreachable']} — ${FAILURE_REASON_RETRYABILITY_CLAUSES['workspace-unreachable']}`,
+  'workspace-unavailable': `${FAILURE_REASON_BARE_LABELS['workspace-unavailable']} — ${FAILURE_REASON_RETRYABILITY_CLAUSES['workspace-unavailable']}`,
 }
 
 // Checkout provenance / checkout preparation — vendored 1.8.0 contract mirror
@@ -572,6 +596,11 @@ export function parseCheckoutPreparation(value) {
  * from the preparation's own sanitized payload fields (never raw wire text).
  * All parts come from allowlist-validated values; the render boundary writes
  * textContent, so nothing is ever parsed as HTML.
+ *
+ * Without a validated refusal the clause-carrying map label is returned
+ * (rm-864's retryability encoding — the DOM-render pins); WITH one, the
+ * refusal detail REPLACES the retryability clause on the bare base (one
+ * em-dash detail max, never a doubled chain — the composition pins).
  */
 export function composeFailureReasonLabel(failureKind, checkoutPreparation) {
   const base = FAILURE_REASON_LABELS[failureKind]
@@ -584,7 +613,7 @@ export function composeFailureReasonLabel(failureKind, checkoutPreparation) {
   // filling the template would stringify undefined. Fixed copy instead — the
   // recipe's step 5 `none` exception, mirroring upstream.
   if (p.reason === 'operation-in-progress' && p.operation === 'none') {
-    return `${base} — ${CHECKOUT_UNNAMED_OPERATION_REASON}`
+    return `${FAILURE_REASON_BARE_LABELS[failureKind]} — ${CHECKOUT_UNNAMED_OPERATION_REASON}`
   }
   const label = fillLabelTemplate(template, {
     // Upstream parity (describeCheckoutPreparationReason): fill the human
@@ -593,7 +622,7 @@ export function composeFailureReasonLabel(failureKind, checkoutPreparation) {
     operation: CHECKOUT_OPERATION_LABELS[p.operation],
     branch: p.branch,
   })
-  return `${base} — ${label}`
+  return `${FAILURE_REASON_BARE_LABELS[failureKind]} — ${label}`
 }
 
 // ---------------------------------------------------------------------------
