@@ -302,6 +302,35 @@ describe('rm-678 schema half: live ledger', () => {
     // superseded by this note exactly as 366f6059 superseded
     // at-write pins — union census 256 + 1 = 257 defs / 0 dups /
     // max rm-866, next free rm-867.
+    // 2026-10-09 cycle:3 roadmap of run 159ec0eba87d (attempt
+    // d95b81ae, ext at base 88e423a == main at author time; at-write
+    // note kept verbatim, superseded by the integrate note below):
+    // 780 -> 837 atomically with this roadmap extension (2026-10-09,
+    // repository-maintenance f8ae69de92b74891b4fe283699cca5b5 cycle:3 run
+    // 159ec0eba87d4f5b9b133dd228240255 roadmap d95b81aeae5145deb463ed3c22cee520):
+    // mints rm-836 + rm-837 above the all-lineage ceiling rm-835 (held only as
+    // spool patch roadmap-91f3d37f-a268ee63 against this same base) — ceiling
+    // re-probed live across 61 run walls + 4 integration worktrees (max rm-833)
+    // + 83 origin conductor/run-* refs (max rm-833); union census
+    // 247 + 2 = 249 defs / 0 dups / max rm-837, next free rm-838.
+    // 2026-10-10 integrate of run 159ec0eba87d (conflict case
+    // bc4dbcf8f6764876b77828a616903e5d): the run was authored at
+    // base 88e423a (247 defs / max rm-780) while main moved through
+    // the d823703c, 155f9770 (case 8955e66c), 91f3d37f (case
+    // a91875ba), 122a693028b8 (case ec31fce8), 8cecf1d7f09f (case
+    // 87124eb3), 28cd8f6c2568 (case a6b4df10) and aec9c3e88357
+    // (case 3b444f4a) integrations, landing at 257 defs / max
+    // rm-866. Its two mints rm-836 (per-repo CI-freshness signal on
+    // the monitoring board — run-age truth) and rm-837 (lint-hygiene
+    // regression: non-null assertions in the listener degradation
+    // suite) sit BELOW that landed ceiling and are collision-free
+    // first-hand against the merged ledger (rm-836/rm-837 appear in
+    // no other landed def line; census dups 0), so both land
+    // as-authored and NO bump is owed: the pin stays 866
+    // single-sourced at the assertion below, and the run's at-write
+    // 837 assertion above is superseded by this note exactly as
+    // 366f6059 superseded at-write pins — union census 257 + 2 =
+    // 259 defs / 0 dups / max rm-866, next free rm-867.
     expect(live.max).toBe(866)
   })
 

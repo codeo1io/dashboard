@@ -43,6 +43,10 @@ function makeRepoRow(): DashboardRepo {
       openAlertCount: null,
       stale: false,
       fetchedAt: 1234,
+      // Required since rm-836 CI-freshness landed (interface widening on
+      // RepoCiStatus — and isValidSnapshotShape now rejects a persisted row
+      // without lastRunAt, so the persist→load round-trip below needs it).
+      lastRunAt: null,
     },
   }
 }
@@ -115,6 +119,30 @@ describe('createFileSnapshotStore — load (fail-open)', () => {
     writeFileSync(
       file,
       JSON.stringify({...makeSnapshot(), repos: [{owner: 'fro-bot'}]}),
+      'utf8',
+    )
+    expect(store.load()).toBeNull()
+  })
+
+  it("rm-836: a cache persisted by a pre-rm-836 build (status row without lastRunAt) is rejected — boot empty, never serve rows the client's strict parse would reject wholesale", () => {
+    const {store, file} = makeStore()
+    const row = makeRepoRow()
+    // Simulate the bridge window: the on-disk cache was written by a build
+    // whose RepoCiStatus had no lastRunAt. Serving it verbatim would emit a
+    // DTO without the key and the client's contract-drift parse would fail
+    // the WHOLE /api/monitoring payload — so the boot shape check fails
+    // closed here instead (empty boot; the next refresh re-persists).
+    const legacyRow = {...row, status: Object.fromEntries(Object.entries(row.status).filter(([key]) => key !== 'lastRunAt'))}
+    writeFileSync(file, JSON.stringify({...makeSnapshot(), repos: [legacyRow]}), 'utf8')
+    expect(store.load()).toBeNull()
+  })
+
+  it('rm-836: a cache whose status row carries a non-number, non-null lastRunAt is rejected (fail-closed, not coerced)', () => {
+    const {store, file} = makeStore()
+    const row = makeRepoRow()
+    writeFileSync(
+      file,
+      JSON.stringify({...makeSnapshot(), repos: [{...row, status: {...row.status, lastRunAt: '2026-10-09T00:00:00Z'}}]}),
       'utf8',
     )
     expect(store.load()).toBeNull()

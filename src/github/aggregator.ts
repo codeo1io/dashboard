@@ -111,6 +111,15 @@ export interface RepoCiStatus {
   readonly stale: boolean
   /** When this data was fetched (ms since epoch) */
   readonly fetchedAt: number
+  /**
+   * When the newest workflow run on the default-branch head started (ms
+   * since epoch), from the check suites' workflowRun.startedAt values (rm-836
+   * CI-freshness). null = unknown — no workflow run carried a parsable
+   * startedAt (no CI at all, legacy suites, or any fail-visible/stale path).
+   * Fail-closed by construction: absent means unknown, never a fabricated
+   * clock — this is run time, distinct from fetchedAt (fetch wall-clock).
+   */
+  readonly lastRunAt: number | null
 }
 
 /**
@@ -209,7 +218,7 @@ interface GraphqlRepoResponse {
         statusCheckRollup: {state: string} | null
         checkSuites: {
           nodes: {
-            workflowRun?: {displayTitle?: string | null; runAttempt?: number | null} | null
+            workflowRun?: {displayTitle?: string | null; runAttempt?: number | null; startedAt?: string | null; completedAt?: string | null} | null
             checkRuns: {
               totalCount: number
               nodes?: readonly {name?: string | null; detailsUrl?: string | null}[] | null
@@ -667,6 +676,29 @@ function extractFailingCheckDetails(target: GraphqlCommitTarget | null | undefin
 }
 
 /**
+ * rm-836: the newest workflow-run start time across a commit's check suites
+ * (ms since epoch), or null when no suite carries one. Fail-closed: an
+ * unparsable/absent startedAt contributes nothing; a repo whose newest CI
+ * activity cannot be established stays unknown (null), never a fabricated
+ * clock. The max-across-suites is the repo's newest run regardless of
+ * conclusion — the freshness signal is outcome-independent by design.
+ */
+function extractLastRunAt(target: GraphqlCommitTarget | null | undefined): number | null {
+  const suites = target?.checkSuites?.nodes
+  if (!suites) return null
+  let newest: number | null = null
+  for (const suite of suites) {
+    const raw = suite.workflowRun?.startedAt
+    if (typeof raw !== 'string' || raw === '') continue
+    const ms = Date.parse(raw)
+    // NaN (malformed timestamp) contributes nothing — fail-closed, not 0.
+    if (Number.isNaN(ms)) continue
+    if (newest === null || ms > newest) newest = ms
+  }
+  return newest
+}
+
+/**
  * Parse a GraphQL response into a RepoCiStatus, with openAlertCount from the response
  * (or null if the field is absent/null).
  */
@@ -680,7 +712,7 @@ export function parseRepoResponse(raw: unknown, fetchedAt: number, openAlertCoun
     // installation lost access. That is a degradation the operator must see,
     // so we fail visible (stale:true), matching the installation_id:null and
     // fetch-failure paths below. Serving a calm unknown here hid silent drift.
-    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt, lastRunAt: null}
   }
 
   const target = repo.defaultBranchRef?.target
@@ -695,6 +727,8 @@ export function parseRepoResponse(raw: unknown, fetchedAt: number, openAlertCoun
     }
   }
   const failingCheckDetails = extractFailingCheckDetails(target)
+  // rm-836: newest-run start across the suites — null when none carries one.
+  const lastRunAt = extractLastRunAt(target)
 
   const openPrCount = repo.pullRequests.totalCount
   const openIssueCount = repo.issues.totalCount
@@ -702,7 +736,7 @@ export function parseRepoResponse(raw: unknown, fetchedAt: number, openAlertCoun
   // Use the provided openAlertCount (may be from the response or null if no-alerts variant)
   const alertCount = openAlertCount ?? (repo.vulnerabilityAlerts?.totalCount ?? null)
 
-  return {rollupState, failingChecks, failingCheckDetails, openPrCount, openIssueCount, openAlertCount: alertCount, stale: false, fetchedAt}
+  return {rollupState, failingChecks, failingCheckDetails, openPrCount, openIssueCount, openAlertCount: alertCount, stale: false, fetchedAt, lastRunAt}
 }
 
 async function fetchRepoStatus(
@@ -716,7 +750,7 @@ async function fetchRepoStatus(
   // installation_id must be present — if null, we cannot authenticate the query
   if (entry.installation_id === null) {
     logger.warning('No installation_id for repo; marking stale', safeRepoLogIdentity(entry))
-    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt, lastRunAt: null}
   }
 
   const installationId = entry.installation_id
@@ -753,12 +787,12 @@ async function fetchRepoStatus(
         return parseRepoResponse(raw, fetchedAt, null)
       } catch (retryError) {
         logger.warning('Per-repo GraphQL fetch failed (no-alerts retry); marking stale', safeRepoErrorContext(entry, retryError))
-        return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+        return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt, lastRunAt: null}
       }
     }
 
     logger.warning('Per-repo GraphQL fetch failed; marking stale', safeRepoErrorContext(entry, error))
-    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt, lastRunAt: null}
   }
 }
 
@@ -1085,6 +1119,8 @@ export function createAggregator(
       // guard merges last-good with absence entries, a row we DO have prior
       // data for inherits that older fetchedAt instead (see below).
       fetchedAt: now(),
+      // rm-836: never queried — run-age is unknown, never fabricated.
+      lastRunAt: null,
     })
     let workingSet: WorkingSetEntry[]
     if (deps.resolveInstallationIdForRepo === undefined) {
@@ -1240,7 +1276,7 @@ export function createAggregator(
         // assigned before Promise.all resolves) and exists only to satisfy
         // noUncheckedIndexedAccess. failingCheckDetails required here too —
         // the drill-down sample is empty on an unfetched repo (rm-192).
-        status: statuses[index] ?? {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt: now()},
+        status: statuses[index] ?? {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt: now(), lastRunAt: null},
       })
     }
 

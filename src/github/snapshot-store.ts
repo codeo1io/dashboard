@@ -83,6 +83,17 @@ function isValidSnapshotShape(value: unknown): value is AggregatorSnapshot {
     ) {
       return false
     }
+    // rm-836 (rm-156 pattern): a new repo-status field must be pinned here in
+    // lockstep with the client's strict parse — a cache persisted by a
+    // pre-rm-836 build (status row without lastRunAt) fails this check and
+    // boots empty (fail-open, next refresh re-persists) instead of serving
+    // rows whose DTO omits the key and trips the client's contract-drift
+    // parse for the whole payload. Scoped to THIS field: the broader
+    // inner-status pinning (failingCheckDetails et al.) is rm-865's item.
+    const status = row.status as Record<string, unknown>
+    if (status.lastRunAt !== null && typeof status.lastRunAt !== 'number') {
+      return false
+    }
   }
   return true
 }

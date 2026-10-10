@@ -15,6 +15,17 @@ import {DatabaseSync} from 'node:sqlite'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {createListenerStore} from '../src/listener/store.ts'
 
+/**
+ * Checked row lookup (rm-837: retires this suite's last ten
+ * no-non-null-assertion warnings — content adopted from sibling lane
+ * implement-8134eb2e's rider so the two lanes converge on one shape).
+ */
+function rowByTitle<T extends {title: string}>(rows: readonly T[], title: string): T {
+  const found = rows.find(m => m.title === title)
+  if (found === undefined) throw new Error(`row ${title} not found in page`)
+  return found
+}
+
 describe('listener store rm-187 (degraded links cell never 500s the messages read)', () => {
   let dir: string
   let dbPath: string
@@ -62,14 +73,13 @@ describe('listener store rm-187 (degraded links cell never 500s the messages rea
     const page = store.list({})
 
     expect(page.messages).toHaveLength(3)
-    const degraded = page.messages.find(m => m.title === 'corrupt json row')
-    expect(degraded).toBeDefined()
-    expect(degraded!.links).toEqual([])
-    expect(degraded!.kind).toBe('deploy-health')
-    expect(degraded!.severity).toBe('warning')
-    expect(degraded!.body).toBe('b')
+    const degraded = rowByTitle(page.messages, 'corrupt json row')
+    expect(degraded.links).toEqual([])
+    expect(degraded.kind).toBe('deploy-health')
+    expect(degraded.severity).toBe('warning')
+    expect(degraded.body).toBe('b')
     // The healthy rows keep their links.
-    expect(page.messages.find(m => m.title === 'healthy row')!.links).toEqual([{label: 'L', url: 'https://example.com'}])
+    expect(rowByTitle(page.messages, 'healthy row').links).toEqual([{label: 'L', url: 'https://example.com'}])
     // Observable by design: every degraded read logs once.
     expect(warn).toHaveBeenCalledTimes(1)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('degraded links cell on message'))
@@ -85,9 +95,9 @@ describe('listener store rm-187 (degraded links cell never 500s the messages rea
     const page = store.list({})
 
     expect(page.messages).toHaveLength(3)
-    expect(page.messages.find(m => m.title === 'corrupt json row')!.links).toEqual([])
-    expect(page.messages.find(m => m.title === 'non-array row')!.links).toEqual([])
-    expect(page.messages.find(m => m.title === 'healthy row')!.links).toHaveLength(1)
+    expect(rowByTitle(page.messages, 'corrupt json row').links).toEqual([])
+    expect(rowByTitle(page.messages, 'non-array row').links).toEqual([])
+    expect(rowByTitle(page.messages, 'healthy row').links).toHaveLength(1)
   })
 
   it('GET /api/listener/messages returns 200 with the healthy rows when a links cell is corrupt (endpoint-level)', async () => {
@@ -113,8 +123,8 @@ describe('listener store rm-187 (degraded links cell never 500s the messages rea
     expect(res.status).toBe(200)
     const body = (await res.json()) as {messages: {title: string; links: {label: string; url: string}[]}[]}
     expect(body.messages).toHaveLength(3)
-    expect(body.messages.find(m => m.title === 'corrupt json row')!.links).toEqual([])
-    expect(body.messages.find(m => m.title === 'healthy row')!.links).toEqual([{label: 'L', url: 'https://example.com'}])
+    expect(rowByTitle(body.messages, 'corrupt json row').links).toEqual([])
+    expect(rowByTitle(body.messages, 'healthy row').links).toEqual([{label: 'L', url: 'https://example.com'}])
     expect(warn).toHaveBeenCalled()
     warn.mockRestore()
   })

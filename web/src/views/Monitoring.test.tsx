@@ -6,6 +6,12 @@ import type { MonitoringData, MonitoringRepo, MonitoringRepoStatus } from '../ap
 
 vi.mock('../api/monitoring.ts')
 
+// rm-836: the CI-freshness reference clock is makeData's refreshedAt — ages
+// are computed against it, not wall-clock. Fixture default: a run 2h old
+// (fresh); rm-836 scenarios override lastRunAt per case.
+const DATA_AS_OF = 1742000000000
+const FRESH_RUN_AT = DATA_AS_OF - 2 * 60 * 60 * 1000
+
 function makeRepo(
   overrides: { fullName?: string; discoveryChannel?: string; status?: Partial<MonitoringRepoStatus> } = {}
 ): MonitoringRepo {
@@ -27,6 +33,7 @@ function makeRepo(
       openIssueCount: 0,
       openAlertCount: null,
       stale: false,
+      lastRunAt: FRESH_RUN_AT,
       ...overrides.status
     }
   }
@@ -40,7 +47,7 @@ function makeData(overrides: Partial<MonitoringData> = {}): MonitoringData {
     staleBanner: false,
     driftCount: 0,
     enumerationIncomplete: null,
-    refreshedAt: 1742000000000,
+    refreshedAt: DATA_AS_OF,
     ...overrides
   }
 }
@@ -428,6 +435,114 @@ describe('Monitoring rm-780 (stale-state surfacing: invisible rows, false all-cl
     expect(screen.queryByTestId('monitoring-stale-repo')).not.toBeInTheDocument()
     expect(screen.queryByTestId('monitoring-view-stale-banner')).not.toBeInTheDocument()
     expect(screen.queryByTestId('monitoring-stale-count')).not.toBeInTheDocument()
+  })
+
+  describe('rm-836: per-repo CI-freshness (last-CI-activity line + enumeration-level CI-silence banner)', () => {
+    /** 49h before the data's own clock — one hour past the 48h floor. */
+    const SILENT_RUN_AT = DATA_AS_OF - 49 * 60 * 60 * 1000
+
+    it('a fresh repo shows a muted last-run line (age computed against refreshedAt, not wall-clock)', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({repos: [makeRepo()]}), // fixture default: 2h-old run
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      const line = screen.getByTestId('monitoring-ci-age-fresh')
+      expect(line).toHaveTextContent('Last CI run: 2h ago')
+      expect(screen.queryByTestId('monitoring-ci-age-stale')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('monitoring-ci-age-unknown')).not.toBeInTheDocument()
+    })
+
+    it('a repo past the 48h floor flips the line to attention with the CI-silence marker', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({repos: [makeRepo({status: {lastRunAt: SILENT_RUN_AT}})]}),
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      const line = screen.getByTestId('monitoring-ci-age-stale')
+      expect(line).toHaveTextContent('Last CI run: 2d ago')
+      expect(line).toHaveTextContent('CI silence')
+    })
+
+    it('unknown run-age (lastRunAt null) reads as attention-unknown, never as fresh', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({repos: [makeRepo({status: {lastRunAt: null}})]}),
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      expect(screen.getByTestId('monitoring-ci-age-unknown')).toHaveTextContent('Last CI run: unknown')
+      expect(screen.queryByTestId('monitoring-ci-age-fresh')).not.toBeInTheDocument()
+    })
+
+    it('enumeration-level silence (every tracked repo silent) renders ONE board-level banner naming the class', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({repos: [makeRepo({status: {lastRunAt: SILENT_RUN_AT}})]}),
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      expect(screen.getByTestId('monitoring-ci-silence-banner')).toHaveTextContent('CI silence')
+      expect(screen.getByTestId('monitoring-ci-silence-banner')).toHaveTextContent('48h')
+    })
+
+    it('a mixed board (any fresh repo) does NOT render the enumeration-level silence banner', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({
+          repos: [
+            makeRepo({status: {lastRunAt: SILENT_RUN_AT}}),
+            makeRepoRm780('fro-bot/healthy', {
+              rollupState: 'green',
+              failingChecks: 0,
+              failingCheckDetails: [],
+              lastRunAt: FRESH_RUN_AT,
+            }),
+          ],
+        }),
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      expect(screen.queryByTestId('monitoring-ci-silence-banner')).not.toBeInTheDocument()
+      // But the silent repo still shows its own attention line.
+      expect(screen.getByTestId('monitoring-ci-age-stale')).toBeInTheDocument()
+    })
+
+    it('an empty fleet (fail-cold boot) never renders the silence banner — silence is a per-repo claim', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({repos: []}),
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      expect(screen.queryByTestId('monitoring-ci-silence-banner')).not.toBeInTheDocument()
+    })
   })
 })
 

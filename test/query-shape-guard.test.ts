@@ -136,4 +136,23 @@ describe('GraphQL query-shape guard (rm-177)', () => {
       ).toBe(false)
     }
   })
+
+  it('rm-836: both templates select the CI-freshness run timestamps (startedAt anchors the newest-run signal)', () => {
+    for (const [name, query] of Object.entries(QUERIES)) {
+      // The workflowRun selection must carry both timestamps — startedAt
+      // anchors the per-repo lastRunAt; completedAt rides the same node so a
+      // running run's context is available without another selection.
+      expect(query.includes('workflowRun {'), `${name}: missing workflowRun selection`).toBe(true)
+      expect(query.includes('checkRuns('), `${name}: missing checkRuns selection after workflowRun`).toBe(true)
+      const workflowRunBlock = query.slice(query.indexOf('workflowRun {'), query.indexOf('checkRuns('))
+      expect(
+        workflowRunBlock.includes('startedAt'),
+        `${name}: workflowRun selection missing startedAt`,
+      ).toBe(true)
+      expect(
+        workflowRunBlock.includes('completedAt'),
+        `${name}: workflowRun selection missing completedAt`,
+      ).toBe(true)
+    }
+  })
 })

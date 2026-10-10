@@ -88,6 +88,7 @@ describe('buildSnapshotProvider — production wiring', () => {
         openAlertCount: null,
         stale: false,
         fetchedAt: Date.now(),
+        lastRunAt: null,
       },
     }
 
