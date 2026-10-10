@@ -46,3 +46,59 @@ describe('rm-780: GET seam wall-clock bound (withGetSeamTimeout)', () => {
     await expect(withGetSeamTimeout(Promise.reject(boom))).rejects.toBe(boom)
   })
 })
+
+describe('rm-847: the seam bound kills the transport (withGetSeamTimeout + controller)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.runOnlyPendingTimers()
+    vi.useRealTimers()
+  })
+
+  it('aborts the caller-owned controller at the bound — the underlying signal flips aborted, not just the await racing to "timeout"', async () => {
+    const controller = new AbortController()
+    let transportAborted = false
+    controller.signal.addEventListener('abort', () => {
+      transportAborted = true
+    })
+    // Never-resolving transport: only the seam's abort can end it — the
+    // hung-GET shape that used to leak its connection past the race when
+    // the equal-duration poll bound disarmed useBoundedPoll's abort.
+    const wedged = new Promise<never>(() => {})
+    void withGetSeamTimeout(wedged, controller)
+
+    await vi.advanceTimersByTimeAsync(GET_SEAM_TIMEOUT_MS - 1)
+    expect(controller.signal.aborted).toBe(false)
+    expect(transportAborted).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(1)
+    expect(controller.signal.aborted).toBe(true)
+    expect(transportAborted).toBe(true)
+  })
+
+  it('a seam-aborted transport rejects AbortError after the race settled "timeout" — handled by the seam, never reclassified as network', async () => {
+    const controller = new AbortController()
+    const transport = new Promise<never>((_, reject) => {
+      controller.signal.addEventListener('abort', () => {
+        reject(new DOMException('The operation was aborted.', 'AbortError'))
+      })
+    })
+    const bounded = withGetSeamTimeout(transport, controller)
+
+    await vi.advanceTimersByTimeAsync(GET_SEAM_TIMEOUT_MS)
+    await expect(bounded).resolves.toBe('timeout')
+    // The killed transport still rejects (fetch/json observe the abort); the
+    // seam's then() already handled it, so the late rejection is not
+    // unhandled and classifyAborts never maps the seam's OWN abort to a
+    // network fault.
+    await expect(transport).rejects.toMatchObject({name: 'AbortError'})
+  })
+
+  it('keeps the no-controller form working for non-fetch uses of the seam', async () => {
+    const bounded = withGetSeamTimeout(new Promise<never>(() => {}))
+    await vi.advanceTimersByTimeAsync(GET_SEAM_TIMEOUT_MS)
+    await expect(bounded).resolves.toBe('timeout')
+  })
+})
