@@ -347,11 +347,29 @@ export function parseSseChunk(text: string): SseParseResult[] {
 // Reader options and interface
 // ---------------------------------------------------------------------------
 
+/**
+ * rm-870: stream-status payload. Carries the contractVersion the ready frame
+ * actually carried — the value the fail-closed window decision consumed and,
+ * before this instrument, discarded. Coarse metadata only: a version string,
+ * never run identity.
+ */
+export interface OperatorStreamStatus {
+  readonly observedContractVersion: string
+}
+
 export interface SseReaderOpenOptions {
   readonly onEvent: (frame: RunStreamFrame) => void
   readonly onError: (error: Error) => void
   readonly onClose: () => void
   readonly signal?: AbortSignal
+  /**
+   * rm-870: stream-status receiver. Called exactly once per opened stream,
+   * right after the ready frame passes the contract-version window, with the
+   * observed contractVersion — the payload the operator stream-status line
+   * reads once the reader is wired into the served stream (rm-253 lane). Not
+   * called when the window rejects (no stream established).
+   */
+  readonly onStreamStatus?: (status: OperatorStreamStatus) => void
 }
 
 export interface OperatorSseReader {
@@ -405,7 +423,7 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
   const ROUTE_TEMPLATE = '/operator/runs/:runId/stream'
 
   async function open(path: string, opts: SseReaderOpenOptions): Promise<void> {
-    const {onEvent, onError, onClose, signal} = opts
+    const {onEvent, onError, onClose, signal, onStreamStatus} = opts
 
     // Validate path is a relative /operator/runs/ path — no absolute URLs, no //
     if (
@@ -505,12 +523,28 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
           return false // stop
         }
         if (!SUPPORTED_OPERATOR_CONTRACT_VERSIONS.includes(frame.data.contractVersion)) {
-          logger?.error('sse-reader: contract version mismatch', {route: ROUTE_TEMPLATE})
+          // rm-870: the mismatch log carries the observed version as a
+          // structured field — that is what proves which side drifted
+          // (gateway ahead vs behind). The onError message stays a fixed
+          // string (no-oracle: never echo wire content in errors).
+          logger?.error('sse-reader: contract version mismatch', {
+            route: ROUTE_TEMPLATE,
+            observedContractVersion: frame.data.contractVersion,
+          })
           drifted = true
           onError(new Error('contract-drift: server contract version does not match client'))
           onClose()
           return false // stop
         }
+        // rm-870: the window decision just consumed this version and, before
+        // this instrument, discarded it. Surface it as (b) a structured log
+        // field at stream start and (a)'s stream-status payload. Coarse
+        // metadata only — version string, never the dynamic runId.
+        logger?.info('sse-reader: stream ready', {
+          route: ROUTE_TEMPLATE,
+          observedContractVersion: frame.data.contractVersion,
+        })
+        onStreamStatus?.({observedContractVersion: frame.data.contractVersion})
         contractVerified = true
       }
 
