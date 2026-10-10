@@ -18,7 +18,7 @@ import AxeBuilder from '@axe-core/playwright'
  * logged for visibility). Any pre-existing fixture-page violations are scoped
  * or disabled inline with a justification — see `axeCommon()` below.
  */
-import {expect, test} from '@playwright/test'
+import {expect, test, type Page} from '@playwright/test'
 
 /** Impact levels that fail the gate. Everything else is report-only. */
 const FAILING_IMPACTS = new Set(['critical', 'serious'])
@@ -122,6 +122,77 @@ test('listener channel view', async ({page}) => {
 
   await assertAccessible(page)
   await expect(page).toHaveScreenshot('dashboard-listener-dark.png', {fullPage: true})
+})
+
+/**
+ * Dev-mode StrictMode quirk: the first useBoundedPoll fetch after a view
+ * mounts is aborted by React's simulated unmount, and the remount's initial
+ * poll is latched out while that abort is still settling — so the loop's
+ * next trigger is the focus path (refetchOnFocus, default true), not the
+ * 60s interval. Nudge it deterministically instead of waiting.
+ */
+async function nudgePoll(page: Page) {
+  await page.waitForTimeout(250)
+  // String-form evaluate (no typed browser globals needed at the Node side).
+  await page.evaluate('window.dispatchEvent(new Event("focus"))')
+}
+
+// rm-896: the two monitoring lanes share ONE process-global harness shape
+// (src/routes/monitoring-fixture.ts module state), so they must not race each
+// other — serial mode pins the order, and each test locks its own shape up
+// front (also self-healing against a reused dev server left on the other
+// shape by a previous run: playwright reuses a running webServer locally).
+test.describe.serial('monitoring view (fixture seam)', () => {
+  test('monitoring view — fixture board (red → stale → green)', async ({page}) => {
+  // rm-896: the fixture-harness seam serves the deterministic /api/monitoring
+  // board (shape 'mixed') whenever the full gate is active — exactly this
+  // suite's boot mode — so the monitoring view gets a stable, synthetic board
+  // instead of whatever the dev aggregator happens to serve.
+    const lock = await page.request.post('/__fixture/operator/monitoring/shape', {
+      data: {shape: 'mixed'},
+    })
+    expect(lock.ok()).toBeTruthy()
+
+    await page.goto('/')
+    await expect(page.getByTestId('operator-shell')).toHaveAttribute('data-state', 'ready')
+    // Primary nav labels the monitoring view "Repos".
+    await page.getByRole('button', {name: 'Repos'}).click()
+    await nudgePoll(page)
+    await expect(page.getByTestId('monitoring-board')).toBeVisible()
+    // Attention-first fixture board: the red repo card is rendered with its
+    // failing-check details, proving the wire DTO → view contract end-to-end.
+    await expect(page.getByTestId('monitoring-red-repo')).toContainText('fixture-ci-red')
+    await expect(page.getByTestId('monitoring-stale-repo')).toContainText('fixture-stale-walk')
+    await page.waitForTimeout(250)
+
+    await assertAccessible(page)
+    await expect(page).toHaveScreenshot('dashboard-monitoring-fixture-board-dark.png', {fullPage: true})
+  })
+
+  test('monitoring view — cold-start no-data state', async ({page}) => {
+  // rm-896 second coverage lane: the fail-closed cold-start shape renders the
+  // rm-835 no-data empty state. The shape is locked process-wide via the
+  // harness introspection route (public under the fixture gate — see
+  // src/server.ts isPublicPath) BEFORE the view fetches.
+    const lock = await page.request.post('/__fixture/operator/monitoring/shape', {
+      data: {shape: 'cold-start'},
+    })
+    expect(lock.ok()).toBeTruthy()
+
+    await page.goto('/')
+    await expect(page.getByTestId('operator-shell')).toHaveAttribute('data-state', 'ready')
+    await page.getByRole('button', {name: 'Repos'}).click()
+    await nudgePoll(page)
+    await expect(page.getByTestId('monitoring-no-data')).toBeVisible()
+    // The stale banner (fail-closed signal) accompanies the no-data state
+    // (board-level banner — the DTO staleBanner, distinct from the post-ready
+    // refresh-failure banner's monitoring-view-stale-banner testid).
+    await expect(page.getByTestId('monitoring-stale-banner')).toBeVisible()
+    await page.waitForTimeout(250)
+
+    await assertAccessible(page)
+    await expect(page).toHaveScreenshot('dashboard-monitoring-cold-start-dark.png', {fullPage: true})
+  })
 })
 
 test('privacy policy page', async ({page}) => {
