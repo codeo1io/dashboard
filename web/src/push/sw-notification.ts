@@ -1,11 +1,11 @@
 /**
- * Pure payload → safe-notification mapping. rm-249/rm-106: INTENTIONALLY
- * STRANDED — `sw.ts` imports nothing since the self-destructing kill-switch
- * (dfa3f80) replaced the PWA service worker and stopped SW registration, so
- * no live entry point pulls this module in yet. It is kept in-tree, tested
- * (sw-notification.test.ts), and ready to re-wire the moment the push-SW
- * unblock decision (rm-249) lands; the module performs no I/O, so carrying
- * it stranded is inert.
+ * Pure payload → safe-notification mapping. rm-249 (2026-10-10): UN-STRANDED
+ * — consumed by web/src/push/sw-handlers.ts, whose handlers the push-only
+ * service worker (web/src/sw.ts) wires onto the live scope: every `push`
+ * event maps through this module before `showNotification`. (Earlier
+ * truthing: the header once claimed an `sw.ts` import that was false during
+ * the kill-switch era; the 2026-10-08 correction marked it stranded pending
+ * exactly this landing.)
  *
  * SW no-leak discipline: this module performs no I/O, has no `console.*`
  * calls, and never echoes payload free-text into rendered copy or into an
