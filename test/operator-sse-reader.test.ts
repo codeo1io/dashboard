@@ -1471,6 +1471,100 @@ describe('parseSseChunk — approval frame (settle variant)', () => {
   })
 })
 
+describe('parseSseChunk — question frame (operator-contract 1.9.0)', () => {
+  const openPayload = {
+    runId: 'run-001',
+    requestID: 'req-001',
+    settled: false,
+    questions: [
+      {
+        header: 'Deploy?',
+        text: 'Choose a deployment strategy',
+        options: [
+          {label: 'Rolling', description: 'Zero-downtime'},
+          {label: 'Blue-green', description: 'Two environments'},
+        ],
+        multiple: false,
+        custom: false,
+      },
+      {header: 'Notes', text: '', options: [], multiple: false, custom: true},
+    ],
+  }
+
+  it('parses an open question frame with the full question list', () => {
+    const text = `event: question\ndata: ${JSON.stringify(openPayload)}\n\n`
+    const results = parseSseChunk(text)
+    expect(results).toHaveLength(1)
+    const frame = results[0]
+    expect(frame?.success).toBe(true)
+    if (frame?.success && frame.frame.type === 'question') {
+      expect(frame.frame.data.runId).toBe('run-001')
+      expect(frame.frame.data.requestID).toBe('req-001')
+      expect(frame.frame.data.settled).toBe(false)
+      if (!frame.frame.data.settled) {
+        expect(frame.frame.data.questions).toEqual(openPayload.questions)
+      }
+    } else {
+      expect.fail('expected a question frame')
+    }
+  })
+
+  it('parses a settle question frame carrying only ids (payload extras ignored)', () => {
+    const payload = {runId: 'run-001', requestID: 'req-001', settled: true, questions: 'ignored-on-settle'}
+    const text = `event: question\ndata: ${JSON.stringify(payload)}\n\n`
+    const results = parseSseChunk(text)
+    expect(results).toHaveLength(1)
+    const frame = results[0]
+    expect(frame?.success).toBe(true)
+    if (frame?.success && frame.frame.type === 'question') {
+      expect(frame.frame.data.settled).toBe(true)
+      if (frame.frame.data.settled) {
+        expect('questions' in frame.frame.data).toBe(false)
+      }
+    } else {
+      expect.fail('expected a settle question frame')
+    }
+  })
+
+  it.each([
+    ['missing runId', {runId: undefined}],
+    ['empty runId', {runId: ''}],
+    ['oversized runId (129)', {runId: 'a'.repeat(129)}],
+    ['slash in runId', {runId: 'run/1'}],
+    ['missing requestID', {requestID: undefined}],
+    ['slash in requestID', {requestID: 'req/1'}],
+    ['missing settled', {settled: undefined}],
+    ['non-boolean settled', {settled: 'no'}],
+    ['missing questions on open', {questions: undefined}],
+    ['empty questions on open', {questions: []}],
+    ['non-array questions', {questions: {}}],
+    ['question item not an object', {questions: ['nope']}],
+    ['empty header', {questions: [{header: '', text: '', options: [], multiple: false, custom: false}]}],
+    ['oversized header (4001)', {questions: [{header: 'h'.repeat(4001), text: '', options: [], multiple: false, custom: false}]}],
+    ['oversized text (4001)', {questions: [{header: 'H', text: 't'.repeat(4001), options: [], multiple: false, custom: false}]}],
+    ['non-boolean multiple', {questions: [{header: 'H', text: '', options: [], multiple: 'yes', custom: false}]}],
+    ['non-boolean custom', {questions: [{header: 'H', text: '', options: [], multiple: false, custom: 1}]}],
+    ['options not an array', {questions: [{header: 'H', text: '', options: {}, multiple: false, custom: false}]}],
+    ['option not an object', {questions: [{header: 'H', text: '', options: ['x'], multiple: false, custom: false}]}],
+    ['empty option label', {questions: [{header: 'H', text: '', options: [{label: '', description: ''}], multiple: false, custom: false}]}],
+    ['oversized option label (4001)', {questions: [{header: 'H', text: '', options: [{label: 'l'.repeat(4001), description: ''}], multiple: false, custom: false}]}],
+    ['oversized option description (4001)', {questions: [{header: 'H', text: '', options: [{label: 'L', description: 'd'.repeat(4001)}], multiple: false, custom: false}]}],
+  ])('rejects %s with the fixed error string (fail-closed, no wire echo)', (_label, overrides) => {
+    const payload = {...openPayload, ...overrides}
+    const text = `event: question\ndata: ${JSON.stringify(payload)}\n\n`
+    const frame = parseSseChunk(text)[0]
+    expect(frame?.success).toBe(false)
+    if (frame !== undefined && !frame.success) {
+      expect(['question frame missing required fields', 'question frame has invalid settled discriminator']).toContain(frame.error.message)
+    }
+  })
+
+  it('rejects non-JSON question data without echoing the payload', () => {
+    const frame = parseSseChunk('event: question\ndata: {not json\n\n')[0]
+    expect(frame?.success).toBe(false)
+  })
+})
+
 describe('parseSseChunk — approval frame (error cases, fail-closed, no wire echo)', () => {
   it('rejects approval frame with missing runId', () => {
     const payload = {requestID: 'req-001', permission: 'shell', settled: false}
@@ -2497,8 +2591,25 @@ describe('createOperatorSseReader — rm-157 supported-versions window', () => {
     }
   })
 
-  it('fails closed on 1.9.0 (future) and on 1.5.0 (pre-window) ready frames', async () => {
-    for (const version of ['1.9.0', '1.5.0']) {
+  it('accepts 1.9.0 (question-bridge window) and fails closed on 2.0.0 (future) and 1.5.0 (pre-window) ready frames', async () => {
+    // 1.9.0 is in the supported window (gateway v0.119.0 question bridge); a
+    // 2.0.0 stream still fails closed until the dashboard vendors the next
+    // contract revision.
+    const acceptSse = `event: ready\ndata: {"contractVersion":"1.9.0"}\n\n${statusText({})}`
+    {
+      const {fetchImpl} = makeFakeFetch(makeResponse(200, [acceptSse]))
+      const reader = createOperatorSseReader({fetchImpl})
+      const events: RunStreamFrame[] = []
+      const errors: Error[] = []
+      await reader.open('/operator/runs/run-001/stream', {
+        onEvent: frame => events.push(frame),
+        onError: err => errors.push(err),
+        onClose: () => {},
+      })
+      expect(errors).toHaveLength(0)
+      expect(events.filter(e => e.type === 'status')).toHaveLength(1)
+    }
+    for (const version of ['2.0.0', '1.5.0']) {
       const sseText = `event: ready\ndata: {"contractVersion":"${version}"}\n\n${statusText({})}`
       const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
       const reader = createOperatorSseReader({fetchImpl})

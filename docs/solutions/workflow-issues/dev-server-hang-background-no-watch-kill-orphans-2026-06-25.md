@@ -34,8 +34,13 @@ The hang is not the server failing to boot — it's two compounding mistakes in 
 lsof -ti :<PORT> | xargs -r kill -9
 pkill -9 -f 'node --watch src/server.ts'
 
-# 2. Start backgrounded, NO --watch, fresh port, autologin on loopback
-DASHBOARD_DEV_AUTOLOGIN=true DASHBOARD_HOST=127.0.0.1 DASHBOARD_PORT=<FRESH_PORT> \
+# 2. Start backgrounded, NO --watch, fresh port, autologin on loopback.
+#    The env contract matters (rm-862): NODE_ENV=development or boot refuses;
+#    DASHBOARD_OPERATOR_LOGIN names the operator the dev session mints — without
+#    it every protected path returns 401 (the server warns at boot when it sees
+#    autologin requested without an operator login).
+NODE_ENV=development DASHBOARD_DEV_AUTOLOGIN=true DASHBOARD_HOST=127.0.0.1 DASHBOARD_PORT=<FRESH_PORT> \
+  DASHBOARD_OPERATOR_LOGIN=<your-login> \
   node --env-file-if-exists=.env src/server.ts > /tmp/dev.log 2>&1 &
 
 # 3. Wait ~7s, then confirm boot from the log + a 200 (do NOT retry blindly — read the log on failure)

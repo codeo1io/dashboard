@@ -618,6 +618,9 @@ function updateCardInPlace(card, view) {
         reasonEl.dataset.reasonState = 'present'
       }
     }
+
+    // checkoutLabel lives on the STREAM safe view (operator-stream.js), not the
+    // list safe view — the updateDOM seam in that module owns run-checkout.
   }
 }
 
@@ -700,6 +703,15 @@ function renderRunCard(view, onSelectRun) {
   cancelEl.dataset.role = 'run-cancel'
   cancelEl.hidden = true
   card.append(cancelEl)
+
+  // Checkout provenance/preparation line (operator contract 1.8.0+ checkout
+  // fields): populated by initOperatorStream via the runtime seam once a status
+  // frame carries checkout data; hidden until then. Same creation-time safety:
+  // no wire field reaches it here.
+  const checkoutLine = document.createElement('div')
+  checkoutLine.dataset.role = 'run-checkout'
+  checkoutLine.hidden = true
+  card.append(checkoutLine)
 
   // Wire click and keyboard activation to the expand/collapse toggle.
   bindCardActivation(card, view.runId, onSelectRun)

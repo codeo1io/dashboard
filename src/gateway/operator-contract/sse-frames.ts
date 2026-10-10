@@ -20,6 +20,7 @@
 
 import type {OperatorApprovalFrame} from './approval-frame.ts'
 import type {OperatorOutputFrame} from './output.ts'
+import type {OperatorQuestionFrame} from './question-frame.ts'
 import type {OperatorRunStatus} from './run-status.ts'
 
 // ---------------------------------------------------------------------------
@@ -82,6 +83,7 @@ export interface ResetFrameData {
  *     case 'status': // frame.data is StatusFrameData (OperatorRunStatus)
  *     case 'reset':  // frame.data is ResetFrameData
  *     case 'output': // frame.data is OperatorOutputFrame
+ *     case 'question': // frame.data is OperatorQuestionFrame (1.9.0)
  *   }
  */
 export type RunStreamFrame =
@@ -90,3 +92,4 @@ export type RunStreamFrame =
   | {readonly type: 'reset'; readonly data: ResetFrameData}
   | {readonly type: 'output'; readonly data: OperatorOutputFrame}
   | {readonly type: 'approval'; readonly data: OperatorApprovalFrame}
+  | {readonly type: 'question'; readonly data: OperatorQuestionFrame}
