@@ -68,7 +68,11 @@ function toMonitoringRepoDto(repo: DashboardRepo): MonitoringRepoDto {
   }
 }
 
-function toMonitoringDto(snapshot: AggregatorSnapshot): MonitoringDto {
+/**
+ * rm-896: exported so the fixture `/api/monitoring` seam reuses the exact
+ * production DTO mapper — the fixture must never drift from the real contract.
+ */
+export function toMonitoringDto(snapshot: AggregatorSnapshot): MonitoringDto {
   return {
     repos: snapshot.repos.map(toMonitoringRepoDto),
     staleBanner: snapshot.staleBanner,
