@@ -1049,7 +1049,14 @@ export function createAggregator(
       })
     } else if (isOk(enumerateResult)) {
       installRepos = enumerateResult.data.repos
-      enumerationIncomplete = enumerateResult.data.failedInstallationIds.length
+      // rm-868: a page-ceiling hit is a partial census even when no
+      // installation outright failed — fold the walker's ceiling signal in.
+      // The field stays the failed-installation count; a ceiling hit with
+      // zero failures reports 1 so the stale banner and the API surface
+      // stay truthfully non-zero (never present a capped census as complete).
+      enumerationIncomplete = enumerateResult.data.enumerationIncomplete
+        ? Math.max(enumerateResult.data.failedInstallationIds.length, 1)
+        : enumerateResult.data.failedInstallationIds.length
     } else {
       enumerationFailed = true
       enumerationIncomplete = null
