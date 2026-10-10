@@ -112,7 +112,7 @@ describe('rm-678 schema half: live ledger', () => {
     // all sit at/below rm-744) and land as-authored, so the union
     // census is 240 + 4 = 244 defs with the ceiling moving to
     // rm-778 — pin 744 → 778 atomically with this landing.
-    expect(live.max).toBe(778)
+    expect(live.max).toBe(831)
     // 2026-10-09 integrate of run 9289efaa (conflict case
     // 139848e6): that run's single mint rm-703 (release.yaml
     // digest-readback SIGPIPE -- the THIRD lineage id of the
@@ -126,6 +126,11 @@ describe('rm-678 schema half: live ledger', () => {
     // this note -- those bands have since landed and
     // reconciled by content (rm-693/694 via 46431058,
     // rm-698 via ad8f21e, rm-700..702 via 76d683f2).
+    // 2026-10-09, run ba5f6d7ddd6741b58817ac63b8a5fb1b cycle:2 roadmap 0bfac151: pinned 831 —
+    // one mint (rm-831, GitHub Actions platform-disable watch) above the re-probed all-lineage
+    // ceiling rm-829 (run-8134eb2e6b13's wall moved 780→829 under this attempt's own probes,
+    // rm-830 left as collision margin); origin/main was 88e423a (max rm-780) at this attempt's
+    // fetch — landed walls re-derive the union pin at integrate per the ext #30 convention.
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {

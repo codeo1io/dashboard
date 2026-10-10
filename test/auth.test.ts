@@ -69,12 +69,17 @@ async function runOAuthFlow(
 ): Promise<{loginRes: Response; callbackRes: Response}> {
   const loginRes = await loginRequest()
   const stateCookieValue = extractCookieValue(getSetCookie(loginRes, 'oauth_state') ?? '')
+  // rm-149: PKCE is mandatory on the callback — carry the minted verifier cookie too
+  const pkceCookieValue = extractCookieValue(getSetCookie(loginRes, 'oauth_pkce_verifier') ?? '')
   const location = loginRes.headers.get('location') ?? ''
   const stateParam = new URL(location).searchParams.get('state') ?? ''
   const callbackRes = await app.request(
     `${callbackUrlPrefix}/auth/callback?code=fake-code&state=${stateParam}`,
     {
-      headers: {cookie: `oauth_state=${stateCookieValue}`, ...callbackHeaders},
+      headers: {
+        cookie: `oauth_state=${stateCookieValue}; oauth_pkce_verifier=${pkceCookieValue}`,
+        ...callbackHeaders,
+      },
     },
   )
   return {loginRes, callbackRes}
@@ -360,7 +365,11 @@ describe('OAuth flow', () => {
       const stateParam = new URL(location).searchParams.get('state') ?? ''
 
       const res = await app.request(`/auth/callback?code=fake-code&state=${stateParam}`, {
-        headers: {cookie: `oauth_state=${stateCookieValue}`},
+        headers: {
+          cookie: `oauth_state=${stateCookieValue}; oauth_pkce_verifier=${extractCookieValue(
+            getSetCookie(loginRes, 'oauth_pkce_verifier') ?? '',
+          )}`,
+        },
       })
 
       // Should redirect to / with a session cookie
@@ -417,7 +426,11 @@ describe('OAuth flow', () => {
       const stateParam = new URL(location).searchParams.get('state') ?? ''
 
       const res = await app.request(`/auth/callback?code=auth-code&state=${stateParam}`, {
-        headers: {cookie: `oauth_state=${stateCookieValue}`},
+        headers: {
+          cookie: `oauth_state=${stateCookieValue}; oauth_pkce_verifier=${extractCookieValue(
+            getSetCookie(loginRes, 'oauth_pkce_verifier') ?? '',
+          )}`,
+        },
       })
 
       expect(res.status).toBe(401)
@@ -436,7 +449,11 @@ describe('OAuth flow', () => {
       const stateParam = new URL(location).searchParams.get('state') ?? ''
 
       const res = await app.request(`/auth/callback?code=fake-code&state=${stateParam}`, {
-        headers: {cookie: `oauth_state=${stateCookieValue}`},
+        headers: {
+          cookie: `oauth_state=${stateCookieValue}; oauth_pkce_verifier=${extractCookieValue(
+            getSetCookie(loginRes, 'oauth_pkce_verifier') ?? '',
+          )}`,
+        },
       })
 
       expect([401, 403]).toContain(res.status)
@@ -747,7 +764,10 @@ describe('makeGitHubOAuthClient', () => {
       'https://dashboard.example.com/auth/callback',
     )
 
-    const url = client.createAuthorizationURL('state value', ['read:user', 'repo:status'])
+    const url = client.createAuthorizationURL('state value', ['read:user', 'repo:status'], {
+      codeChallenge: 'challenge-value',
+      codeChallengeMethod: 'S256',
+    })
 
     expect(url.origin).toBe('https://github.com')
     expect(url.pathname).toBe('/login/oauth/authorize')
@@ -757,6 +777,8 @@ describe('makeGitHubOAuthClient', () => {
       state: 'state value',
       scope: 'read:user repo:status',
       response_type: 'code',
+      code_challenge: 'challenge-value',
+      code_challenge_method: 'S256',
     })
   })
 
@@ -1237,10 +1259,11 @@ describe('/auth/callback — CSRF state compare (timing-safe)', () => {
   it('matching state passes the CSRF gate (no false rejection on the happy path)', async () => {
     const app = await buildTestApp({operatorLogin: 'octocat'})
     const res = await app.request(`/auth/callback?code=abc&state=${STATE}`, {
-      headers: {cookie: `oauth_state=${STATE}`},
+      headers: {cookie: `oauth_state=${STATE}; oauth_pkce_verifier=${'c'.repeat(43)}`},
     })
     // Past the CSRF gate the code exchange runs (fake client) and the operator
-    // login matches, so this must NOT be a 403.
+    // login matches, so this must NOT be a 403. (rm-149: the PKCE verifier
+    // cookie rides along so only the STATE gate is under test here.)
     expect(res.status).not.toBe(403)
     expect(res.status).not.toBe(500)
   })
