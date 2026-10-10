@@ -145,10 +145,15 @@ describe('rm-678 schema half: live ledger', () => {
     // (the 788aa489 wall's 'next free rm-779' pointer minted
     // nothing above rm-778; rm-779/rm-780 appear in no landed
     // def line), so both land as-authored and the pin moves
-    // 778 -> 780 atomically with this landing: union census
-    // 245 + 2 = 247 defs / 0 dups / max rm-780, next free
-    // rm-781.
-    expect(live.max).toBe(780)
+    // 780 -> 837 atomically with this roadmap extension (2026-10-09,
+    // repository-maintenance f8ae69de92b74891b4fe283699cca5b5 cycle:3 run
+    // 159ec0eba87d4f5b9b133dd228240255 roadmap d95b81aeae5145deb463ed3c22cee520):
+    // mints rm-836 + rm-837 above the all-lineage ceiling rm-835 (held only as
+    // spool patch roadmap-91f3d37f-a268ee63 against this same base) — ceiling
+    // re-probed live across 61 run walls + 4 integration worktrees (max rm-833)
+    // + 83 origin conductor/run-* refs (max rm-833); union census
+    // 247 + 2 = 249 defs / 0 dups / max rm-837, next free rm-838.
+    expect(live.max).toBe(837)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {

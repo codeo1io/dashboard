@@ -145,6 +145,7 @@ describe('monitoring API', () => {
               openIssueCount: 0,
               openAlertCount: null,
               stale: false,
+              lastRunAt: null,
             },
           },
         ],
@@ -180,6 +181,7 @@ describe('monitoring API', () => {
               openIssueCount: 0,
               openAlertCount: null,
               stale: false,
+              lastRunAt: null,
             },
           },
         ],
@@ -211,10 +213,81 @@ describe('monitoring API', () => {
               openIssueCount: 0,
               openAlertCount: null,
               stale: false,
+              lastRunAt: null,
             },
           },
         ])
       }
+    })
+
+    describe('rm-836: per-repo CI-freshness field (lastRunAt) survives the whitelist', () => {
+      /** Full legal payload with one repo whose status carries the given lastRunAt (shape included literally). */
+      function payloadWithStatusStatus(statusFields: object) {
+        return {
+          repos: [
+            {
+              full_name: 'org/repo-a',
+              discovery_channel: 'installation',
+              status: {
+                rollupState: 'green',
+                failingChecks: 0,
+                failingCheckDetails: [],
+                openPrCount: 0,
+                openIssueCount: 0,
+                openAlertCount: null,
+                stale: false,
+                ...statusFields,
+              },
+            },
+          ],
+          refreshDurationMs: null,
+          refreshDegraded: false,
+          staleBanner: false,
+          driftCount: 0,
+          enumerationIncomplete: null,
+          refreshedAt: 1742000000000,
+        }
+      }
+
+      it('a number lastRunAt parses through and maps to the repo status', async () => {
+        vi.mocked(fetch).mockResolvedValueOnce(
+          new Response(JSON.stringify(payloadWithStatusStatus({lastRunAt: 1741992800000})), {status: 200}),
+        )
+        const res = await fetchMonitoring()
+        expect(res.ok).toBe(true)
+        if (res.ok) {
+          expect(res.data.repos[0]?.status.lastRunAt).toBe(1741992800000)
+        }
+      })
+
+      it('null lastRunAt (unknown run-age) is legal and maps to null', async () => {
+        vi.mocked(fetch).mockResolvedValueOnce(
+          new Response(JSON.stringify(payloadWithStatusStatus({lastRunAt: null})), {status: 200}),
+        )
+        const res = await fetchMonitoring()
+        expect(res.ok).toBe(true)
+        if (res.ok) {
+          expect(res.data.repos[0]?.status.lastRunAt).toBeNull()
+        }
+      })
+
+      it('an ABSENT lastRunAt key is contract drift (a pre-rm-836 server must be caught, not read as unknown)', async () => {
+        const legacy = payloadWithStatusStatus({})
+        // Ensure the key is genuinely absent, not undefined-valued JSON.
+        const raw = JSON.stringify(legacy).replace('"lastRunAt":null,', '')
+        expect(raw).not.toContain('lastRunAt')
+        vi.mocked(fetch).mockResolvedValueOnce(new Response(raw, {status: 200}))
+        const res = await fetchMonitoring()
+        expect(res).toEqual({ok: false, reason: 'contract-drift'})
+      })
+
+      it('a non-number lastRunAt (ISO string) is contract drift — never coerced', async () => {
+        vi.mocked(fetch).mockResolvedValueOnce(
+          new Response(JSON.stringify(payloadWithStatusStatus({lastRunAt: '2026-10-09T00:00:00Z'})), {status: 200}),
+        )
+        const res = await fetchMonitoring()
+        expect(res).toEqual({ok: false, reason: 'contract-drift'})
+      })
     })
   })
 })

@@ -61,6 +61,8 @@ function makeRepo(overrides: Partial<DashboardRepo> = {}): DashboardRepo {
       openAlertCount: null,
       stale: false,
       fetchedAt: 1_700_000_000_000,
+      // rm-836 CI-freshness (interface widening; null = unknown run-age).
+      lastRunAt: null,
     },
     ...overrides,
   }
@@ -215,6 +217,8 @@ describe('/api/monitoring — BFF aggregation endpoint', () => {
           openAlertCount: null,
           stale: false,
           fetchedAt: 1_700_000_000_000,
+          // rm-836 CI-freshness (interface widening; null = unknown run-age).
+          lastRunAt: null,
         },
       })
       const app = await buildTestApp(makeSnapshot({repos: [repo]}))

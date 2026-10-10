@@ -13,6 +13,69 @@ const POLL_INTERVAL_MS = 60000
 export const MONITORING_FETCH_TIMEOUT_MS = 15000
 
 /**
+ * rm-836: per-repo CI-freshness threshold — a tracked repo whose newest
+ * workflow run on the default-branch head is older than this (or of unknown
+ * run-age) gets the attention treatment. 48h is the acceptance's floor; the
+ * "rolling per-repo cadence (2x median interval)" refinement needs snapshot
+ * history the dashboard does not persist, so the floor is the honest bound
+ * (the median-based refinement is deferred — see rm-836's rider).
+ */
+export const CI_SILENCE_THRESHOLD_MS = 48 * 60 * 60 * 1000
+
+/** rm-836: compact relative age (largest whole unit) for the CI-freshness line. */
+export function formatRunAge(ageMs: number): string {
+  const minutes = Math.floor(ageMs / 60_000)
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h`
+  return `${Math.floor(hours / 24)}d`
+}
+
+/**
+ * rm-836: a repo is CI-silent when its newest run is older than the silence
+ * threshold OR its run-age is unknown (lastRunAt null, or no reference clock
+ * — refreshedAt null). Fail-closed: unknown reads as attention, never fresh.
+ */
+export function isCiSilent(repo: MonitoringRepo, referenceNow: number | null): boolean {
+  if (repo.status.lastRunAt === null || referenceNow === null) return true
+  return Math.max(0, referenceNow - repo.status.lastRunAt) > CI_SILENCE_THRESHOLD_MS
+}
+
+/**
+ * rm-836: per-repo last-CI-activity sub-line. Deliberately a sub-line on
+ * the repo card — no new sort tier (attention ordering stays red > stale >
+ * green per rm-780). Ages are computed against the snapshot's refreshedAt
+ * (the data's own clock), not wall-clock, so a frozen board reads as-of its
+ * data instead of drifting.
+ */
+function RepoCiFreshnessLine({lastRunAt, referenceNow}: {lastRunAt: number | null; referenceNow: number | null}) {
+  if (lastRunAt === null || referenceNow === null) {
+    return (
+      <div
+        data-testid="monitoring-ci-age-unknown"
+        style={{fontSize: 'var(--text-body-sm)', color: 'var(--color-warning)', marginTop: 'var(--space-2)'}}
+      >
+        Last CI run: unknown — no workflow run carried a timestamp.
+      </div>
+    )
+  }
+  const ageMs = Math.max(0, referenceNow - lastRunAt)
+  const silent = ageMs > CI_SILENCE_THRESHOLD_MS
+  return (
+    <div
+      data-testid={silent ? 'monitoring-ci-age-stale' : 'monitoring-ci-age-fresh'}
+      style={{
+        fontSize: 'var(--text-body-sm)',
+        color: silent ? 'var(--color-warning)' : 'var(--color-text-muted)',
+        marginTop: 'var(--space-2)',
+      }}
+    >
+      Last CI run: {formatRunAge(ageMs)} ago{silent ? ' — CI silence (over 48h)' : ''}
+    </div>
+  )
+}
+
+/**
  * Red-repo drill-down view (rm-192): renders the repos whose default branch
  * is failing CI, with WHICH check failed, in which workflow run and attempt.
  * Green/unknown repos are summarized in a footer count — the view's purpose
@@ -122,6 +185,11 @@ function MonitoringBoard({data, viewStale}: {data: MonitoringData; viewStale: bo
   // rm-107: measured duration of the last walk for the degraded banner — null
   // only when no cycle has ever stamped a snapshot (never while degraded).
   const degradedDuration = data.refreshDurationMs === null ? null : `${(data.refreshDurationMs / 1000).toFixed(1)}s`
+  // rm-836: the CI-freshness reference clock is the snapshot's own
+  // refreshedAt — ages read as-of the data, so a frozen board never shows
+  // drifting wall-clock ages. null (never refreshed) = every age unknown.
+  const referenceNow = data.refreshedAt
+  const ciSilence = data.repos.length > 0 && data.repos.every(repo => isCiSilent(repo, referenceNow))
 
   return (
     <div data-testid="monitoring-board" style={{display: 'flex', flexDirection: 'column', gap: 'var(--space-3)'}}>
@@ -139,9 +207,16 @@ function MonitoringBoard({data, viewStale}: {data: MonitoringData; viewStale: bo
         </div>
       )}
 
-      {redRepos.map(repo => <RedRepoCard key={repo.fullName} repo={repo} />)}
+      {ciSilence && (
+        <div data-testid="monitoring-ci-silence-banner" className="operator-warning-panel" role="status">
+          CI silence — every tracked repository's newest workflow run is older than{' '}
+          {CI_SILENCE_THRESHOLD_MS / 3_600_000}h or of unknown run-age. Runs may not be triggering.
+        </div>
+      )}
 
-      {staleRepos.map(repo => <StaleRepoCard key={repo.fullName} repo={repo} />)}
+      {redRepos.map(repo => <RedRepoCard key={repo.fullName} repo={repo} referenceNow={referenceNow} />)}
+
+      {staleRepos.map(repo => <StaleRepoCard key={repo.fullName} repo={repo} referenceNow={referenceNow} />)}
 
       {redRepos.length === 0 && staleRepos.length === 0 &&
         (allClear ? (
@@ -186,7 +261,7 @@ function MonitoringBoard({data, viewStale}: {data: MonitoringData; viewStale: bo
  * card; not green either, but the footer only had a "not failing" count).
  * Mirrors RedRepoCard's chrome; the note carries the degradation truth.
  */
-function StaleRepoCard({repo}: {repo: MonitoringRepo}) {
+function StaleRepoCard({repo, referenceNow}: {repo: MonitoringRepo; referenceNow: number | null}) {
   const note =
     repo.status.stale === true
       ? 'Status is stale — the last fetch failed; counts are from the last successful refresh.'
@@ -204,11 +279,12 @@ function StaleRepoCard({repo}: {repo: MonitoringRepo}) {
       <div data-testid="monitoring-stale-repo-note" style={{fontSize: 'var(--text-body-sm)', color: 'var(--color-text-muted)'}}>
         {note}
       </div>
+      <RepoCiFreshnessLine lastRunAt={repo.status.lastRunAt} referenceNow={referenceNow} />
     </div>
   )
 }
 
-function RedRepoCard({repo}: {repo: MonitoringRepo}) {
+function RedRepoCard({repo, referenceNow}: {repo: MonitoringRepo; referenceNow: number | null}) {
   const {status} = repo
   return (
     <div data-testid="monitoring-red-repo" className="listener-message-card operator-failure-state-unavailable">
@@ -259,6 +335,8 @@ function RedRepoCard({repo}: {repo: MonitoringRepo}) {
           unavailable (count-only view).
         </div>
       )}
+
+      <RepoCiFreshnessLine lastRunAt={status.lastRunAt} referenceNow={referenceNow} />
     </div>
   )
 }

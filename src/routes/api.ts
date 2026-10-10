@@ -31,6 +31,13 @@ interface MonitoringRepoStatusDto {
   readonly openIssueCount: number
   readonly openAlertCount: number | null
   readonly stale: boolean
+  /**
+   * When the newest workflow run on the default-branch head started (ms
+   * since epoch; rm-836 CI-freshness). null = unknown — carried explicitly
+   * (JSON keeps the key) so an absent key stays contract-drift, and the
+   * client renders "unknown", never a fabricated clock.
+   */
+  readonly lastRunAt: number | null
 }
 
 interface MonitoringRepoDto {
@@ -64,6 +71,7 @@ function toMonitoringRepoDto(repo: DashboardRepo): MonitoringRepoDto {
       openIssueCount: repo.status.openIssueCount,
       openAlertCount: repo.status.openAlertCount,
       stale: repo.status.stale,
+      lastRunAt: repo.status.lastRunAt,
     },
   }
 }

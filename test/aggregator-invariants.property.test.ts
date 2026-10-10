@@ -70,6 +70,9 @@ const statusArb = (fetchedAt: number): fc.Arbitrary<RepoCiStatus> =>
     openAlertCount: fc.option(fc.nat({max: 30}), {nil: null}),
     stale: fc.boolean(),
     fetchedAt: fc.constant(fetchedAt),
+    // rm-836: newest-run start (ms) or null-unknown — generated independently
+    // of the other status fields (freshness is outcome-independent).
+    lastRunAt: fc.option(fc.nat({max: Number.MAX_SAFE_INTEGER}), {nil: null}),
   })
 
 function makeRepo(n: number, status: RepoCiStatus, owner: string, name: string): DashboardRepo {
@@ -190,6 +193,8 @@ describe('aggregator parseRepoResponse invariants (rm-144)', () => {
             openAlertCount: null,
             stale: true,
             fetchedAt,
+            // rm-836: the fail-visible path is run-age-unknown by construction.
+            lastRunAt: null,
           })
         }
       }),
