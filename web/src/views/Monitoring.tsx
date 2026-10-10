@@ -115,9 +115,13 @@ function MonitoringBoard({data, viewStale}: {data: MonitoringData; viewStale: bo
       (repo.status.stale === true || repo.status.rollupState === 'unknown'),
   )
   const remaining = data.repos.length - redRepos.length - staleRepos.length
-  // rm-780: the all-clear claim is only true when nothing is stale/unknown
-  // AND the view is not running on failing refreshes.
-  const allClear = redRepos.length === 0 && staleRepos.length === 0 && !viewStale
+  // rm-780: the all-clear claim is only true when nothing is stale/unknown,
+  // the view is not running on failing refreshes, AND the DTO-level
+  // enumeration banner is clear — the aggregator's fail-closed paths serve
+  // staleBanner with ZERO rows (repos:[] + staleBanner:true), which a
+  // row-only gate misreads as all-clear (cycle:3 residual amendment).
+  const allClear =
+    redRepos.length === 0 && staleRepos.length === 0 && !viewStale && !data.staleBanner
   const refreshedAt = data.refreshedAt === null ? null : new Date(data.refreshedAt).toLocaleString()
   // rm-107: measured duration of the last walk for the degraded banner — null
   // only when no cycle has ever stamped a snapshot (never while degraded).
