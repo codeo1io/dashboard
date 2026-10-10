@@ -1,14 +1,14 @@
+import {randomUUID} from 'node:crypto'
+import {mkdirSync} from 'node:fs'
+import {dirname} from 'node:path'
+import {DatabaseSync} from 'node:sqlite'
 /**
  * `node:sqlite`-backed persistence for the operator listener channel.
  *
  * See docs/contracts/operator-listener-channel.md — retention policy (500 rows
  * / 30 days) and idempotency (dedupeKey upsert) are enforced here.
  */
-import type {IngestMessage, ListenerLink, ListenerMessage, MessagesResponse} from './contract.ts'
-import {randomUUID} from 'node:crypto'
-import {mkdirSync} from 'node:fs'
-import {dirname} from 'node:path'
-import {DatabaseSync} from 'node:sqlite'
+import {parseLinks, type IngestMessage, type ListenerLink, type ListenerMessage, type MessagesResponse} from './contract.ts'
 
 export interface ListenerStore {
   insert: (input: IngestMessage) => {id: string; receivedAt: string}
@@ -53,8 +53,15 @@ const MAX_LIST_LIMIT = 200
 function parseLinksCell(raw: string, id: string): readonly ListenerLink[] {
   try {
     const parsed: unknown = JSON.parse(raw)
-    if (Array.isArray(parsed)) return parsed as readonly ListenerLink[]
-    throw new Error('not a JSON array')
+    if (!Array.isArray(parsed)) throw new Error('not a JSON array')
+    // rm-187 follow-up (2026-10-10): the array CONTENTS used to flow through a
+    // bare cast (`[1,2,3]` served as ListenerLink[]). Reuse the ingest-side
+    // canonical validator so a persisted cell is accepted exactly when the
+    // same shape would have been accepted at ingest — a wrong-shaped element
+    // degrades the whole cell to empty links, other fields intact.
+    const validated = parseLinks(parsed)
+    if (!validated.success) throw new Error(validated.error.message)
+    return validated.data
   } catch (error) {
     console.warn(
       `[listener-store] degraded links cell on message ${id}: ${
