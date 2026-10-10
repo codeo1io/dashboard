@@ -195,7 +195,17 @@ describe('rm-678 schema half: live ledger', () => {
     // def line; census dups 0), so it lands as-authored and the pin
     // moves 833 -> 835 atomically with this landing: union census
     // 251 + 1 = 252 defs / 0 dups / max rm-835, next free rm-836.
-    expect(live.max).toBe(835)
+    // 2026-10-10 run 4474e5ab (roadmap 7f5515b5, ext #39) mints
+    // rm-896 (Monitoring visual/a11y coverage via a fixture
+    // /api/monitoring seam) above the re-probed all-lineage
+    // unlanded ceiling rm-895 (e5b718478274's ext #38 wall) —
+    // pin bumped 835 -> 896 atomically with the mint; census
+    // 252 + 1 = 253 defs / 0 dups / max rm-896, next free
+    // rm-898. Same extension trues six stale 'pending landing'
+    // status tails to landing-verified landed-at records
+    // (rm-149/187/208/260/780/835 — markers first-hand at
+    // ae9ee8e); status trues do not move the census.
+    expect(live.max).toBe(896)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {

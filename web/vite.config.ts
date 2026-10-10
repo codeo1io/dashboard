@@ -16,8 +16,10 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       // injectManifest ships our hand-written SW (web/src/sw.ts) — a
-      // kill-switch that purges caches and unregisters itself. It performs no
-      // fetch routing and no caching; the emitted precache manifest is inert.
+      // push-only substrate (rm-249): notification display + subscription
+      // rotation + the legacy cache purge. It performs no fetch routing and
+      // no caching; the emitted precache manifest stays inert (rm-138 owns
+      // the offline decision).
       strategies: 'injectManifest',
       srcDir: 'src',
       filename: 'sw.ts',
