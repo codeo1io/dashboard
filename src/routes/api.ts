@@ -91,7 +91,12 @@ export function buildApiRouter(getSnapshot?: SnapshotProvider): Hono {
   const api = new Hono()
 
   api.get('/healthz', c => {
-    return c.json({ok: true, lastFetch: null, rateLimit: null})
+    // rm-904: trimmed to {ok: true}. The former lastFetch/rateLimit fields
+    // were vestigial placeholders (always null since the status snapshot
+    // moved off this route) — no consumer ever read them, and a health probe
+    // should advertise only liveness. Anything richer belongs on /status or
+    // /api/monitoring behind auth.
+    return c.json({ok: true})
   })
 
   /**
