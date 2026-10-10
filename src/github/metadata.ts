@@ -23,12 +23,14 @@
  */
 
 import type {Result} from '../result.ts'
+import type {ConditionalContentCache, RestRequestFn} from './conditional-reads.ts'
 
 import {Buffer} from 'node:buffer'
 import {parse} from 'yaml'
 
 import {logger, sanitizeErrorMessage} from '../logger.ts'
 import {err, ok} from '../result.ts'
+import {ifNoneMatchHeader, normalizeEtag} from './conditional-reads.ts'
 
 // ---------------------------------------------------------------------------
 // Reader interface (injectable — tests inject a fake, production injects real)
@@ -183,6 +185,61 @@ export function makeNotFoundError(message: string): Error & {code: typeof NOT_FO
   const error = new Error(message) as Error & {code: typeof NOT_FOUND_CODE}
   error.code = NOT_FOUND_CODE
   return error
+}
+
+// ---------------------------------------------------------------------------
+// Conditional contents read (rm-162)
+// ---------------------------------------------------------------------------
+
+/** Where the metadata file lives — the codeo1io/.github repo's `data` branch. */
+export const METADATA_SOURCE = {owner: 'codeo1io', repo: '.github'} as const
+
+/**
+ * Conditional GET of the metadata file via an authenticated contents
+ * request seam (rm-162). Carries `If-None-Match` from the supplied cache's
+ * stored ETag and treats 304 as unchanged: the cached decoded content is
+ * returned and NO decode/store work happens. A 200 decodes the base64 body,
+ * stores `{etag, content}` keyed `"${path}@${ref}"`, and returns it.
+ *
+ * This is the shared/testable body of the production metadata reader
+ * (server.ts wires it onto a token-authenticated Octokit); it throws with
+ * the same shapes the inline reader did (Octokit RequestError for transport
+ * /404s, `makeNotFoundError` for non-file bodies), so `readRepoMetadata`'s
+ * error classification is unchanged.
+ */
+export async function fetchMetadataContents(
+  request: RestRequestFn,
+  cache: ConditionalContentCache,
+  path: string,
+  ref: string,
+): Promise<string> {
+  const key = `${path}@${ref}`
+  const cached = cache.get(key)
+  const response = await request('GET /repos/{owner}/{repo}/contents/{path}', {
+    owner: METADATA_SOURCE.owner,
+    repo: METADATA_SOURCE.repo,
+    path,
+    ref,
+    headers: ifNoneMatchHeader(cached?.etag ?? null),
+  })
+  if (response.status === 304) {
+    // We only send If-None-Match when a cached entry exists, so the content
+    // is present by construction; the ?? branch keeps an unexpected 304
+    // WITHOUT a cache entry loud instead of silently serving ''.
+    const content = cached?.content
+    if (content === undefined) {
+      throw makeNotFoundError(`${path} at ref=${ref} returned 304 with no cached content`)
+    }
+    logger.debug('metadata contents read 304 Not Modified — serving cached content unchanged (rm-162)')
+    return content
+  }
+  const data = response.data as {type: string; encoding: string; content: string}
+  if (data.type !== 'file' || data.encoding !== 'base64') {
+    throw makeNotFoundError(`${path} at ref=${ref} is not a base64-encoded file`)
+  }
+  const decoded = Buffer.from(data.content, 'base64').toString('utf8')
+  cache.store(key, normalizeEtag(response.headers.etag), decoded)
+  return decoded
 }
 
 // ---------------------------------------------------------------------------

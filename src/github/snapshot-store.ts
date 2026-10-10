@@ -83,6 +83,18 @@ function isValidSnapshotShape(value: unknown): value is AggregatorSnapshot {
     ) {
       return false
     }
+    // rm-117 review fix (independent_review 5d6fd3f, medium): every new
+    // repo-status field must ride this row check too — the row-level twin
+    // of the rm-156 pattern above. A cache persisted before the
+    // openCodeScanningAlerts widening otherwise loads verbatim, the DTO
+    // copies the absent field as undefined, and the client's strict parse
+    // turns the whole /api/monitoring payload into a contract-drift board
+    // for the entire cold-start bridge window instead of the documented
+    // empty boot (which the next refresh re-persists with the field).
+    const status = row.status as Record<string, unknown>
+    if (status.openCodeScanningAlerts !== null && typeof status.openCodeScanningAlerts !== 'number') {
+      return false
+    }
   }
   return true
 }

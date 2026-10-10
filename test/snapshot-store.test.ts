@@ -41,6 +41,9 @@ function makeRepoRow(): DashboardRepo {
       openPrCount: 0,
       openIssueCount: 0,
       openAlertCount: null,
+      // Required since the cycle-1 batch's rm-117 widening (counts + buckets
+      // only — null matches every pre-rm-117 fixture by design).
+      openCodeScanningAlerts: null,
       stale: false,
       fetchedAt: 1234,
     },
@@ -115,6 +118,23 @@ describe('createFileSnapshotStore — load (fail-open)', () => {
     writeFileSync(
       file,
       JSON.stringify({...makeSnapshot(), repos: [{owner: 'fro-bot'}]}),
+      'utf8',
+    )
+    expect(store.load()).toBeNull()
+  })
+
+  it('review fix (5d6fd3f): a persisted pre-openCodeScanningAlerts cache is rejected — legacy rows fail open to an empty boot', () => {
+    const {store, file} = makeStore()
+    // A cache persisted by a pre-rm-117 build: structurally valid except the
+    // repo rows pre-date the openCodeScanningAlerts widening. The row-shape
+    // check must reject it (the rm-156 pattern: every new repo-status field
+    // rides the check) — otherwise the boot bridge serves rows whose DTO
+    // lacks the field, and the client's strict parse turns the whole board
+    // into a contract-drift error for the cold-start bridge window instead
+    // of the documented empty boot.
+    writeFileSync(
+      file,
+      JSON.stringify(makeSnapshot()).replace(',"openCodeScanningAlerts":null', ''),
       'utf8',
     )
     expect(store.load()).toBeNull()
