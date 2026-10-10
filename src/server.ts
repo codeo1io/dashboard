@@ -636,6 +636,15 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   const devAutoLogin = devAutoLoginRequested
 
   if (devAutoLogin) {
+    if (operatorLogin === undefined) {
+      // Config-truth wedge guard (rm-862): with no operator login the auth stack
+      // is deny-all for every protected path — the devAutoLogin mint below never
+      // gets a chance to run, so a fresh clone boots into silent 401s. Say it at
+      // boot, once, instead of leaving it to be rediscovered per-request.
+      logger.warning(
+        'DEV AUTO-LOGIN enabled but DASHBOARD_OPERATOR_LOGIN is unset — every protected path will return 401. Set DASHBOARD_OPERATOR_LOGIN (see docs/solutions/workflow-issues/dev-server-hang-background-no-watch-kill-orphans-2026-06-25.md) to mint the dev session.',
+      )
+    }
     logger.warning('DEV AUTO-LOGIN ENABLED — auth is bypassed; never use in production')
   }
 

@@ -54,6 +54,7 @@ const VALID_STATUSES: ReadonlySet<string> = new Set([
   'blocked',
   'running',
   'waiting_for_approval',
+  'waiting_for_question',
   'succeeded',
   'failed',
   'cancelled',
@@ -206,7 +207,15 @@ function parseSseRecord(record: string): SseParseResult | null {
           entityRef: candidate.entityRef,
           surface: candidate.surface as 'github' | 'discord' | 'web',
           phase: candidate.phase as 'PENDING' | 'ACKNOWLEDGED' | 'EXECUTING' | 'COMPLETED' | 'FAILED' | 'CANCELLED',
-          status: candidate.status as 'queued' | 'blocked' | 'running' | 'waiting_for_approval' | 'succeeded' | 'failed' | 'cancelled',
+          status: candidate.status as
+          | 'queued'
+          | 'blocked'
+          | 'running'
+          | 'waiting_for_approval'
+          | 'waiting_for_question'
+          | 'succeeded'
+          | 'failed'
+          | 'cancelled',
           startedAt: candidate.startedAt,
           stale: candidate.stale,
           ...(failureKind === undefined ? {} : {failureKind}),
