@@ -47,6 +47,10 @@ function makeRepoRow(): DashboardRepo {
       // RepoCiStatus — and isValidSnapshotShape now rejects a persisted row
       // without lastRunAt, so the persist→load round-trip below needs it).
       lastRunAt: null,
+      // Required since rm-916 (cycle:2) landed — same interface-widening
+      // discipline: provenance + activity anchor are now required keys.
+      lastRunAtSource: 'fetched',
+      lastPushedAt: null,
     },
   }
 }
@@ -143,6 +147,32 @@ describe('createFileSnapshotStore — load (fail-open)', () => {
     writeFileSync(
       file,
       JSON.stringify({...makeSnapshot(), repos: [{...row, status: {...row.status, lastRunAt: '2026-10-09T00:00:00Z'}}]}),
+      'utf8',
+    )
+    expect(store.load()).toBeNull()
+  })
+
+  it("rm-916: a cache persisted by a pre-rm-916 build (status row without lastRunAtSource/lastPushedAt) is rejected — boot empty, never serve rows the client's strict parse would reject wholesale", () => {
+    const {store, file} = makeStore()
+    const row = makeRepoRow()
+    // Same bridge-window discipline as rm-836 above: the on-disk cache was
+    // written by a build whose RepoCiStatus predates the rm-916 keys. Serving
+    // it verbatim would emit a DTO without the keys and the client's
+    // contract-drift parse would fail the WHOLE payload — fail closed here.
+    const legacyRow = {
+      ...row,
+      status: Object.fromEntries(Object.entries(row.status).filter(([key]) => key !== 'lastRunAtSource' && key !== 'lastPushedAt')),
+    }
+    writeFileSync(file, JSON.stringify({...makeSnapshot(), repos: [legacyRow]}), 'utf8')
+    expect(store.load()).toBeNull()
+  })
+
+  it('rm-916: a status row whose lastRunAtSource is outside the declared union is rejected (fail-closed, not coerced)', () => {
+    const {store, file} = makeStore()
+    const row = makeRepoRow()
+    writeFileSync(
+      file,
+      JSON.stringify({...makeSnapshot(), repos: [{...row, status: {...row.status, lastRunAtSource: 'legacy'}}]}),
       'utf8',
     )
     expect(store.load()).toBeNull()

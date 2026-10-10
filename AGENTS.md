@@ -14,14 +14,17 @@ view of Fro Bot's cross-repo footprint.
    `security_events`/`vulnerability_alerts:read` optional + graceful). The Agent
    App's registered permissions are therefore irrelevant to effective access.
    Never add a write code path.
-   Upstream divergence disposition (verified 2026-09-29, run 262f170c research):
-   `fro-bot/dashboard` upstream has adopted an isolated repository-editing (wiki)
-   capability —
-   visible in its package description — while this fork keeps the read-only
-   invariant absolute (standing never-absorb item, upstream PR #498). Any
-   future absorb of upstream commits must exclude write-capability surfaces by
-   default; the ledger tracks the absorb window at rm-252 and the disposition at
-   rm-259.
+   Upstream divergence disposition (verified 2026-09-29, run 262f170c research;
+   sharpened 2026-10-11, run a9e473cf983a research — upstream PR #498, merged
+   2026-09-20, corrected the existence claim): `fro-bot/dashboard` upstream
+   carries an isolated repository-editing (wiki) capability IMPLEMENTED IN
+   `wiki-writer/` (verified in the upstream tree: wiki-writer/src/{contract,
+   fixture,gate-contract,github-data-client,internal-auth,operation-ledger}.ts
+   + docs/plans/2026-08-31-001) but NOT deployed, NOT integrated, and holding
+   no runtime authority (nothing in its src/ reaches it) — while this fork
+   keeps the read-only invariant absolute. Never absorb `wiki-writer/**` (or
+   any write-capability surface) by default; the ledger tracks the absorb
+   window at rm-252 and the disposition at rm-259.
 2. **Redaction preservation.** `src/github/metadata.ts` reads
    `metadata/repos.yaml` from the `codeo1io/.github` `data` branch and exports
    `redactedNodeIds` (node_ids of `[REDACTED]`/`private:true` entries). The

@@ -2749,6 +2749,10 @@ function makeBootSnapshotRepo(overrides: {node_id?: string; full_name?: string} 
       // Required since rm-836 CI-freshness landed (interface widening; a
       // persisted snapshot without lastRunAt now fails the boot shape check).
       lastRunAt: null,
+      // rm-916: provenance + tip anchor ride the same widening — a persisted
+      // snapshot without them fails the boot shape check (fail-closed boot).
+      lastRunAtSource: 'fetched',
+      lastPushedAt: null,
     },
   }
 }

@@ -94,6 +94,18 @@ function isValidSnapshotShape(value: unknown): value is AggregatorSnapshot {
     if (status.lastRunAt !== null && typeof status.lastRunAt !== 'number') {
       return false
     }
+    // rm-916 (rm-836 pattern): the two new activity-anchor keys are pinned
+    // here in lockstep with the client's strict parse — a cache persisted by
+    // a pre-rm-916 build fails this check and boots empty (fail-open; the
+    // next refresh re-persists with the keys), instead of serving rows
+    // whose DTO would omit the keys and trip the client's contract-drift
+    // parse for the whole payload.
+    if (status.lastRunAtSource !== 'absent' && status.lastRunAtSource !== 'fetched') {
+      return false
+    }
+    if (status.lastPushedAt !== null && typeof status.lastPushedAt !== 'number') {
+      return false
+    }
   }
   return true
 }
