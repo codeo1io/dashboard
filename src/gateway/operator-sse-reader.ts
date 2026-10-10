@@ -11,6 +11,13 @@
  *   (SUPPORTED_OPERATOR_CONTRACT_VERSIONS — rm-157). Anything outside the
  *   window triggers a fail-closed drift error and stops all further frame
  *   dispatch.
+ * - Every abandoned response body is released before an error is raised
+ *   (rm-900): non-ok statuses and refused 200s cancel the body, and every
+ *   mid-stream stop cancels the active reader — an unconsumed body pins
+ *   its undici socket until GC and can exhaust the keep-alive pool under
+ *   an error storm.
+ * - An unparseable frame fails the stream closed (rm-901): the operator
+ *   surface receives the error instead of a silently degraded stream.
  * - No runId or dynamic path segment is ever logged — only the route template.
  * - No response body text is included in errors (no-oracle).
  * - 404 → typed not-found error; body is never parsed for cause.
@@ -343,6 +350,40 @@ export function parseSseChunk(text: string): SseParseResult[] {
   return results
 }
 
+/**
+ * rm-900 — release a response body the reader is about to discard.
+ *
+ * undici pins the socket of a response whose body is never consumed until GC
+ * reclaims the stream, so a reader that repeatedly errors out on non-ok
+ * statuses (crashed run → 404 polling loop, gateway saturation → 429/5xx
+ * loop) bleeds keep-alive connections until the agent's pool is exhausted.
+ * Best-effort: a body that already errored or closed rejects here, and the
+ * error verdict stands either way. Runs before onError/onClose so resource
+ * release precedes consumer surfacing.
+ */
+async function cancelResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel()
+  } catch {
+    // Already gone — the verdict stands either way.
+  }
+}
+
+/**
+ * rm-900 — release the active body reader when the read loop stops early.
+ *
+ * An SSE connection does not close itself after a terminal frame or a
+ * fail-closed stop; returning without cancelling leaves the socket pinned
+ * until GC. Same best-effort contract as cancelResponseBody.
+ */
+async function cancelReaderQuietly(reader: {cancel: () => Promise<void>}): Promise<void> {
+  try {
+    await reader.cancel()
+  } catch {
+    // Already closed or errored — nothing to release.
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Reader options and interface
 // ---------------------------------------------------------------------------
@@ -438,6 +479,9 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
 
     // Branch on HTTP status
     if (response.status === 404) {
+      // rm-900 — release the unread error body so its socket returns to the
+      // pool before the error is surfaced.
+      await cancelResponseBody(response)
       logger?.error('sse-reader: stream not found', {route: ROUTE_TEMPLATE, status: 404})
       onError(new Error('not-found: stream endpoint returned 404'))
       onClose()
@@ -445,6 +489,9 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
     }
 
     if (response.status === 429) {
+      // rm-900 — release the unread error body so its socket returns to the
+      // pool before the error is surfaced.
+      await cancelResponseBody(response)
       logger?.error('sse-reader: rate limited', {route: ROUTE_TEMPLATE, status: 429})
       onError(new Error('rate-limited: stream endpoint returned 429'))
       onClose()
@@ -452,6 +499,9 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
     }
 
     if (response.status !== 200) {
+      // rm-900 — release the unread error body so its socket returns to the
+      // pool before the error is surfaced.
+      await cancelResponseBody(response)
       logger?.error('sse-reader: unexpected status', {route: ROUTE_TEMPLATE, status: response.status})
       onError(new Error('network error: unexpected stream status'))
       onClose()
@@ -461,6 +511,9 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
     // Require Content-Type text/event-stream on 200
     const contentType = response.headers.get('content-type') ?? ''
     if (!contentType.startsWith('text/event-stream')) {
+      // rm-900 — a refused 200 carries the same retention hazard as a
+      // non-ok response: release the body we are refusing to parse.
+      await cancelResponseBody(response)
       logger?.error('sse-reader: unexpected content-type', {route: ROUTE_TEMPLATE})
       onError(new Error('network error: unexpected content-type'))
       onClose()
@@ -489,8 +542,15 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
      */
     function handleFrame(result: SseParseResult): boolean {
       if (!result.success) {
-        logger?.error('sse-reader: frame parse failure', {route: ROUTE_TEMPLATE})
-        return true // continue reading
+        // rm-901 — fail closed per the module contract: an unparseable frame
+        // errors the stream instead of logging-and-continuing, so the
+        // operator surface receives the failure and can never render a
+        // silently degraded stream as healthy. Fixed error string; never
+        // echoes wire content.
+        logger?.error('sse-reader: frame parse failure — failing closed', {route: ROUTE_TEMPLATE})
+        onError(new Error('network error: stream frame failed validation'))
+        onClose()
+        return false // stop reading
       }
 
       const frame = result.frame
@@ -561,6 +621,8 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
 
         // Hard buffer cap (UTF-8 bytes, rm-114) — fail closed if exceeded without a boundary
         if (bufferBytes > MAX_SSE_BUFFER_BYTES) {
+          // rm-900 — release the abandoned body before failing closed.
+          await cancelReaderQuietly(reader)
           logger?.error('sse-reader: buffer overflow', {route: ROUTE_TEMPLATE})
           onError(new Error('network error: stream buffer overflow'))
           onClose()
@@ -577,7 +639,13 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
           const results = parseSseChunk(`${record}\n\n`)
           for (const result of results) {
             const shouldContinue = handleFrame(result)
-            if (!shouldContinue) return
+            if (!shouldContinue) {
+              // rm-900 — the stop abandons an unconsumed body: cancel the
+              // reader so the socket returns to the pool (an SSE connection
+              // does not close itself after a terminal frame).
+              await cancelReaderQuietly(reader)
+              return
+            }
           }
 
           boundary = buffer.indexOf('\n\n')
@@ -590,7 +658,11 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
         const results = parseSseChunk(`${buffer}\n\n`)
         for (const result of results) {
           const shouldContinue = handleFrame(result)
-          if (!shouldContinue) return
+          if (!shouldContinue) {
+            // rm-900 — same stop-path release as the streaming loop above.
+            await cancelReaderQuietly(reader)
+            return
+          }
         }
       }
     } catch {

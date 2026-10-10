@@ -4,7 +4,9 @@
  * Pins the fail-open contract of createFileSnapshotStore: the boot-time
  * bridge must never break the dashboard because of a bad cache file —
  * missing/corrupt/oversize/malformed inputs all yield null (empty boot),
- * persistence is best-effort, atomic (tmp + rename), and size-bounded.
+ * persistence is best-effort, atomic (tmp + rename), non-blocking (rm-902:
+ * fs/promises publish path serialized through a promise chain), and
+ * size-bounded.
  */
 
 import type {AggregatorSnapshot, DashboardRepo, SnapshotStore} from '../src/github/aggregator.ts'
@@ -89,9 +91,9 @@ describe('createFileSnapshotStore — load (fail-open)', () => {
     for (const dir of dirs.splice(0)) rmSync(dir, {recursive: true, force: true})
   })
 
-  it('round-trips a persisted snapshot', () => {
+  it('round-trips a persisted snapshot', async () => {
     const {store, file} = makeStore()
-    store.persist(makeSnapshot())
+    await store.persist(makeSnapshot())
     expect(readFileSync(file, 'utf8')).toBe(JSON.stringify(makeSnapshot()))
 
     const loaded = store.load()
@@ -126,9 +128,9 @@ describe('createFileSnapshotStore — load (fail-open)', () => {
     expect(store.load()).toBeNull()
   })
 
-  it('persist is atomic — no .tmp residue after a clean write', () => {
+  it('persist is atomic — no .tmp residue after a clean write', async () => {
     const {store, file} = makeStore()
-    store.persist(makeSnapshot())
+    await store.persist(makeSnapshot())
     expect(readFileSync(file, 'utf8')).toBe(JSON.stringify(makeSnapshot()))
     expect(() => readFileSync(`${file}.tmp`, 'utf8')).toThrow()
   })
@@ -182,7 +184,7 @@ describe('createFileSnapshotStore — size bound measures UTF-8 bytes, not UTF-1
     expect(store.load()).toBeNull()
   })
 
-  it('persist: CJK snapshot over the byte cap but under the code-unit cap is not written', () => {
+  it('persist: CJK snapshot over the byte cap but under the code-unit cap is not written', async () => {
     const {store, file} = makeStore()
     const padChars = Math.ceil((CAP + 32 - bytes(JSON.stringify(makeSnapshot()))) / 3)
     const snapshot: AggregatorSnapshot = {
@@ -192,7 +194,7 @@ describe('createFileSnapshotStore — size bound measures UTF-8 bytes, not UTF-1
     const serialized = JSON.stringify(snapshot)
     expect(bytes(serialized)).toBeGreaterThan(CAP)
     expect(serialized.length).toBeLessThan(CAP)
-    store.persist(snapshot)
+    await store.persist(snapshot)
     expect(() => readFileSync(file, 'utf8')).toThrow()
   })
 
@@ -279,5 +281,86 @@ describe('createFileSnapshotStore — size gate fires before the read (rm-759)',
     } finally {
       readMock.mockReset()
     }
+  })
+})
+
+describe('createFileSnapshotStore — non-blocking atomic publish (rm-902)', () => {
+  const dirs: string[] = []
+
+  function makeStore(): {store: SnapshotStore; file: string} {
+    const dir = mkdtempSync(join(tmpdir(), 'snapshot-store-rm902-'))
+    dirs.push(dir)
+    const file = join(dir, 'snapshot.json')
+    return {store: createFileSnapshotStore(file) as SnapshotStore, file}
+  }
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, {recursive: true, force: true})
+  })
+
+  it('persist is non-blocking — the file is not on disk when persist returns', async () => {
+    const {store, file} = makeStore()
+    const pending = store.persist(makeSnapshot())
+    expect(pending).toBeInstanceOf(Promise)
+    // Synchronous code cannot be interrupted by the microtask that starts
+    // the write, so the file is provably absent at return time.
+    expect(() => readFileSync(file, 'utf8')).toThrow()
+    await pending
+    expect(readFileSync(file, 'utf8')).toBe(JSON.stringify(makeSnapshot()))
+    expect(() => readFileSync(`${file}.tmp`, 'utf8')).toThrow()
+  })
+
+  it('serialized publishes land in order — the newest snapshot always wins, no tmp residue', async () => {
+    const {store, file} = makeStore()
+    const pendings: Promise<void>[] = []
+    const expected: string[] = []
+    for (let i = 0; i < 5; i++) {
+      const snapshot = {...makeSnapshot(), driftCount: i}
+      expected.push(JSON.stringify(snapshot))
+      pendings.push(Promise.resolve(store.persist(snapshot)))
+    }
+    await Promise.all(pendings)
+    expect(readFileSync(file, 'utf8')).toBe(expected[4])
+    expect(() => readFileSync(`${file}.tmp`, 'utf8')).toThrow()
+  })
+
+  it('atomicity invariant under a concurrent reader — only complete snapshots are ever observable', async () => {
+    const {store, file} = makeStore()
+    // ~100KB payloads keep the writes on the thread pool long enough for
+    // the reader loop to observe intermediate complete states.
+    const pendings: Promise<void>[] = []
+    const expected: string[] = []
+    for (let i = 0; i < 8; i++) {
+      const snapshot: AggregatorSnapshot = {
+        ...makeSnapshot(),
+        repos: [{...makeRepoRow(), name: `repo-${i}-${'x'.repeat(100_000)}`}],
+      }
+      expected.push(JSON.stringify(snapshot))
+      pendings.push(Promise.resolve(store.persist(snapshot)))
+    }
+    let observations = 0
+    let violations = 0
+    const reader = (async () => {
+      const deadline = Date.now() + 2_000
+      for (;;) {
+        await new Promise<void>(resolve => setImmediate(resolve))
+        try {
+          const raw = readFileSync(file, 'utf8')
+          JSON.parse(raw)
+          observations++
+        } catch (error) {
+          // ENOENT (before the first write) is fine; a present-but-unparseable
+          // file would be a torn write leaking past the rename.
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') violations++
+        }
+        if (Date.now() >= deadline) break
+      }
+    })()
+    await Promise.all(pendings)
+    await reader
+    expect(violations).toBe(0)
+    expect(observations).toBeGreaterThan(0)
+    expect(readFileSync(file, 'utf8')).toBe(expected[7])
+    expect(() => readFileSync(`${file}.tmp`, 'utf8')).toThrow()
   })
 })
