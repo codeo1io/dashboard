@@ -146,9 +146,9 @@ describe('rm-678 schema half: live ledger', () => {
     // nothing above rm-778; rm-779/rm-780 appear in no landed
     // def line), so both land as-authored and the pin moves
     // 778 -> 780 atomically with this landing: union census
-    // 245 + 2 = 247 defs / 0 dups / max rm-780, next free
-    // rm-781.
-    expect(live.max).toBe(780)
+    // 247 + 1 = 248 defs / 0 dups / max rm-833, next free
+    // rm-834.
+    expect(live.max).toBe(833)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {

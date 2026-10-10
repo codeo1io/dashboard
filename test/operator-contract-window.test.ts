@@ -2,9 +2,10 @@
  * rm-157 supported-versions window — single-source pins.
  *
  * The window is the deploy-order independence mechanism for the operator
- * stream: the primary version is what the pinned gateway deployment serves
- * today ('1.6.0'); '1.8.0' is additive-only upstream shape absorbed from
- * upstream PR #573 (a82871d). These tests pin:
+ * stream: the primary version is what the pinned gateway deployment serves.
+ * Flip executed 2026-10-09 (rm-157's deferred half): the gateway moved to
+ * 1.8.0 (infra faf71414, 2026-10-07T20:11:52Z, v0.118.2) and '1.6.0' was
+ * retired from the window in the same change. These tests pin:
  * - the primary and the window contents (no accidental widen/narrow),
  * - the browser client's window and primary mirror the vendored ones,
  * - the contract 1.8.0 absorb surface: the two new failure kinds are vendored
@@ -17,17 +18,18 @@ import {OPERATOR_FAILURE_KINDS} from '../src/gateway/operator-contract/run-statu
 import {OPERATOR_CONTRACT_VERSION, SUPPORTED_OPERATOR_CONTRACT_VERSIONS} from '../src/gateway/operator-contract/version.ts'
 
 describe('rm-157 supported-versions window', () => {
-  it('primary stays 1.6.0 — the version the pinned gateway deployment serves', () => {
-    expect(OPERATOR_CONTRACT_VERSION).toBe('1.6.0')
+  it('primary is 1.8.0 — the version the pinned gateway deployment serves since infra faf71414 (2026-10-07)', () => {
+    expect(OPERATOR_CONTRACT_VERSION).toBe('1.8.0')
   })
 
-  it('window is exactly the primary plus additive 1.8.0, in order', () => {
-    expect([...SUPPORTED_OPERATOR_CONTRACT_VERSIONS]).toEqual(['1.6.0', '1.8.0'])
+  it('window is exactly the primary alone, in order (1.6.0 retired by the 2026-10-09 flip)', () => {
+    expect([...SUPPORTED_OPERATOR_CONTRACT_VERSIONS]).toEqual(['1.8.0'])
   })
 
   it('window includes the primary and excludes pre-window, future, and garbage versions', () => {
     expect(SUPPORTED_OPERATOR_CONTRACT_VERSIONS).toContain(OPERATOR_CONTRACT_VERSION)
     expect(SUPPORTED_OPERATOR_CONTRACT_VERSIONS).not.toContain('1.5.0')
+    expect(SUPPORTED_OPERATOR_CONTRACT_VERSIONS).not.toContain('1.6.0')
     expect(SUPPORTED_OPERATOR_CONTRACT_VERSIONS).not.toContain('1.9.0')
     expect(SUPPORTED_OPERATOR_CONTRACT_VERSIONS).not.toContain('')
   })

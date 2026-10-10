@@ -17,7 +17,12 @@ inlined boundary types for RunPhase/Surface/RunState).
   the dashboard applies exactly three edits:
   - `export` is added to the existing vocabulary sets (`CHECKOUT_OPERATIONS`,
     `LAYOUT_REFUSAL_REASONS`, `OBSTRUCTION_KINDS`, `UPDATE_FAILURE_REASONS`), so
-    coverage tests can read them at runtime.
+    coverage tests can read them at runtime: `test/operator-contract-vocabulary.test.ts`
+    (the "rm-833 vendored vocabulary conformance" suite) pins exact membership of
+    every exported vocabulary surface, including the refusal list and the push
+    vocabularies (`VALID_PUSH_HANDOFF_STATES`, `OPERATOR_PUSH_INACTIVE_REASONS`).
+    A vendored refresh that grows or shrinks a member fails that suite — the
+    refresh rule is to update the vendored sets and the suite together.
   - `CHECKOUT_REFUSAL_REASONS` is added, an exported list of the refusal reasons.
     A compile-time check (`CheckoutRefusalReasonsAreExact`) fails the type check if
     the list and `OperatorCheckoutPreparationRefused['reason']` differ in either

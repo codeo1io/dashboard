@@ -9,6 +9,8 @@
  * - NO dynamic interpolation of sensitive values.
  */
 
+import type {OperatorPushInactiveReason} from '../push/push-types.ts'
+
 export type NotificationUiState =
   | 'not-requested'
   | 'subscribed'
@@ -102,4 +104,60 @@ const COPY: Record<NotificationUiState, NotificationStateCopy> = {
 
 export function getNotificationCopy(state: NotificationUiState): NotificationStateCopy {
   return COPY[state]
+}
+
+/**
+ * rm-693 inactive-reason ladder copy — rendered ONLY when the reconcile
+ * sweep derived the `inactive` handoff state, as a secondary banner under
+ * the state card. `unknown-inactive` covers an inactive record whose gateway
+ * sent no reason (or an unrecognized one): generic degraded copy, never a
+ * fabricated state. Same security invariants as the state map above.
+ */
+export type InactiveReasonKey = OperatorPushInactiveReason | 'unknown-inactive'
+
+export interface InactiveReasonCopy {
+  readonly label: string
+  readonly detail: string
+  /**
+   * Recovery affordance: 'resubscribe' → the existing enable CTA path;
+   * 'purge-device' → the existing disable path (drop the dead gateway
+   * record); 'reauth' → copy-only hint (session re-auth is an operator
+   * action outside the push surface — no fabricated in-app flow);
+   * null → none.
+   */
+  readonly affordance: 'resubscribe' | 'purge-device' | 'reauth' | null
+}
+
+const INACTIVE_REASON_COPY: Record<InactiveReasonKey, InactiveReasonCopy> = {
+  unsubscribed: {
+    label: 'Alerts stopped on the server',
+    detail: 'This browser is no longer registered for push delivery. Re-enable to resume alerts.',
+    affordance: 'resubscribe',
+  },
+  dead: {
+    label: 'Device record expired',
+    detail: 'The delivery record for this device is stale. Purge it, then re-enable when you want alerts again.',
+    affordance: 'purge-device',
+  },
+  revoked: {
+    label: 'Alerts revoked',
+    detail: 'Push delivery was revoked for this operator. Sign in again to restore alert delivery.',
+    affordance: 'reauth',
+  },
+  'session-revoked': {
+    label: 'Session expired',
+    detail: 'The session that registered these alerts is gone. Sign in again, then re-enable notifications.',
+    affordance: 'reauth',
+  },
+  'unknown-inactive': {
+    label: 'Alerts inactive',
+    detail: 'This browser is registered but not receiving alerts. Re-enable to resubscribe.',
+    affordance: 'resubscribe',
+  },
+}
+
+export function getInactiveReasonCopy(reason: InactiveReasonKey): InactiveReasonCopy {
+  // noUncheckedIndexedAccess: undefined can only mean a missing rung — fail
+  // open to the generic rung rather than leaking undefined to the view.
+  return INACTIVE_REASON_COPY[reason] ?? INACTIVE_REASON_COPY['unknown-inactive']
 }

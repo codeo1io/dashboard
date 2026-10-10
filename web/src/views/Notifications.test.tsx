@@ -60,6 +60,7 @@ describe('Notifications Component', () => {
     vi.mocked(getNotificationPermission).mockReturnValue('default')
     vi.mocked(runReconcileSweep).mockResolvedValue({
       skipped: false,
+      inactiveReason: undefined,
       action: undefined,
       uiState: 'not-requested',
       nextCache: {} as any,
@@ -164,6 +165,7 @@ describe('Notifications Component', () => {
     addMetaTag()
     vi.mocked(runReconcileSweep).mockResolvedValue({
       skipped: false,
+      inactiveReason: undefined,
       action: undefined,
       uiState: 'denied',
       nextCache: {} as any,
@@ -195,6 +197,7 @@ describe('Notifications Component', () => {
     })
     vi.mocked(runReconcileSweep).mockResolvedValue({
       skipped: false,
+      inactiveReason: undefined,
       action: 'cleanup',
       uiState: 'denied',
       nextCache: {} as any,
@@ -219,6 +222,7 @@ describe('Notifications Component', () => {
     addMetaTag()
     vi.mocked(runReconcileSweep).mockResolvedValue({
       skipped: false,
+      inactiveReason: undefined,
       action: undefined,
       uiState: 'subscribed',
       nextCache: {} as any,
@@ -269,6 +273,7 @@ describe('Notifications Component', () => {
     addMetaTag()
     vi.mocked(runReconcileSweep).mockResolvedValue({
       skipped: false,
+      inactiveReason: undefined,
       action: undefined,
       uiState,
       nextCache: {} as any,
@@ -404,6 +409,7 @@ describe('Notifications Component', () => {
     addMetaTag()
     vi.mocked(runReconcileSweep).mockResolvedValue({
       skipped: false,
+      inactiveReason: undefined,
       action: 'register',
       uiState: 'not-requested',
       nextCache: {} as any,
@@ -422,6 +428,7 @@ describe('Notifications Component', () => {
     addMetaTag()
     vi.mocked(runReconcileSweep).mockResolvedValue({
       skipped: false,
+      inactiveReason: undefined,
       action: 'resubscribe',
       uiState: 'subscribed',
       nextCache: {} as any,
@@ -445,6 +452,7 @@ describe('Notifications Component', () => {
     // which captures the endpoint before unsubscribing locally.
     vi.mocked(runReconcileSweep).mockResolvedValue({
       skipped: false,
+      inactiveReason: undefined,
       action: 'cleanup',
       uiState: 'not-requested',
       nextCache: {} as any,
@@ -467,6 +475,7 @@ describe('Notifications Component', () => {
     // First sweep: healthy, subscribed.
     vi.mocked(runReconcileSweep).mockResolvedValueOnce({
       skipped: false,
+      inactiveReason: undefined,
       action: undefined,
       uiState: 'subscribed',
       nextCache: {} as any,
@@ -484,6 +493,7 @@ describe('Notifications Component', () => {
     // notifications" while the subscription was still live.
     vi.mocked(runReconcileSweep).mockResolvedValueOnce({
       skipped: false,
+      inactiveReason: undefined,
       action: 'none',
       uiState: undefined,
       nextCache: {} as any,
@@ -504,6 +514,7 @@ describe('Notifications Component', () => {
     addMetaTag()
     vi.mocked(runReconcileSweep).mockResolvedValue({
       skipped: false,
+      inactiveReason: undefined,
       action: 'cleanup-and-unsubscribe',
       uiState: 'not-requested',
       nextCache: {} as any,
@@ -534,6 +545,7 @@ describe('Notifications Component', () => {
     })
     vi.mocked(runReconcileSweep).mockResolvedValue({
       skipped: false,
+      inactiveReason: undefined,
       action: 'cleanup-and-unsubscribe',
       uiState: 'denied',
       nextCache: {} as any,
@@ -573,6 +585,7 @@ describe('Notifications Component', () => {
     })
     vi.mocked(runReconcileSweep).mockResolvedValue({
       skipped: false,
+      inactiveReason: undefined,
       action: undefined,
       uiState: 'subscribed',
       nextCache: {} as any,
@@ -767,5 +780,99 @@ describe('Notifications Component', () => {
       const secondDeps = vi.mocked(runReconcileSweep).mock.calls[1]?.[0]
       expect(secondDeps?.getCurrentKeyVersion?.()).toBeUndefined()
     })
+  })
+})
+
+describe('Notifications Component — rm-693 inactive-reason ladder', () => {
+  let metaTag: HTMLMetaElement | null = null
+
+  const addMetaTag = () => {
+    metaTag = document.createElement('meta')
+    metaTag.setAttribute('name', 'push-enabled')
+    metaTag.setAttribute('content', 'true')
+    document.head.appendChild(metaTag)
+  }
+
+  beforeEach(() => {
+    localStorage.clear()
+    vi.clearAllMocks()
+    if (metaTag && metaTag.parentNode) {
+      metaTag.parentNode.removeChild(metaTag)
+    }
+    metaTag = null
+    vi.mocked(getPushSupport).mockReturnValue({supported: true, needsInstall: false})
+    vi.mocked(getNotificationPermission).mockReturnValue('granted')
+    vi.mocked(runReconcileSweep).mockResolvedValue({
+      skipped: false,
+      inactiveReason: undefined,
+      action: undefined,
+      uiState: 'subscribed',
+      nextCache: {handoffState: 'subscribed'} as any,
+    })
+  })
+
+  const renderInactive = async (reason: string | undefined) => {
+    vi.mocked(runReconcileSweep).mockResolvedValue({
+      skipped: false,
+      inactiveReason: reason as any,
+      action: undefined,
+      uiState: 'subscribed',
+      nextCache: {handoffState: 'inactive'} as any,
+    })
+    addMetaTag()
+    await act(async () => {
+      render(<Notifications />)
+    })
+  }
+
+  it('unsubscribed renders the dedicated rung with a re-enable affordance', async () => {
+    await renderInactive('unsubscribed')
+    expect(screen.getByTestId('notifications-inactive-banner')).toBeTruthy()
+    expect(screen.getByTestId('notifications-inactive-label').textContent).toContain('stopped on the server')
+    expect(screen.getByTestId('notifications-inactive-affordance').textContent).toBe(
+      'Re-enable notifications',
+    )
+  })
+
+  it('dead renders the dedicated rung with a stale-record removal affordance', async () => {
+    await renderInactive('dead')
+    expect(screen.getByTestId('notifications-inactive-banner')).toBeTruthy()
+    expect(screen.getByTestId('notifications-inactive-label').textContent).toContain('Device record expired')
+    expect(screen.getByTestId('notifications-inactive-affordance').textContent).toBe(
+      'Remove stale device record',
+    )
+  })
+
+  it('revoked renders the dedicated rung with a copy-only re-auth hint (no button)', async () => {
+    await renderInactive('revoked')
+    expect(screen.getByTestId('notifications-inactive-banner')).toBeTruthy()
+    expect(screen.getByTestId('notifications-inactive-label').textContent).toContain('Alerts revoked')
+    expect(screen.getByTestId('notifications-inactive-detail').textContent).toContain('Sign in again')
+    expect(screen.queryByTestId('notifications-inactive-affordance')).toBeNull()
+  })
+
+  it('session-revoked renders a sign-in-again hint without a button (session flow owns the action)', async () => {
+    await renderInactive('session-revoked')
+    expect(screen.getByTestId('notifications-inactive-banner')).toBeTruthy()
+    expect(screen.getByTestId('notifications-inactive-label').textContent).toContain('Session expired')
+    expect(screen.getByTestId('notifications-inactive-detail').textContent).toContain('Sign in again')
+    expect(screen.queryByTestId('notifications-inactive-affordance')).toBeNull()
+  })
+
+  it('inactive without a reason renders the generic rung — never a fabricated state', async () => {
+    await renderInactive(undefined)
+    expect(screen.getByTestId('notifications-inactive-banner')).toBeTruthy()
+    expect(screen.getByTestId('notifications-inactive-label').textContent).toContain('Alerts inactive')
+    expect(screen.getByTestId('notifications-inactive-affordance').textContent).toBe(
+      'Re-enable notifications',
+    )
+  })
+
+  it('no banner when the sweep derives a non-inactive handoff state', async () => {
+    addMetaTag()
+    await act(async () => {
+      render(<Notifications />)
+    })
+    expect(screen.queryByTestId('notifications-inactive-banner')).toBeNull()
   })
 })
