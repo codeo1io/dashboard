@@ -124,6 +124,29 @@ describe('parseSseChunk — pure parser', () => {
     }
   })
 
+  it('rm-912: parses a status frame carrying the 1.9.0 waiting_for_question overlay', () => {
+    const payload = {
+      runId: 'run-001',
+      entityRef: 'fro-bot/agent',
+      surface: 'github',
+      phase: 'EXECUTING',
+      status: 'waiting_for_question',
+      startedAt: '2026-06-18T20:00:00Z',
+      stale: false,
+    }
+    const text = `event: status\ndata: ${JSON.stringify(payload)}\n\n`
+    const results = parseSseChunk(text)
+    expect(results).toHaveLength(1)
+    const frame = results[0]
+    expect(frame?.success).toBe(true)
+    if (frame?.success) {
+      expect(frame.frame.type).toBe('status')
+      if (frame.frame.type === 'status') {
+        expect(frame.frame.data.status).toBe('waiting_for_question')
+      }
+    }
+  })
+
   // -------------------------------------------------------------------------
   // failureKind
   // -------------------------------------------------------------------------
@@ -2497,8 +2520,8 @@ describe('createOperatorSseReader — rm-157 supported-versions window', () => {
     }
   })
 
-  it('fails closed on 1.9.0 (future) and on 1.5.0 (pre-window) ready frames', async () => {
-    for (const version of ['1.9.0', '1.5.0']) {
+  it('fails closed on 1.10.0 (future) and on 1.5.0 (pre-window) ready frames — rm-912 widened the window to {1.8.0, 1.9.0}', async () => {
+    for (const version of ['1.10.0', '1.5.0']) {
       const sseText = `event: ready\ndata: {"contractVersion":"${version}"}\n\n${statusText({})}`
       const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
       const reader = createOperatorSseReader({fetchImpl})
@@ -2519,5 +2542,22 @@ describe('createOperatorSseReader — rm-157 supported-versions window', () => {
       expect(events.filter(e => e.type === 'status')).toHaveLength(0)
       expect(closed).toBe(true)
     }
+  })
+
+  it('accepts a 1.9.0 ready frame (rm-912: in-window) and delivers its frames', async () => {
+    const sseText = `event: ready\ndata: {"contractVersion":"1.9.0"}\n\n${statusText({})}`
+    const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
+    const reader = createOperatorSseReader({fetchImpl})
+
+    const events: RunStreamFrame[] = []
+    const errors: Error[] = []
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: frame => events.push(frame),
+      onError: err => errors.push(err),
+      onClose: () => {},
+    })
+
+    expect(errors).toHaveLength(0)
+    expect(events.filter(e => e.type === 'status')).toHaveLength(1)
   })
 })

@@ -31,17 +31,21 @@ export type Surface = 'github' | 'discord' | 'web'
 // ---------------------------------------------------------------------------
 
 /**
- * The 7-value operator-facing web status set (snake_case).
+ * The 8-value operator-facing web status set (snake_case).
  *
- * 'blocked' and 'waiting_for_approval' are endpoint-layer overlays derived from
- * queue/registry state — they are NOT produced by toOperatorRunStatus (which maps
- * RunPhase only). The snapshot endpoint layers them on top after projection.
+ * 'blocked', 'waiting_for_approval', and 'waiting_for_question' are
+ * endpoint-layer overlays derived from queue/registry/pending-question state —
+ * they are NOT produced by toOperatorRunStatus (which maps RunPhase only).
+ * The snapshot endpoint layers them on top after projection. Contract 1.9.0
+ * adds 'waiting_for_question' (a run is paused on an open operator question);
+ * 'waiting_for_approval' takes precedence when both are pending.
  */
 export type OperatorWebStatus =
   | 'queued'
   | 'blocked'
   | 'running'
   | 'waiting_for_approval'
+  | 'waiting_for_question'
   | 'succeeded'
   | 'failed'
   | 'cancelled'
@@ -49,8 +53,9 @@ export type OperatorWebStatus =
 /**
  * Maps a RunPhase to its operator-facing web status.
  *
- * 'blocked' and 'waiting_for_approval' are NOT in this map — they are
- * endpoint-layer overlays, not derivable from RunPhase alone.
+ * 'blocked', 'waiting_for_approval', and 'waiting_for_question' are NOT in
+ * this map — they are endpoint-layer overlays, not derivable from RunPhase
+ * alone.
  */
 export const PHASE_TO_WEB_STATUS: Readonly<Record<RunPhase, OperatorWebStatus>> = {
   PENDING: 'queued',

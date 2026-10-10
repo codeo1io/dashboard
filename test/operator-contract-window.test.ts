@@ -21,8 +21,8 @@ describe('rm-157 supported-versions window (rm-252 flip)', () => {
     expect(OPERATOR_CONTRACT_VERSION).toBe('1.8.0')
   })
 
-  it("window is exactly ['1.8.0'] — '1.6.0' retired in the same change", () => {
-    expect([...SUPPORTED_OPERATOR_CONTRACT_VERSIONS]).toEqual(['1.8.0'])
+  it("window is exactly ['1.8.0', '1.9.0'] — rm-912 additive adoption, '1.6.0' stays retired", () => {
+    expect([...SUPPORTED_OPERATOR_CONTRACT_VERSIONS]).toEqual(['1.8.0', '1.9.0'])
     expect(SUPPORTED_OPERATOR_CONTRACT_VERSIONS).not.toContain('1.6.0')
   })
 
@@ -30,7 +30,8 @@ describe('rm-157 supported-versions window (rm-252 flip)', () => {
     expect(SUPPORTED_OPERATOR_CONTRACT_VERSIONS).toContain(OPERATOR_CONTRACT_VERSION)
     expect(SUPPORTED_OPERATOR_CONTRACT_VERSIONS).not.toContain('1.6.0')
     expect(SUPPORTED_OPERATOR_CONTRACT_VERSIONS).not.toContain('1.5.0')
-    expect(SUPPORTED_OPERATOR_CONTRACT_VERSIONS).not.toContain('1.9.0')
+    expect(SUPPORTED_OPERATOR_CONTRACT_VERSIONS).toContain('1.9.0')
+    expect(SUPPORTED_OPERATOR_CONTRACT_VERSIONS).not.toContain('1.10.0')
     expect(SUPPORTED_OPERATOR_CONTRACT_VERSIONS).not.toContain('')
   })
 

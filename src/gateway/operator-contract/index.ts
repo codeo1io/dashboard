@@ -55,6 +55,20 @@ export {
 } from './provenance.ts'
 export type {PushHandoffState, PushSubscriptionMetadata, VapidKeyResponse} from './push.ts'
 export {parsePushHandoffState, parsePushSubscriptionMetadata, parseVapidKeyResponse} from './push.ts'
+export type {
+  PendingQuestionsResponse,
+  QuestionAnswerChoice,
+  QuestionAnswerRequest,
+  QuestionDecisionErrorResponse,
+  QuestionDecisionInvalidReason,
+  QuestionDecisionRequest,
+  QuestionDecisionResponse,
+  QuestionFrameData,
+  QuestionOptionDetail,
+  QuestionPromptDetail,
+  QuestionRequestDetail,
+  QuestionSkipRequest,
+} from './question-frame.ts'
 export {assertRedactionApplied, AUTHORIZATION_OBLIGATION, REDACTION_OBLIGATION} from './redaction.ts'
 export type {RedactionContext} from './redaction.ts'
 export type {RepoSummary} from './repo-summary.ts'
@@ -68,10 +82,14 @@ export type {
 } from './responses.ts'
 export {
   parseLaunchRunResponse,
+  parsePendingQuestionsResponse,
+  parseQuestionDecisionErrorResponse,
+  parseQuestionDecisionResponse,
   parseRunApprovalDecisionResponse,
   parseRunApprovalsResponse,
   parseRunSnapshotResponse,
 } from './run-responses.ts'
+export {QUESTION_BUILD_BOUNDS, QUESTION_WIRE_CAPS} from './run-responses.ts'
 export type {
   LaunchRunResponse,
   RunApprovalDecisionResult,

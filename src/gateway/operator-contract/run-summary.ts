@@ -19,7 +19,8 @@ import {err, ok} from '../../result.ts'
 import {isOperatorFailureKind} from './run-status.ts'
 
 /**
- * Index-only status set. 'blocked' and 'waiting_for_approval' are stream-only
+ * Index-only status set. 'blocked', 'waiting_for_approval', and
+ * 'waiting_for_question' are stream-only
  * overlays — never produced by the run-summary projector.
  */
 export type RunSummaryStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'

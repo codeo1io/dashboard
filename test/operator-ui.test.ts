@@ -106,6 +106,12 @@ function makeFakeOperatorClient(
     subscribePush: () => {
       throw new Error('subscribePush must not be called during page render')
     },
+    listRunQuestions: () => {
+      throw new Error('listRunQuestions must not be called during page render')
+    },
+    decideRunQuestion: () => {
+      throw new Error('decideRunQuestion must not be called during page render')
+    },
     unsubscribePush: () => {
       throw new Error('unsubscribePush must not be called during page render')
     },

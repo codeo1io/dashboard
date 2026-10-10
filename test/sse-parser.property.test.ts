@@ -31,7 +31,7 @@ const statusFrameArb = fc
     entityRef: fc.stringMatching(/^[\w.\-/]{1,64}$/),
     surface: fc.constantFrom('github', 'discord', 'web'),
     phase: fc.constantFrom('PENDING', 'ACKNOWLEDGED', 'EXECUTING', 'COMPLETED', 'FAILED', 'CANCELLED'),
-    status: fc.constantFrom('queued', 'blocked', 'running', 'waiting_for_approval', 'succeeded', 'failed', 'cancelled'),
+    status: fc.constantFrom('queued', 'blocked', 'running', 'waiting_for_approval', 'waiting_for_question', 'succeeded', 'failed', 'cancelled'),
     startedAt: fc.date({noInvalidDate: true}).map(d => d.toISOString()),
     stale: fc.boolean(),
   })

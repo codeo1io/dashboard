@@ -302,7 +302,14 @@ describe('rm-678 schema half: live ledger', () => {
     // superseded by this note exactly as 366f6059 superseded
     // at-write pins — union census 256 + 1 = 257 defs / 0 dups /
     // max rm-866, next free rm-867.
-    expect(live.max).toBe(866)
+    // 2026-10-10 roadmap extension (repository-maintenance
+    // 004d121611784d46b808d439aecce4c2 cycle:1 run 263be65e8e0f, base
+    // d2b1acf): single mint rm-912 (operator contract 1.9.0 consumer
+    // adoption) above the all-lineage unlanded fleet frontier rm-911
+    // — pin 866→912, union census 257 + 1 = 258 defs / 0 dups /
+    // max rm-912, next free rm-913 (derivation in ROADMAP's cycle:1
+    // roadmap extension #38 comment).
+    expect(live.max).toBe(912)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {

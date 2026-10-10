@@ -16,7 +16,7 @@ export const FETCH_TIMEOUT_MS = 10_000
 const MAX_ID_LENGTH = 512
 const MAX_DATE_LENGTH = 128
 
-/** 'blocked' and 'waiting_for_approval' are stream-only — never produced by the run-summary projector. */
+/** 'blocked', 'waiting_for_approval', and 'waiting_for_question' are stream-only — never produced by the run-summary projector. */
 export const VALID_RUN_SUMMARY_STATUSES = new Set([
   'queued',
   'running',
@@ -696,6 +696,20 @@ function renderRunCard(view, onSelectRun) {
   badgeEl.hidden = true
   card.append(badgeEl)
 
+  // rm-912 (contract 1.9.0): inline question-prompt region + count badge,
+  // mirroring the approvals pair above. Safe DOM only; populated by
+  // initOperatorStream via the runtime seam, self-gated on the observed
+  // contract version (a 1.8.0-only gateway emits no question frames).
+  const questionsEl = document.createElement('div')
+  questionsEl.dataset.role = 'run-questions'
+  questionsEl.hidden = true
+  card.append(questionsEl)
+
+  const questionBadgeEl = document.createElement('span')
+  questionBadgeEl.dataset.role = 'question-badge'
+  questionBadgeEl.hidden = true
+  card.append(questionBadgeEl)
+
   // Cancel control region — a sibling to run-approvals. Populated by
   // initOperatorStream (operator-stream.js) via the runtime seam once a stream
   // attaches; gated on non-terminal status there. Safe-DOM only at creation.
@@ -908,7 +922,7 @@ function expandCardForRestore(runId, onExpand) {
 /** Show/hide a card's four per-card substructure regions in one place. */
 function setSubstructureHidden(card, hidden) {
   if (typeof card.querySelector !== 'function') return
-  for (const role of ['run-output', 'run-output-coalesced', 'run-approvals', 'approval-badge', 'run-cancel']) {
+  for (const role of ['run-output', 'run-output-coalesced', 'run-approvals', 'approval-badge', 'run-questions', 'question-badge', 'run-cancel']) {
     const el = card.querySelector(`[data-role="${role}"]`)
     if (el !== null && el !== undefined) el.hidden = hidden
   }

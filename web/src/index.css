@@ -1176,3 +1176,113 @@
   text-decoration: none;
   font-weight: 500;
 }
+
+/* rm-912 (contract 1.9.0): agent-question prompts — mirror of .approval-prompt. */
+.question-prompt {
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-accent);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  margin-top: var(--space-3);
+}
+
+.question-prompt-label {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.question-prompt-count {
+  font-size: var(--text-body-sm);
+  color: var(--color-text-subtle);
+  margin-bottom: var(--space-2);
+}
+
+.question-prompt-question {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  margin: var(--space-2) 0;
+}
+
+.question-prompt-question[data-invalid='true'] {
+  border-color: var(--color-danger, #b91c1c);
+}
+
+.question-prompt-header {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.question-prompt-text {
+  font-size: var(--text-body-sm);
+  color: var(--color-text);
+  margin: var(--space-1) 0 var(--space-2);
+}
+
+.question-prompt-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.question-prompt-option {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.question-prompt-option-description {
+  font-size: var(--text-body-sm);
+  color: var(--color-text-subtle);
+}
+
+.question-prompt-custom {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-body-sm);
+  color: var(--color-text-subtle);
+}
+
+.question-prompt-status {
+  font-size: var(--text-body-sm);
+  color: var(--color-text-muted);
+  margin-top: var(--space-2);
+  min-height: 1.2em;
+}
+
+.question-prompt-controls {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-top: var(--space-3);
+}
+
+.question-prompt-btn-submit,
+.question-prompt-btn-skip {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-body-sm);
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.question-prompt-btn-submit {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #ffffff;
+}
+
+.question-prompt[data-state='in-flight'] .question-prompt-btn-submit,
+.question-prompt[data-state='in-flight'] .question-prompt-btn-skip {
+  opacity: 0.6;
+  cursor: progress;
+}

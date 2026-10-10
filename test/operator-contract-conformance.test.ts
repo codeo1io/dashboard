@@ -828,6 +828,15 @@ describe('parseRunSummary', () => {
     }
   })
 
+  it('rejects stream-only status: waiting_for_question (rm-912 — the 1.9.0 overlay stays stream/snapshot-only; the index projector never emits it)', () => {
+    const input = {runId: 'run-1', repo: 'fro-bot/agent', status: 'waiting_for_question', createdAt: '2026-06-01T00:00:00.000Z'}
+    const result = parseRunSummary(input)
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.message).toBe('invalid run summary shape')
+    }
+  })
+
   it('rejects stream-only status: blocked', () => {
     const input = {runId: 'run-1', repo: 'fro-bot/agent', status: 'blocked', createdAt: '2026-06-01T00:00:00.000Z'}
     const result = parseRunSummary(input)

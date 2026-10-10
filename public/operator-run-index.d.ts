@@ -3,7 +3,7 @@
  * Loaded only by web/src/operator/runtime.ts via dynamic import with ?manual=1.
  */
 
-/** Index-only status set. Stream-only statuses (blocked, waiting_for_approval) are excluded. */
+/** Index-only status set. Stream-only statuses (blocked, waiting_for_approval, waiting_for_question) are excluded. */
 export type RunSummaryStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
 
 /** Operator-safe failure-reason code. */

@@ -81,6 +81,12 @@ function makeFakeOperatorClient(
     subscribePush: () => {
       throw new Error('subscribePush must not be called in auth middleware')
     },
+    listRunQuestions: () => {
+      throw new Error('listRunQuestions must not be called in auth middleware')
+    },
+    decideRunQuestion: () => {
+      throw new Error('decideRunQuestion must not be called in auth middleware')
+    },
     unsubscribePush: () => {
       throw new Error('unsubscribePush must not be called in auth middleware')
     },
