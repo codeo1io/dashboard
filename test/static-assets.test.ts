@@ -781,8 +781,16 @@ describe('service worker cache boundary — fixture routes not intercepted', () 
     const fs = await import('node:fs/promises')
     const src = await fs.readFile('web/dist/sw.js', 'utf8')
     // The denylist patterns are /^\/auth/, /^\/operator\/auth/, /^\/api/
-    // /__fixture must not appear in any denylist or allowlist pattern
-    expect(src).not.toContain('fixture')
+    // /__fixture must not appear in any denylist or allowlist pattern.
+    // rm-249 hardened this guard for the push-only SW: the strongest form of
+    // "no fixture interception" is NO route table at all, so the bundle must
+    // not contain the workbox routing API. The bare word 'fixture' is no
+    // longer a leak signal on its own — the bundled push client legitimately
+    // carries the fixtureSessionId plumbing shared with the page; the ROUTE
+    // prefix '/__fixture' (asserted above) is the actual interception signal.
+    expect(src).not.toContain('/__fixture')
+    expect(src).not.toContain('NavigationRoute')
+    expect(src).not.toContain('registerRoute')
   })
 })
 
