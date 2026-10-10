@@ -302,7 +302,32 @@ describe('rm-678 schema half: live ledger', () => {
     // superseded by this note exactly as 366f6059 superseded
     // at-write pins — union census 256 + 1 = 257 defs / 0 dups /
     // max rm-866, next free rm-867.
-    expect(live.max).toBe(866)
+    // max id as of extension #36 (2026-10-09, run c37a857620e14531abd6be2112004c60 roadmap d5f8451f136c43629a0e87e53fefb54c): minted rm-778 above the all-lineage frontier (sibling walls through 769, PR #444 head 709, foreign-fleet spool 795-855 excluded, 777 ceiling note honored)
+    // 2026-10-10 integrate of run c37a857620e1 (conflict case
+    // 96a24445c12b4bdfaac34b14ba4e3afb): the run was authored at
+    // base 559642a (237 defs / max rm-744 at author time) while
+    // main moved through the cbe70604 (case 543f1e72), d823703c,
+    // 155f9770 (case 8955e66c), 91f3d37f (case a91875ba),
+    // 122a693028b8 (case ec31fce8), 8cecf1d7f09f (case 87124eb3),
+    // 28cd8f6c2568 (case a6b4df10) and aec9c3e88357 (case
+    // 3b444f4a / 5738c577) integrations, landing at 257 defs /
+    // max rm-866. Its single mint rm-778 (operator annotations
+    // drill-down, the 3f3abfdd-lane revival) COLLIDES with the
+    // landed rm-778 (788aa489c1d5's conductor/ci-* stale-ref
+    // sweep, landed via 79dc3dcaec7b) — landed meanings own ids —
+    // so it renumbers to rm-900, minted above the re-probed
+    // all-lineage unlanded dashboard-fleet frontier (sibling
+    // def-lines rm-867/868 run 461586fe, rm-870..872 run
+    // 33ede5da, rm-896 run 4474e5ab, rm-898/899 run c07a6b75;
+    // landed ceiling rm-866; agenttrace-family spool
+    // compositions 880..938 excluded by def-id overlap 2/12 per
+    // the ext #29 adjudication; nothing ≥rm-900 in spool
+    // def-lines, walls, or landed main). The pin moves
+    // 866 -> 900 atomically with this landing: union census
+    // 257 + 1 = 258 defs / 0 dups / max rm-900, next free
+    // rm-901; the run's at-write 778 pin above is superseded by
+    // this note exactly as 366f6059 superseded at-write pins.
+    expect(live.max).toBe(900)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
