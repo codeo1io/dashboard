@@ -302,7 +302,36 @@ describe('rm-678 schema half: live ledger', () => {
     // superseded by this note exactly as 366f6059 superseded
     // at-write pins — union census 256 + 1 = 257 defs / 0 dups /
     // max rm-866, next free rm-867.
-    expect(live.max).toBe(866)
+    // 2026-10-09 roadmap extension #36 of run c37a857620e (the
+    // batch this merge lands): minted rm-778 above its at-write
+    // all-lineage frontier (sibling walls through 769, PR #444
+    // head 709, foreign-fleet spool 795-855 excluded, 777
+    // ceiling note honored) — at-write record, superseded below.
+    // 2026-10-10 integrate of run c37a857620e14531abd6be2112004c60 (conflict
+    // case ed98b8f86603430095c86040a408e654, the 'Monday watch
+    // cure' batch): the run was authored at base 559642aa (237
+    // defs / max rm-744) while main moved through the 788aa489c1d5
+    // (case 366f6059), cbe70604 (case e796bbf3), d823703c,
+    // 155f9770 (case 8955e66c), 91f3d37f (case a91875ba),
+    // 122a693028b8 (case ec31fce8), 8cecf1d7f09f (case 87124eb3),
+    // 28cd8f6c2568 (case a6b4df10) and aec9c3e88357 (case
+    // 3b444f4a) integrations, landing at 257 defs / max rm-866.
+    // Its single mint rm-778 (operator monitoring failing-check
+    // annotations drill-down) COLLIDES with the landed rm-778
+    // (run 788aa489c1d5's conductor/ci-* stale-ref hygiene
+    // sweep, landed via case 366f6059) — landed meanings own ids
+    // (d00d095), so the def is RENUMBERED rm-778 -> rm-897, one
+    // above the all-lineage def-line frontier re-probed live
+    // 2026-10-10 at this resolution (landed main rm-866, dirty
+    // sibling walls through rm-896 at run 4474e5ab, origin
+    // conductor refs through 863, spool def-line additions
+    // <= 561; nothing >= 897 anywhere in the fleet) — union
+    // census 257 + 1 = 258 defs / 0 dups / max rm-897, so this
+    // time a bump IS owed: the pin moves 866 -> 897 atomically
+    // with this landing, single-sourced at the assertion below,
+    // and the run's at-write 778 comment above stays verbatim and
+    // superseded exactly as 366f6059 superseded at-write pins.
+    expect(live.max).toBe(897)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {
