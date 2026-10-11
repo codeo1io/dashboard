@@ -204,6 +204,14 @@ export interface StreamState {
   readonly runs: Readonly<Record<string, RunEntry>>
   readonly retryCount: number
   readonly shouldReconnect: boolean
+  /**
+   * rm-866: true once ANY frame has been verified (successfully parsed) in
+   * this stream lifetime — gates the zero-frame drift truth on
+   * stream-closed. Absent on legacy snapshots is treated as unverified.
+   */
+  readonly firstFrameSeen?: boolean
+  /** rm-866: why the connection drifted, when it has. */
+  readonly driftReason?: 'contract-version' | 'zero-frame'
 }
 
 // ---------------------------------------------------------------------------
@@ -246,6 +254,12 @@ export type StreamEvent =
   | {readonly type: 'unexpected-close'}
   | {readonly type: 'buffer-overflow'}
   | {readonly type: 'first-frame-timeout'}
+  // rm-866: the reader's at-most-once marker that a frame was verified.
+  | {readonly type: 'frame-verified'}
+  // rm-867: the done branch's EOF dispatch. armedByReset is true when the
+  // transition that armed this cycle's reconnect already charged the
+  // budget (a mid-stream reset); absent/false means the EOF itself charges.
+  | {readonly type: 'clean-eof-reconnect'; readonly data?: {readonly armedByReset?: boolean}}
   | ApprovalReconcileEvent
   | CancelActionEvent
 
