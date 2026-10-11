@@ -91,20 +91,30 @@ view of Fro Bot's cross-repo footprint.
   workflow now sets `branch-pr` for those triggers; verify delivery by confirming a
   fro-bot-authored PR exists, not by reading run status. See
   `docs/solutions/workflow-issues/workflow-output-mode-auto-discarded-agent-fixes-2026-08-31.md`.
-- The `Fro Bot` workflow on this fork is `disabled_manually` (verified 2026-09-19):
-  codeo1io/dashboard has no `FRO_BOT_PAT` secret, so the daily cron would fail on
-  every run. Re-enabling it without provisioning that secret resurrects the failing
-  cron — check `gh workflow list` state and secret presence before flipping it back on.
+- The `Fro Bot` workflow on this fork reports state `active` (re-probed 2026-10-13;
+  the 2026-09-19 `disabled_manually` observation no longer holds), and the repo has
+  no secrets configured at all — in particular no `FRO_BOT_PAT`. Scheduled runs are
+  therefore defused gracefully by the workflow's `HAS_FRO_BOT_PAT` gate (a warning
+  step and a skip, not a failure). Independently of that gate, repo-wide Actions
+  have been dead since 2026-10-09T01:59:31Z (newest run of any workflow, re-probed
+  2026-10-13; a 2026-10-12 probe saw `workflow_dispatch` return 422 "Actions has
+  been disabled for this repository") — the cron is silent for that reason, not
+  because of its own state. Check `gh workflow list`, `gh api …/actions/runs`, and
+  secret presence before drawing conclusions from the cron's silence.
 
 ## Cloned Dependency Source
 
-Read-only dependency source repositories are available under
-`.slim/clonedeps/repos/` for inspection. Do not edit these clones.
+The clone pin manifest `.slim/clonedeps.json` is tracked; the clones it points at
+(`.slim/clonedeps/repos/…`) are not — a fresh worktree carries the manifest but
+no clones (verified 2026-10-13). Provision a clone read-only at the pinned
+commit when genuinely needed; do not edit clones, and record any pin change in
+the manifest as a dated decision.
 
-- `.slim/clonedeps/repos/fro-bot__agent/` — `fro-bot/agent` at `v0.78.0`; the
-  gateway's operator OAuth return path contract, GitHub App client, secret
-  readers, Hono build/serve split, and runtime logger/Result primitives that
-  this app mirrors.
+- `fro-bot/agent` at `v0.78.0` — the gateway's operator OAuth return path
+  contract, GitHub App client, secret readers, Hono build/serve split, and runtime
+  logger/Result primitives that this app mirrors. Prefer live `gh api` reads of
+  `fro-bot/agent` over cloning when a quick contract check suffices (the runtime
+  pin is separate — see `.github/workflows/fro-bot.yaml`).
 
 ## Landing-pipeline traps
 

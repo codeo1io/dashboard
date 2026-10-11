@@ -124,10 +124,19 @@ jobs:
       - name: 📦 Setup
         uses: ./.github/actions/setup
 
-      # No explicit "Build web" step: the pretest hook (package.json) builds the
-      # client before vitest runs, so a separate step would build it twice.
-      - name: 🧪 Run Tests
-        run: pnpm test
+      # rm-956 cycle:2 (2026-10-12): the legs run as separate steps so a red
+      # server leg can never mask the web leg's results — the old composed
+      # `pnpm test` short-circuited on the first failing leg (the `&&` in
+      # package.json). The explicit build replaces the pretest hook the composed
+      # entry used to provide: direct test:server/test:web invocations do not
+      # trigger pretest, and the server leg's `/`-hitting suites need web/dist.
+      - name: 🏗️ Build client for server-leg fixtures
+        run: pnpm build:web
+      - name: 🧪 Server test leg
+        run: pnpm run test:server
+      - name: 🧪 Web test leg
+        if: ${{ !cancelled() }}
+        run: pnpm run test:web
 
   check-workflows:
     name: Check Workflows

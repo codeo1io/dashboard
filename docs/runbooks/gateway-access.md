@@ -170,3 +170,16 @@ identified the outage recorded in
 `docs/solutions/security-issues/gateway-operator-oauth-rate-limit-shared-key-behind-caddy-2026-09-21.md`.
 
 Delete the capture when done; it is sensitive.
+
+## The listener `/data` volume
+
+The dashboard container's operator listener channel stores its SQLite database at
+`/data/listener/messages.db` by default (`DASHBOARD_LISTENER_DB` overrides it — see
+`src/listener/config.ts`). The Dockerfile prepares that directory writable for the
+runtime user. If `/data` is nonetheless unwritable at startup (a volume mounted
+read-only, a host-owned directory with the wrong uid), store initialization fails
+and the channel is left unmounted with a warning — `src/server.ts`, the fail-closed
+catch around `createListenerStore`. The dashboard itself keeps serving: auth and
+the operator UI work, and the health check stays green because it probes
+`/api/healthz`, not the channel. The log line to look for is
+`Failed to initialize listener store; operator listener channel disabled`.

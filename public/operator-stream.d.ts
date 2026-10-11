@@ -390,6 +390,10 @@ export interface RunEntry {
   readonly outputCoalesced?: boolean
   /** True if accumulated output exceeded the cap and was truncated. */
   readonly outputTruncated?: boolean
+  /** rm-853: true once any non-final delta skipped seq values (frames dropped before the reducer). Sticky for the run. */
+  readonly outputGapDetected?: boolean
+  /** rm-853: accumulated count of seq values skipped across the run. Never rendered as a raw number. */
+  readonly outputGapMissing?: number
   /**
    * Pre-resolved dashboard display label for a known failure reason. Set only when
    * a failed status frame carried a known failureKind; sticky across later frames
@@ -478,6 +482,13 @@ export interface StreamState {
    * status frame with no output since shows the unavailable state; an output frame clears the mark.
    */
   readonly snapshotMissing?: Readonly<Record<string, true>>
+  /**
+   * rm-954: the contractVersion observed on the drifted `ready` frame
+   * (`connection === 'drift'`, the mismatch branch of `nextStreamState`). The
+   * drift notice names it alongside `PINNED_CONTRACT_VERSION`, sanitized at
+   * render time — anything that does not parse as a version shows 'unknown'.
+   */
+  readonly driftObservedVersion?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -642,10 +653,11 @@ export declare function getOpenQuestions(runEntry: RunEntry | undefined | null):
 export declare function hasOpenQuestions(runEntry: RunEntry | undefined | null): boolean
 
 /**
- * The status to render: terminal wins; else wire `waiting_for_approval`; else a `running` run with
- * an open question → `waiting_for_question`; else a wire `waiting_for_question` with no open question
- * after a completed reconcile → `running`; else the wire value. Derived at render, never stored.
- * Returns '' for an absent entry.
+ * The status to render: terminal wins; else wire `waiting_for_approval`; else a `running` or
+ * `waiting_for_question` run with an open approval prompt → `waiting_for_approval`; else a `running`
+ * run with an open question → `waiting_for_question`; else a wire `waiting_for_question` with no open
+ * question after a completed reconcile → `running`; else the wire value. Derived at render, never
+ * stored. Returns '' for an absent entry.
  */
 export declare function getEffectiveStatus(runEntry: RunEntry | undefined | null): string
 
@@ -814,6 +826,8 @@ export interface InitOptions {
   readonly noticeEl: Element | null
   readonly outputEl?: (HTMLElement & {hidden: boolean}) | null
   readonly coalescedEl?: (HTMLElement & {hidden: boolean}) | null
+  /** rm-853 gap-notice element (data-role="run-output-gap"); optional like coalescedEl. */
+  readonly gapEl?: (HTMLElement & {hidden: boolean}) | null
   /** Approval prompts container element (data-role="run-approvals"). */
   readonly approvalsEl?: (HTMLElement & {hidden: boolean}) | null
   /** Approval count badge element (data-role="approval-badge"). */
