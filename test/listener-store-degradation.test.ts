@@ -1,3 +1,4 @@
+import type {Logger} from '../src/logger.ts'
 /**
  * rm-187: corrupt-links degradation — the listener store's `links` cell is
  * the only free-form JSON it persists, and a corrupt cell (hand-edit, torn
@@ -14,6 +15,19 @@ import {join} from 'node:path'
 import {DatabaseSync} from 'node:sqlite'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {createListenerStore} from '../src/listener/store.ts'
+
+/** Capturing logger — rm-904 replaced the bare console.warn with this shape. */
+function makeCapturingLogger(): {logger: Logger; warnings: {message: string; context?: unknown}[]} {
+  const warnings: {message: string; context?: unknown}[] = []
+  const logger = {
+    debug: () => {},
+    info: () => {},
+    success: () => {},
+    warning: (message: string, context?: unknown) => warnings.push({message, context}),
+    error: () => {},
+  } as unknown as Logger
+  return {logger, warnings}
+}
 
 describe('listener store rm-187 (degraded links cell never 500s the messages read)', () => {
   let dir: string
@@ -57,8 +71,11 @@ describe('listener store rm-187 (degraded links cell never 500s the messages rea
     const ids = seedThreeRows()
     corruptViaSecondHandle(ids.corrupt, '{not json')
 
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const store = createListenerStore(dbPath)
+    // rm-904: the degradation log goes through the injected app logger
+    // (structured warning + route/message context) — not console.warn.
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const {logger, warnings} = makeCapturingLogger()
+    const store = createListenerStore(dbPath, {logger})
     const page = store.list({})
 
     expect(page.messages).toHaveLength(3)
@@ -70,10 +87,13 @@ describe('listener store rm-187 (degraded links cell never 500s the messages rea
     expect(degraded!.body).toBe('b')
     // The healthy rows keep their links.
     expect(page.messages.find(m => m.title === 'healthy row')!.links).toEqual([{label: 'L', url: 'https://example.com'}])
-    // Observable by design: every degraded read logs once.
-    expect(warn).toHaveBeenCalledTimes(1)
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('degraded links cell on message'))
-    warn.mockRestore()
+    // Observable by design: every degraded read logs once, structurally.
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]?.message).toContain('degraded links cell')
+    expect(warnings[0]?.context).toMatchObject({route: '/api/listener/messages', messageId: ids.corrupt})
+    // And never through the bare console.
+    expect(consoleWarn).not.toHaveBeenCalled()
+    consoleWarn.mockRestore()
   })
 
   it('degrades valid-JSON-but-not-an-array cells (JSON null, JSON string, empty string) the same way', () => {
@@ -94,11 +114,12 @@ describe('listener store rm-187 (degraded links cell never 500s the messages rea
     const ids = seedThreeRows()
     corruptViaSecondHandle(ids.corrupt, '{not json')
 
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const {logger, warnings} = makeCapturingLogger()
     const {buildDashboardApp} = await import('../src/server.ts')
     const {SessionManager} = await import('../src/session.ts')
     const TEST_KEY = Buffer.from('testkey-ABCDEFGHIJKLMNOPQRSTUV12', 'utf8') // 32 bytes
-    const store = createListenerStore(dbPath)
+    const store = createListenerStore(dbPath, {logger})
     const app = await buildDashboardApp({
       operatorLogin: 'octocat',
       cookieKey: TEST_KEY,
@@ -115,17 +136,32 @@ describe('listener store rm-187 (degraded links cell never 500s the messages rea
     expect(body.messages).toHaveLength(3)
     expect(body.messages.find(m => m.title === 'corrupt json row')!.links).toEqual([])
     expect(body.messages.find(m => m.title === 'healthy row')!.links).toEqual([{label: 'L', url: 'https://example.com'}])
-    expect(warn).toHaveBeenCalled()
-    warn.mockRestore()
+    expect(warnings).toHaveLength(1)
+    expect(consoleWarn).not.toHaveBeenCalled()
+    consoleWarn.mockRestore()
   })
 
   it('a healthy store (no corruption) never logs a degradation', () => {
     seedThreeRows()
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const store = createListenerStore(dbPath)
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const {logger, warnings} = makeCapturingLogger()
+    const store = createListenerStore(dbPath, {logger})
     const page = store.list({})
     expect(page.messages).toHaveLength(3)
-    expect(warn).not.toHaveBeenCalled()
-    warn.mockRestore()
+    expect(warnings).toHaveLength(0)
+    expect(consoleWarn).not.toHaveBeenCalled()
+    consoleWarn.mockRestore()
+  })
+
+  it('rm-904: without an injected logger the degradation is silent (no stray console output)', () => {
+    const ids = seedThreeRows()
+    corruptViaSecondHandle(ids.corrupt, '{not json')
+
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = createListenerStore(dbPath) // no logger — legacy call shape
+    const page = store.list({})
+    expect(page.messages.find(m => m.title === 'corrupt json row')!.links).toEqual([])
+    expect(consoleWarn).not.toHaveBeenCalled()
+    consoleWarn.mockRestore()
   })
 })
