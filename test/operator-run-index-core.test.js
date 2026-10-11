@@ -2215,7 +2215,7 @@ function renderRunCardForTest(cards, summaryLike) {
 
   card.append(statusGroup)
 
-  for (const role of ['run-output', 'run-output-coalesced', 'run-approvals', 'approval-badge']) {
+  for (const role of ['run-output', 'run-output-coalesced', 'run-output-gap', 'run-approvals', 'approval-badge']) {
     const el = document.createElement('div')
     el.dataset.role = role
     el.hidden = true

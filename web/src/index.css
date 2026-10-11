@@ -291,6 +291,7 @@
 /* Expanded substructure */
 [data-role="run-output"],
 [data-role="run-output-coalesced"],
+[data-role="run-output-gap"],
 [data-role="run-approvals"] {
   width: 100%;
   margin-top: var(--space-3);
@@ -532,7 +533,8 @@
   color: var(--color-text-muted);
 }
 
-[data-role="run-output-coalesced"] {
+[data-role="run-output-coalesced"],
+[data-role="run-output-gap"] {
   display: inline-block;
   position: sticky;
   bottom: 0;
@@ -545,7 +547,8 @@
   margin-top: var(--space-2);
   z-index: 10;
 }
-[data-role="run-output-coalesced"][hidden] {
+[data-role="run-output-coalesced"][hidden],
+[data-role="run-output-gap"][hidden] {
   display: none;
 }
 
@@ -1031,6 +1034,7 @@
 /* Responsive and grid auto-layout for expanded components */
 [data-role="run-output"],
 [data-role="run-output-coalesced"],
+[data-role="run-output-gap"],
 [data-role="run-approvals"],
 [data-role="approval-badge"] {
   grid-column: 1 / -1;

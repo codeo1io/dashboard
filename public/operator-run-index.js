@@ -48,6 +48,7 @@ const SUBSTRUCTURE_ROLES = [
   CHECKOUT_DETAIL_ROLE,
   'run-output',
   'run-output-coalesced',
+  'run-output-gap',
   'run-approvals',
   'approval-badge',
   'run-cancel',
@@ -712,6 +713,11 @@ function renderRunCard(view, onSelectRun) {
   coalescedEl.dataset.role = 'run-output-coalesced'
   coalescedEl.hidden = true
   card.append(coalescedEl)
+
+  const gapEl = document.createElement('div')
+  gapEl.dataset.role = 'run-output-gap'
+  gapEl.hidden = true
+  card.append(gapEl)
 
   const approvalsEl = document.createElement('div')
   approvalsEl.dataset.role = 'run-approvals'

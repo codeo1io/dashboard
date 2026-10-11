@@ -48,6 +48,7 @@ export const MAX_HASH_ID_LENGTH = 512
 export function discoverCardStreamTargets(runId: string): {
   outputEl: Element | null
   coalescedEl: Element | null
+  gapEl: Element | null
   approvalsEl: Element | null
   badgeEl: Element | null
   reasonEl: Element | null
@@ -60,6 +61,7 @@ export function discoverCardStreamTargets(runId: string): {
   return {
     outputEl: card?.querySelector('[data-role="run-output"]') ?? null,
     coalescedEl: card?.querySelector('[data-role="run-output-coalesced"]') ?? null,
+    gapEl: card?.querySelector('[data-role="run-output-gap"]') ?? null,
     approvalsEl: card?.querySelector('[data-role="run-approvals"]') ?? null,
     badgeEl: card?.querySelector('[data-role="approval-badge"]') ?? null,
     reasonEl: card?.querySelector('[data-role="run-reason"]') ?? null,
@@ -275,6 +277,7 @@ async function defaultRuntimeLoader(opts?: {
       noticeEl?: Element | null
       outputEl?: Element | null
       coalescedEl?: Element | null
+      gapEl?: Element | null
       approvalsEl?: Element | null
       badgeEl?: Element | null
       reasonEl?: Element | null
@@ -325,7 +328,7 @@ async function defaultRuntimeLoader(opts?: {
 
     // Discover the per-card render targets so live output, coalescing hints,
     // approval prompts, and the approval badge all render — not just status.
-    const {outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, cancelEl, checkoutEl} = discoverCardStreamTargets(runId)
+    const {outputEl, coalescedEl, gapEl, approvalsEl, badgeEl, reasonEl, cancelEl, checkoutEl} = discoverCardStreamTargets(runId)
 
     try {
       const handle = streamMod.initOperatorStream({
@@ -334,6 +337,7 @@ async function defaultRuntimeLoader(opts?: {
         noticeEl,
         outputEl,
         coalescedEl,
+        gapEl,
         approvalsEl,
         badgeEl,
         reasonEl,
