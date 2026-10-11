@@ -131,7 +131,7 @@ missing `_FILE` path silently falls back to the environment variable).
 |---|---|---|---|
 | `DASHBOARD_COOKIE_KEY` | `src/session.ts` | — (falls through to file) | Cookie-signing key: hex or padded base64 decoding to ≥32 bytes, else load throws (fail-closed). |
 | `DASHBOARD_COOKIE_KEY_FILE` | `src/session.ts` | `/data/cookie.key` | File fallback for the cookie key (text-encoded or raw ≥32 bytes). |
-| `DASHBOARD_DEV_AUTOLOGIN` | `src/server.ts` | unset (off) | Dev/test-only auth bypass; refused unless `NODE_ENV` is `development`/`test` and the bind host is loopback. |
+| `DASHBOARD_DEV_AUTOLOGIN` | `src/server.ts` | unset (off) | Dev/test-only auth bypass; refused unless `NODE_ENV` is `development`/`test` and the bind host is loopback. Requires `DASHBOARD_OPERATOR_LOGIN` to name the operator the dev session mints — without it every protected path returns 401 (a boot warning says so; see the dev-server recipe in `docs/solutions/workflow-issues/dev-server-hang-background-no-watch-kill-orphans-2026-06-25.md`). |
 | `DASHBOARD_FIXTURE_HARNESS_ENABLED` | `src/gateway/operator-fixture-config.ts` | off | Operator fixture-harness flag; only the exact value `true` enables (fail-closed). |
 | `DASHBOARD_GATEWAY_OPERATOR_ORIGIN` | `src/gateway/operator-config.ts` | `https://dashboard.fro.bot` | Pinned trusted origin for the `/operator/*` proxy target — never derived from the request Host header. Must be an absolute http(s) origin with no path/query/fragment. |
 | `DASHBOARD_GATEWAY_OPERATOR_SESSION_ENABLED` | `src/gateway/operator-config.ts` | off | Gateway-backed operator session forwarding; only the exact value `true` enables (fail-closed). |

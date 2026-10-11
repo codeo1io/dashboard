@@ -71,10 +71,13 @@ const VALID_WEB_STATUSES: ReadonlySet<string> = new Set([
   'blocked',
   'running',
   'waiting_for_approval',
+  'waiting_for_question',
   'succeeded',
   'failed',
   'cancelled',
 ])
+
+export const OPERATOR_WEB_STATUSES: ReadonlySet<string> = VALID_WEB_STATUSES
 
 const VALID_DECISION_STATES: ReadonlySet<string> = new Set([
   'pending',

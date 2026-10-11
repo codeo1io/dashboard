@@ -19,6 +19,7 @@ import type {AggregatorSnapshot, DashboardRepo} from '../src/github/aggregator.t
 import {Buffer} from 'node:buffer'
 import process from 'node:process'
 import {afterEach, describe, expect, it, vi} from 'vitest'
+import {logger} from '../src/logger.ts'
 import {buildDashboardApp} from '../src/server.ts'
 import {SessionManager} from '../src/session.ts'
 
@@ -820,6 +821,36 @@ describe('devAutoLogin — DEV-ONLY auth bypass', () => {
           devAutoLogin: true,
         }),
       ).rejects.toThrow('dev-only auth bypass must never run outside an explicit dev/test environment')
+    })
+  })
+
+  // ── ENV path: autologin requested without an operator login (rm-862) ──────
+
+  describe('ENV path: DASHBOARD_DEV_AUTOLOGIN=true but DASHBOARD_OPERATOR_LOGIN unset (rm-862)', () => {
+    it('boots (deny-all) and warns once at boot that protected paths will 401', async () => {
+      process.env.NODE_ENV = 'development'
+      process.env.DASHBOARD_HOST = '127.0.0.1'
+      process.env.DASHBOARD_DEV_AUTOLOGIN = 'true'
+      const warningSpy = vi.spyOn(logger, 'warning')
+      try {
+        const app = await buildDashboardApp({
+          // operatorLogin deliberately unset — the wedge arm
+          cookieKey: TEST_KEY,
+          oauthClient: makeFakeOAuthClient(),
+          fetchUserLogin: async (_token: string) => TEST_OPERATOR,
+          getSnapshot: () => makeSnapshot(),
+        })
+        // The recipe's silent symptom, now said at boot:
+        expect(warningSpy).toHaveBeenCalledWith(
+          expect.stringContaining('DASHBOARD_OPERATOR_LOGIN is unset'),
+        )
+        // …and the wedge is real: the SPA root stays guarded.
+        const res = await app.request('/')
+        expect(res.status).toBe(401)
+      } finally {
+        warningSpy.mockRestore()
+        delete process.env.DASHBOARD_DEV_AUTOLOGIN
+      }
     })
   })
 
