@@ -12,8 +12,10 @@
  */
 
 import type {ApprovalFrameDataOpen, OutputFrameData, RunEntry, StreamState} from '../public/operator-stream.js'
+import fc from 'fast-check'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {
+  appendStreamChunk,
   bootstrapOperatorStreams,
   buildApprovalClient,
   buildCancelClient,
@@ -47,8 +49,7 @@ import {
   RETRY_BASE_MS,
   RETRY_FACTOR,
   RETRY_MAX_COUNT,
-  sanitizeCheckoutText,
-  toSafeRunView,
+  sanitizeCheckoutText, toSafeRunView,
 } from '../public/operator-stream.js'
 import {
   CHECKOUT_OPERATIONS,
@@ -61,7 +62,6 @@ import {
 } from '../src/gateway/operator-contract/index.ts'
 import {OPERATOR_FAILURE_KINDS} from '../src/gateway/operator-contract/run-status.ts'
 import {FIXTURE_RUN_ID_FOR_TESTS, FIXTURE_SCENARIO_NAMES, serializeScenarioToSse} from '../src/gateway/operator-fixture-sse.ts'
-import {appendStreamChunk} from '../public/operator-stream.js'
 import {parseSseChunk} from '../src/gateway/operator-sse-reader.ts'
 
 const ACTIVE_STATUS = {
@@ -90,29 +90,6 @@ const INITIAL_STATE: StreamState = {
   retryCount: 0,
   shouldReconnect: false,
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 interface FakeStatusEl {
   textContent: string
@@ -186,21 +163,6 @@ async function withFakeBrowser(
 
   return fetchCalls
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 interface FakeElement {
   tagName: string
@@ -375,10 +337,6 @@ function makeApprovalTestEnv(opts: {
   return {approvalsEl, badgeEl, statusEl, noticeEl, client, decideCalls, listCalls, createdElements}
 }
 
-
-
-
-
 /** Stub a minimal browser environment for renderApprovalPrompt tests. */
 function stubRenderEnv() {
   vi.stubGlobal('document', {
@@ -418,17 +376,6 @@ function findStatusElement(el: FakeElement): FakeElement | undefined {
   return undefined
 }
 
-
-
-
-
-
-
-
-
-
-
-
 /**
  * Build a fake SSE ReadableStream that emits the given SSE text chunks.
  * Pass `keepOpen: true` to leave the stream open after all chunks are emitted.
@@ -457,12 +404,6 @@ function makeSseResponse(chunks: string[], opts: {keepOpen?: boolean} = {}): Res
   } as unknown as Response
 }
 
-
-
-
-
-
-
 // ---------------------------------------------------------------------------
 // Fixture SSE scenario integration (browser reducer path)
 // ---------------------------------------------------------------------------
@@ -470,27 +411,13 @@ function makeSseResponse(chunks: string[], opts: {keepOpen?: boolean} = {}): Res
 // that the browser-side parseSseFrame + nextStreamState reducer can consume.
 // ---------------------------------------------------------------------------
 
-
-
-
-
-
-
-
-
-
-
 // ---------------------------------------------------------------------------
 // fixtureSessionId propagation to stream URL and approval client
 // ---------------------------------------------------------------------------
 
-
-
 // ---------------------------------------------------------------------------
 // Late-frame guard — closed stream must not mutate shared noticeEl
 // ---------------------------------------------------------------------------
-
-
 
 function makeUnavailableTestStatusEl(initial = 'Pending') {
   return {textContent: initial, className: 'status-queued', classList: {add(_cls: string) {}, remove() {}}, dataset: {}, hidden: false}
@@ -499,9 +426,6 @@ function makeUnavailableTestStatusEl(initial = 'Pending') {
 function makeUnavailableTestNoticeEl() {
   return {textContent: '', hidden: false, dataset: {connectionState: ''}}
 }
-
-
-
 
 interface FakeCancelOutcome {
   success: boolean
@@ -546,17 +470,17 @@ function stubCancelRenderEnv() {
   vi.stubGlobal('crypto', {randomUUID: () => 'test-uuid-cancel'})
 }
 
-
-
-
 // ---------------------------------------------------------------------------
 // Reducer — latest valid wins, per field; provenance and preparation exclusive
 // ---------------------------------------------------------------------------
 
-
 // ---------------------------------------------------------------------------
 // Leak guard — sentinel `fixture-` strings stay inside in-memory state
 // ---------------------------------------------------------------------------
+
+const CK_SHA_A = 'a'.repeat(40)
+const CK_SHA_B = 'b'.repeat(40)
+const CK_SHA_C = 'c'.repeat(40)
 
 function ckSentinelStatus(): Record<string, unknown> {
   return ckStatusPayload({
@@ -617,8 +541,6 @@ function ckRecordingElement(writes: string[]): Record<string, unknown> {
     },
   })
 }
-
-import fc from 'fast-check'
 function makeLifecycleElements(): {statusEl: FakeElement; noticeEl: FakeElement} {
   return {statusEl: makeFakeEl('span'), noticeEl: makeFakeEl('div')}
 }
@@ -7461,10 +7383,6 @@ describe('CSS selector ↔ checkout-detail emitter agreement', () => {
 // Checkout provenance / checkout preparation — browser trust boundary
 // ===========================================================================
 
-const CK_SHA_A = 'a'.repeat(40)
-const CK_SHA_B = 'b'.repeat(40)
-const CK_SHA_C = 'c'.repeat(40)
-
 function ckStatusPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     runId: 'run-ck-001',
@@ -8787,4 +8705,3 @@ describe('connection lifecycle — stranded connections abort (rm-261)', () => {
     expect(noticeEl.dataset.connectionState).toBeTruthy()
   })
 })
-
