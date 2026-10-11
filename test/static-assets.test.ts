@@ -11,8 +11,6 @@
  */
 import type {GitHubOAuthClient} from '../src/auth/oauth.ts'
 import {Buffer} from 'node:buffer'
-import {existsSync, readdirSync, statSync} from 'node:fs'
-import {join, resolve} from 'node:path'
 import process from 'node:process'
 import {afterEach, describe, expect, it} from 'vitest'
 import {buildDashboardApp} from '../src/server.ts'
@@ -46,7 +44,7 @@ async function buildTestApp(operatorUiEnabled: boolean) {
     cookieKey: TEST_KEY,
     oauthClient: makeFakeOAuthClient(),
     fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
+    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
     operatorUiEnabled,
   })
 }
@@ -59,6 +57,103 @@ async function authedGet(app: Awaited<ReturnType<typeof buildTestApp>>, path: st
 // ---------------------------------------------------------------------------
 // CSP header tests
 // ---------------------------------------------------------------------------
+
+
+// ---------------------------------------------------------------------------
+// Static asset serving tests
+// ---------------------------------------------------------------------------
+
+
+// ---------------------------------------------------------------------------
+// /operator → / redirect
+// ---------------------------------------------------------------------------
+
+
+// ---------------------------------------------------------------------------
+// Flag-off: static route not mounted
+// ---------------------------------------------------------------------------
+
+
+// ---------------------------------------------------------------------------
+// Operator runtime JS assets — always served regardless of operatorUiEnabled
+//
+// Root / now owns the operator shell. The browser-side runtime modules
+// (operator-stream.js, operator-launch.js) must be served unconditionally
+// because the SPA shell at / always depends on them — the old operatorUiEnabled
+// flag-gate was for the SSR /operator route, not the root app.
+// ---------------------------------------------------------------------------
+
+
+// ---------------------------------------------------------------------------
+// PWA SW asset serving — /sw.js
+// ---------------------------------------------------------------------------
+
+
+// ---------------------------------------------------------------------------
+// PWA SW asset serving — /registerSW.js
+// ---------------------------------------------------------------------------
+// NOTE: vite-plugin-pwa only emits registerSW.js when using auto-register mode.
+// Since the app uses useRegisterSW() in a component (ReloadPrompt), the
+// registration code is bundled into the main JS chunk and registerSW.js is NOT
+// emitted. The route remains in isPublicPath for forward-compatibility.
+
+
+// ---------------------------------------------------------------------------
+// PWA manifest serving — /manifest.webmanifest
+// ---------------------------------------------------------------------------
+
+
+// ---------------------------------------------------------------------------
+// Auth boundary: SW assets are public but protected routes are still gated
+// ---------------------------------------------------------------------------
+
+
+
+// ---------------------------------------------------------------------------
+// Production build artifact assertions — web/dist must be fixture-free
+//
+// These tests scan the compiled browser bundle and service-worker output after
+// `pnpm build:web`. Fixture imports are dev-gated so Vite removes the module
+// request strings from production output. The pretest hook runs build:web before
+// vitest, so web/dist is always fresh when these tests run.
+// ---------------------------------------------------------------------------
+
+
+// ---------------------------------------------------------------------------
+// Service worker cache boundary — fixture routes are not intercepted
+//
+// The SW uses a deny-by-default NavigationRoute with an explicit denylist.
+// /__fixture/* paths are not in the SW route table, so they naturally pass
+// through to the server. These tests prove the SW source does not add fixture
+// route handling and does not precache or runtime-cache fixture paths.
+// ---------------------------------------------------------------------------
+
+
+// ---------------------------------------------------------------------------
+// DASHBOARD_WEB_DIST static root override
+//
+// The server must read DASHBOARD_WEB_DIST (defaulting to ./web/dist) and use it
+// for all SPA static asset routes: /, /assets/*, /icon-*, /manifest.webmanifest,
+// /sw.js, /registerSW.js, and the missing-index warning.
+//
+// Tests here verify:
+// 1. Default root is ./web/dist (production unchanged).
+// 2. DASHBOARD_WEB_DIST env var is forwarded to the app config.
+// 3. package.json dev:fixture script sets DASHBOARD_WEB_DIST=./web/dist-fixture.
+// ---------------------------------------------------------------------------
+
+
+
+
+// ---------------------------------------------------------------------------
+// CSP invariant: existing worker-src/manifest-src 'self' already covers SW+manifest
+// ---------------------------------------------------------------------------
+
+
+
+import {existsSync, readdirSync, statSync} from 'node:fs'
+import {join, resolve} from 'node:path'
+const DENIED_PERMISSIONS = 'accelerometer=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()'
 
 describe('security headers — CSP', () => {
   it('CSP header is present on a normal response', async () => {
@@ -130,104 +225,6 @@ describe('security headers — CSP', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// rm-557: Permissions-Policy deny-by-default — the last missing header of the
-// MDN/OWASP baseline set. secureHeaders applies app-wide, so one exact-value
-// pin plus presence checks across surface classes (public API, authed SPA
-// shell, static asset, redirect) is the whole guard.
-// ---------------------------------------------------------------------------
-
-/** Every denied directive serializes to `()` — insertion order is preserved. */
-const DENIED_PERMISSIONS = 'accelerometer=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()'
-
-describe('security headers — Permissions-Policy deny-by-default (rm-557)', () => {
-  it('Permissions-Policy is present with exactly the deny-all directive set (public API)', async () => {
-    const app = await buildTestApp(true)
-    const res = await app.request('/api/healthz')
-    expect(res.status).toBe(200)
-    expect(res.headers.get('permissions-policy')).toBe(DENIED_PERMISSIONS)
-  })
-
-  it('Permissions-Policy is present on the authenticated SPA shell', async () => {
-    const app = await buildTestApp(true)
-    const res = await authedGet(app, '/')
-    expect(res.headers.get('permissions-policy')).toBe(DENIED_PERMISSIONS)
-  })
-
-  it('Permissions-Policy is present on static asset responses (PWA manifest)', async () => {
-    const app = await buildTestApp(true)
-    const res = await app.request('/manifest.webmanifest')
-    expect(res.status).toBe(200)
-    expect(res.headers.get('permissions-policy')).toBe(DENIED_PERMISSIONS)
-  })
-
-  it('Permissions-Policy is present on redirects too (secureHeaders runs post-next)', async () => {
-    const app = await buildTestApp(true)
-    // Unauthenticated request to a protected API route → auth redirect; the
-    // header must ride along even on non-200 responses.
-    const res = await app.request('/api/monitoring')
-    expect(res.status).toBe(302)
-    expect(res.headers.get('permissions-policy')).toBe(DENIED_PERMISSIONS)
-  })
-
-  it('deny list stays representation-safe — no denied feature is used by the client', async () => {
-    // Mirror of the src/server.ts deny list (camelCase directive keys). The API
-    // names for each denied feature mirror the grep the rm-557 acceptance ran
-    // at implementation time — adopting a denied feature trips this before it
-    // breaks in production.
-    const featureApiPatterns: [string, RegExp][] = [
-      ['accelerometer', /DeviceMotionEvent|accelerometer/i],
-      ['camera', /getUserMedia|mediaDevices|enumerateDevices/i],
-      ['displayCapture', /getDisplayMedia/i],
-      ['geolocation', /geolocation/i],
-      ['gyroscope', /DeviceOrientationEvent|gyroscope/i],
-      ['magnetometer', /magnetometer/i],
-      ['microphone', /getUserMedia|mediaDevices|enumerateDevices/i],
-      ['payment', /PaymentRequest/i],
-      ['usb', /navigator\.usb|requestDevice/i],
-    ]
-    const fs = await import('node:fs/promises')
-    const path = await import('node:path')
-
-    async function collectClientFiles(dir: string): Promise<string[]> {
-      const out: string[] = []
-      let entries: string[] = []
-      try {
-        entries = await fs.readdir(dir)
-      } catch {
-        return out
-      }
-      for (const entry of entries) {
-        const full = path.join(dir, entry)
-        const st = await fs.stat(full)
-        if (st.isDirectory()) {
-          out.push(...(await collectClientFiles(full)))
-        } else if (/\.(?:ts|tsx|js)$/.test(entry)) {
-          out.push(full)
-        }
-      }
-      return out
-    }
-
-    for (const dir of ['web/src', 'public']) {
-      const files = await collectClientFiles(path.join(process.cwd(), dir))
-      for (const file of files) {
-        const text = await fs.readFile(file, 'utf8')
-        for (const [feature, pattern] of featureApiPatterns) {
-          expect(
-            text.match(pattern),
-            `${dir} uses a Permissions-Policy-denied feature (${feature}) — remove it from the deny list or stop using it: ${file}`,
-          ).toBeNull()
-        }
-      }
-    }
-  })
-})
-
-// ---------------------------------------------------------------------------
-// Static asset serving tests
-// ---------------------------------------------------------------------------
-
 describe('static asset serving — /static/operator.css', () => {
   it('GET /static/operator.css returns 200 when operatorUiEnabled=true', async () => {
     const app = await buildTestApp(true)
@@ -273,63 +270,6 @@ describe('static asset serving — /static/operator.css', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// rm-478 — explicit caching policy for the unversioned operator runtime JS
-// ---------------------------------------------------------------------------
-
-describe('operator runtime JS caching policy (rm-478)', () => {
-  it('GET /static/operator-stream.js serves no-cache with a content-hash ETag', async () => {
-    const app = await buildTestApp(false) // runtime JS is flag-independent
-    const res = await app.request('/static/operator-stream.js')
-    expect(res.status).toBe(200)
-    expect(res.headers.get('cache-control')).toBe('no-cache')
-    const etag = res.headers.get('etag')
-    expect(etag).toBeTruthy()
-    expect(etag).toMatch(/^"[0-9a-f]{32}"$/)
-  })
-
-  it('the ETag is deterministic across apps (content hash, not instance state)', async () => {
-    const appA = await buildTestApp(false)
-    const appB = await buildTestApp(false)
-    const resA = await appA.request('/static/operator-stream.js')
-    const resB = await appB.request('/static/operator-stream.js')
-    expect(resA.headers.get('etag')).toBe(resB.headers.get('etag'))
-  })
-
-  it('a matching If-None-Match short-circuits the transfer with 304', async () => {
-    const app = await buildTestApp(false)
-    const first = await app.request('/static/operator-stream.js')
-    const etag = first.headers.get('etag') ?? ''
-    const revalidated = await app.request('/static/operator-stream.js', {headers: {'If-None-Match': etag}})
-    expect(revalidated.status).toBe(304)
-    expect(revalidated.headers.get('etag')).toBe(etag)
-    expect(revalidated.headers.get('cache-control')).toBe('no-cache')
-    await expect(revalidated.text()).resolves.toBe('')
-  })
-
-  it('a non-matching If-None-Match still serves the full asset (200)', async () => {
-    const app = await buildTestApp(false)
-    const res = await app.request('/static/operator-stream.js', {headers: {'If-None-Match': '"stale"'}})
-    expect(res.status).toBe(200)
-    expect(res.headers.get('cache-control')).toBe('no-cache')
-    expect((await res.text()).length).toBeGreaterThan(0)
-  })
-
-  it('operator-launch.js and operator-run-index.js carry the same policy', async () => {
-    const app = await buildTestApp(false)
-    for (const asset of ['/static/operator-launch.js', '/static/operator-run-index.js']) {
-      const res = await app.request(asset)
-      expect(res.status, asset).toBe(200)
-      expect(res.headers.get('cache-control'), asset).toBe('no-cache')
-      expect(res.headers.get('etag'), asset).toMatch(/^"[0-9a-f]{32}"$/)
-    }
-  })
-})
-
-// ---------------------------------------------------------------------------
-// /operator → / redirect
-// ---------------------------------------------------------------------------
-
 describe('/operator → / redirect', () => {
   it('GET /operator redirects to / (302) when operatorUiEnabled=true', async () => {
     const app = await buildTestApp(true)
@@ -355,10 +295,6 @@ describe('/operator → / redirect', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Flag-off: static route not mounted
-// ---------------------------------------------------------------------------
-
 describe('static route absent when operator UI disabled', () => {
   it('GET /static/operator.css is not served when flag is off', async () => {
     const app = await buildTestApp(false)
@@ -372,15 +308,6 @@ describe('static route absent when operator UI disabled', () => {
     expect(res.status).toBe(200)
   })
 })
-
-// ---------------------------------------------------------------------------
-// Operator runtime JS assets — always served regardless of operatorUiEnabled
-//
-// Root / now owns the operator shell. The browser-side runtime modules
-// (operator-stream.js, operator-launch.js) must be served unconditionally
-// because the SPA shell at / always depends on them — the old operatorUiEnabled
-// flag-gate was for the SSR /operator route, not the root app.
-// ---------------------------------------------------------------------------
 
 describe('operator runtime JS assets — served regardless of operatorUiEnabled flag', () => {
   it('GET /static/operator-stream.js returns 200 when operatorUiEnabled=false', async () => {
@@ -501,10 +428,6 @@ describe('operator runtime JS assets — served regardless of operatorUiEnabled 
   })
 })
 
-// ---------------------------------------------------------------------------
-// PWA SW asset serving — /sw.js
-// ---------------------------------------------------------------------------
-
 describe('PWA SW asset serving — /sw.js', () => {
   it('GET /sw.js returns 200', async () => {
     const app = await buildTestApp(false)
@@ -545,14 +468,6 @@ describe('PWA SW asset serving — /sw.js', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// PWA SW asset serving — /registerSW.js
-// ---------------------------------------------------------------------------
-// NOTE: vite-plugin-pwa only emits registerSW.js when using auto-register mode.
-// Since the app uses useRegisterSW() in a component (ReloadPrompt), the
-// registration code is bundled into the main JS chunk and registerSW.js is NOT
-// emitted. The route remains in isPublicPath for forward-compatibility.
-
 describe('PWA SW asset serving — /registerSW.js', () => {
   it('GET /registerSW.js is in the public allowlist (no auth redirect)', async () => {
     const app = await buildTestApp(false)
@@ -561,10 +476,6 @@ describe('PWA SW asset serving — /registerSW.js', () => {
     expect(res.status).not.toBe(401)
   })
 })
-
-// ---------------------------------------------------------------------------
-// PWA manifest serving — /manifest.webmanifest
-// ---------------------------------------------------------------------------
 
 describe('PWA manifest serving — /manifest.webmanifest', () => {
   it('GET /manifest.webmanifest returns 200', async () => {
@@ -589,10 +500,6 @@ describe('PWA manifest serving — /manifest.webmanifest', () => {
     expect(res.status).not.toBe(401)
   })
 })
-
-// ---------------------------------------------------------------------------
-// Auth boundary: SW assets are public but protected routes are still gated
-// ---------------------------------------------------------------------------
 
 describe('auth boundary — SW assets public, protected routes still gated', () => {
   it('/sw.js is public but / (the SPA shell) still requires auth', async () => {
@@ -679,15 +586,6 @@ describe('production static JS assets — no fixture strings', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// Production build artifact assertions — web/dist must be fixture-free
-//
-// These tests scan the compiled browser bundle and service-worker output after
-// `pnpm build:web`. Fixture imports are dev-gated so Vite removes the module
-// request strings from production output. The pretest hook runs build:web before
-// vitest, so web/dist is always fresh when these tests run.
-// ---------------------------------------------------------------------------
-
 describe('production build artifacts — no fixture strings in web/dist JS', () => {
   it('web/dist/sw.js does not contain /__fixture route string', async () => {
     const fs = await import('node:fs/promises')
@@ -755,15 +653,6 @@ describe('production build artifacts — no fixture strings in web/dist JS', () 
   })
 })
 
-// ---------------------------------------------------------------------------
-// Service worker cache boundary — fixture routes are not intercepted
-//
-// The SW uses a deny-by-default NavigationRoute with an explicit denylist.
-// /__fixture/* paths are not in the SW route table, so they naturally pass
-// through to the server. These tests prove the SW source does not add fixture
-// route handling and does not precache or runtime-cache fixture paths.
-// ---------------------------------------------------------------------------
-
 describe('service worker cache boundary — fixture routes not intercepted', () => {
   it('web/dist/sw.js does not register a route for /__fixture paths', async () => {
     const fs = await import('node:fs/promises')
@@ -786,19 +675,6 @@ describe('service worker cache boundary — fixture routes not intercepted', () 
   })
 })
 
-// ---------------------------------------------------------------------------
-// DASHBOARD_WEB_DIST static root override
-//
-// The server must read DASHBOARD_WEB_DIST (defaulting to ./web/dist) and use it
-// for all SPA static asset routes: /, /assets/*, /icon-*, /manifest.webmanifest,
-// /sw.js, /registerSW.js, and the missing-index warning.
-//
-// Tests here verify:
-// 1. Default root is ./web/dist (production unchanged).
-// 2. DASHBOARD_WEB_DIST env var is forwarded to the app config.
-// 3. package.json dev:fixture script sets DASHBOARD_WEB_DIST=./web/dist-fixture.
-// ---------------------------------------------------------------------------
-
 describe('DASHBOARD_WEB_DIST — static root override', () => {
   const ORIGINAL_WEB_DIST = process.env.DASHBOARD_WEB_DIST
 
@@ -818,7 +694,7 @@ describe('DASHBOARD_WEB_DIST — static root override', () => {
       cookieKey: TEST_KEY,
       oauthClient: makeFakeOAuthClient(),
       fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
+      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
     })
     // /sw.js is served from web/dist — 200 confirms the default root is correct
     const res = await app.request('/sw.js')
@@ -836,7 +712,7 @@ describe('DASHBOARD_WEB_DIST — static root override', () => {
       cookieKey: TEST_KEY,
       oauthClient: makeFakeOAuthClient(),
       fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
+      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
       webDistRoot: './web/dist-fixture',
     })
     const res = await app.request('/sw.js')
@@ -850,7 +726,7 @@ describe('DASHBOARD_WEB_DIST — static root override', () => {
       cookieKey: TEST_KEY,
       oauthClient: makeFakeOAuthClient(),
       fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
+      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
       // No webDistRoot injected — reads from env
     })
     const res = await app.request('/sw.js')
@@ -869,7 +745,7 @@ describe('DASHBOARD_WEB_DIST — production guard: dist-fixture must not be used
           cookieKey: TEST_KEY,
           oauthClient: makeFakeOAuthClient(),
           fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-          getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
+          getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
           webDistRoot: './web/dist-fixture',
         }),
       ).rejects.toThrow(/dist-fixture.*production|production.*dist-fixture/i)
@@ -888,7 +764,7 @@ describe('DASHBOARD_WEB_DIST — production guard: dist-fixture must not be used
           cookieKey: TEST_KEY,
           oauthClient: makeFakeOAuthClient(),
           fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-          getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
+          getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
           webDistRoot: './web/dist-fixture',
         }),
       ).resolves.toBeDefined()
@@ -907,7 +783,7 @@ describe('DASHBOARD_WEB_DIST — production guard: dist-fixture must not be used
           cookieKey: TEST_KEY,
           oauthClient: makeFakeOAuthClient(),
           fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-          getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
+          getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
           webDistRoot: './web/dist',
         }),
       ).resolves.toBeDefined()
@@ -969,10 +845,6 @@ describe('dev:fixture script — package.json content', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// CSP invariant: existing worker-src/manifest-src 'self' already covers SW+manifest
-// ---------------------------------------------------------------------------
-
 describe('CSP invariant — worker-src and manifest-src already cover SW+manifest', () => {
   it("CSP on a normal response contains worker-src 'self' (covers SW registration)", async () => {
     const app = await buildTestApp(false)
@@ -1006,9 +878,186 @@ describe('security — raw failure reason codes security invariants', () => {
   })
 })
 
-// ---------------------------------------------------------------------------
-// rm-498 — serveStatic double-decode middleware bypass (fixed adapter pair)
-// ---------------------------------------------------------------------------
+describe('security — operator-stream.js contract pin and checkout-field boundary', () => {
+  it('holds exactly one version literal (the pin), and imports no server code', async () => {
+    const fs = await import('node:fs/promises')
+    const src = await fs.readFile('public/operator-stream.js', 'utf8')
+    // Strip comments so prose that names a version cannot hide a second pin.
+    const code = src.replaceAll(/\/\*[\s\S]*?\*\//g, '').replaceAll(/(^|[^:])\/\/.*$/gm, '$1')
+    const literals = code.match(/['"`]\d+\.\d+\.\d+['"`]/g) ?? []
+    expect(literals).toHaveLength(1)
+    expect(code).toMatch(/export const PINNED_CONTRACT_VERSION = ['"]\d+\.\d+\.\d+['"]/)
+    expect(code).not.toMatch(/from\s+['"][^'"]*(?:src\/|\.ts['"])/)
+    expect(code).not.toMatch(/\bimport\s*\(/)
+  })
+
+  it('renders checkout provenance and preparation through no HTML sink and puts no raw field in a class or CSS variable', async () => {
+    const fs = await import('node:fs/promises')
+    for (const filePath of ['public/operator-stream.js', 'public/operator-run-index.js']) {
+      const src = await fs.readFile(filePath, 'utf8')
+      expect(src).not.toMatch(/(?:innerHTML|outerHTML|insertAdjacentHTML)\s*=/)
+      expect(src).not.toMatch(/classList\.add\([^)]*checkout(?:Provenance|Preparation)/)
+      expect(src).not.toMatch(/className[^;\n]*checkout(?:Provenance|Preparation)/)
+      expect(src).not.toMatch(/setProperty\([^)]*checkout(?:Provenance|Preparation)/)
+      expect(src).not.toMatch(/dataset\.[A-Za-z]+\s*=[^;\n]*checkout(?:Provenance|Preparation)/)
+    }
+  })
+
+  it('the run-index module never reads checkout fields (summaries do not carry them)', async () => {
+    const fs = await import('node:fs/promises')
+    const src = await fs.readFile('public/operator-run-index.js', 'utf8')
+    expect(src).not.toMatch(/checkout(?:Provenance|Preparation)/)
+  })
+})
+
+describe('checkout detail styling — selector/emitter parity', () => {
+  it('styles every checkout detail class emitted by operator-stream.js', async () => {
+    const fs = await import('node:fs/promises')
+    const [js, css] = await Promise.all([
+      fs.readFile('public/operator-stream.js', 'utf8'),
+      fs.readFile('web/src/index.css', 'utf8'),
+    ])
+    const emitted = [...js.matchAll(/\bcheckout-detail(?:__[a-z-]+)?\b/g)]
+      .map(match => match[0])
+    expect(emitted.length).toBeGreaterThan(0)
+    for (const className of emitted) {
+      expect(css, `missing CSS rule for .${className}`).toMatch(new RegExp(String.raw`\.${className}(?![\w-])`))
+    }
+  })
+})
+
+describe('security headers — Permissions-Policy deny-by-default (rm-557)', () => {
+  it('Permissions-Policy is present with exactly the deny-all directive set (public API)', async () => {
+    const app = await buildTestApp(true)
+    const res = await app.request('/api/healthz')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('permissions-policy')).toBe(DENIED_PERMISSIONS)
+  })
+
+  it('Permissions-Policy is present on the authenticated SPA shell', async () => {
+    const app = await buildTestApp(true)
+    const res = await authedGet(app, '/')
+    expect(res.headers.get('permissions-policy')).toBe(DENIED_PERMISSIONS)
+  })
+
+  it('Permissions-Policy is present on static asset responses (PWA manifest)', async () => {
+    const app = await buildTestApp(true)
+    const res = await app.request('/manifest.webmanifest')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('permissions-policy')).toBe(DENIED_PERMISSIONS)
+  })
+
+  it('Permissions-Policy is present on redirects too (secureHeaders runs post-next)', async () => {
+    const app = await buildTestApp(true)
+    // Unauthenticated request to a protected API route → auth redirect; the
+    // header must ride along even on non-200 responses.
+    const res = await app.request('/api/monitoring')
+    expect(res.status).toBe(302)
+    expect(res.headers.get('permissions-policy')).toBe(DENIED_PERMISSIONS)
+  })
+
+  it('deny list stays representation-safe — no denied feature is used by the client', async () => {
+    // Mirror of the src/server.ts deny list (camelCase directive keys). The API
+    // names for each denied feature mirror the grep the rm-557 acceptance ran
+    // at implementation time — adopting a denied feature trips this before it
+    // breaks in production.
+    const featureApiPatterns: [string, RegExp][] = [
+      ['accelerometer', /DeviceMotionEvent|accelerometer/i],
+      ['camera', /getUserMedia|mediaDevices|enumerateDevices/i],
+      ['displayCapture', /getDisplayMedia/i],
+      ['geolocation', /geolocation/i],
+      ['gyroscope', /DeviceOrientationEvent|gyroscope/i],
+      ['magnetometer', /magnetometer/i],
+      ['microphone', /getUserMedia|mediaDevices|enumerateDevices/i],
+      ['payment', /PaymentRequest/i],
+      ['usb', /navigator\.usb|requestDevice/i],
+    ]
+    const fs = await import('node:fs/promises')
+    const path = await import('node:path')
+
+    async function collectClientFiles(dir: string): Promise<string[]> {
+      const out: string[] = []
+      let entries: string[] = []
+      try {
+        entries = await fs.readdir(dir)
+      } catch {
+        return out
+      }
+      for (const entry of entries) {
+        const full = path.join(dir, entry)
+        const st = await fs.stat(full)
+        if (st.isDirectory()) {
+          out.push(...(await collectClientFiles(full)))
+        } else if (/\.(?:ts|tsx|js)$/.test(entry)) {
+          out.push(full)
+        }
+      }
+      return out
+    }
+
+    for (const dir of ['web/src', 'public']) {
+      const files = await collectClientFiles(path.join(process.cwd(), dir))
+      for (const file of files) {
+        const text = await fs.readFile(file, 'utf8')
+        for (const [feature, pattern] of featureApiPatterns) {
+          expect(
+            text.match(pattern),
+            `${dir} uses a Permissions-Policy-denied feature (${feature}) — remove it from the deny list or stop using it: ${file}`,
+          ).toBeNull()
+        }
+      }
+    }
+  })
+})
+
+describe('operator runtime JS caching policy (rm-478)', () => {
+  it('GET /static/operator-stream.js serves no-cache with a content-hash ETag', async () => {
+    const app = await buildTestApp(false) // runtime JS is flag-independent
+    const res = await app.request('/static/operator-stream.js')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-cache')
+    const etag = res.headers.get('etag')
+    expect(etag).toBeTruthy()
+    expect(etag).toMatch(/^"[0-9a-f]{32}"$/)
+  })
+
+  it('the ETag is deterministic across apps (content hash, not instance state)', async () => {
+    const appA = await buildTestApp(false)
+    const appB = await buildTestApp(false)
+    const resA = await appA.request('/static/operator-stream.js')
+    const resB = await appB.request('/static/operator-stream.js')
+    expect(resA.headers.get('etag')).toBe(resB.headers.get('etag'))
+  })
+
+  it('a matching If-None-Match short-circuits the transfer with 304', async () => {
+    const app = await buildTestApp(false)
+    const first = await app.request('/static/operator-stream.js')
+    const etag = first.headers.get('etag') ?? ''
+    const revalidated = await app.request('/static/operator-stream.js', {headers: {'If-None-Match': etag}})
+    expect(revalidated.status).toBe(304)
+    expect(revalidated.headers.get('etag')).toBe(etag)
+    expect(revalidated.headers.get('cache-control')).toBe('no-cache')
+    await expect(revalidated.text()).resolves.toBe('')
+  })
+
+  it('a non-matching If-None-Match still serves the full asset (200)', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/static/operator-stream.js', {headers: {'If-None-Match': '"stale"'}})
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-cache')
+    expect((await res.text()).length).toBeGreaterThan(0)
+  })
+
+  it('operator-launch.js and operator-run-index.js carry the same policy', async () => {
+    const app = await buildTestApp(false)
+    for (const asset of ['/static/operator-launch.js', '/static/operator-run-index.js']) {
+      const res = await app.request(asset)
+      expect(res.status, asset).toBe(200)
+      expect(res.headers.get('cache-control'), asset).toBe('no-cache')
+      expect(res.headers.get('etag'), asset).toMatch(/^"[0-9a-f]{32}"$/)
+    }
+  })
+})
 
 describe('rm-498 — serveStatic double-decode bypass (GHSA-rmxm-3fg6-px4f / GHSA-5r4p-p66f-jhc7)', () => {
   // The 2026-09-29 coordinated fixes (@hono/node-server v2.1.3 GHSA-rmxm-3fg6-px4f,
@@ -1083,50 +1132,6 @@ describe('rm-498 — % rejection compatibility (allowPercentInPath stays unset)'
     const dist = resolve(repoRoot, 'web/dist')
     if (existsSync(dist)) walk(dist)
     expect(offenders).toEqual([])
-describe('security — operator-stream.js contract pin and checkout-field boundary', () => {
-  it('holds exactly one version literal (the pin), and imports no server code', async () => {
-    const fs = await import('node:fs/promises')
-    const src = await fs.readFile('public/operator-stream.js', 'utf8')
-    // Strip comments so prose that names a version cannot hide a second pin.
-    const code = src.replaceAll(/\/\*[\s\S]*?\*\//g, '').replaceAll(/(^|[^:])\/\/.*$/gm, '$1')
-    const literals = code.match(/['"`]\d+\.\d+\.\d+['"`]/g) ?? []
-    expect(literals).toHaveLength(1)
-    expect(code).toMatch(/export const PINNED_CONTRACT_VERSION = ['"]\d+\.\d+\.\d+['"]/)
-    expect(code).not.toMatch(/from\s+['"][^'"]*(?:src\/|\.ts['"])/)
-    expect(code).not.toMatch(/\bimport\s*\(/)
-  })
-
-  it('renders checkout provenance and preparation through no HTML sink and puts no raw field in a class or CSS variable', async () => {
-    const fs = await import('node:fs/promises')
-    for (const filePath of ['public/operator-stream.js', 'public/operator-run-index.js']) {
-      const src = await fs.readFile(filePath, 'utf8')
-      expect(src).not.toMatch(/(?:innerHTML|outerHTML|insertAdjacentHTML)\s*=/)
-      expect(src).not.toMatch(/classList\.add\([^)]*checkout(?:Provenance|Preparation)/)
-      expect(src).not.toMatch(/className[^;\n]*checkout(?:Provenance|Preparation)/)
-      expect(src).not.toMatch(/setProperty\([^)]*checkout(?:Provenance|Preparation)/)
-      expect(src).not.toMatch(/dataset\.[A-Za-z]+\s*=[^;\n]*checkout(?:Provenance|Preparation)/)
-    }
-  })
-
-  it('the run-index module never reads checkout fields (summaries do not carry them)', async () => {
-    const fs = await import('node:fs/promises')
-    const src = await fs.readFile('public/operator-run-index.js', 'utf8')
-    expect(src).not.toMatch(/checkout(?:Provenance|Preparation)/)
   })
 })
 
-describe('checkout detail styling — selector/emitter parity', () => {
-  it('styles every checkout detail class emitted by operator-stream.js', async () => {
-    const fs = await import('node:fs/promises')
-    const [js, css] = await Promise.all([
-      fs.readFile('public/operator-stream.js', 'utf8'),
-      fs.readFile('web/src/index.css', 'utf8'),
-    ])
-    const emitted = [...js.matchAll(/\bcheckout-detail(?:__[a-z-]+)?\b/g)]
-      .map(match => match[0])
-    expect(emitted.length).toBeGreaterThan(0)
-    for (const className of emitted) {
-      expect(css, `missing CSS rule for .${className}`).toMatch(new RegExp(String.raw`\.${className}(?![\w-])`))
-    }
-  })
-})
