@@ -34,6 +34,8 @@ function makeRepo(
       openAlertCount: null,
       stale: false,
       lastRunAt: FRESH_RUN_AT,
+      lastRunAtSource: 'fetched',
+      lastPushedAt: null,
       ...overrides.status
     }
   }
@@ -48,6 +50,7 @@ function makeData(overrides: Partial<MonitoringData> = {}): MonitoringData {
     driftCount: 0,
     enumerationIncomplete: null,
     refreshedAt: DATA_AS_OF,
+    actionsStatus: null,
     ...overrides
   }
 }
@@ -624,5 +627,200 @@ describe('Monitoring rm-835 (cold-start truth: DTO stale banner + empty enumerat
     expect(screen.getByTestId('monitoring-all-clear-suppressed')).toBeInTheDocument()
     // The healthy row itself still renders (last-known state, honestly framed).
     expect(screen.getByTestId('monitoring-footer')).toHaveTextContent('1 repository not failing')
+  })
+})
+
+describe('cycle:2 ci-freshness completion (rm-916/rm-913/rm-917)', () => {
+  const DORMANT_PUSH_AT = DATA_AS_OF - 31 * 24 * 60 * 60 * 1000
+  const DORMANT_RUN_AT = DATA_AS_OF - 30 * 24 * 60 * 60 * 1000
+  const ACTIVE_PUSH_AT = DATA_AS_OF - 2 * 60 * 60 * 1000
+  const ACTIVE_OLD_RUN_AT = DATA_AS_OF - 3 * 24 * 60 * 60 * 1000
+  const SILENT_MX_RUN_AT = DATA_AS_OF - 49 * 60 * 60 * 1000
+  const SILENT_MX_PUSH_AT = DATA_AS_OF - 2 * 60 * 60 * 1000
+
+  function makeRepoCycle2(fullName: string, status: Partial<MonitoringRepoStatus>): MonitoringRepo {
+    return {...makeRepo({status}), fullName}
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValue({
+      ok: true,
+      data: makeData()
+    })
+  })
+
+  afterEach(() => {
+    vi.runOnlyPendingTimers()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('rm-916: dormant-but-healthy repos (run postdates tip) never read as silent', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+          repos: [
+            makeRepoCycle2('fro-bot/dormant-one', { rollupState: 'green', failingChecks: 0, lastRunAt: DORMANT_RUN_AT, lastPushedAt: DORMANT_PUSH_AT, lastRunAtSource: 'fetched' }),
+            makeRepoCycle2('fro-bot/dormant-two', { rollupState: 'green', failingChecks: 0, lastRunAt: DORMANT_RUN_AT, lastPushedAt: DORMANT_PUSH_AT, lastRunAtSource: 'fetched' })
+          ]
+      })
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+    // Both repos are green with CI that ran AFTER their tip commit landed:
+    // healthy, dormant — the all-dormant fleet must light NOTHING.
+    expect(screen.queryByTestId('monitoring-ci-silence-banner')).toBeNull()
+    expect(screen.queryByTestId('monitoring-ci-silence-carrier')).toBeNull()
+    expect(screen.getByTestId('monitoring-footer')).toHaveTextContent('2 repositories not failing')
+  })
+
+  it('rm-916: an active repo gone quiet (recent push, old runs) reads as silent', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+          repos: [makeRepoCycle2('fro-bot/active-quiet', { rollupState: 'green', failingChecks: 0, lastRunAt: ACTIVE_OLD_RUN_AT, lastPushedAt: ACTIVE_PUSH_AT, lastRunAtSource: 'fetched' })]
+      })
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+    // Tip pushed 2h ago but the newest run is 3d old: no run on the current tip.
+    // All-silent fleet: the enumeration banner fires (rm-836 semantics), the
+    // mixed-fleet carrier stays down.
+    expect(screen.getByTestId('monitoring-ci-silence-banner')).toHaveTextContent('CI silence')
+    expect(screen.queryByTestId('monitoring-ci-silence-carrier')).toBeNull()
+  })
+
+  it('rm-913: mixed fleet with one silent repo surfaces the banner naming it', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+          repos: [
+            makeRepoCycle2('fro-bot/silent-mixed', { rollupState: 'green', failingChecks: 0, lastRunAt: SILENT_MX_RUN_AT, lastPushedAt: SILENT_MX_PUSH_AT, lastRunAtSource: 'fetched' }),
+            makeRepoCycle2('fro-bot/fresh-mixed', { rollupState: 'green', failingChecks: 0, lastRunAt: FRESH_RUN_AT, lastPushedAt: DATA_AS_OF - 3 * 60 * 60 * 1000, lastRunAtSource: 'fetched' })
+          ]
+      })
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+    // rm-913 carrier: the enumeration banner stays DOWN on a mixed fleet
+    // (pinned rm-836 behavior), and the carrier names the silent repo.
+    expect(screen.queryByTestId('monitoring-ci-silence-banner')).toBeNull()
+    const carrier = screen.getByTestId('monitoring-ci-silence-carrier')
+    expect(carrier).toHaveTextContent('fro-bot/silent-mixed')
+    expect(carrier).not.toHaveTextContent('fro-bot/fresh-mixed')
+  })
+
+  it('rm-913: a silent GREEN repo is visible via the banner even beside a red card', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+          repos: [
+            makeRepoCycle2('fro-bot/silent-green', { rollupState: 'green', failingChecks: 0, lastRunAt: SILENT_MX_RUN_AT, lastPushedAt: SILENT_MX_PUSH_AT, lastRunAtSource: 'fetched' }),
+            makeRepoCycle2('fro-bot/red-fresh', { rollupState: 'red', failingChecks: 2, lastRunAt: FRESH_RUN_AT, lastPushedAt: DATA_AS_OF - 3 * 60 * 60 * 1000, lastRunAtSource: 'fetched' })
+          ]
+      })
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+    // Green repos have no card; the mixed-fleet carrier is their only
+    // visibility surface (rm-913) — the enumeration banner stays down because
+    // the red-fresh repo is NOT silent.
+    expect(screen.queryByTestId('monitoring-ci-silence-banner')).toBeNull()
+    expect(screen.getByTestId('monitoring-ci-silence-carrier')).toHaveTextContent('fro-bot/silent-green')
+  })
+
+  it('rm-916 copy: an absent (never-fetched) row reads as not-fetched, not as a query verdict', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+          repos: [
+            makeRepoCycle2('fro-bot/absent-row', {
+              rollupState: 'red',
+              failingChecks: 2,
+              lastRunAt: null,
+              lastRunAtSource: 'absent',
+              lastPushedAt: null
+            })
+          ]
+      })
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+    expect(screen.getByTestId('monitoring-ci-age-unknown')).toHaveTextContent('not fetched this cycle')
+    expect(screen.getByTestId('monitoring-ci-age-unknown')).not.toHaveTextContent('no workflow run carried a timestamp')
+  })
+
+  it('rm-916 copy: a fetched row with no timestamps keeps the query-verdict copy', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+          repos: [
+            makeRepoCycle2('fro-bot/fetched-null', {
+              rollupState: 'red',
+              failingChecks: 2,
+              lastRunAt: null,
+              lastRunAtSource: 'fetched',
+              lastPushedAt: null
+            })
+          ]
+      })
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+    expect(screen.getByTestId('monitoring-ci-age-unknown')).toHaveTextContent('no workflow run carried a timestamp')
+  })
+
+  it('rm-917: a degraded platform state annotates the silence banner', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+          actionsStatus: { state: 'degraded_performance', fetchedAt: DATA_AS_OF - 60_000 },
+          repos: [makeRepoCycle2('fro-bot/silent-platform', { rollupState: 'green', failingChecks: 0, lastRunAt: ACTIVE_OLD_RUN_AT, lastPushedAt: ACTIVE_PUSH_AT, lastRunAtSource: 'fetched' })]
+      })
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+    const banner = screen.getByTestId('monitoring-ci-silence-banner')
+    expect(screen.getByTestId('monitoring-ci-silence-platform-chip')).toHaveTextContent('degraded_performance')
+    expect(banner).toHaveTextContent('CI silence')
+  })
+
+  it('rm-917: absent platform state leaves the banner bit-identical', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+          actionsStatus: null,
+          repos: [makeRepoCycle2('fro-bot/silent-noplatform', { rollupState: 'green', failingChecks: 0, lastRunAt: ACTIVE_OLD_RUN_AT, lastPushedAt: ACTIVE_PUSH_AT, lastRunAtSource: 'fetched' })]
+        })
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+    expect(screen.queryByTestId('monitoring-ci-silence-platform-chip')).toBeNull()
+    expect(screen.getByTestId('monitoring-ci-silence-banner')).toHaveTextContent('CI silence')
   })
 })

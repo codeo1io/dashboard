@@ -27,7 +27,6 @@
 import type {Result} from '../result.ts'
 import type {EnumerateReposResult, InstallationsClient} from './installations.ts'
 import type {MetadataError, MetadataReader, MetadataResult} from './metadata.ts'
-
 import {logger, sanitizeErrorMessage, type LogContext} from '../logger.ts'
 import {isErr, isOk} from '../result.ts'
 import {deriveDatabaseId, redactedDatabaseIdIn} from './metadata.ts'
@@ -35,6 +34,7 @@ import {
   REPO_STATUS_QUERY,
   REPO_STATUS_QUERY_NO_ALERTS,
 } from './query-registry.ts'
+import {readActionsComponentStatus, type ActionsComponentStatus} from './statuspage.ts'
 
 export {REPO_STATUS_QUERY_REGISTRY} from './query-registry.ts'
 
@@ -120,6 +120,15 @@ export interface RepoCiStatus {
    * clock — this is run time, distinct from fetchedAt (fetch wall-clock).
    */
   readonly lastRunAt: number | null
+  // rm-916 (2026-10-11): provenance for a null lastRunAt — 'absent' = never queried
+  // this cycle (absence/degraded row; the operator must not be told a query
+  // verdict happened); 'fetched' = real query response, no timestamp observed.
+  readonly lastRunAtSource: 'absent' | 'fetched'
+  // rm-916 (2026-10-11): tip-commit committedDate (ms) of the default branch —
+  // the activity anchor for CI silence (a run that postdates the tip is
+  // healthy regardless of absolute age). Null = unknown tip age (fail-closed,
+  // never fabricated).
+  readonly lastPushedAt: number | null
 }
 
 /**
@@ -150,6 +159,13 @@ export interface AggregatorSnapshot {
    * and we are serving stale/empty data.
    */
   readonly staleBanner: boolean
+  /**
+   * rm-917 (2026-10-11): GitHub Statuspage 'Actions' component state,
+   * ANNOTATION-ONLY for the CI-silence banner. Optional + null = unknown or
+   * unavailable (fail-open: the banner renders exactly as without it). See
+   * src/github/statuspage.ts for the precedence contract.
+   */
+  readonly actionsStatus?: ActionsComponentStatus | null
   /**
    * Count of repos the Agent App can see that are NOT in public metadata.
    * Never includes names or node_ids — count only.
@@ -199,6 +215,7 @@ export interface SnapshotStore {
 export const COLD_START_SNAPSHOT: AggregatorSnapshot = {
   repos: [],
   staleBanner: true,
+  actionsStatus: null,
   driftCount: 0,
   enumerationIncomplete: null,
   refreshedAt: null,
@@ -216,6 +233,8 @@ interface GraphqlRepoResponse {
     defaultBranchRef: {
       target: {
         statusCheckRollup: {state: string} | null
+        // rm-916: additive scalar on the already-selected Commit node.
+        committedDate?: string | null
         checkSuites: {
           nodes: {
             workflowRun?: {displayTitle?: string | null; runAttempt?: number | null; startedAt?: string | null; completedAt?: string | null} | null
@@ -699,6 +718,18 @@ function extractLastRunAt(target: GraphqlCommitTarget | null | undefined): numbe
 }
 
 /**
+ * rm-916 (2026-10-11): tip-commit committedDate of the default branch, as ms.
+ * Fail-closed: null when the tip carries no parseable committedDate — the
+ * activity anchor is never fabricated (the web predicate falls back to the
+ * absolute 48h floor when the tip age is unknown).
+ */
+export function extractLastPushedAt(target: {readonly committedDate?: string | null} | null | undefined): number | null {
+  if (target?.committedDate === null || target?.committedDate === undefined) return null
+  const parsed = Date.parse(target.committedDate)
+  return Number.isNaN(parsed) ? null : parsed
+}
+
+/**
  * Parse a GraphQL response into a RepoCiStatus, with openAlertCount from the response
  * (or null if the field is absent/null).
  */
@@ -712,7 +743,7 @@ export function parseRepoResponse(raw: unknown, fetchedAt: number, openAlertCoun
     // installation lost access. That is a degradation the operator must see,
     // so we fail visible (stale:true), matching the installation_id:null and
     // fetch-failure paths below. Serving a calm unknown here hid silent drift.
-    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt, lastRunAt: null}
+    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt, lastRunAt: null, lastRunAtSource: 'fetched', lastPushedAt: null}
   }
 
   const target = repo.defaultBranchRef?.target
@@ -736,7 +767,7 @@ export function parseRepoResponse(raw: unknown, fetchedAt: number, openAlertCoun
   // Use the provided openAlertCount (may be from the response or null if no-alerts variant)
   const alertCount = openAlertCount ?? (repo.vulnerabilityAlerts?.totalCount ?? null)
 
-  return {rollupState, failingChecks, failingCheckDetails, openPrCount, openIssueCount, openAlertCount: alertCount, stale: false, fetchedAt, lastRunAt}
+  return {rollupState, failingChecks, failingCheckDetails, openPrCount, openIssueCount, openAlertCount: alertCount, stale: false, fetchedAt, lastRunAt, lastRunAtSource: 'fetched', lastPushedAt: extractLastPushedAt(repo.defaultBranchRef?.target)}
 }
 
 async function fetchRepoStatus(
@@ -750,7 +781,7 @@ async function fetchRepoStatus(
   // installation_id must be present — if null, we cannot authenticate the query
   if (entry.installation_id === null) {
     logger.warning('No installation_id for repo; marking stale', safeRepoLogIdentity(entry))
-    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt, lastRunAt: null}
+    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt, lastRunAt: null, lastRunAtSource: 'fetched', lastPushedAt: null}
   }
 
   const installationId = entry.installation_id
@@ -787,12 +818,12 @@ async function fetchRepoStatus(
         return parseRepoResponse(raw, fetchedAt, null)
       } catch (retryError) {
         logger.warning('Per-repo GraphQL fetch failed (no-alerts retry); marking stale', safeRepoErrorContext(entry, retryError))
-        return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt, lastRunAt: null}
+        return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt, lastRunAt: null, lastRunAtSource: 'fetched', lastPushedAt: null}
       }
     }
 
     logger.warning('Per-repo GraphQL fetch failed; marking stale', safeRepoErrorContext(entry, error))
-    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt, lastRunAt: null}
+    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt, lastRunAt: null, lastRunAtSource: 'fetched', lastPushedAt: null}
   }
 }
 
@@ -1048,7 +1079,7 @@ export function createAggregator(
 
       if (lastGoodSnapshot === null) {
         // Cold start with no cache — serve empty with banner
-        setSnapshot(watchdogStamp({repos: [], staleBanner: true, driftCount: 0, enumerationIncomplete: null, refreshedAt: null}))
+        setSnapshot(watchdogStamp({repos: [], staleBanner: true, actionsStatus: null, driftCount: 0, enumerationIncomplete: null, refreshedAt: null}))
       } else {
         // Serve last-good with staleBanner (rm-156: watchdog-stamped with
         // this cycle's elapsed time — the write records how long the walk
@@ -1121,6 +1152,10 @@ export function createAggregator(
       fetchedAt: now(),
       // rm-836: never queried — run-age is unknown, never fabricated.
       lastRunAt: null,
+      // rm-916: absence rows say so explicitly — the operator must not be
+      // told a query verdict happened for a row that was never fetched.
+      lastRunAtSource: 'absent',
+      lastPushedAt: null,
     })
     let workingSet: WorkingSetEntry[]
     if (deps.resolveInstallationIdForRepo === undefined) {
@@ -1276,7 +1311,7 @@ export function createAggregator(
         // assigned before Promise.all resolves) and exists only to satisfy
         // noUncheckedIndexedAccess. failingCheckDetails required here too —
         // the drill-down sample is empty on an unfetched repo (rm-192).
-        status: statuses[index] ?? {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt: now(), lastRunAt: null},
+        status: statuses[index] ?? {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt: now(), lastRunAt: null, lastRunAtSource: 'absent', lastPushedAt: null},
       })
     }
 
@@ -1290,7 +1325,7 @@ export function createAggregator(
     // incomplete (install repos missing). We still show metadata publicRepos
     // (they are public and safe), but the operator must know the installation
     // channel data is absent.
-    setSnapshot(watchdogStamp({repos: sorted, staleBanner: enumerationFailed || (enumerationIncomplete ?? 0) > 0, driftCount, enumerationIncomplete, refreshedAt: now()}))
+    setSnapshot(watchdogStamp({repos: sorted, staleBanner: enumerationFailed || (enumerationIncomplete ?? 0) > 0, actionsStatus: await readActionsComponentStatus(), driftCount, enumerationIncomplete, refreshedAt: now()}))
 
     logger.info('Aggregator refresh complete', {
       repoCount: sorted.length,

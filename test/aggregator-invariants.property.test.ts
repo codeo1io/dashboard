@@ -73,6 +73,10 @@ const statusArb = (fetchedAt: number): fc.Arbitrary<RepoCiStatus> =>
     // rm-836: newest-run start (ms) or null-unknown — generated independently
     // of the other status fields (freshness is outcome-independent).
     lastRunAt: fc.option(fc.nat({max: Number.MAX_SAFE_INTEGER}), {nil: null}),
+    // rm-916: provenance + tip anchor are generated independently of
+    // lastRunAt (the properties under test do not constrain them yet).
+    lastRunAtSource: fc.constantFrom('absent' as const, 'fetched' as const),
+    lastPushedAt: fc.option(fc.nat({max: Number.MAX_SAFE_INTEGER}), {nil: null}),
   })
 
 function makeRepo(n: number, status: RepoCiStatus, owner: string, name: string): DashboardRepo {
@@ -195,6 +199,11 @@ describe('aggregator parseRepoResponse invariants (rm-144)', () => {
             fetchedAt,
             // rm-836: the fail-visible path is run-age-unknown by construction.
             lastRunAt: null,
+            // rm-916: the fail-visible path carries explicit provenance (a
+            // real query response was parsed — repository was null/undefined
+            // in it) and no tip anchor (fail-closed, never fabricated).
+            lastRunAtSource: 'fetched',
+            lastPushedAt: null,
           })
         }
       }),

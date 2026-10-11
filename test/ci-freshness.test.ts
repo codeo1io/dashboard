@@ -13,7 +13,7 @@
  */
 
 import {describe, expect, it} from 'vitest'
-import {parseRepoResponse} from '../src/github/aggregator.ts'
+import {extractLastPushedAt, parseRepoResponse} from '../src/github/aggregator.ts'
 
 const FETCHED_AT = 1_700_000_000_000
 
@@ -92,5 +92,38 @@ describe('rm-836 CI-freshness extraction (parseRepoResponse)', () => {
     const status = parseRepoResponse({repository: null}, FETCHED_AT, null)
     expect(status.stale).toBe(true)
     expect(status.lastRunAt).toBeNull()
+  })
+})
+
+describe('rm-916 CI-freshness activity anchor (parseRepoResponse + extractLastPushedAt)', () => {
+  it('lastPushedAt = tip committedDate; lastRunAtSource = fetched on the happy path', () => {
+    const status = parseRepoResponse(
+      responseWithSuites([suiteWithRun('2023-11-14T22:30:00.000Z')], {committedDate: '2023-11-14T21:00:00.000Z'}),
+      FETCHED_AT,
+      null,
+    )
+    expect(status.lastRunAtSource).toBe('fetched')
+    expect(status.lastPushedAt).toBe(Date.parse('2023-11-14T21:00:00.000Z'))
+    // run postdates tip -> healthy-by-anchor (web predicate consumes this)
+    expect(status.lastRunAt !== null && status.lastPushedAt !== null && status.lastRunAt >= status.lastPushedAt).toBe(true)
+  })
+
+  it('absent/unparsable committedDate yields lastPushedAt null (fail-closed, never fabricated)', () => {
+    expect(extractLastPushedAt(undefined)).toBeNull()
+    expect(extractLastPushedAt({})).toBeNull()
+    expect(extractLastPushedAt({committedDate: null})).toBeNull()
+    expect(extractLastPushedAt({committedDate: ''})).toBeNull()
+    expect(extractLastPushedAt({committedDate: 'not-a-date'})).toBeNull()
+    const status = parseRepoResponse(responseWithSuites([suiteWithRun('2023-11-14T22:30:00.000Z')]), FETCHED_AT, null)
+    expect(status.lastPushedAt).toBeNull()
+    // Web predicate falls back to the absolute floor when the anchor is null.
+    expect(status.lastRunAtSource).toBe('fetched')
+  })
+
+  it('queried-but-no-timestamp still says fetched (provenance drives the web copy split)', () => {
+    const status = parseRepoResponse(responseWithSuites([suiteWithRun(null)]), FETCHED_AT, null)
+    expect(status.lastRunAt).toBeNull()
+    expect(status.lastRunAtSource).toBe('fetched')
+    expect(status.lastPushedAt).toBeNull()
   })
 })

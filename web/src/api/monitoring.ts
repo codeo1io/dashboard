@@ -26,6 +26,16 @@ export interface MonitoringRepoStatus {
   readonly stale: boolean
   /** rm-836: newest workflow-run start on the repo's default-branch head (ms since epoch); null = unknown run-age, never a fabricated clock. */
   readonly lastRunAt: number | null
+  /** rm-916: provenance for a null lastRunAt — 'absent' = never queried this cycle (absence/degraded row), 'fetched' = real query response, no timestamp observed. */
+  readonly lastRunAtSource: 'absent' | 'fetched'
+  /** rm-916: tip-commit committedDate of the default branch (ms) — the activity anchor for CI silence; null = unknown tip age (never fabricated). */
+  readonly lastPushedAt: number | null
+}
+
+/** rm-917: server-observed GitHub Statuspage 'Actions' component state — annotation-only for the CI-silence banner. */
+export interface MonitoringActionsStatus {
+  readonly state: string
+  readonly fetchedAt: number
 }
 
 export interface MonitoringRepo {
@@ -44,6 +54,8 @@ export interface MonitoringData {
   readonly driftCount: number
   readonly enumerationIncomplete: number | null
   readonly refreshedAt: number | null
+  /** rm-917: platform annotation; null = unknown/unavailable (fail-open — the banner renders identically without it). */
+  readonly actionsStatus: MonitoringActionsStatus | null
 }
 
 export type FetchMonitoringResult =
@@ -85,6 +97,8 @@ function parseRepo(item: unknown): MonitoringRepo | null {
     openAlertCount,
     stale,
     lastRunAt,
+    lastRunAtSource,
+    lastPushedAt,
   } = status
   if (typeof rollupState !== 'string' || !ROLLUP_STATES.includes(rollupState)) return null
   if (typeof failingChecks !== 'number') return null
@@ -95,6 +109,10 @@ function parseRepo(item: unknown): MonitoringRepo | null {
   // is contract drift rather than silently-unknown, so a server build
   // predating the CI-freshness field is caught at the seam.
   if (lastRunAt !== null && typeof lastRunAt !== 'number') return null
+  // rm-916: provenance + tip anchor are required keys with the same
+  // absent-key-is-drift discipline.
+  if (lastRunAtSource !== 'absent' && lastRunAtSource !== 'fetched') return null
+  if (lastPushedAt !== null && typeof lastPushedAt !== 'number') return null
   if (!Array.isArray(failingCheckDetails)) return null
 
   const details: FailingCheckDetail[] = []
@@ -116,6 +134,8 @@ function parseRepo(item: unknown): MonitoringRepo | null {
       openAlertCount,
       stale,
       lastRunAt,
+      lastRunAtSource,
+      lastPushedAt,
     },
   }
 }
@@ -172,6 +192,17 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
     if (typeof data.refreshDegraded !== 'boolean') {
       return {ok: false, reason: 'contract-drift'}
     }
+    // rm-917: platform annotation is required-nullable at this seam (null =
+    // unknown); a non-object value is drift. Shape-validated, not trusted.
+    let actionsStatus: MonitoringActionsStatus | null = null
+    if (data.actionsStatus !== null) {
+      if (!isPlainObject(data.actionsStatus)) return {ok: false, reason: 'contract-drift'}
+      const {state, fetchedAt} = data.actionsStatus
+      if (typeof state !== 'string' || typeof fetchedAt !== 'number') {
+        return {ok: false, reason: 'contract-drift'}
+      }
+      actionsStatus = {state, fetchedAt}
+    }
 
     const repos: MonitoringRepo[] = []
     for (const item of data.repos) {
@@ -190,6 +221,7 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
         refreshedAt: data.refreshedAt,
         refreshDurationMs: data.refreshDurationMs,
         refreshDegraded: data.refreshDegraded,
+        actionsStatus,
       },
     }
   } catch (err) {

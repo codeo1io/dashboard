@@ -38,6 +38,10 @@ interface MonitoringRepoStatusDto {
    * client renders "unknown", never a fabricated clock.
    */
   readonly lastRunAt: number | null
+  /** rm-916: provenance for a null lastRunAt — 'absent' = never queried this cycle (absence/degraded row); 'fetched' = a real response was parsed. */
+  readonly lastRunAtSource: 'absent' | 'fetched'
+  /** rm-916: tip-commit committedDate (ms) — the activity anchor for CI silence; null = unknown (never fabricated). */
+  readonly lastPushedAt: number | null
 }
 
 interface MonitoringRepoDto {
@@ -49,6 +53,8 @@ interface MonitoringRepoDto {
 interface MonitoringDto {
   readonly repos: readonly MonitoringRepoDto[]
   readonly staleBanner: boolean
+  /** rm-917: GitHub Statuspage 'Actions' component state, annotation-only for the CI-silence banner; null = unknown/unavailable (fail-open). */
+  readonly actionsStatus: {readonly state: string; readonly fetchedAt: number} | null
   readonly driftCount: number
   /** Count of installations that failed during the enumeration feeding this snapshot; null = unknown. */
   readonly enumerationIncomplete: number | null
@@ -72,6 +78,8 @@ function toMonitoringRepoDto(repo: DashboardRepo): MonitoringRepoDto {
       openAlertCount: repo.status.openAlertCount,
       stale: repo.status.stale,
       lastRunAt: repo.status.lastRunAt,
+      lastRunAtSource: repo.status.lastRunAtSource,
+      lastPushedAt: repo.status.lastPushedAt,
     },
   }
 }
@@ -80,6 +88,7 @@ function toMonitoringDto(snapshot: AggregatorSnapshot): MonitoringDto {
   return {
     repos: snapshot.repos.map(toMonitoringRepoDto),
     staleBanner: snapshot.staleBanner,
+    actionsStatus: snapshot.actionsStatus ?? null,
     driftCount: snapshot.driftCount,
     enumerationIncomplete: snapshot.enumerationIncomplete,
     refreshedAt: snapshot.refreshedAt,

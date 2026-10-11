@@ -20,6 +20,7 @@ describe('monitoring API', () => {
         refreshDurationMs: 1234,
         refreshDegraded: false,
         staleBanner: false,
+        actionsStatus: null,
         driftCount: 0,
         enumerationIncomplete: null,
         refreshedAt: null,
@@ -41,6 +42,7 @@ describe('monitoring API', () => {
         refreshDurationMs: null,
         refreshDegraded: true,
         staleBanner: true,
+        actionsStatus: null,
         driftCount: 2,
         enumerationIncomplete: 1,
         refreshedAt: 1742000000000,
@@ -59,6 +61,7 @@ describe('monitoring API', () => {
       const mockData = {
         repos: [],
         staleBanner: false,
+        actionsStatus: null,
         driftCount: 0,
         enumerationIncomplete: null,
         refreshedAt: null,
@@ -77,6 +80,7 @@ describe('monitoring API', () => {
         refreshDurationMs: 1234,
         refreshDegraded: false,
         staleBanner: false,
+        actionsStatus: null,
         driftCount: 0,
         enumerationIncomplete: null,
         refreshedAt: null,
@@ -155,6 +159,7 @@ describe('monitoring API', () => {
         refreshDurationMs: null,
         refreshDegraded: false,
         staleBanner: false,
+        actionsStatus: null,
         driftCount: 0,
         enumerationIncomplete: null,
         refreshedAt: null,
@@ -182,6 +187,8 @@ describe('monitoring API', () => {
               openAlertCount: null,
               stale: false,
               lastRunAt: null,
+              lastRunAtSource: 'absent',
+              lastPushedAt: null,
             },
           },
         ],
@@ -190,6 +197,7 @@ describe('monitoring API', () => {
         refreshDurationMs: null,
         refreshDegraded: false,
         staleBanner: false,
+        actionsStatus: null,
         driftCount: 0,
         enumerationIncomplete: null,
         refreshedAt: null,
@@ -214,6 +222,8 @@ describe('monitoring API', () => {
               openAlertCount: null,
               stale: false,
               lastRunAt: null,
+              lastRunAtSource: 'absent',
+              lastPushedAt: null,
             },
           },
         ])
@@ -236,6 +246,8 @@ describe('monitoring API', () => {
                 openIssueCount: 0,
                 openAlertCount: null,
                 stale: false,
+                lastRunAtSource: 'fetched',
+                lastPushedAt: null,
                 ...statusFields,
               },
             },
@@ -243,6 +255,7 @@ describe('monitoring API', () => {
           refreshDurationMs: null,
           refreshDegraded: false,
           staleBanner: false,
+          actionsStatus: null,
           driftCount: 0,
           enumerationIncomplete: null,
           refreshedAt: 1742000000000,
@@ -274,7 +287,12 @@ describe('monitoring API', () => {
       it('an ABSENT lastRunAt key is contract drift (a pre-rm-836 server must be caught, not read as unknown)', async () => {
         const legacy = payloadWithStatusStatus({})
         // Ensure the key is genuinely absent, not undefined-valued JSON.
-        const raw = JSON.stringify(legacy).replace('"lastRunAt":null,', '')
+        // rm-916: the fixture's defaults now carry lastRunAtSource/lastPushedAt
+        // too — strip all three so this stays a genuine pre-rm-836 payload.
+        const raw = JSON.stringify(legacy)
+          .replace(/"lastRunAt":(null|\d+),/, '')
+          .replace('"lastRunAtSource":"fetched",', '')
+          .replace('"lastPushedAt":null,', '')
         expect(raw).not.toContain('lastRunAt')
         vi.mocked(fetch).mockResolvedValueOnce(new Response(raw, {status: 200}))
         const res = await fetchMonitoring()
@@ -285,6 +303,58 @@ describe('monitoring API', () => {
         vi.mocked(fetch).mockResolvedValueOnce(
           new Response(JSON.stringify(payloadWithStatusStatus({lastRunAt: '2026-10-09T00:00:00Z'})), {status: 200}),
         )
+        const res = await fetchMonitoring()
+        expect(res).toEqual({ok: false, reason: 'contract-drift'})
+      })
+
+      it('rm-916: an ABSENT lastRunAtSource key is contract drift (a pre-rm-916 server must be caught)', async () => {
+        const raw = JSON.stringify(payloadWithStatusStatus({lastRunAt: 1741992800000}))
+          .replace('"lastRunAtSource":"fetched",', '')
+          .replace('"lastRunAtSource": "fetched",', '')
+        expect(raw).not.toContain('lastRunAtSource')
+        vi.mocked(fetch).mockResolvedValueOnce(new Response(raw, {status: 200}))
+        const res = await fetchMonitoring()
+        expect(res).toEqual({ok: false, reason: 'contract-drift'})
+      })
+
+      it('rm-916: a lastRunAtSource outside the union is contract drift — never coerced', async () => {
+        vi.mocked(fetch).mockResolvedValueOnce(
+          new Response(JSON.stringify(payloadWithStatusStatus({lastRunAt: 1741992800000, lastRunAtSource: 'legacy'})), {status: 200}),
+        )
+        const res = await fetchMonitoring()
+        expect(res).toEqual({ok: false, reason: 'contract-drift'})
+      })
+
+      it('rm-916: provenance + tip anchor survive the whitelist and map through', async () => {
+        vi.mocked(fetch).mockResolvedValueOnce(
+          new Response(
+            JSON.stringify(
+              payloadWithStatusStatus({lastRunAt: 1741992800000, lastRunAtSource: 'absent', lastPushedAt: 1741980000000}),
+            ),
+            {status: 200},
+          ),
+        )
+        const res = await fetchMonitoring()
+        expect(res.ok).toBe(true)
+        if (res.ok) {
+          expect(res.data.repos[0]?.status.lastRunAtSource).toBe('absent')
+          expect(res.data.repos[0]?.status.lastPushedAt).toBe(1741980000000)
+        }
+      })
+
+      it('rm-917: a well-formed actionsStatus parses through to the snapshot', async () => {
+        const payload = {...payloadWithStatusStatus({lastRunAt: 1741992800000}), actionsStatus: {state: 'degraded_performance', fetchedAt: 1742000000000}}
+        vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(payload), {status: 200}))
+        const res = await fetchMonitoring()
+        expect(res.ok).toBe(true)
+        if (res.ok) {
+          expect(res.data.actionsStatus).toEqual({state: 'degraded_performance', fetchedAt: 1742000000000})
+        }
+      })
+
+      it('rm-917: a malformed actionsStatus (state not a string) is contract drift', async () => {
+        const payload = {...payloadWithStatusStatus({lastRunAt: 1741992800000}), actionsStatus: {state: 7, fetchedAt: 1742000000000}}
+        vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(payload), {status: 200}))
         const res = await fetchMonitoring()
         expect(res).toEqual({ok: false, reason: 'contract-drift'})
       })

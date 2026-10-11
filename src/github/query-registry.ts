@@ -21,6 +21,9 @@ export const REPO_STATUS_QUERY = `
             statusCheckRollup {
               state
             }
+            # rm-916: tip commit date anchors CI silence to repo activity
+            # (dormant-but-healthy repos are healthy, not silent).
+            committedDate
             # GraphQL max page size; repos with >100 suites still understate failingChecks (documented ceiling, rm-110)
             checkSuites(first: 100) {
               nodes {
@@ -75,6 +78,9 @@ export const REPO_STATUS_QUERY_NO_ALERTS = `
             statusCheckRollup {
               state
             }
+            # rm-916: tip commit date anchors CI silence to repo activity
+            # (dormant-but-healthy repos are healthy, not silent).
+            committedDate
             # GraphQL max page size; repos with >100 suites still understate failingChecks (documented ceiling, rm-110)
             checkSuites(first: 100) {
               nodes {

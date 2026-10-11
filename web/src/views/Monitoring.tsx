@@ -22,6 +22,13 @@ export const MONITORING_FETCH_TIMEOUT_MS = 15000
  */
 export const CI_SILENCE_THRESHOLD_MS = 48 * 60 * 60 * 1000
 
+/**
+ * rm-916: grace between a tip landing and a run being expected on it — a repo
+ * that pushed recently keeps a small window before its older runs read as
+ * silence (absorbs schedule latency and push/run races).
+ */
+export const CI_SILENCE_TIP_GRACE_MS = 6 * 60 * 60 * 1000
+
 /** rm-836: compact relative age (largest whole unit) for the CI-freshness line. */
 export function formatRunAge(ageMs: number): string {
   const minutes = Math.floor(ageMs / 60_000)
@@ -35,10 +42,28 @@ export function formatRunAge(ageMs: number): string {
  * rm-836: a repo is CI-silent when its newest run is older than the silence
  * threshold OR its run-age is unknown (lastRunAt null, or no reference clock
  * — refreshedAt null). Fail-closed: unknown reads as attention, never fresh.
+ *
+ * rm-916 (2026-10-11): the threshold is now anchored to repo ACTIVITY, not
+ * absolute time — a run that POSTDATES the default-branch tip is healthy
+ * regardless of age (a dormant-but-healthy repo no longer reads as
+ * permanently silent), and a repo that pushed recently gets tip-age + grace
+ * before its old runs count as silence. Unknown run-age still reads as
+ * attention (rm-836 fail-closed posture preserved); unknown tip age
+ * (lastPushedAt null) falls back to the absolute 48h floor.
  */
 export function isCiSilent(repo: MonitoringRepo, referenceNow: number | null): boolean {
-  if (repo.status.lastRunAt === null || referenceNow === null) return true
-  return Math.max(0, referenceNow - repo.status.lastRunAt) > CI_SILENCE_THRESHOLD_MS
+  if (referenceNow === null) return true
+  // rm-916: normalize at the seam — the typed DTO promises non-undefined,
+  // but the view is also fed by direct mocks; undefined must degrade to the
+  // documented null semantics, never NaN the threshold.
+  const lastRunAt = repo.status.lastRunAt ?? null
+  const lastPushedAt = repo.status.lastPushedAt ?? null
+  if (lastRunAt === null) return true
+  // rm-916: run postdates the tip commit — CI answered this tip: healthy.
+  if (lastPushedAt !== null && lastRunAt >= lastPushedAt) return false
+  const tipAgeMs = lastPushedAt === null ? 0 : Math.max(0, referenceNow - lastPushedAt)
+  const thresholdMs = Math.max(CI_SILENCE_THRESHOLD_MS, tipAgeMs + CI_SILENCE_TIP_GRACE_MS)
+  return referenceNow - lastRunAt > thresholdMs
 }
 
 /**
@@ -48,14 +73,21 @@ export function isCiSilent(repo: MonitoringRepo, referenceNow: number | null): b
  * (the data's own clock), not wall-clock, so a frozen board reads as-of its
  * data instead of drifting.
  */
-function RepoCiFreshnessLine({lastRunAt, referenceNow}: {lastRunAt: number | null; referenceNow: number | null}) {
+function RepoCiFreshnessLine({lastRunAt: lastRunMaybe, lastRunAtSource: sourceMaybe, referenceNow}: {lastRunAt: number | null; lastRunAtSource: 'absent' | 'fetched'; referenceNow: number | null}) {
+  // rm-916: seam normalization — undefined degrades to the null semantics.
+  const lastRunAt = lastRunMaybe ?? null
+  const lastRunAtSource = sourceMaybe ?? 'fetched'
   if (lastRunAt === null || referenceNow === null) {
     return (
       <div
         data-testid="monitoring-ci-age-unknown"
         style={{fontSize: 'var(--text-body-sm)', color: 'var(--color-warning)', marginTop: 'var(--space-2)'}}
       >
-        Last CI run: unknown — no workflow run carried a timestamp.
+        {lastRunAtSource === 'absent'
+          ? // rm-916: this row was never queried — no query verdict happened,
+            // and the copy must not claim one.
+            'Last CI run: unknown — not fetched this cycle (no query was made for this repository).'
+          : 'Last CI run: unknown — no workflow run carried a timestamp.'}
       </div>
     )
   }
@@ -197,7 +229,7 @@ function MonitoringBoard({data, viewStale}: {data: MonitoringData; viewStale: bo
   // refreshedAt — ages read as-of the data, so a frozen board never shows
   // drifting wall-clock ages. null (never refreshed) = every age unknown.
   const referenceNow = data.refreshedAt
-  const ciSilence = data.repos.length > 0 && data.repos.every(repo => isCiSilent(repo, referenceNow))
+  const ciSilentRepos = data.repos.filter(repo => isCiSilent(repo, referenceNow))
 
   return (
     <div data-testid="monitoring-board" style={{display: 'flex', flexDirection: 'column', gap: 'var(--space-3)'}}>
@@ -215,10 +247,35 @@ function MonitoringBoard({data, viewStale}: {data: MonitoringData; viewStale: bo
         </div>
       )}
 
-      {ciSilence && (
+      {data.repos.length > 0 && ciSilentRepos.length === data.repos.length && (
         <div data-testid="monitoring-ci-silence-banner" className="operator-warning-panel" role="status">
           CI silence — every tracked repository's newest workflow run is older than{' '}
           {CI_SILENCE_THRESHOLD_MS / 3_600_000}h or of unknown run-age. Runs may not be triggering.
+          {/* rm-917: annotation-only — banner truth comes from run data; the
+              platform chip can ADD context but never suppress or replace the
+              banner (fail-open when actionsStatus is null). */}
+          {data.actionsStatus !== null && data.actionsStatus.state !== 'operational' && (
+            <div
+              data-testid="monitoring-ci-silence-platform-chip"
+              style={{marginTop: 'var(--space-2)', fontWeight: 600}}
+            >
+              GitHub Actions platform status: {data.actionsStatus.state} — see githubstatus.com
+            </div>
+          )}
+        </div>
+      )}
+      {/* rm-913 (2026-10-11): mixed-fleet carrier — when SOME but not all
+          tracked repositories are CI-silent, the enumeration-level banner
+          intentionally stays down (pinned behavior), and green repos render
+          no card, so this list is their ONLY visibility surface. It names the
+          silent repositories without changing card tiers or rm-780 ordering. */}
+      {ciSilentRepos.length > 0 && ciSilentRepos.length < data.repos.length && (
+        <div data-testid="monitoring-ci-silence-carrier" className="operator-warning-panel" role="status">
+          CI silence — {ciSilentRepos.length} of {data.repos.length} tracked{' '}
+          {ciSilentRepos.length === 1 ? 'repository is' : 'repositories are'} without a run on their
+          current tip ({CI_SILENCE_THRESHOLD_MS / 3_600_000}h):{' '}
+          {ciSilentRepos.slice(0, 5).map(repo => repo.fullName).join(', ')}
+          {ciSilentRepos.length > 5 ? ` (+${ciSilentRepos.length - 5} more)` : ''}
         </div>
       )}
 
@@ -301,7 +358,7 @@ function StaleRepoCard({repo, referenceNow}: {repo: MonitoringRepo; referenceNow
       <div data-testid="monitoring-stale-repo-note" style={{fontSize: 'var(--text-body-sm)', color: 'var(--color-text-muted)'}}>
         {note}
       </div>
-      <RepoCiFreshnessLine lastRunAt={repo.status.lastRunAt} referenceNow={referenceNow} />
+      <RepoCiFreshnessLine lastRunAt={repo.status.lastRunAt} lastRunAtSource={repo.status.lastRunAtSource} referenceNow={referenceNow} />
     </div>
   )
 }
@@ -358,7 +415,7 @@ function RedRepoCard({repo, referenceNow}: {repo: MonitoringRepo; referenceNow: 
         </div>
       )}
 
-      <RepoCiFreshnessLine lastRunAt={status.lastRunAt} referenceNow={referenceNow} />
+      <RepoCiFreshnessLine lastRunAt={status.lastRunAt} lastRunAtSource={status.lastRunAtSource} referenceNow={referenceNow} />
     </div>
   )
 }
