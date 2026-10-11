@@ -29,12 +29,12 @@ export const REPO_STATUS_QUERY = `
                 workflowRun {
                   displayTitle
                   runAttempt
-                  # rm-836 CI-freshness: newest-run timestamps for the per-repo
-                  # last-CI-activity signal (startedAt anchors it; completedAt
-                  # rides the same node for running runs' context). Additive
-                  # scalar fields only — read-only, no new page sizes.
+                  # rm-836 CI-freshness: the newest-run timestamp for the
+                  # per-repo last-CI-activity signal (startedAt anchors it).
+                  # rm-913 folded the dead completion-timestamp rider — it was
+                  # selected but never consumed anywhere. Additive scalar
+                  # fields only — read-only, no new page sizes.
                   startedAt
-                  completedAt
                 }
                 checkRuns(first: 50, filterBy: { status: COMPLETED, conclusions: [FAILURE, TIMED_OUT, CANCELLED, ACTION_REQUIRED, STARTUP_FAILURE] }) {
                   totalCount
@@ -83,12 +83,12 @@ export const REPO_STATUS_QUERY_NO_ALERTS = `
                 workflowRun {
                   displayTitle
                   runAttempt
-                  # rm-836 CI-freshness: newest-run timestamps for the per-repo
-                  # last-CI-activity signal (startedAt anchors it; completedAt
-                  # rides the same node for running runs' context). Additive
-                  # scalar fields only — read-only, no new page sizes.
+                  # rm-836 CI-freshness: the newest-run timestamp for the
+                  # per-repo last-CI-activity signal (startedAt anchors it).
+                  # rm-913 folded the dead completion-timestamp rider — it was
+                  # selected but never consumed anywhere. Additive scalar
+                  # fields only — read-only, no new page sizes.
                   startedAt
-                  completedAt
                 }
                 checkRuns(first: 50, filterBy: { status: COMPLETED, conclusions: [FAILURE, TIMED_OUT, CANCELLED, ACTION_REQUIRED, STARTUP_FAILURE] }) {
                   totalCount

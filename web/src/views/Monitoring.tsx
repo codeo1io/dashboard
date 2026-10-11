@@ -178,13 +178,31 @@ function MonitoringBoard({data, viewStale}: {data: MonitoringData; viewStale: bo
       (repo.status.stale === true || repo.status.rollupState === 'unknown'),
   )
   const remaining = data.repos.length - redRepos.length - staleRepos.length
+  // rm-836: the CI-freshness reference clock is the snapshot's own
+  // refreshedAt — ages read as-of the data, so a frozen board never shows
+  // drifting wall-clock ages. null (never refreshed) = every age unknown.
+  const referenceNow = data.refreshedAt
+  // rm-913: the CI-silent set drives both board-level carriers — the rm-836
+  // enumeration banner (EVERY repo silent) and the rm-913 partial banner
+  // (SOME silent). rm-836's board-level signal was enumeration-gated, so a
+  // mixed fleet carried no board-level CI-silence marker at all, and a
+  // green-but-silent repo — no card tier, footer count only — was invisible
+  // everywhere: the exact "runs may not be triggering" failure mode, on the
+  // tier rm-836 did not cover (green = the majority of a healthy fleet).
+  const silentRepos = data.repos.filter(repo => isCiSilent(repo, referenceNow))
   // rm-780: the all-clear claim is only true when nothing is stale/unknown
   // AND the view is not running on failing refreshes. rm-835: the DTO-level
   // staleBanner also gates the claim — the aggregator's fail-closed cold-start
   // snapshot serves repos: [] with staleBanner: true, which previously landed
   // here as the green all-clear (an empty enumeration counted as clear).
+  // rm-913: a CI-silent repo equally withholds the claim — no recent run has
+  // verified its branch, so "no failing checks" is unproven, not green.
   const allClear =
-    redRepos.length === 0 && staleRepos.length === 0 && !viewStale && !data.staleBanner
+    redRepos.length === 0 &&
+    staleRepos.length === 0 &&
+    !viewStale &&
+    !data.staleBanner &&
+    silentRepos.length === 0
   // rm-835: an empty enumeration is not evidence of health — with zero rows
   // the green claim cannot be made even on a fresh snapshot, so a distinct
   // no-data state renders instead of the all-clear panel.
@@ -193,11 +211,11 @@ function MonitoringBoard({data, viewStale}: {data: MonitoringData; viewStale: bo
   // rm-107: measured duration of the last walk for the degraded banner — null
   // only when no cycle has ever stamped a snapshot (never while degraded).
   const degradedDuration = data.refreshDurationMs === null ? null : `${(data.refreshDurationMs / 1000).toFixed(1)}s`
-  // rm-836: the CI-freshness reference clock is the snapshot's own
-  // refreshedAt — ages read as-of the data, so a frozen board never shows
-  // drifting wall-clock ages. null (never refreshed) = every age unknown.
-  const referenceNow = data.refreshedAt
-  const ciSilence = data.repos.length > 0 && data.repos.every(repo => isCiSilent(repo, referenceNow))
+  // rm-836/rm-913: enumeration-level silence = every tracked repo silent
+  // (the silentRepos set is computed against referenceNow above); any
+  // smaller silent set routes to the rm-913 partial banner instead.
+  const ciSilence = data.repos.length > 0 && silentRepos.length === data.repos.length
+  const partialCiSilence = !ciSilence && silentRepos.length > 0
 
   return (
     <div data-testid="monitoring-board" style={{display: 'flex', flexDirection: 'column', gap: 'var(--space-3)'}}>
@@ -219,6 +237,19 @@ function MonitoringBoard({data, viewStale}: {data: MonitoringData; viewStale: bo
         <div data-testid="monitoring-ci-silence-banner" className="operator-warning-panel" role="status">
           CI silence — every tracked repository's newest workflow run is older than{' '}
           {CI_SILENCE_THRESHOLD_MS / 3_600_000}h or of unknown run-age. Runs may not be triggering.
+        </div>
+      )}
+
+      {/* rm-913: the mixed-fleet carrier — silence in SOME repos (the
+          enumeration banner above stays all-or-nothing). Names the silent
+          repos because a green-but-silent repo has no card: without the
+          names, the majority tier of a healthy fleet carries no per-repo
+          CI-freshness surface at all. */}
+      {partialCiSilence && (
+        <div data-testid="monitoring-ci-silence-partial-banner" className="operator-warning-panel" role="status">
+          CI silence — {silentRepos.length} of {data.repos.length} tracked repositories' newest workflow
+          run is older than {CI_SILENCE_THRESHOLD_MS / 3_600_000}h or of unknown run-age
+          ({silentRepos.map(repo => repo.fullName).join(', ')}). Runs may not be triggering.
         </div>
       )}
 
@@ -255,7 +286,8 @@ function MonitoringBoard({data, viewStale}: {data: MonitoringData; viewStale: bo
           // banner (rows present but the snapshot is stale).
           <div data-testid="monitoring-all-clear-suppressed" className="operator-empty-state">
             <p className="operator-empty-desc">
-              No failing checks in the last completed snapshot — the all-clear claim is held while data is stale or refreshes fail.
+              No failing checks in the last completed snapshot — the all-clear claim is held while data is
+              stale, refreshes fail, or CI has been silent in the fleet.
             </p>
           </div>
         ))}
