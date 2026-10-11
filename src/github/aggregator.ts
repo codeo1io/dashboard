@@ -136,7 +136,8 @@ export interface AggregatorSnapshot {
    */
   readonly staleBanner: boolean
   /**
-   * Count of repos the Agent App can see that are NOT in public metadata.
+   * Count of repos the Agent App can see that are not matched into the public
+   * metadata set by node_id (a format-skewed install twin still counts, by design).
    * Never includes names or node_ids — count only.
    */
   readonly driftCount: number
@@ -516,7 +517,9 @@ export type RepoLogIdentity = Pick<WorkingSetEntry, 'node_id' | 'owner' | 'name'
  * @param installRepos - Repos from the installations channel (must carry database_id)
  * @param metadata - Parsed metadata result (publicRepos + redactedNodeIds + redactedDatabaseIds)
  * @returns { workingSet, driftCount, denylistComplete } where driftCount is the number of
- *   installation-only repos (not in publicRepos, not denylisted) — count only, and
+ *   repos not matched into the public set by node_id (not in publicRepos' node_id union,
+ *   not denylisted — a format-skewed install twin whose metadata entry is public still
+ *   counts, by design; see the skew twin in test/aggregator.test.ts) — count only, and
  *   denylistComplete indicates whether ALL redacted entries contributed a databaseId.
  */
 function buildWorkingSet(

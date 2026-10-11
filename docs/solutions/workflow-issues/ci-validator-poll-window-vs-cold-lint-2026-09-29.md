@@ -84,3 +84,29 @@ archive any unique unlanded content out of the head ref first — durably, in-re
 not-planned with an explanatory comment, and only then delete both refs —
 close strictly before delete, so a base ref is never removed from under an
 open PR.
+
+## Supersession: the Lint-window diagnosis, not the mechanics (added 2026-09-30)
+
+Measured at base 31995a2 (2026-09-30): `timeout 100 pnpm exec eslint ROADMAP.md`
+SIGTERMs at rc=124 on an idle machine — ROADMAP.md alone cannot finish inside
+the window, so runner-herd contention is not the demonstrated cause of the Lint
+cancellations this doc diagnosed. The demonstrated mechanism is the ledger's
+single-line monolith paragraphs (7317 and 7967 characters at the measure)
+driving quadratic markdown work; main's Lint job cancelled at its 35m timeout
+on three consecutive pushes (36692888877, 36599485283, 36576833307) with every
+sibling job green, and `timeout 100 eslint ROADMAP.md` reproduces the blowup
+deterministically.
+
+Superseded: the herd-contention cause reading above ("duration under herd
+contention exceeded the validator's poll window"; "three-plus herds reliably
+blew the window"). Still valid: the poll-window mechanics — bounded poll,
+out-of-band cross-check, background launch — remain the operator playbook for
+any job that can blow a validator window, and the residue-leak disposition
+section above is untouched. For a future window-blowing job, bound the
+reproduction first (`timeout 100 <linter> <file>`) and only then weigh runner
+contention.
+
+Ledger: this addendum rides rm-311 (acceptance: a dated supersession recording
+the cliff proof with a pointer to the evidence); the full evidence trail is at
+rm-104's dated rider in ROADMAP.md and the split cure is owned by the rm-284
+lineage.
