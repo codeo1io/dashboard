@@ -22,6 +22,13 @@
  * - runId appears only in the data-run-id attribute and the stream URL.
  */
 
+// rm-903: stateless shared size-cap helper (see public/operator-fetch-cap.js).
+// Relative specifier so the import resolves in the browser (/static/…) and in
+// Node (public/ on disk). Unlike RUN_INDEX_CAP below, this helper is fully
+// stateless, so a second module instance is harmless — there is no singleton
+// to de-coordinate.
+import {readJsonWithCap} from './operator-fetch-cap.js'
+
 // Mirrors RUN_INDEX_CAP in operator-run-index.js. Not imported directly: this module
 // and operator-run-index.js are loaded as separate dynamic-import instances (each
 // carries its own ?manual=1 query string keyed module identity in the runtime seam),
@@ -244,7 +251,8 @@ export function buildLaunchClient(opts) {
           headers: {'content-type': 'application/json'},
         })
         if (!res.ok) return {success: false, error: {kind: 'http', status: res.status}}
-        const data = await res.json()
+        // rm-903: capped read — over-cap throws into the catch below (network).
+        const data = await readJsonWithCap(res)
         if (data === null || typeof data !== 'object' || typeof data.csrfToken !== 'string') {
           return {success: false, error: {kind: 'protocol', message: 'invalid csrf response'}}
         }
@@ -260,7 +268,8 @@ export function buildLaunchClient(opts) {
           headers: {'content-type': 'application/json'},
         })
         if (!res.ok) return {success: false, error: {kind: 'http', status: res.status}}
-        const data = await res.json()
+        // rm-903: capped read — over-cap throws into the catch below (network).
+        const data = await readJsonWithCap(res)
         if (!Array.isArray(data)) {
           return {success: false, error: {kind: 'protocol', message: 'invalid repos response'}}
         }
@@ -306,7 +315,8 @@ export function buildLaunchClient(opts) {
           body: JSON.stringify(bodyObj),
         })
         if (res.status === 200 || res.status === 202) {
-          const data = await res.json()
+          // rm-903: capped read — over-cap throws into the catch below (network).
+          const data = await readJsonWithCap(res)
           if (typeof data.runId !== 'string' || data.runId === '') {
             return {success: false, error: {kind: 'protocol', message: 'invalid runId in launch response'}}
           }

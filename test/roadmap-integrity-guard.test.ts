@@ -302,7 +302,9 @@ describe('rm-678 schema half: live ledger', () => {
     // superseded by this note exactly as 366f6059 superseded
     // at-write pins — union census 256 + 1 = 257 defs / 0 dups /
     // max rm-866, next free rm-867.
-    expect(live.max).toBe(866)
+    // 2026-10-10 (run 6a54049e26ec roadmap 2718d779): pin 866 -> 904 with the
+    // cycle:1 extension's four mints rm-901..904 (census 261/0/904).
+    expect(live.max).toBe(904)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {

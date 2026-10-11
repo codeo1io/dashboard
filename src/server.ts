@@ -898,6 +898,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     path === '/static/operator-stream.js' ||
     path === '/static/operator-launch.js' ||
     path === '/static/operator-run-index.js' ||
+    // rm-903: stateless size-cap helper imported by the three modules above —
+    // same always-public class, since loading operator-stream.js transitively
+    // loads this module regardless of operatorUiEnabled.
+    path === '/static/operator-fetch-cap.js' ||
     (operatorUiEnabled && path.startsWith('/static/')) ||
     // Fixture harness routes — public ONLY when the full fixture gate is active
     // (non-production + loopback bind + flag enabled). Otherwise not in public list.
@@ -1233,6 +1237,13 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   )
   app.use(
     '/static/operator-run-index.js',
+    operatorRuntimeCaching,
+    serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}),
+  )
+  // rm-903: stateless size-cap helper statically imported by operator-stream.js,
+  // operator-run-index.js, and operator-launch.js via a relative specifier.
+  app.use(
+    '/static/operator-fetch-cap.js',
     operatorRuntimeCaching,
     serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}),
   )
@@ -1609,7 +1620,8 @@ async function createDashboardServer(): Promise<ServerType> {
   let listenerStore: ListenerStore | undefined
   const listenerIngestKey = readListenerIngestKey()
   try {
-    listenerStore = createListenerStore(readListenerDbPath())
+    // rm-904: pass the app logger so store degradations log structurally.
+    listenerStore = createListenerStore(readListenerDbPath(), {logger})
   } catch (error) {
     logger.warning('Failed to initialize listener store; operator listener channel disabled', {
       error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),

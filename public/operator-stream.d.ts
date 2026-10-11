@@ -730,3 +730,34 @@ export declare function renderApprovalPrompt(
   approvalClient: ApprovalClient,
   onSettle: () => void,
 ): HTMLElement
+
+/**
+ * The amendable content of an approval prompt (permission/command/filepath) —
+ * the fields a duplicate-open frame for the same requestID replaces.
+ */
+export declare function approvalPromptModelOf(prompt: ApprovalFrameDataOpen): {
+  permission: string
+  command?: string
+  filepath?: string
+}
+
+/** Structural equality of two amendable-content models (missing key ≡ undefined). */
+export declare function sameApprovalPromptModel(
+  a: {permission: string; command?: string; filepath?: string},
+  b: {permission: string; command?: string; filepath?: string},
+): boolean
+
+/**
+ * rm-902: refresh the amendable content (permission label, gated action
+ * text, edit-caveat visibility) of an already-rendered approval prompt in
+ * place — textContent/hidden only, never innerHTML, never detached.
+ */
+export declare function refreshApprovalPromptContent(el: HTMLElement, prompt: ApprovalFrameDataOpen): void
+
+/**
+ * rm-904: exact UTF-8 byte count of the stream buffer after appending one
+ * decoded chunk, computed incrementally (never re-encoding the whole buffer).
+ * Valid over reachable buffer states (appendStreamChunk outputs: normalized
+ * interior + at most one held trailing CR).
+ */
+export declare function nextBufferByteCount(buffer: string, bufferBytes: number, decoded: string): number
