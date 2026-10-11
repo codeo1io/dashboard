@@ -1,21 +1,28 @@
 /**
- * Service worker tests — KILL-SWITCH contract (build-output assertions,
- * require a prior `pnpm build:web`).
+ * Service worker tests — PUSH-ONLY contract (rm-249; build-output
+ * assertions, require a prior `pnpm build:web`).
  *
- * The SW was deliberately reduced to a kill switch (see sw.ts header): it
- * exists to remove the previous PWA shell from every client — on activate it
- * purges all caches, unregisters itself, and reloads open windows. These
- * tests pin THAT contract. The old full-PWA guard suite (NetworkOnly routes,
- * NavigationRoute denylists, push handlers, PURGE_RUNTIME) tested behavior
- * that no longer ships and was removed with the PWA shell.
+ * History: the SW was first the rm-128 kill switch that removed the old PWA
+ * shell (purge caches, unregister, reload clients), then rm-249 rebuilt it as
+ * the persistent push-only substrate — the self-unregister stranded
+ * `navigator.serviceWorker.ready`, which is why `web/src/push/subscribe.ts`
+ * could only ever terminate at 'sw-not-ready'. These tests pin the CURRENT
+ * contract; the retired kill-switch behaviors (unregister-self,
+ * reload-clients) are guarded as ABSENT.
  *
  * What must remain true in the built artifact:
  * - the precache manifest is injected (self.__WB_MANIFEST substituted) so the
- *   SW is a valid injectManifest product, but it is consumed and dropped,
- *   never precacheAndRoute'd;
- * - the activate handler unconditionally purges ALL caches and unregisters;
- * - open windows are reloaded so clients recover the server-side auth
- *   redirect the old precached shell was hiding.
+ *   SW is a valid injectManifest product, but it stays inert — never
+ *   precacheAndRoute'd (the joint rm-138 PWA-precache decision stays open);
+ * - the activate-stage legacy cache purge survives from the kill-switch
+ *   mission (idempotent: this worker writes no caches);
+ * - the push channel is PRESENT: `push`, `notificationclick`, and
+ *   `pushsubscriptionchange` listeners with `showNotification`, exactly the
+ *   substrate the opt-in flow (subscribe.ts) and the rm-600 reconcile sweep
+ *   build on;
+ * - there is NO fetch routing of any kind — the worker never intercepts
+ *   network traffic (the push client's `fetch()` CALLS are network requests,
+ *   not a fetch event handler).
  */
 
 import {readFileSync} from 'node:fs'
@@ -36,7 +43,7 @@ function readSW(): string {
   }
 }
 
-describe('sw.js build output (kill-switch SW)', () => {
+describe('sw.js build output (push-only SW)', () => {
   it('exists and is non-empty', () => {
     const content = readSW()
     expect(content.length).toBeGreaterThan(100)
@@ -59,15 +66,23 @@ describe('sw.js build output (kill-switch SW)', () => {
     expect(content).not.toMatch(/cacheName/)
   })
 
-  it('GUARD: SW unregisters itself on activate', () => {
+  it('GUARD: SW stays registered — self-unregister must be ABSENT (persistent push substrate)', () => {
     const content = readSW()
-    expect(content).toMatch(/registration\.unregister/)
+    // rm-249: the kill-switch unregister stranded serviceWorker.ready (the
+    // 'sw-not-ready' terminal in subscribe.ts). A push worker must persist.
+    // Bare token: the minifier aliases receivers, so exact-property forms
+    // like `registration.unregister` do not survive bundling.
+    expect(content).not.toContain('unregister')
   })
 
-  it('GUARD: open windows are reloaded (clients.matchAll + navigate)', () => {
+  it('GUARD: notificationclick focuses an open window or opens one (matchAll + openWindow, no reload)', () => {
     const content = readSW()
-    expect(content).toMatch(/clients\.matchAll/)
-    expect(content).toMatch(/navigate/)
+    // The kill-switch reloaded clients to recover the old precached-shell
+    // escape; with no fetch handler there is no such escape, so the click
+    // path only focuses/opens instead of navigating existing clients.
+    expect(content).toMatch(/matchAll/)
+    expect(content).toMatch(/openWindow/)
+    expect(content).not.toMatch(/\bnavigate\b/)
   })
 
   it('GUARD: install triggers skipWaiting so the kill switch activates promptly', () => {
@@ -88,12 +103,14 @@ describe('sw.js build output (kill-switch SW)', () => {
     expect(content).not.toMatch(/addEventListener\(`?fetch/)
   })
 
-  it('GUARD: push/notification handlers are ABSENT (push channel retired with the PWA shell)', () => {
+  it('GUARD: push/notification handlers are PRESENT (rm-249 push-only substrate)', () => {
     const content = readSW()
-    expect(content).not.toMatch(/notificationclick/)
-    expect(content).not.toMatch(/pushsubscriptionchange/)
-    expect(content).not.toContain('showNotification')
-    expect(content).not.toContain('PURGE_RUNTIME')
+    // Inverted from the kill-switch contract: the push channel is the point
+    // of this worker now. The rotation handler is the SW-owned first line of
+    // defense that the page-scope rm-600 sweep cannot replace (no page open).
+    expect(content).toMatch(/notificationclick/)
+    expect(content).toMatch(/pushsubscriptionchange/)
+    expect(content).toContain('showNotification')
   })
 
   it('REGRESSION: the old SPA-shell restore paths stay gone', () => {
