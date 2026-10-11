@@ -1245,3 +1245,31 @@ describe('/auth/callback — CSRF state compare (timing-safe)', () => {
     expect(res.status).not.toBe(500)
   })
 })
+
+describe('fetchGitHubUserLogin', () => {
+  it('sends a User-Agent header symmetric with the token-exchange call (rm-872)', async () => {
+    const token = 'gho_access-token'
+    const originalFetch = globalThis.fetch
+
+    globalThis.fetch = async (input, init) => {
+      expect(String(input)).toBe('https://api.github.com/user')
+      const headers = new Headers(init?.headers)
+      expect(headers.get('authorization')).toBe(`Bearer ${token}`)
+      expect(headers.get('accept')).toBe('application/vnd.github+json')
+      expect(headers.get('x-github-api-version')).toBe('2022-11-28')
+      // rm-872: api.github.com answers 403 to requests without a User-Agent
+      // (verified live 2026-10-10: 403 without UA vs 200 with UA on /user);
+      // the token-exchange call above has sent one since it was written —
+      // this call must stay symmetric.
+      expect(headers.get('user-agent')).toBe('fro-bot-dashboard')
+      return Response.json({login: 'octocat'})
+    }
+
+    try {
+      const login = await fetchGitHubUserLogin(token)
+      expect(login).toBe('octocat')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+})
