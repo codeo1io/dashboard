@@ -537,9 +537,9 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Workflow pin-consistency and minor-bump batch
-- id: `rm-137` | track: reliability | priority: 40.0 | status: in_progress
+- id: `rm-137` | track: reliability | priority: 40.0 | status: implemented (2026-10-09, repository-maintenance cycle:2 run 493bbbf2227c implement 45e7b1c1 — digest pair landed at all 8 sites: codeql-action v4.38.2→v4.38.3 @24c54180a607b1449ed407dd24f251e4e9147c8d (codeql.yaml init+analyze, release.yaml + scorecard.yaml upload-sarif) and upload-artifact v7.0.1→v7.0.2 @cf430e030ddbb5b0abf93d22962f4752f3646cd9 (release.yaml, scorecard.yaml, visual.yaml ×2 — the visual pair completing the set past upstream #580/#589's partial landing), version comments per rm-650's accuracy rule; npm minors ride the dependabot/rm-760 windows; prior pins-half implemented 2026-09-22 cycle-6 B3, completed at 539c632)
 - acceptance: single sha-pinned discipline for checkout and upload-artifact across all workflows including visual.yaml; the three npm minors ride the first dependabot window (~2026-10-03) where possible rather than manual same-day adoption while minimumReleaseAge is inactive on main (activate it via rm-135 first); gates green at the pushed sha
-- evidence: campaign-recorded in dashboard ROADMAP.md
+- evidence: repo-wide grep shows one pin family per action (24c54180 ×4, cf430e03 ×4, zero 2892aa5/043fb46 under .github/); actionlint container-form rc=0 on the four touched workflows; full run record in docs/prioritization/2026-10-09-repository-maintenance-cycle-2-batch-run-493bbbf2227c.md
 
 ### Mint fallback scopes transient errors out of the permission-subset degradation
 - id: `rm-170` | track: reliability | priority: 40.0 | status: in_progress
@@ -1007,9 +1007,9 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### In-window dependency refresh — vite 8.3.4, eslint 10.12.0, @hono/node-server 2.1.4, @playwright/test 1.64.0, @opencode-ai/plugin 1.18.35
-- id: `rm-760` | track: reliability | priority: 24.0 | status: in_progress
+- id: `rm-760` | track: reliability | priority: 24.0 | status: implemented (2026-10-09, repository-maintenance cycle:2 run 493bbbf2227c implement 45e7b1c1 — soak-eligible half landed past minimumReleaseAge 1440: @hono/node-server 2.1.3→2.1.4 (package.json:22) and vite 8.3.3→8.3.4 (package.json:53), lockfile regen intended-movement-only (vite subtree: rolldown, @oxc-project/types, nanoid, postcss); @playwright/test untouched by this batch (specifier ^1.63.0; the 1.64.0 lockfile resolution vs the visual.yaml v1.63.0 mcr pin stays this def's lockstep watch tail); prior cycle-1 half 2026-10-08 run 788aa489c1d5: eslint 10.11.0→10.12.0 + vite 8.3.2→8.3.3)
 - acceptance: 
-- evidence: campaign-recorded in dashboard ROADMAP.md
+- evidence: frozen install rc=0 and pnpm audit clean on the regenerated tree; build:web green on vite 8.3.4; full run record in docs/prioritization/2026-10-09-repository-maintenance-cycle-2-batch-run-493bbbf2227c.md
 
 ### Code-truth micro-batch: dead param, env-parse lenience
 - id: `rm-180` | track: reliability | priority: 23.0 | status: in_progress
