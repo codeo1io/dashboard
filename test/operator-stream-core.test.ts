@@ -23,8 +23,11 @@ import type {
   StreamHandle,
   StreamState,
 } from '../public/operator-stream.js'
+import fc from 'fast-check'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {
+  appendStreamChunk,
+  APPROVAL_FETCH_TIMEOUT_MS,
   bootstrapOperatorStreams,
   buildApprovalClient,
   buildCancelClient,
@@ -121,6 +124,19 @@ const INITIAL_STATE: StreamState = {
   runs: {},
   retryCount: 0,
   shouldReconnect: false,
+}
+
+function makeLifecycleElements(): {statusEl: FakeElement; noticeEl: FakeElement} {
+  return {statusEl: makeFakeEl('span'), noticeEl: makeFakeEl('div')}
+}
+function stubLifecycleDom(): void {
+  vi.stubGlobal('document', {
+    createElement: (tag: string) => makeFakeEl(tag),
+    querySelector: () => null,
+    readyState: 'complete',
+    addEventListener: () => {},
+  })
+  vi.stubGlobal('addEventListener', () => {})
 }
 
 describe('parseSseFrame — pure parser', () => {
@@ -673,6 +689,37 @@ describe('nextStreamState — ready frame', () => {
       data: {contractVersion: '0.0.1'},
     })
     expect(state.connection).toBe('drift')
+  })
+
+  it('drift state carries the observed contract version (rm-967)', () => {
+    const state = nextStreamState(INITIAL_STATE, {
+      type: 'ready',
+      data: {contractVersion: '0.0.1'},
+    })
+    expect(state.connection).toBe('drift')
+    expect(state.observedContractVersion).toBe('0.0.1')
+  })
+
+  it('drift state keeps the first observed version (absorbing, not last-write)', () => {
+    const drifted = nextStreamState(INITIAL_STATE, {
+      type: 'ready',
+      data: {contractVersion: '0.0.1'},
+    })
+    const state = nextStreamState(drifted, {
+      type: 'ready',
+      data: {contractVersion: '9.9.9'},
+    })
+    expect(state.connection).toBe('drift')
+    expect(state.observedContractVersion).toBe('0.0.1')
+  })
+
+  it('non-drift ready state carries no observed contract version', () => {
+    const state = nextStreamState(INITIAL_STATE, {
+      type: 'ready',
+      data: {contractVersion: PINNED_CONTRACT_VERSION},
+    })
+    expect(state.connection).not.toBe('drift')
+    expect(state.observedContractVersion).toBeUndefined()
   })
 
   it('does not retain any run status on drift', () => {
@@ -3137,6 +3184,48 @@ describe('renderApprovalPrompt — in-flight guard', () => {
   })
 })
 
+describe('buildApprovalClient — approval-path fetch bounds (rm-594 regression)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('every approval-path fetch carries APPROVAL_FETCH_TIMEOUT_MS as its bound', async () => {
+    // rm-594: approval paths must stay bounded. Upstream #600's absorb history
+    // removed this bound once; this test fails if any approval-path call ever
+    // drops back to an unbounded browserFetch (timeoutMs === undefined).
+    const observedTimeouts: number[] = []
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => {
+      observedTimeouts.push(ms)
+      return new AbortController().signal
+    })
+    vi.stubGlobal('fetch', async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({csrfToken: 'test-csrf-token', state: 'claimed', approvals: []}),
+    }))
+
+    const client = buildApprovalClient()
+
+    const csrf = await client.refreshCsrf()
+    expect(csrf.success).toBe(true)
+
+    const decision = await client.decideRunApproval('run-001', 'request-1', 'approved', 'idem-key-1')
+    expect(decision.success).toBe(true)
+
+    const list = await client.listRunApprovals('run-001')
+    expect(list.success).toBe(true)
+
+    // refreshCsrf (1) + decide csrf + decide POST (2) + list (1) = 4 bound fetches.
+    expect(observedTimeouts.length).toBeGreaterThanOrEqual(4)
+    for (const ms of observedTimeouts) {
+      expect(ms, 'approval-path fetch must be bounded by APPROVAL_FETCH_TIMEOUT_MS').toBe(APPROVAL_FETCH_TIMEOUT_MS)
+    }
+    expect(observedTimeouts).not.toContain(undefined as unknown as number)
+    timeoutSpy.mockRestore()
+  })
+})
+
 describe('buildApprovalClient — refreshCsrf', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -4037,6 +4126,57 @@ function makeSseResponse(chunks: string[], opts: {keepOpen?: boolean} = {}): Res
     body: makeSseStream(chunks, opts),
   } as unknown as Response
 }
+
+describe('drift notice — observability (rm-967)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('drift renders pinned + observed versions and actionable advice, not "refresh the page"', async () => {
+    const OBSERVED = '0.0.1'
+    const readyChunk = `event: ready\ndata: ${JSON.stringify({contractVersion: OBSERVED})}\n\n`
+
+    const client = {
+      refreshCsrf: async () => ({success: true as const, data: {csrfToken: 'csrf'}}),
+      decideRunApproval: async () => ({success: true as const, data: {state: 'claimed'}}),
+      listRunApprovals: async () => ({success: true as const, data: {approvals: []}}),
+    }
+
+    const approvalsEl = makeFakeEl('div')
+    const badgeEl = makeFakeEl('span')
+    const statusEl = makeFakeEl('span')
+    const noticeEl = makeFakeEl('div')
+
+    vi.stubGlobal('document', {
+      createElement: (tag: string) => makeFakeEl(tag),
+      querySelector: () => null,
+      readyState: 'complete',
+      addEventListener: () => {},
+    })
+    vi.stubGlobal('fetch', async () => makeSseResponse([readyChunk], {keepOpen: true}))
+    vi.stubGlobal('addEventListener', () => {})
+
+    const handle = initOperatorStream({
+      runId: 'run-001',
+      statusEl,
+      noticeEl,
+      approvalsEl,
+      badgeEl,
+      approvalClient: client,
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 1500))
+
+    const text = noticeEl.textContent ?? ''
+    expect(text).toContain('Stream version mismatch')
+    expect(text).toContain(PINNED_CONTRACT_VERSION)
+    expect(text).toContain(OBSERVED)
+    expect(text).toContain('Dashboard update required')
+    expect(text).not.toContain('refresh the page')
+
+    handle.close()
+  }, 10000)
+})
 
 describe('reconcileApprovals — wired integration (corrective prune)', () => {
   afterEach(() => {
@@ -9510,6 +9650,50 @@ describe('getEffectiveStatus — derived from the wire status and open questions
     expect(getEffectiveStatus(qEntry(withQuestion('waiting_for_approval')))).toBe('waiting_for_approval')
   })
 
+  const withApproval = (state: StreamState): StreamState =>
+    nextStreamState(state, {
+      type: 'approval',
+      data: {runId: Q_RUN, requestID: 'req-a-1', permission: 'shell', settled: false},
+    })
+
+  it('running with an open approval is waiting_for_approval; the wire status stays running', () => {
+    const state = withApproval(qStatus(qLive(), 'running'))
+    expect(getEffectiveStatus(qEntry(state))).toBe('waiting_for_approval')
+    expect(qEntry(state).status).toBe('running')
+  })
+
+  it('running with an open approval and an open question is waiting_for_approval', () => {
+    const state = qFrameApply(withApproval(qStatus(qLive(), 'running')), qOpen('req-q-1'))
+    expect(getEffectiveStatus(qEntry(state))).toBe('waiting_for_approval')
+  })
+
+  it('wire waiting_for_question with an open approval is waiting_for_approval', () => {
+    const state = withApproval(qStatus(qLive(), 'waiting_for_question'))
+    expect(getEffectiveStatus(qEntry(state))).toBe('waiting_for_approval')
+  })
+
+  it('terminal wins over an open approval', () => {
+    const state = qStatus(qLive(), 'succeeded')
+    const stale: RunEntry = {
+      ...qEntry(state),
+      status: 'succeeded',
+      terminal: true,
+      approvalOpenPrompts: {'req-a-1': {runId: Q_RUN, requestID: 'req-a-1', permission: 'shell', settled: false}},
+    }
+    expect(hasOpenApprovals(stale)).toBe(true)
+    expect(getEffectiveStatus(stale)).toBe('succeeded')
+  })
+
+  it('running with no approval and an open question stays waiting_for_question', () => {
+    expect(getEffectiveStatus(qEntry(withQuestion('running')))).toBe('waiting_for_question')
+  })
+
+  it('queued and blocked with an open approval are unchanged', () => {
+    for (const status of ['queued', 'blocked']) {
+      expect(getEffectiveStatus(qEntry(withApproval(qStatus(qLive(), status))))).toBe(status)
+    }
+  })
+
   it('queued with an open question stays queued', () => {
     expect(getEffectiveStatus(qEntry(withQuestion('queued')))).toBe('queued')
   })
@@ -9736,6 +9920,24 @@ describe('question status — label, wire acceptance and styling', () => {
     const settled = await paintedStatus([statusRecord('running'), qSse(qOpen('req-q-1')), qSse(qSettle('req-q-1'))])
     expect(settled.textContent).toBe('Running')
     expect(settled.className).toContain('status-running')
+  })
+
+  const approvalRecord = (requestID = 'req-a-1') =>
+    `event: approval\ndata: ${JSON.stringify({runId: Q_RUN, requestID, permission: 'shell', settled: false})}\n\n`
+
+  it('paints "Waiting for approval" with the hyphenated status class for a running run with an open approval', async () => {
+    resetQuestionPageStore()
+    const status = await paintedStatus([statusRecord('running'), approvalRecord()])
+    expect(status.textContent).toBe('Waiting for approval')
+    expect(status.className).toContain('status-waiting-for-approval')
+    expect(status.className).not.toContain('status-running')
+  })
+
+  it('paints "Waiting for approval" for a running run with an open approval and an open question', async () => {
+    resetQuestionPageStore()
+    const status = await paintedStatus([statusRecord('running'), approvalRecord(), qSse(qOpen('req-q-1'))])
+    expect(status.textContent).toBe('Waiting for approval')
+    expect(status.className).toContain('status-waiting-for-approval')
   })
 
   it('keeps "Waiting for approval" over an open question', async () => {
@@ -11412,5 +11614,359 @@ describe('approval client — unchanged by the question client', () => {
     u4Handles.push(handle)
     await vi.advanceTimersByTimeAsync(10)
     expect(listed).toEqual([Q_RUN])
+  })
+})
+describe('appendStreamChunk — pending-CR chunk reassembly (rm-477)', () => {
+  it('holds a trailing CR instead of normalizing it to LF', () => {
+    expect(appendStreamChunk('', 'event: status\r')).toBe('event: status\r')
+    expect(appendStreamChunk('event: status\r', '')).toBe('event: status\r')
+  })
+
+  it('pairs a held CR with an LF arriving in the next chunk', () => {
+    expect(appendStreamChunk('event: status\r', '\ndata: {"runId":"run-abc"}\r')).toBe(
+      'event: status\ndata: {"runId":"run-abc"}\r',
+    )
+  })
+
+  it('collapses a CRLF pair that arrives within one chunk', () => {
+    expect(appendStreamChunk('', 'event: status\r\ndata: x\r\n\r\n')).toBe('event: status\ndata: x\n\n')
+  })
+
+  it('still normalizes lone CRs inside a chunk, holding only the final one', () => {
+    // The trailing CR stays pending — if the stream continues with an LF it
+    // collapses; if the stream ends, the done() flush parses buffer + '\n\n'
+    // and the parser's internal normalization resolves the held CR, so the
+    // final record is delivered exactly as before the fix (EOF parity).
+    expect(appendStreamChunk('', 'event: reset\rdata: {"runId":"r"}\r\r')).toBe(
+      'event: reset\ndata: {"runId":"r"}\n\r',
+    )
+    expect(appendStreamChunk('', 'a\rb\r')).toBe('a\nb\r')
+  })
+
+  it('property: any split of any wire text reassembles identically to a single chunk', () => {
+    const frame =
+      `event: status\r\ndata: ${
+        JSON.stringify({
+          runId: 'run-abc',
+          entityRef: 'fro-bot/agent',
+          surface: 'github',
+          phase: 'EXECUTING',
+          status: 'running',
+          startedAt: '2026-06-20T10:00:00Z',
+          stale: false,
+        })
+      }\r\n\r\n`
+    fc.assert(
+      fc.property(fc.constant(frame), fc.nat(frame.length - 1), (text, split) => {
+        const folded = appendStreamChunk(appendStreamChunk('', text.slice(0, split)), text.slice(split))
+        const whole = appendStreamChunk('', text)
+        expect(folded).toBe(whole)
+      }),
+      {numRuns: 300},
+    )
+  })
+})
+
+describe('buildApprovalClient — wall-clock fetch bound (rm-594)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('every approval-surface fetch (refreshCsrf / decide POSTs / listRunApprovals) carries an AbortSignal', async () => {
+    const signals: (AbortSignal | null | undefined)[] = []
+    vi.stubGlobal('fetch', async (url: unknown, init?: RequestInit) => {
+      signals.push(init?.signal)
+      const path = String(url)
+      if (path.includes('/csrf')) {
+        return {ok: true, status: 200, json: async () => ({csrfToken: 'test-csrf-token'})}
+      }
+      if (path.includes('/decision')) {
+        return {ok: true, status: 200, json: async () => ({state: 'claimed'})}
+      }
+      return {ok: true, status: 200, json: async () => ({approvals: []})}
+    })
+    const client = buildApprovalClient()
+    expect((await client.refreshCsrf()).success).toBe(true)
+    expect((await client.decideRunApproval('run-001', 'req-001', 'once', 'idem-key-abc')).success).toBe(true)
+    expect((await client.listRunApprovals('run-001')).success).toBe(true)
+    // 5 calls = refreshCsrf(1) + decide's csrf(1) + decide POST(1) + list(1)… the
+    // exact count is not the contract; the contract is that EVERY call carried
+    // a live signal from browserFetch's feature-detected AbortSignal.timeout.
+    expect(signals.length).toBeGreaterThanOrEqual(4)
+    for (const signal of signals) {
+      expect(signal).toBeInstanceOf(AbortSignal)
+    }
+  })
+
+  it('a never-resolving refreshCsrf hits the bound and maps to a network error (not an eternal pending state)', async () => {
+    vi.stubGlobal('fetch', async (_input: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        const err = new Error('The operation was aborted')
+        err.name = 'AbortError'
+        reject(err)
+      })
+    }))
+    const client = buildApprovalClient()
+    const result = await client.refreshCsrf()
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error?.kind).toBe('network')
+    }
+  }, 15_000)
+
+  it('a never-resolving decide POST (csrf fetch healthy) hits the bound and maps to a network error — the operator is not stranded with every control disabled', async () => {
+    vi.stubGlobal('fetch', async (input: string, init?: RequestInit) => {
+      if (String(input).includes('/csrf')) {
+        return {ok: true, status: 200, json: async () => ({csrfToken: 'test-csrf-token'})}
+      }
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          const err = new Error('The operation was aborted')
+          err.name = 'AbortError'
+          reject(err)
+        })
+      })
+    })
+    const client = buildApprovalClient()
+    const result = await client.decideRunApproval('run-001', 'req-001', 'once', 'idem-key-abc')
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error?.kind).toBe('network')
+    }
+  }, 15_000)
+})
+
+describe('connection lifecycle — stranded connections abort (rm-261)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  it('contract drift stops the read loop and aborts the connection', async () => {
+    const {statusEl, noticeEl} = makeLifecycleElements()
+    stubLifecycleDom()
+    const signals: AbortSignal[] = []
+    const driftReady = `event: ready\ndata: ${JSON.stringify({contractVersion: '0.0.0'})}\n\n`
+    const trailing = `event: status\ndata: ${JSON.stringify(ACTIVE_STATUS)}\n\n`
+    vi.stubGlobal('fetch', async (_url: unknown, init?: {signal?: AbortSignal}) => {
+      if (init?.signal !== undefined) signals.push(init.signal)
+      return makeSseResponse([driftReady, trailing], {keepOpen: true})
+    })
+
+    initOperatorStream({runId: 'run-001', statusEl, noticeEl})
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    expect(noticeEl.dataset.connectionState).toBe('drift')
+    expect(signals.length).toBe(1)
+    expect(signals[0]?.aborted).toBe(true) // reader released, socket closed
+  })
+
+  it('first-frame timeout on a stalled stream aborts the pending connection', async () => {
+    const {statusEl, noticeEl} = makeLifecycleElements()
+    stubLifecycleDom()
+    const signals: AbortSignal[] = []
+    let fetchCount = 0
+    vi.stubGlobal('fetch', async (_url: unknown, init?: {signal?: AbortSignal}) => {
+      fetchCount++
+      if (init?.signal !== undefined) signals.push(init.signal)
+      return makeSseResponse([], {keepOpen: true}) // stalls: never emits a frame
+    })
+
+    vi.useFakeTimers()
+    initOperatorStream({runId: 'run-001', statusEl, noticeEl})
+    await vi.advanceTimersByTimeAsync(FIRST_FRAME_TIMEOUT_MS + 100)
+
+    expect(noticeEl.dataset.connectionState).toBe('submitted-unobservable')
+    expect(signals[0]?.aborted).toBe(true) // the stalled read is released
+    expect(fetchCount).toBe(1) // deliberate stop does not schedule a reconnect
+  })
+
+  it('non-200 response aborts the unread response body instead of stranding it', async () => {
+    const {statusEl, noticeEl} = makeLifecycleElements()
+    stubLifecycleDom()
+    const signals: AbortSignal[] = []
+    let fetchCount = 0
+    vi.stubGlobal('fetch', async (_url: unknown, init?: {signal?: AbortSignal}) => {
+      fetchCount++
+      if (init?.signal !== undefined) signals.push(init.signal)
+      return {
+        ok: false,
+        status: 503,
+        headers: {get: () => 'text/html'},
+        body: makeSseStream(['x'.repeat(1024)], {keepOpen: true}), // never drained
+      } as unknown as Response
+    })
+
+    initOperatorStream({runId: 'run-001', statusEl, noticeEl})
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    expect(signals[0]?.aborted).toBe(true) // response body cancelled, socket released
+    expect(fetchCount).toBe(1) // backoff (1s) has not fired within the tick
+    expect(noticeEl.dataset.connectionState).toBeTruthy()
+  })
+})
+
+describe('rm-854 — parseSseFrame joins consecutive data lines (WHATWG SSE 9.2.6)', () => {
+  it('joins two data lines with a newline instead of last-wins', () => {
+    // A conforming sender splits the record at a JSON token boundary; only the
+    // spec's join-with-newline recovers the full object (last-wins yields a
+    // fragment that fails JSON.parse).
+    const record = 'event: output\ndata: {"runId":\ndata: "run-a","text":"multi line","final":false,"seq":0}\n\n'
+    const result = parseSseFrame(record)
+    expect(result?.success).toBe(true)
+    if (result?.success) {
+      expect(result.frame.type).toBe('output')
+      if (result.frame.type === 'output') {
+        expect(result.frame.data.runId).toBe('run-a')
+        expect(result.frame.data.text).toBe('multi line')
+        expect(result.frame.data.final).toBe(false)
+        expect(result.frame.data.seq).toBe(0)
+      }
+    }
+  })
+
+  it('single data line parses identically to the pre-join behavior', () => {
+    const record = 'event: output\ndata: {"runId":"run-a","text":"one","final":false,"seq":0}\n\n'
+    const result = parseSseFrame(record)
+    expect(result?.success).toBe(true)
+    if (result?.success && result.frame.type === 'output') {
+      expect(result.frame.data.text).toBe('one')
+    }
+  })
+
+  it('a multi-line record whose joined payload is invalid JSON is a parse failure (dropped downstream, rm-853 territory)', () => {
+    const record = 'event: output\ndata: not-json-first\ndata: not-json-second\n\n'
+    const result = parseSseFrame(record)
+    expect(result?.success).toBe(false)
+  })
+})
+
+describe('rm-853 — nextStreamState output seq-gap detection', () => {
+  const live = (): StreamState =>
+    nextStreamState(INITIAL_STATE, {type: 'ready', data: {contractVersion: PINNED_CONTRACT_VERSION}})
+  const applyOutput = (state: StreamState, data: OutputFrameData): StreamState =>
+    nextStreamState(state, {type: 'output', data})
+  const runOf = (state: StreamState, runId: string): RunEntry => {
+    const entry = state.runs[runId]
+    if (entry === undefined) throw new Error(`expected run ${runId} in state`)
+    return entry
+  }
+
+  it('flags a gap and accumulates the missing-frame count when a delta skips seqs', () => {
+    let state = live()
+    state = applyOutput(state, {runId: 'run-gap', text: 'a', final: false, seq: 0})
+    state = applyOutput(state, {runId: 'run-gap', text: 'c', final: false, seq: 2})
+    const run = runOf(state, 'run-gap')
+    expect(run.outputGapDetected).toBe(true)
+    expect(run.outputGapMissing).toBe(1)
+  })
+
+  it('accumulates across multiple gaps', () => {
+    let state = live()
+    state = applyOutput(state, {runId: 'run-gap', text: 'a', final: false, seq: 0})
+    state = applyOutput(state, {runId: 'run-gap', text: 'd', final: false, seq: 5})
+    const run = runOf(state, 'run-gap')
+    expect(run.outputGapMissing).toBe(4)
+  })
+
+  it('duplicate and stale seqs never raise a false gap', () => {
+    let state = live()
+    state = applyOutput(state, {runId: 'run-dup', text: 'a', final: false, seq: 0})
+    state = applyOutput(state, {runId: 'run-dup', text: 'a', final: false, seq: 0})
+    state = applyOutput(state, {runId: 'run-dup', text: 'b', final: false, seq: 1})
+    state = applyOutput(state, {runId: 'run-dup', text: 'a', final: false, seq: 0})
+    const run = runOf(state, 'run-dup')
+    expect(run.outputGapDetected).toBe(false)
+    expect(run.outputGapMissing).toBe(0)
+  })
+
+  it('a first-seen delta above seq 0 is not a gap (no prior frame to count from)', () => {
+    let state = live()
+    state = applyOutput(state, {runId: 'run-late', text: 'x', final: false, seq: 4})
+    const run = runOf(state, 'run-late')
+    expect(run.outputGapDetected).toBe(false)
+    expect(run.outputGapMissing).toBe(0)
+  })
+
+  it('the gap latch survives a status frame and a final output frame (final replaces text but not the signal)', () => {
+    let state = live()
+    state = applyOutput(state, {runId: 'run-latch', text: 'a', final: false, seq: 0})
+    state = applyOutput(state, {runId: 'run-latch', text: 'c', final: false, seq: 2})
+    state = nextStreamState(state, {
+      type: 'status',
+      data: {runId: 'run-latch', entityRef: 'fro-bot/agent', surface: 'operator', phase: 'session', status: 'running', stale: false, startedAt: '2026-10-10T00:00:00Z'},
+    })
+    let run = runOf(state, 'run-latch')
+    expect(run.outputGapDetected).toBe(true)
+    expect(run.outputGapMissing).toBe(1)
+    state = applyOutput(state, {runId: 'run-latch', text: 'final', final: true, seq: 9})
+    run = runOf(state, 'run-latch')
+    expect(run.outputFinal).toBe(true)
+    expect(run.outputText).toBe('final')
+    expect(run.outputGapDetected).toBe(true)
+    expect(run.outputGapMissing).toBe(1)
+  })
+
+  it('a final frame alone never counts a gap (authoritative replace, seq not delta-compared)', () => {
+    let state = live()
+    state = applyOutput(state, {runId: 'run-fin', text: 'a', final: false, seq: 0})
+    state = applyOutput(state, {runId: 'run-fin', text: 'FINAL', final: true, seq: 12})
+    const run = runOf(state, 'run-fin')
+    expect(run.outputGapDetected).toBe(false)
+  })
+
+  it('the surfaced signal renders: gap element shows with a fixed label, coalesced stays hidden (no coalesce/truncate)', async () => {
+    // Mirrors the late-frame render harness: drive updateDOM with a gapped stream.
+    const noticeEl = {textContent: '', hidden: false, dataset: {connectionState: ''}}
+    const statusEl = {textContent: 'Pending', className: '', classList: {add: () => {}}, dataset: {}, hidden: false}
+    const outputEl = {textContent: '', hidden: true}
+    const coalescedEl = {textContent: '', hidden: true}
+    const gapEl = {textContent: '', hidden: true}
+    const approvalsEl = {hidden: true, append: () => {}}
+    const badgeEl = {textContent: '', hidden: true}
+
+    const encoder = new TextEncoder()
+    // The harness must present the pinned contract version — the upstream-authored
+    // 1.8.0 state machine fails closed (drift, no output) on any other value, so a
+    // hardcoded fixture version would mask the gap-surfacing behavior under test.
+    const readyFrame = `event: ready\ndata: {"contractVersion":"${PINNED_CONTRACT_VERSION}"}\n\n`
+    const frameA = `event: output\ndata: ${JSON.stringify({runId: 'run-gap-render', text: 'a', final: false, seq: 0})}\n\n`
+    const frameC = `event: output\ndata: ${JSON.stringify({runId: 'run-gap-render', text: 'c', final: false, seq: 2})}\n\n`
+    let readCount = 0
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: {get: () => 'text/event-stream'},
+      body: {
+        getReader: () => ({
+          read: async () => {
+            readCount++
+            if (readCount === 1) return {done: false, value: encoder.encode(readyFrame)}
+            if (readCount === 2) return {done: false, value: encoder.encode(frameA + frameC)}
+            return {done: true}
+          },
+        }),
+      },
+    }))
+
+    const handle = initOperatorStream({
+      runId: 'run-gap-render',
+      statusEl,
+      noticeEl,
+      outputEl,
+      coalescedEl,
+      gapEl,
+      approvalsEl,
+      badgeEl,
+      endpointBase: '/operator',
+    })
+    await new Promise(resolve => setTimeout(resolve, 40))
+    handle.close()
+    vi.unstubAllGlobals()
+
+    expect(outputEl.textContent).toBe('ac')
+    expect(gapEl.hidden).toBe(false)
+    expect(gapEl.textContent).not.toBe('')
+    expect(coalescedEl.hidden).toBe(true)
   })
 })

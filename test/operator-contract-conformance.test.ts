@@ -55,6 +55,8 @@ import {
   MAX_QUESTIONS_PER_REQUEST,
   OBSTRUCTION_KINDS,
   OPERATOR_CONTRACT_VERSION,
+  OPERATOR_PUSH_HEALTH_STATUSES,
+  OPERATOR_PUSH_TRIGGER_KINDS,
   parseOperatorCancelResponse,
   parseOperatorCheckoutPreparation,
   parseOperatorCheckoutProvenance,
@@ -822,6 +824,79 @@ describe('parseOperatorSessionInfo', () => {
     const input = {operatorId: 1, login: 'x', expiresAt: Infinity}
     const result = parseOperatorSessionInfo(input)
     expect(result.success).toBe(false)
+  })
+
+  // ---------------------------------------------------------------------
+  // Contract 1.10.0 push health (upstream #1788): validated when present,
+  // dropped when malformed (fail-open — the session itself stays usable).
+  // ---------------------------------------------------------------------
+
+  it('keeps a valid push health payload', () => {
+    const input = {operatorId: 42, login: 'octocat', expiresAt: 1000, push: {status: 'ready'}}
+    const result = parseOperatorSessionInfo(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.push).toEqual({status: 'ready'})
+    }
+  })
+
+  it('keeps every allowlisted push health status', () => {
+    for (const status of OPERATOR_PUSH_HEALTH_STATUSES) {
+      const result = parseOperatorSessionInfo({operatorId: 1, login: 'x', expiresAt: 1000, push: {status}})
+      expect(result.success, `status=${status}`).toBe(true)
+      if (result.success) {
+        expect(result.data.push?.status).toBe(status)
+      }
+    }
+  })
+
+  it('drops a malformed push health payload but keeps the session (fail-open)', () => {
+    const input = {operatorId: 42, login: 'octocat', expiresAt: 1000, push: {status: 'very-broken'}}
+    const result = parseOperatorSessionInfo(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.operatorId).toBe(42)
+      expect(result.data.push).toBeUndefined()
+    }
+  })
+
+  it('drops a structurally invalid push health payload (non-object status)', () => {
+    const input = {operatorId: 42, login: 'octocat', expiresAt: 1000, push: {status: 7}}
+    const result = parseOperatorSessionInfo(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.push).toBeUndefined()
+    }
+  })
+
+  it('drops a null push health payload (never passed through unvalidated)', () => {
+    const input = {operatorId: 42, login: 'octocat', expiresAt: 1000, push: null}
+    const result = parseOperatorSessionInfo(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.push).toBeUndefined()
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Contract 1.10.0 exported closed sets (upstream #1787 / #1788) — gateway parity
+// ---------------------------------------------------------------------------
+
+describe('OPERATOR_PUSH_TRIGGER_KINDS and OPERATOR_PUSH_HEALTH_STATUSES', () => {
+  it('exports exactly the gateway v0.120.0 trigger kinds', () => {
+    expect([...OPERATOR_PUSH_TRIGGER_KINDS]).toEqual(['approval', 'question', 'run_failed'])
+  })
+
+  it('exports exactly the gateway v0.120.0 health statuses', () => {
+    expect([...OPERATOR_PUSH_HEALTH_STATUSES]).toEqual(['ready', 'degraded', 'unknown'])
+  })
+
+  it('derives the union types from the sets (no hand-typed literals)', () => {
+    const statuses: string[] = OPERATOR_PUSH_HEALTH_STATUSES.map(s => s)
+    const kinds: string[] = OPERATOR_PUSH_TRIGGER_KINDS.map(k => k)
+    expect(new Set(statuses).size).toBe(statuses.length)
+    expect(new Set(kinds).size).toBe(kinds.length)
   })
 })
 

@@ -19,12 +19,43 @@ import type {TerminalPhase} from './run-status.ts'
  *   Prefer this over `login` for any access-control or audit decision.
  * - `login`: GitHub display login (mutable, for display only).
  * - `expiresAt`: ms-since-epoch timestamp of the sooner of absolute or idle expiry.
+ * - `push`: observed push health for the operator session, when the gateway
+ *   reports it. Validated when present; a malformed value is dropped at parse
+ *   time (fail-open — the session itself stays usable).
  */
 export interface OperatorSessionInfo {
   readonly operatorId: number
   readonly login: string
   readonly expiresAt: number
+  readonly push?: OperatorPushHealth
 }
+
+/**
+ * Observed push health for the operator session (upstream #1788, landed with
+ * the current contract bump).
+ *
+ * `status` is a closed allowlist — `ready`, `degraded`, or `unknown`. `ready`
+ * means the gateway has registered everything it needs to deliver web-push;
+ * `degraded` means the gateway knows push cannot work right now (for example
+ * the VAPID key or database path is unavailable) — treat it as informational,
+ * never as an operator error; `unknown` means no health is reported yet.
+ */
+export const OPERATOR_PUSH_HEALTH_STATUSES = ['ready', 'degraded', 'unknown'] as const
+
+export type OperatorPushHealthStatus = (typeof OPERATOR_PUSH_HEALTH_STATUSES)[number]
+
+export interface OperatorPushHealth {
+  readonly status: OperatorPushHealthStatus
+}
+
+/**
+ * Kinds of trigger that can start a run which reports on the operator stream
+ * (upstream #1787, landed with the current contract bump). Closed set,
+ * exported for parity checks.
+ */
+export const OPERATOR_PUSH_TRIGGER_KINDS = ['approval', 'question', 'run_failed'] as const
+
+export type OperatorPushTriggerKind = (typeof OPERATOR_PUSH_TRIGGER_KINDS)[number]
 
 /**
  * Canonical response shape for GET /operator/session/csrf.

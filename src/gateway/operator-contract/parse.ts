@@ -24,10 +24,12 @@ import type {
   OperatorCsrfToken,
   OperatorError,
   OperatorOk,
+  OperatorPushHealth,
   OperatorSessionInfo,
 } from './responses.ts'
 
 import {err, ok} from '../../result.ts'
+import {OPERATOR_PUSH_HEALTH_STATUSES} from './responses.ts'
 
 // ---------------------------------------------------------------------------
 // OperatorSessionInfo
@@ -48,6 +50,29 @@ function hasValidOperatorSessionInfoShape(value: unknown): value is OperatorSess
   )
 }
 
+function hasValidOperatorPushHealthShape(value: unknown): value is OperatorPushHealth {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+
+  const candidate = value as Record<string, unknown>
+  if (typeof candidate.status !== 'string') {
+    return false
+  }
+
+  return (OPERATOR_PUSH_HEALTH_STATUSES as readonly string[]).includes(candidate.status)
+}
+
+function stripPushHealth(input: unknown): OperatorSessionInfo {
+  if (typeof input !== 'object' || input === null) {
+    throw new Error('unreachable: stripPushHealth called with non-object')
+  }
+
+  const copy = {...(input as Record<string, unknown>)}
+  delete copy.push
+  return copy as unknown as OperatorSessionInfo
+}
+
 /**
  * Parse an unknown value as OperatorSessionInfo.
  *
@@ -60,7 +85,14 @@ export function parseOperatorSessionInfo(input: unknown): Result<OperatorSession
     return err(new Error('invalid operator session info shape'))
   }
 
-  return ok(input)
+  const push = (input as OperatorSessionInfo & {push?: unknown}).push
+  if (push === undefined || hasValidOperatorPushHealthShape(push)) {
+    return ok(input)
+  }
+
+  // A malformed push health payload degrades gracefully: the session stays
+  // usable, the push field is dropped (never passed through unvalidated).
+  return ok(stripPushHealth(input))
 }
 
 // ---------------------------------------------------------------------------

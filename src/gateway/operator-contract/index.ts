@@ -8,6 +8,8 @@
  * - toOperatorDecisionState: omitted — requires DecisionOutcome (upstream-only registry type)
  * - toOperatorRunStatus: omitted — requires RunState (upstream-only coordination type)
  * - DecisionInput: omitted — requires ApprovalActor (upstream-only registry type)
+ * - push vapid-key/subscribe/unsubscribe DTOs + parses: omitted — the fork's own
+ *   push client surface is owned by push.ts (VapidKeyResponse et al.)
  *
  * The PUBLIC frozen types (unions + response interfaces + parse helpers) are all present.
  *
@@ -88,6 +90,8 @@ export {assertRedactionApplied, AUTHORIZATION_OBLIGATION, REDACTION_OBLIGATION} 
 export type {RedactionContext} from './redaction.ts'
 export type {RepoSummary} from './repo-summary.ts'
 export {parseRepoSummary, parseRepoSummaryList} from './repo-summary.ts'
+export type {OperatorPushHealth, OperatorPushHealthStatus, OperatorPushTriggerKind} from './responses.ts'
+export {OPERATOR_PUSH_HEALTH_STATUSES, OPERATOR_PUSH_TRIGGER_KINDS} from './responses.ts'
 export type {
   OperatorCancelResponse,
   OperatorCsrfToken,

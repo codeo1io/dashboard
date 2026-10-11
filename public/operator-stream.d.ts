@@ -61,6 +61,8 @@ export declare const QUESTION_INVALID_REASONS: readonly [
 export declare const QUESTION_CLAIM_RECHECK_DELAYS_MS: readonly number[]
 /** Bound, in milliseconds, on each fetch of the question client (list, CSRF and decision POST). */
 export declare const QUESTION_FETCH_TIMEOUT_MS: number
+/** Bound, in milliseconds, on each fetch of the approval client (CSRF, decision POST, reconcile list). rm-594. */
+export declare const APPROVAL_FETCH_TIMEOUT_MS: number
 
 /** Operator-safe failure-reason code. */
 export type FailureKind =
@@ -390,6 +392,10 @@ export interface RunEntry {
   readonly outputCoalesced?: boolean
   /** True if accumulated output exceeded the cap and was truncated. */
   readonly outputTruncated?: boolean
+  /** rm-853: true once any non-final delta skipped seq values (frames dropped before the reducer). Sticky for the run. */
+  readonly outputGapDetected?: boolean
+  /** rm-853: accumulated count of seq values skipped across the run. Never rendered as a raw number. */
+  readonly outputGapMissing?: number
   /**
    * Pre-resolved dashboard display label for a known failure reason. Set only when
    * a failed status frame carried a known failureKind; sticky across later frames
@@ -467,6 +473,12 @@ export interface StreamState {
   readonly runs: Readonly<Record<string, RunEntry>>
   readonly retryCount: number
   readonly shouldReconnect: boolean
+  /**
+   * The gateway's observed contract version, carried ONLY on the drift state — the
+   * absorbing drift state preserves the FIRST observed version so the notice renders
+   * gateway-vs-dashboard staleness without re-reading the frame.
+   */
+  readonly observedContractVersion?: string
   /**
    * The run-list summary status for the stream's run, when the caller has one. A terminal value lets
    * a `reset` (`no-snapshot`) close the card with that status and the unavailable state, without
@@ -642,10 +654,11 @@ export declare function getOpenQuestions(runEntry: RunEntry | undefined | null):
 export declare function hasOpenQuestions(runEntry: RunEntry | undefined | null): boolean
 
 /**
- * The status to render: terminal wins; else wire `waiting_for_approval`; else a `running` run with
- * an open question → `waiting_for_question`; else a wire `waiting_for_question` with no open question
- * after a completed reconcile → `running`; else the wire value. Derived at render, never stored.
- * Returns '' for an absent entry.
+ * The status to render: terminal wins; else wire `waiting_for_approval`; else a `running` or
+ * `waiting_for_question` run with an open approval prompt → `waiting_for_approval`; else a `running`
+ * run with an open question → `waiting_for_question`; else a wire `waiting_for_question` with no open
+ * question after a completed reconcile → `running`; else the wire value. Derived at render, never
+ * stored. Returns '' for an absent entry.
  */
 export declare function getEffectiveStatus(runEntry: RunEntry | undefined | null): string
 
@@ -814,6 +827,8 @@ export interface InitOptions {
   readonly noticeEl: Element | null
   readonly outputEl?: (HTMLElement & {hidden: boolean}) | null
   readonly coalescedEl?: (HTMLElement & {hidden: boolean}) | null
+  /** rm-853 gap-notice element (data-role="run-output-gap"); optional like coalescedEl. */
+  readonly gapEl?: (HTMLElement & {hidden: boolean}) | null
   /** Approval prompts container element (data-role="run-approvals"). */
   readonly approvalsEl?: (HTMLElement & {hidden: boolean}) | null
   /** Approval count badge element (data-role="approval-badge"). */
