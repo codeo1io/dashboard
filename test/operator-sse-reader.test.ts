@@ -2521,3 +2521,34 @@ describe('createOperatorSseReader — rm-157 supported-versions window', () => {
     }
   })
 })
+
+describe('rm-854 — parseSseChunk joins consecutive data lines per WHATWG SSE 9.2.6', () => {
+  it('server parser joins two data lines with a newline instead of last-wins', () => {
+    // Conforming sender splits at a JSON token boundary; only join semantics
+    // recover the full object (last-wins yields an unparseable fragment).
+    const text = 'event: output\ndata: {"runId":\ndata: "run-a","text":"multi line","final":false,"seq":0}\n\n'
+    const results = parseSseChunk(text)
+    expect(results).toHaveLength(1)
+    const frame = results[0]
+    expect(frame?.success).toBe(true)
+    if (frame?.success) {
+      expect(frame.frame.type).toBe('output')
+      if (frame.frame.type === 'output') {
+        expect(frame.frame.data.runId).toBe('run-a')
+        expect(frame.frame.data.text).toBe('multi line')
+        expect(frame.frame.data.seq).toBe(0)
+      }
+    }
+  })
+
+  it('server parser keeps single-line records byte-identical', () => {
+    const text = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+    const results = parseSseChunk(text)
+    expect(results).toHaveLength(1)
+    const frame = results[0]
+    expect(frame?.success).toBe(true)
+    if (frame?.success && frame.frame.type === 'ready') {
+      expect(frame.frame.data.contractVersion).toBe('1.6.0')
+    }
+  })
+})

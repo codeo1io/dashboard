@@ -336,6 +336,7 @@ describe('optimistic pending card anatomy — status-group parity with renderRun
     // Existing output/coalesced/approvals/badge hooks must be preserved.
     expect(src).toContain(`outputEl.dataset.role = 'run-output'`)
     expect(src).toContain(`coalescedEl.dataset.role = 'run-output-coalesced'`)
+    expect(src).toContain(`gapEl.dataset.role = 'run-output-gap'`)
     expect(src).toContain(`approvalsEl.dataset.role = 'run-approvals'`)
     expect(src).toContain(`badgeEl.dataset.role = 'approval-badge'`)
   })
@@ -1263,7 +1264,7 @@ describe('operator-launch — optimistic card uses .status-pending and is marked
   it('source still creates the four hidden per-card substructure regions on the optimistic card', async () => {
     const fs = await import('node:fs/promises')
     const src = await fs.readFile('public/operator-launch.js', 'utf8')
-    for (const role of ['run-output', 'run-output-coalesced', 'run-approvals', 'approval-badge']) {
+    for (const role of ['run-output', 'run-output-coalesced', 'run-output-gap', 'run-approvals', 'approval-badge']) {
       expect(src).toContain(role)
     }
   })

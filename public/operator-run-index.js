@@ -683,6 +683,11 @@ function renderRunCard(view, onSelectRun) {
   coalescedEl.hidden = true
   card.append(coalescedEl)
 
+  const gapEl = document.createElement('div')
+  gapEl.dataset.role = 'run-output-gap'
+  gapEl.hidden = true
+  card.append(gapEl)
+
   const approvalsEl = document.createElement('div')
   approvalsEl.dataset.role = 'run-approvals'
   approvalsEl.hidden = true
@@ -905,7 +910,7 @@ function expandCardForRestore(runId, onExpand) {
 /** Show/hide a card's four per-card substructure regions in one place. */
 function setSubstructureHidden(card, hidden) {
   if (typeof card.querySelector !== 'function') return
-  for (const role of ['run-output', 'run-output-coalesced', 'run-approvals', 'approval-badge', 'run-cancel']) {
+  for (const role of ['run-output', 'run-output-coalesced', 'run-output-gap', 'run-approvals', 'approval-badge', 'run-cancel']) {
     const el = card.querySelector(`[data-role="${role}"]`)
     if (el !== null && el !== undefined) el.hidden = hidden
   }
