@@ -11,6 +11,8 @@
  */
 import type {GitHubOAuthClient} from '../src/auth/oauth.ts'
 import {Buffer} from 'node:buffer'
+import {existsSync, readdirSync, statSync} from 'node:fs'
+import {join, resolve} from 'node:path'
 import process from 'node:process'
 import {afterEach, describe, expect, it} from 'vitest'
 import {buildDashboardApp} from '../src/server.ts'
@@ -44,7 +46,7 @@ async function buildTestApp(operatorUiEnabled: boolean) {
     cookieKey: TEST_KEY,
     oauthClient: makeFakeOAuthClient(),
     fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: 0, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
     operatorUiEnabled,
   })
 }
@@ -58,21 +60,17 @@ async function authedGet(app: Awaited<ReturnType<typeof buildTestApp>>, path: st
 // CSP header tests
 // ---------------------------------------------------------------------------
 
-
 // ---------------------------------------------------------------------------
 // Static asset serving tests
 // ---------------------------------------------------------------------------
-
 
 // ---------------------------------------------------------------------------
 // /operator → / redirect
 // ---------------------------------------------------------------------------
 
-
 // ---------------------------------------------------------------------------
 // Flag-off: static route not mounted
 // ---------------------------------------------------------------------------
-
 
 // ---------------------------------------------------------------------------
 // Operator runtime JS assets — always served regardless of operatorUiEnabled
@@ -83,11 +81,9 @@ async function authedGet(app: Awaited<ReturnType<typeof buildTestApp>>, path: st
 // flag-gate was for the SSR /operator route, not the root app.
 // ---------------------------------------------------------------------------
 
-
 // ---------------------------------------------------------------------------
 // PWA SW asset serving — /sw.js
 // ---------------------------------------------------------------------------
-
 
 // ---------------------------------------------------------------------------
 // PWA SW asset serving — /registerSW.js
@@ -97,17 +93,13 @@ async function authedGet(app: Awaited<ReturnType<typeof buildTestApp>>, path: st
 // registration code is bundled into the main JS chunk and registerSW.js is NOT
 // emitted. The route remains in isPublicPath for forward-compatibility.
 
-
 // ---------------------------------------------------------------------------
 // PWA manifest serving — /manifest.webmanifest
 // ---------------------------------------------------------------------------
 
-
 // ---------------------------------------------------------------------------
 // Auth boundary: SW assets are public but protected routes are still gated
 // ---------------------------------------------------------------------------
-
-
 
 // ---------------------------------------------------------------------------
 // Production build artifact assertions — web/dist must be fixture-free
@@ -118,7 +110,6 @@ async function authedGet(app: Awaited<ReturnType<typeof buildTestApp>>, path: st
 // vitest, so web/dist is always fresh when these tests run.
 // ---------------------------------------------------------------------------
 
-
 // ---------------------------------------------------------------------------
 // Service worker cache boundary — fixture routes are not intercepted
 //
@@ -127,7 +118,6 @@ async function authedGet(app: Awaited<ReturnType<typeof buildTestApp>>, path: st
 // through to the server. These tests prove the SW source does not add fixture
 // route handling and does not precache or runtime-cache fixture paths.
 // ---------------------------------------------------------------------------
-
 
 // ---------------------------------------------------------------------------
 // DASHBOARD_WEB_DIST static root override
@@ -142,17 +132,10 @@ async function authedGet(app: Awaited<ReturnType<typeof buildTestApp>>, path: st
 // 3. package.json dev:fixture script sets DASHBOARD_WEB_DIST=./web/dist-fixture.
 // ---------------------------------------------------------------------------
 
-
-
-
 // ---------------------------------------------------------------------------
 // CSP invariant: existing worker-src/manifest-src 'self' already covers SW+manifest
 // ---------------------------------------------------------------------------
 
-
-
-import {existsSync, readdirSync, statSync} from 'node:fs'
-import {join, resolve} from 'node:path'
 const DENIED_PERMISSIONS = 'accelerometer=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()'
 
 describe('security headers — CSP', () => {
@@ -694,7 +677,7 @@ describe('DASHBOARD_WEB_DIST — static root override', () => {
       cookieKey: TEST_KEY,
       oauthClient: makeFakeOAuthClient(),
       fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: 0, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
     })
     // /sw.js is served from web/dist — 200 confirms the default root is correct
     const res = await app.request('/sw.js')
@@ -712,7 +695,7 @@ describe('DASHBOARD_WEB_DIST — static root override', () => {
       cookieKey: TEST_KEY,
       oauthClient: makeFakeOAuthClient(),
       fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: 0, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
       webDistRoot: './web/dist-fixture',
     })
     const res = await app.request('/sw.js')
@@ -726,7 +709,7 @@ describe('DASHBOARD_WEB_DIST — static root override', () => {
       cookieKey: TEST_KEY,
       oauthClient: makeFakeOAuthClient(),
       fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: 0, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
       // No webDistRoot injected — reads from env
     })
     const res = await app.request('/sw.js')
@@ -745,7 +728,7 @@ describe('DASHBOARD_WEB_DIST — production guard: dist-fixture must not be used
           cookieKey: TEST_KEY,
           oauthClient: makeFakeOAuthClient(),
           fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-          getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+          getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: 0, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
           webDistRoot: './web/dist-fixture',
         }),
       ).rejects.toThrow(/dist-fixture.*production|production.*dist-fixture/i)
@@ -764,7 +747,7 @@ describe('DASHBOARD_WEB_DIST — production guard: dist-fixture must not be used
           cookieKey: TEST_KEY,
           oauthClient: makeFakeOAuthClient(),
           fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-          getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+          getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: 0, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
           webDistRoot: './web/dist-fixture',
         }),
       ).resolves.toBeDefined()
@@ -783,7 +766,7 @@ describe('DASHBOARD_WEB_DIST — production guard: dist-fixture must not be used
           cookieKey: TEST_KEY,
           oauthClient: makeFakeOAuthClient(),
           fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-          getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+          getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: 0, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
           webDistRoot: './web/dist',
         }),
       ).resolves.toBeDefined()
@@ -1135,3 +1118,70 @@ describe('rm-498 — % rejection compatibility (allowPercentInPath stays unset)'
   })
 })
 
+// ---------------------------------------------------------------------------
+// rm-690 — Cache-Control policy for static surfaces
+// ---------------------------------------------------------------------------
+// Vite content-hashes everything under /assets/* (index-Dy_WXR3M.js style), so
+// a given URL's bytes can never change: RFC 8246 (HTTP Immutable Responses)
+// and the MDN Cache-Control `immutable` entry make a one-year public lifetime
+// sound. Unhashed surfaces (/icon-*, manifest.webmanifest, sw.js,
+// /registerSW.js) must revalidate on every load instead. sw.js and
+// /registerSW.js already carried a no-cache,no-store policy before rm-690
+// (src/server.ts pre-secureHeaders middleware and the registerSW wrapper)
+// — those cases pin the pre-existing behavior; the /assets/*, /icon-* and
+// manifest cases were RED first (headers absent) and went green with the
+// rm-690 middleware.
+
+/** First content-hashed file in web/dist/assets matching Vite's -<hash>.<ext>. */
+function firstHashedAsset(): string {
+  const dir = resolve(process.cwd(), 'web/dist/assets')
+  const files = readdirSync(dir).find(f => /-[\w-]{8}\.[a-z]+$/.test(f))
+  if (files === undefined) {
+    throw new Error(`no content-hashed asset found in ${dir} — run pnpm build:web`)
+  }
+  return files
+}
+
+describe('rm-690 — Cache-Control policy for static surfaces', () => {
+  it('GET /assets/<content-hashed> carries Cache-Control public, max-age=31536000, immutable', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request(`/assets/${firstHashedAsset()}`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, immutable')
+  })
+
+  it('GET /assets/<missing> 404s WITHOUT the immutable header (errors must never be pinned for a year)', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/assets/index-doesnotexist.js')
+    expect(res.status).toBe(404)
+    expect(res.headers.get('cache-control') ?? '').not.toContain('immutable')
+  })
+
+  it('GET /icon-<name> carries a no-cache-family policy (unhashed surface revalidates)', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/icon-192.svg')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-cache')
+  })
+
+  it('GET /manifest.webmanifest carries a no-cache-family policy (unhashed surface revalidates)', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/manifest.webmanifest')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-cache')
+  })
+
+  it('GET /sw.js keeps its no-cache,no-store policy (pinned pre-rm-690 behavior)', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/sw.js')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-cache, no-store, must-revalidate')
+  })
+
+  it('GET /registerSW.js keeps its no-cache,no-store policy (pinned pre-rm-690 behavior)', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/registerSW.js')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-cache, no-store, must-revalidate')
+  })
+})
