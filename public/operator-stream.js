@@ -45,7 +45,7 @@ export const PINNED_CONTRACT_VERSION = '1.8.0'
  * '1.6.0' retired from the window in the same change (the rm-157 retirement
  * rule) — a pre-flip gateway now fails closed to drift, by design.
  */
-export const SUPPORTED_CONTRACT_VERSIONS = ['1.8.0']
+export const SUPPORTED_CONTRACT_VERSIONS = ['1.8.0', '1.9.0']
 
 /** Base delay in milliseconds for exponential backoff. */
 export const RETRY_BASE_MS = 1000
@@ -95,6 +95,74 @@ export const MAX_OPEN_APPROVALS = 100
  * catastrophic wipe — the safe failure direction.
  */
 export const GATEWAY_PENDING_APPROVALS_CAP = 50
+// rm-912 (contract 1.9.0): question-request prompt state caps, mirroring the
+// approval-prompt caps above. The gateway build-side bound is 8 questions per
+// request / 64 options per question (approvals/question-detail.ts at v0.119.1);
+// these consumer-side caps bound the OPEN-REQUEST map and tombstones, not the
+// per-request question arity (the parse layer enforces that).
+export const MAX_OPEN_QUESTIONS = 100
+export const MAX_QUESTION_TOMBSTONES = 1000
+// The gateway's pending-questions listing is hard-capped at 50 requests per
+// call (PENDING_QUESTIONS_MAX_RESULTS); at or above this the recovered set may
+// be truncated, so the reconcile truncation guard switches to additive-only.
+export const GATEWAY_PENDING_QUESTIONS_CAP = 50
+
+// Wire-side parse bounds for one question request: the gateway's untrusted-array
+// safety net caps questions/options arrays at 256 entries before build-side
+// validation, and bounds header/text/label/description/answer strings.
+export const QUESTION_WIRE_ARRAY_CAP = 256
+export const QUESTION_WIRE_HEADER_MAX = 128
+export const QUESTION_WIRE_TEXT_MAX = 4096
+export const QUESTION_WIRE_LABEL_MAX = 256
+export const QUESTION_WIRE_DESCRIPTION_MAX = 1024
+export const QUESTION_WIRE_ANSWER_TEXT_MAX = 4000
+
+/**
+ * Validate one recovered pending-question request (contract 1.9.0, rm-912)
+ * before it may enter prompt state via question-reconcile — the same shape
+ * and bounds the SSE open-frame parse branch enforces, so the listing GET
+ * and the stream cannot admit different data. Untrusted text is checked,
+ * never echoed.
+ *
+ * Module-scope by lint discipline (the approvals mirror validates inline at
+ * its call site): the reducer's question-reconcile action TRUSTS its
+ * addPrompts — this gate is the only thing standing between an untrusted
+ * listing body and prompt state.
+ */
+function isValidRecoveredQuestionRequest(request) {
+  if (request === null || typeof request !== 'object' || Array.isArray(request)) return false
+  if (typeof request.requestID !== 'string' || request.requestID.length === 0) return false
+  if (!Array.isArray(request.questions) || request.questions.length === 0) return false
+  if (request.questions.length > QUESTION_WIRE_ARRAY_CAP) return false
+  for (const question of request.questions) {
+    if (question === null || typeof question !== 'object' || Array.isArray(question)) return false
+    if (
+      typeof question.header !== 'string' ||
+      question.header.length > QUESTION_WIRE_HEADER_MAX ||
+      typeof question.text !== 'string' ||
+      question.text.length > QUESTION_WIRE_TEXT_MAX ||
+      typeof question.multiple !== 'boolean' ||
+      typeof question.custom !== 'boolean' ||
+      !Array.isArray(question.options) ||
+      question.options.length > QUESTION_WIRE_ARRAY_CAP
+    ) {
+      return false
+    }
+    for (const option of question.options) {
+      if (option === null || typeof option !== 'object' || Array.isArray(option)) return false
+      if (
+        typeof option.label !== 'string' ||
+        option.label.length === 0 ||
+        option.label.length > QUESTION_WIRE_LABEL_MAX ||
+        typeof option.description !== 'string' ||
+        option.description.length > QUESTION_WIRE_DESCRIPTION_MAX
+      ) {
+        return false
+      }
+    }
+  }
+  return true
+}
 
 /**
  * Bounded timeout in milliseconds for receiving the first SSE frame after opening
@@ -123,6 +191,7 @@ const VALID_STATUSES = new Set([
   'blocked',
   'running',
   'waiting_for_approval',
+  'waiting_for_question',
   'succeeded',
   'failed',
   'cancelled',
@@ -151,6 +220,7 @@ const STATUS_LABELS = {
   blocked: 'Blocked',
   running: 'Running',
   waiting_for_approval: 'Waiting for approval',
+  waiting_for_question: 'Waiting for question',
   succeeded: 'Succeeded',
   failed: 'Failed',
   cancelled: 'Cancelled',
@@ -816,6 +886,76 @@ export function parseSseFrame(record) {
     return {success: true, frame: {type: 'output', data}}
   }
 
+  if (eventName === 'question') {
+    // rm-912 (contract 1.9.0): SSE question frame — open variant carries the
+    // full bounded request (requestID + questions[]), settle variant carries
+    // only {runId, requestID, settled: true}. Every text field is untrusted
+    // plain text; validated for shape/bounds here, rendered inertly downstream.
+    if (
+      typeof parsed.runId !== 'string' ||
+      parsed.runId.length === 0 ||
+      typeof parsed.requestID !== 'string' ||
+      parsed.requestID.length === 0 ||
+      typeof parsed.settled !== 'boolean'
+    ) {
+      return {success: false, error: 'question frame missing required fields'}
+    }
+    if (parsed.settled) {
+      // Settle variant: no other fields are consumed (unknown extras ignored).
+      const data = {runId: parsed.runId, requestID: parsed.requestID, settled: true}
+      return {success: true, frame: {type: 'question', data}}
+    }
+    // Open variant: questions[] must be a non-empty bounded array of prompts.
+    if (!Array.isArray(parsed.questions) || parsed.questions.length === 0) {
+      return {success: false, error: 'question frame missing questions array'}
+    }
+    if (parsed.questions.length > QUESTION_WIRE_ARRAY_CAP) {
+      return {success: false, error: 'question frame questions array exceeds wire cap'}
+    }
+    const questions = []
+    for (const question of parsed.questions) {
+      if (question === null || typeof question !== 'object' || Array.isArray(question)) {
+        return {success: false, error: 'question frame question entry is not an object'}
+      }
+      if (
+        typeof question.header !== 'string' ||
+        question.header.length > QUESTION_WIRE_HEADER_MAX ||
+        typeof question.text !== 'string' ||
+        question.text.length > QUESTION_WIRE_TEXT_MAX ||
+        typeof question.multiple !== 'boolean' ||
+        typeof question.custom !== 'boolean' ||
+        !Array.isArray(question.options) ||
+        question.options.length > QUESTION_WIRE_ARRAY_CAP
+      ) {
+        return {success: false, error: 'question frame question entry missing required fields'}
+      }
+      const options = []
+      for (const option of question.options) {
+        if (option === null || typeof option !== 'object' || Array.isArray(option)) {
+          return {success: false, error: 'question frame option entry is not an object'}
+        }
+        if (
+          typeof option.label !== 'string' ||
+          option.label.length === 0 ||
+          option.label.length > QUESTION_WIRE_LABEL_MAX ||
+          typeof option.description !== 'string' ||
+          option.description.length > QUESTION_WIRE_DESCRIPTION_MAX
+        ) {
+          return {success: false, error: 'question frame option entry missing required fields'}
+        }
+        options.push({label: option.label, description: option.description})
+      }
+      questions.push({
+        header: question.header,
+        text: question.text,
+        options,
+        multiple: question.multiple,
+        custom: question.custom,
+      })
+    }
+    const data = {runId: parsed.runId, requestID: parsed.requestID, settled: false, questions}
+    return {success: true, frame: {type: 'question', data}}
+  }
   if (eventName === 'approval') {
     // Validate runId and requestID — required on both variants; must be non-empty strings
     if (
@@ -907,10 +1047,15 @@ export function nextStreamState(current, event) {
           shouldReconnect: false,
         }
       }
+      // rm-912: remember the observed contract version (additive). The 1.9.0
+      // question surface is only ever consumed from a >=1.9.0 stream — a 1.8.0
+      // gateway emits no question frames and 404s the questions REST read, so
+      // consumption self-gates; this field lets the card expose what was seen.
       return {
         ...current,
         connection: 'live',
         shouldReconnect: false,
+        contractVersion: event.data.contractVersion,
       }
     }
 
@@ -957,10 +1102,17 @@ export function nextStreamState(current, event) {
         ? {
             approvalOpenPrompts: Object.create(null),
             approvalTombstones: prevStatusEntry?.approvalTombstones ?? Object.create(null),
+            // rm-912 (contract 1.9.0): terminal clears question prompts too —
+            // absorbing for questions exactly as for approvals; tombstones
+            // preserved so late open frames stay ignored.
+            questionOpenPrompts: Object.create(null),
+            questionTombstones: prevStatusEntry?.questionTombstones ?? Object.create(null),
           }
         : {
             approvalOpenPrompts: prevStatusEntry?.approvalOpenPrompts,
             approvalTombstones: prevStatusEntry?.approvalTombstones,
+            questionOpenPrompts: prevStatusEntry?.questionOpenPrompts,
+            questionTombstones: prevStatusEntry?.questionTombstones,
           }
       const nextEntry = {
         ...prevStatusEntry,
@@ -1108,6 +1260,72 @@ export function nextStreamState(current, event) {
       }
     }
 
+    case 'question': {
+      // rm-912 (contract 1.9.0): mirror of the approval prompt reducer. Question
+      // frames before ready (connection !== 'live') are ignored; terminal is
+      // absorbing; open-after-settle is tombstone-guarded; overflow open frames
+      // are dropped (never evicting a live prompt).
+      if (current.connection !== 'live') {
+        return current
+      }
+      const {runId, requestID, settled} = event.data
+      const prevEntry = current.runs[runId]
+
+      if (prevEntry !== undefined && prevEntry.terminal) {
+        return current
+      }
+
+      const base = prevEntry ?? {
+        runId,
+        status: '',
+        phase: '',
+        startedAt: '',
+        stale: false,
+        terminal: false,
+      }
+
+      const prevOpenPrompts = base.questionOpenPrompts ?? Object.create(null)
+      const prevTombstones = base.questionTombstones ?? Object.create(null)
+
+      if (settled) {
+        const nextOpenPrompts = Object.assign(Object.create(null), prevOpenPrompts)
+        delete nextOpenPrompts[requestID]
+        let tombstoneBase = prevTombstones
+        if (!(requestID in prevTombstones) && Object.keys(prevTombstones).length >= MAX_QUESTION_TOMBSTONES) {
+          const oldestKey = Object.keys(prevTombstones)[0]
+          tombstoneBase = Object.assign(Object.create(null), prevTombstones)
+          delete tombstoneBase[oldestKey]
+        }
+        const nextTombstones = Object.assign(Object.create(null), tombstoneBase, {[requestID]: true})
+        const updatedEntry = {
+          ...base,
+          questionOpenPrompts: nextOpenPrompts,
+          questionTombstones: nextTombstones,
+        }
+        const updatedRuns = Object.assign(Object.create(null), current.runs, {[runId]: updatedEntry})
+        return {...current, runs: updatedRuns}
+      }
+      if (prevTombstones[requestID] === true) {
+        return current
+      }
+      if (!(requestID in prevOpenPrompts) && Object.keys(prevOpenPrompts).length >= MAX_OPEN_QUESTIONS) {
+        return current
+      }
+      const promptData = {
+        runId: event.data.runId,
+        requestID: event.data.requestID,
+        settled: false,
+        questions: event.data.questions,
+      }
+      const nextOpenPrompts = Object.assign(Object.create(null), prevOpenPrompts, {[requestID]: promptData})
+      const updatedEntry = {
+        ...base,
+        questionOpenPrompts: nextOpenPrompts,
+        questionTombstones: prevTombstones,
+      }
+      const updatedRuns = Object.assign(Object.create(null), current.runs, {[runId]: updatedEntry})
+      return {...current, runs: updatedRuns}
+    }
     case 'output': {
       // Output before ready (connection !== 'live') is not applied.
       if (current.connection !== 'live') {
@@ -1386,6 +1604,72 @@ export function nextStreamState(current, event) {
       return {...current, runs: updatedRuns}
     }
 
+    case 'question-reconcile': {
+      // rm-912: corrective reconcile for question prompts, dispatched by
+      // reconcileQuestions with an explicit pre-GET diff (mirrors
+      // approval-reconcile; the reducer never re-derives the diff).
+      if (current.connection !== 'live') {
+        return current
+      }
+      const {runId, pruneIds, addPrompts} = event
+      const prevEntry = current.runs[runId]
+
+      if (prevEntry !== undefined && prevEntry.terminal) {
+        return current
+      }
+
+      const base = prevEntry ?? {
+        runId,
+        status: '',
+        phase: '',
+        startedAt: '',
+        stale: false,
+        terminal: false,
+      }
+
+      let nextOpenPrompts = Object.assign(Object.create(null), base.questionOpenPrompts ?? Object.create(null))
+      let nextTombstones = base.questionTombstones ?? Object.create(null)
+
+      for (const requestID of pruneIds) {
+        if (requestID === '__proto__') continue
+        if (requestID in nextOpenPrompts) {
+          const updated = Object.assign(Object.create(null), nextOpenPrompts)
+          delete updated[requestID]
+          nextOpenPrompts = updated
+        }
+        if (!(requestID in nextTombstones) && Object.keys(nextTombstones).length >= MAX_QUESTION_TOMBSTONES) {
+          const oldestKey = Object.keys(nextTombstones)[0]
+          const trimmed = Object.assign(Object.create(null), nextTombstones)
+          delete trimmed[oldestKey]
+          nextTombstones = trimmed
+        }
+        nextTombstones = Object.assign(Object.create(null), nextTombstones, {[requestID]: true})
+      }
+
+      for (const prompt of addPrompts) {
+        const {requestID} = prompt
+        if (requestID === '__proto__') continue
+        if (nextTombstones[requestID] === true) continue
+        if (requestID in nextOpenPrompts) continue
+        if (Object.keys(nextOpenPrompts).length >= MAX_OPEN_QUESTIONS) continue
+        nextOpenPrompts = Object.assign(Object.create(null), nextOpenPrompts, {
+          [requestID]: {
+            runId,
+            requestID,
+            settled: false,
+            questions: prompt.questions,
+          },
+        })
+      }
+
+      const updatedEntry = {
+        ...base,
+        questionOpenPrompts: nextOpenPrompts,
+        questionTombstones: nextTombstones,
+      }
+      const updatedRuns = Object.assign(Object.create(null), current.runs, {[runId]: updatedEntry})
+      return {...current, runs: updatedRuns}
+    }
     case 'buffer-overflow': {
       // A stream that exceeds the buffer cap is hostile or broken — fail closed
       // terminally with no reconnect, regardless of retry budget.
@@ -1486,6 +1770,35 @@ export function hasOpenApprovals(runEntry) {
 export function getOpenApprovals(runEntry) {
   if (runEntry === undefined || runEntry === null) return []
   const openPrompts = runEntry.approvalOpenPrompts
+  if (openPrompts === undefined || openPrompts === null) return []
+  return Object.values(openPrompts)
+}
+/**
+ * rm-912 (contract 1.9.0): true iff the run entry has at least one open
+ * question-request prompt. Canonical visibility signal for the question
+ * region and the question badge (both derive from this one state).
+ *
+ * @param {object} runEntry - A RunEntry from the stream state's runs map.
+ * @returns {boolean} True iff the run has at least one open question request.
+ */
+export function hasOpenQuestions(runEntry) {
+  if (runEntry === undefined || runEntry === null) return false
+  const openPrompts = runEntry.questionOpenPrompts
+  if (openPrompts === undefined || openPrompts === null) return false
+  return Object.keys(openPrompts).length > 0
+}
+
+/**
+ * rm-912: the list of open question-request prompts for a run entry, in
+ * insertion order. Each element is an open question frame payload with
+ * `{runId, requestID, settled: false, questions: [...]}`.
+ *
+ * @param {object} runEntry - A RunEntry from the stream state's runs map.
+ * @returns {Array} The list of open question-request prompts, or an empty array.
+ */
+export function getOpenQuestions(runEntry) {
+  if (runEntry === undefined || runEntry === null) return []
+  const openPrompts = runEntry.questionOpenPrompts
   if (openPrompts === undefined || openPrompts === null) return []
   return Object.values(openPrompts)
 }
@@ -1688,6 +2001,197 @@ export function buildApprovalClient(opts) {
   }
 
   return {refreshCsrf, decideRunApproval, listRunApprovals}
+}
+// ---------------------------------------------------------------------------
+// Browser-direct question client (contract 1.9.0, rm-912) — mirrors
+// buildApprovalClient above for the agent-question surface.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a browser-direct question client for the inline question prompt UI.
+ *
+ * Same-origin relative paths under the /operator prefix (reverse-proxy owned in
+ * production, fixture-harness owned in dev). credentials:'include' and
+ * redirect:'error' ride every fetch. Wall-clock bounded (10s parity with
+ * APPROVAL_FETCH_TIMEOUT_MS — same fetch class, same stranded-operator hazard).
+ *
+ * decideRunQuestion() distinguishes three outcome classes:
+ *   {success: true, data: {kind: 'accepted', state}}  — HTTP 200, the gateway's
+ *     decision state (claimed / already_claimed / already_settled / failed_to_settle)
+ *   {success: true, data: {kind: 'refused', badRequest}}  — HTTP 400: a typed
+ *     validation refusal ({error: 'bad request', reason, questionIndex}); the
+ *     request STAYS PENDING and the prompt stays open for a corrected answer.
+ *     An unparseable 400 body fails closed to reason 'malformed', questionIndex null.
+ *   {success: false, error: {kind: 'http'|'network'|'protocol'}}  — denial,
+ *     session, or transport failure (prompt enters its failure state)
+ *
+ * Security: never logs runId, requestId, answers, csrf, or idempotency key.
+ * One CSRF-400 retry reusing the same idempotency key (launch pattern): a stale
+ * CSRF also 400s, so the first 400 is retried once with a refreshed token and
+ * only a persistent 400 is surfaced as a typed refusal.
+ *
+ * @param {object} [opts] - Optional configuration.
+ * @param {string} [opts.endpointBase] - The endpoint base path. Defaults to '/operator'.
+ * @param {string} [opts.fixtureSessionId] - Fixture session ID (fixture mode only).
+ * @returns {object} An object with refreshCsrf(), decideRunQuestion(), and listRunQuestions() methods.
+ */
+export function buildQuestionClient(opts) {
+  const endpointBase = opts?.endpointBase ?? '/operator'
+  const fixtureSessionId = opts?.fixtureSessionId
+
+  const withFixtureParam = url =>
+    fixtureSessionId === undefined
+      ? url
+      : `${url}${url.includes('?') ? '&' : '?'}fixtureSessionId=${encodeURIComponent(fixtureSessionId)}`
+
+  const browserFetch = (input, init) =>
+    globalThis.fetch(input, {
+      ...init,
+      credentials: 'include',
+      redirect: 'error',
+      signal: typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(APPROVAL_FETCH_TIMEOUT_MS) : undefined,
+    })
+
+  async function refreshCsrf() {
+    try {
+      const res = await browserFetch(withFixtureParam(`${endpointBase}/session/csrf`), {
+        headers: {'content-type': 'application/json'},
+      })
+      if (!res.ok) return {success: false, error: {kind: 'http', status: res.status}}
+      const data = await res.json()
+      if (data === null || typeof data !== 'object' || typeof data.csrfToken !== 'string') {
+        return {success: false, error: {kind: 'protocol'}}
+      }
+      return {success: true, data: {csrfToken: data.csrfToken}}
+    } catch {
+      return {success: false, error: {kind: 'network'}}
+    }
+  }
+
+  // Best-effort parse of a 400 refusal body; any failure fails closed to
+  // reason 'malformed' with questionIndex null. Never echoes wire text.
+  const parseRefusalBody = raw => {
+    const fallback = {error: 'bad request', reason: 'malformed', questionIndex: null}
+    let body
+    try {
+      body = JSON.parse(raw)
+    } catch {
+      return fallback
+    }
+    if (body === null || typeof body !== 'object') return fallback
+    const reasons = ['malformed', 'arity-mismatch', 'unknown-option', 'multiple-not-allowed', 'empty-value', 'text-too-long']
+    if (typeof body.reason !== 'string' || !reasons.includes(body.reason)) return fallback
+    if (body.questionIndex === null) return {error: 'bad request', reason: body.reason, questionIndex: null}
+    if (typeof body.questionIndex !== 'number' || !Number.isInteger(body.questionIndex) || body.questionIndex < 0) {
+      return fallback
+    }
+    return {error: 'bad request', reason: body.reason, questionIndex: body.questionIndex}
+  }
+
+  /**
+   * POST an answer or skip for a pending question request.
+   *
+   * decisionRequest is the wire body: {decision: 'answer', answers: [...]} or
+   * {decision: 'skip'}. See the outcome classes in the builder doc above.
+   */
+  async function decideRunQuestion(runId, requestId, decisionRequest, idempotencyKey) {
+    const csrfResult = await refreshCsrf()
+    if (!csrfResult.success) {
+      return csrfResult.error.kind === 'http'
+        ? {success: false, error: {kind: 'http', status: csrfResult.error.status}}
+        : {success: false, error: {kind: 'network'}}
+    }
+
+    const path = withFixtureParam(`${endpointBase}/runs/${encodeURIComponent(runId)}/questions/${encodeURIComponent(requestId)}/decision`)
+    const body = JSON.stringify(decisionRequest)
+    const makeInit = csrf => ({
+      method: 'POST',
+      redirect: 'error',
+      headers: {
+        'content-type': 'application/json',
+        'x-csrf-token': csrf,
+        'idempotency-key': idempotencyKey,
+      },
+      body,
+    })
+
+    let res
+    try {
+      res = await browserFetch(path, makeInit(csrfResult.data.csrfToken))
+    } catch {
+      return {success: false, error: {kind: 'network'}}
+    }
+
+    // CSRF-400 retry with the same idempotency key: a stale CSRF token also
+    // produces a 400, so refresh once and resend before treating the 400 as a
+    // typed validation refusal.
+    if (res.status === 400) {
+      const retrycsrfResult = await refreshCsrf()
+      if (!retrycsrfResult.success) {
+        return retrycsrfResult.error.kind === 'http'
+          ? {success: false, error: {kind: 'http', status: retrycsrfResult.error.status}}
+          : {success: false, error: {kind: 'network'}}
+      }
+      try {
+        res = await browserFetch(path, makeInit(retrycsrfResult.data.csrfToken))
+      } catch {
+        return {success: false, error: {kind: 'network'}}
+      }
+    }
+
+    if (res.ok) {
+      let data
+      try {
+        data = await res.json()
+      } catch {
+        return {success: false, error: {kind: 'network'}}
+      }
+      const states = ['claimed', 'already_claimed', 'already_settled', 'failed_to_settle']
+      if (data === null || typeof data !== 'object' || !states.includes(data.state)) {
+        return {success: false, error: {kind: 'protocol'}}
+      }
+      return {success: true, data: {kind: 'accepted', state: data.state}}
+    }
+
+    if (res.status === 400) {
+      // Typed refusal: request stays pending; prompt stays open.
+      let raw = ''
+      try {
+        raw = await res.text()
+      } catch {
+        raw = ''
+      }
+      return {success: true, data: {kind: 'refused', badRequest: parseRefusalBody(raw)}}
+    }
+
+    return {success: false, error: {kind: 'http', status: res.status}}
+  }
+
+  /**
+   * GET open question requests for a run (reconcile on reconnect).
+   *
+   * Same failure contract as listRunApprovals: a malformed body is NOT
+   * success-empty — under corrective pruning a failed reconcile must never
+   * wipe open prompts. The caller dispatches the corrective action only on
+   * success:true. A 1.8.0-only gateway 404s this route: consumption of the
+   * question surface is thereby self-gated by the observed contract version.
+   */
+  async function listRunQuestions(runId) {
+    try {
+      const res = await browserFetch(
+        withFixtureParam(`${endpointBase}/runs/${encodeURIComponent(runId)}/questions`),
+        {headers: {'content-type': 'application/json'}},
+      )
+      if (!res.ok) return {success: false, error: {kind: 'http', status: res.status}}
+      const data = await res.json()
+      if (!data || !Array.isArray(data.requests)) return {success: false, error: {kind: 'protocol'}}
+      return {success: true, data: {requests: data.requests}}
+    } catch {
+      return {success: false, error: {kind: 'network'}}
+    }
+  }
+
+  return {refreshCsrf, decideRunQuestion, listRunQuestions}
 }
 
 // ---------------------------------------------------------------------------
@@ -2181,6 +2685,314 @@ export function renderApprovalPrompt(prompt, runId, approvalClient, _onSettle) {
 // ---------------------------------------------------------------------------
 // Cancel control interaction state machine (per-run, browser-side)
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Question prompt rendering (contract 1.9.0, rm-912) — mirrors
+// renderApprovalPrompt: safe DOM only (textContent), inert display of
+// untrusted agent-authored text, inline submit/skip with typed 400 refusals.
+// ---------------------------------------------------------------------------
+
+/** Fixed refusal-reason messages (never echo wire text). @private */
+const QUESTION_REFUSAL_MESSAGES = {
+  malformed: 'The gateway couldn\u2019t read that answer \u2014 re-select and try again.',
+  'arity-mismatch': 'Answer every question in this request, then submit.',
+  'unknown-option': 'One of the selected options is no longer available \u2014 re-select.',
+  'multiple-not-allowed': 'Only one option can be chosen for that question.',
+  'empty-value': 'Provide an answer for every question.',
+  'text-too-long': 'The written answer is too long (4,000 characters max).',
+}
+
+/**
+ * Render one open question-request prompt.
+ *
+ * Every string in `prompt` (headers, texts, option labels/descriptions) is
+ * untrusted agent-authored plain text: displayed via textContent only, never
+ * innerHTML, never interpreted as HTML/Markdown/links.
+ *
+ * The prompt offers Answer (submit one choice per question) and Skip. A typed
+ * 400 refusal ({error, reason, questionIndex}) keeps the prompt open with a
+ * fixed reason message and marks the offending question's fieldset
+ * data-invalid="true" when questionIndex is a number.
+ *
+ * @param {object} prompt - An open question frame payload ({requestID, questions, ...}).
+ * @param {string} runId - The run the question belongs to.
+ * @param {object} questionClient - A question client (decideRunQuestion).
+ * @param {Function} [_onSettle] - Unused parity hook with renderApprovalPrompt.
+ * @returns {HTMLElement} The prompt root element (caller appends + removes).
+ */
+export function renderQuestionPrompt(prompt, runId, questionClient, _onSettle) {
+  const {requestID, questions} = prompt
+
+  const el = document.createElement('div')
+  el.className = 'question-prompt'
+  el.setAttribute('role', 'region')
+  el.setAttribute('aria-label', 'Agent question')
+
+  const labelEl = document.createElement('div')
+  labelEl.className = 'question-prompt-label'
+  labelEl.textContent = 'Agent question'
+  el.append(labelEl)
+
+  const countEl = document.createElement('div')
+  countEl.className = 'question-prompt-count'
+  countEl.textContent =
+    questions.length === 1
+      ? '1 question'
+      : `${questions.length} questions \u2014 answer all, then submit once`
+  el.append(countEl)
+
+  // Per-question fieldsets. inputs are rebuilt from scratch on every
+  // renderControls() so a refusal never strands stale checked state.
+  const fieldsets = []
+
+  function buildQuestions() {
+    fieldsets.length = 0
+    questions.forEach((question, questionIndex) => {
+      const fs = document.createElement('fieldset')
+      fs.className = 'question-prompt-question'
+      fs.dataset.questionIndex = String(questionIndex)
+
+      const legend = document.createElement('legend')
+      legend.className = 'question-prompt-header'
+      // Untrusted text — textContent only.
+      legend.textContent =
+        questions.length === 1 ? question.header : `${questionIndex + 1}. ${question.header}`
+      fs.append(legend)
+
+      const textEl = document.createElement('p')
+      textEl.className = 'question-prompt-text'
+      textEl.textContent = question.text
+      fs.append(textEl)
+
+      const optionsWrap = document.createElement('div')
+      optionsWrap.className = 'question-prompt-options'
+      question.options.forEach((option, optionIndex) => {
+        const label = document.createElement('label')
+        label.className = 'question-prompt-option'
+
+        const input = document.createElement('input')
+        input.type = question.multiple ? 'checkbox' : 'radio'
+        input.name = `question-${requestID}-${questionIndex}`
+        input.value = String(optionIndex)
+        input.setAttribute('data-role', 'question-option')
+        label.append(input)
+
+        const optionText = document.createElement('span')
+        optionText.className = 'question-prompt-option-main'
+        // Untrusted text — textContent only.
+        optionText.textContent = option.label
+        label.append(optionText)
+
+        if (option.description !== '') {
+          const desc = document.createElement('span')
+          desc.className = 'question-prompt-option-description'
+          desc.textContent = option.description
+          label.append(desc)
+        }
+
+        optionsWrap.append(label)
+      })
+      fs.append(optionsWrap)
+
+      if (question.custom) {
+        const customLabel = document.createElement('label')
+        customLabel.className = 'question-prompt-custom'
+        customLabel.textContent = 'Written answer'
+        const customInput = document.createElement('input')
+        customInput.type = 'text'
+        customInput.setAttribute('data-role', 'question-custom')
+        // Wire-side answer bound (gateway rejects above 4,000 characters).
+        customInput.maxLength = QUESTION_WIRE_ANSWER_TEXT_MAX
+        customLabel.append(customInput)
+        fs.append(customLabel)
+      }
+
+      fieldsets.push(fs)
+    })
+  }
+
+  const statusEl = document.createElement('div')
+  statusEl.className = 'question-prompt-status'
+  statusEl.setAttribute('role', 'status')
+  statusEl.setAttribute('aria-live', 'polite')
+
+  const controlsEl = document.createElement('div')
+  controlsEl.className = 'question-prompt-controls'
+
+  // Interaction state machine (approval-prompt precedent).
+  let promptState = 'open' // 'open' | 'in-flight' | 'refused' | 'cant-ask' | 'session-expired' | 'transport-failure' | 'already-settled'
+
+  function updateStateAttr() {
+    el.dataset.state = promptState
+  }
+
+  function setInFlight() {
+    promptState = 'in-flight'
+    updateStateAttr()
+    statusEl.textContent = 'Sending answer\u2026'
+    for (const btn of el.querySelectorAll('button')) {
+      btn.disabled = true
+    }
+  }
+
+  function setTransportFailure() {
+    promptState = 'transport-failure'
+    updateStateAttr()
+    renderControls()
+    statusEl.textContent = 'Answer didn\u2019t go through \u2014 try again.'
+  }
+
+  function setCantAsk() {
+    promptState = 'cant-ask'
+    updateStateAttr()
+    statusEl.textContent = 'You may not have question access for this run. If you believe this is an error, check your gateway operator session.'
+    controlsEl.textContent = ''
+  }
+
+  function setSessionFailure() {
+    promptState = 'session-expired'
+    updateStateAttr()
+    statusEl.textContent = 'Your gateway operator session changed \u2014 reload this page to answer.'
+    controlsEl.textContent = ''
+  }
+
+  function setAlreadySettled() {
+    promptState = 'already-settled'
+    updateStateAttr()
+    statusEl.textContent = 'This question was already answered or is no longer pending.'
+    controlsEl.textContent = ''
+  }
+
+  function clearInvalidMarks() {
+    for (const fs of fieldsets) {
+      fs.dataset.invalid = 'false'
+    }
+  }
+
+  // Collect the wire body from current input state. Client-side guards mirror
+  // the gateway's arity rule: one choice per question, in question order.
+  function readAnswers() {
+    const answers = fieldsets.map(fs => {
+      const optionInputs = Array.from(fs.querySelectorAll('[data-role="question-option"]'))
+      const options = optionInputs.filter(input => input.checked).map(input => Number(input.value))
+      const customInput = fs.querySelector('[data-role="question-custom"]')
+      const text = customInput !== null && customInput.value !== '' ? customInput.value : undefined
+      return {
+        ...(options.length > 0 ? {options} : {}),
+        ...(text === undefined ? {} : {text}),
+      }
+    })
+    return answers
+  }
+
+  async function handleDecision(kind) {
+    if (promptState !== 'open' && promptState !== 'refused' && promptState !== 'transport-failure') return
+
+    let decisionRequest
+    if (kind === 'skip') {
+      decisionRequest = {decision: 'skip'}
+    } else {
+      const answers = readAnswers()
+      // Arity guard: every question needs a choice or written text (the
+      // gateway refuses an empty answers entry with 'empty-value').
+      if (answers.some(answer => answer.options === undefined && answer.text === undefined)) {
+        promptState = 'refused'
+        updateStateAttr()
+        statusEl.textContent = QUESTION_REFUSAL_MESSAGES['empty-value']
+        clearInvalidMarks()
+        answers.forEach((answer, i) => {
+          if (answer.options === undefined && answer.text === undefined && fieldsets[i] !== undefined) {
+            fieldsets[i].dataset.invalid = 'true'
+          }
+        })
+        return
+      }
+      decisionRequest = {decision: 'answer', answers}
+    }
+
+    setInFlight()
+
+    const idempotencyKey = (
+      globalThis.crypto !== undefined && typeof globalThis.crypto.randomUUID === 'function'
+        ? globalThis.crypto.randomUUID()
+        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+    )
+
+    const result = await questionClient.decideRunQuestion(runId, requestID, decisionRequest, idempotencyKey)
+
+    if (result.success && result.data.kind === 'accepted') {
+      const {state} = result.data
+      if (state === 'claimed') {
+        promptState = 'already-settled'
+        updateStateAttr()
+        statusEl.textContent = 'Answer sent.'
+        controlsEl.textContent = ''
+      } else if (state === 'already_claimed' || state === 'already_settled') {
+        setAlreadySettled()
+      } else if (state === 'failed_to_settle') {
+        setTransportFailure()
+        statusEl.textContent = 'Couldn\u2019t finalize the answer \u2014 please try again.'
+      }
+      return
+    }
+
+    if (result.success && result.data.kind === 'refused') {
+      // Typed 400: the request stays pending; keep the prompt open, surface a
+      // fixed reason message, mark the offending question when indexed.
+      promptState = 'refused'
+      updateStateAttr()
+      renderControls()
+      const {badRequest} = result.data
+      statusEl.textContent = QUESTION_REFUSAL_MESSAGES[badRequest.reason] ?? QUESTION_REFUSAL_MESSAGES.malformed
+      clearInvalidMarks()
+      if (typeof badRequest.questionIndex === 'number' && fieldsets[badRequest.questionIndex] !== undefined) {
+        fieldsets[badRequest.questionIndex].dataset.invalid = 'true'
+      }
+      return
+    }
+
+    const {error} = result
+    if (error.kind === 'http' && error.status === 404) {
+      setCantAsk()
+    } else if (error.kind === 'http' && (error.status === 400 || error.status === 401 || error.status === 403)) {
+      setSessionFailure()
+    } else {
+      setTransportFailure()
+    }
+  }
+
+  function renderControls() {
+    controlsEl.textContent = ''
+    statusEl.textContent = ''
+
+    const submitBtn = document.createElement('button')
+    submitBtn.type = 'button'
+    submitBtn.className = 'question-prompt-btn-submit'
+    submitBtn.textContent = 'Submit answer'
+    submitBtn.addEventListener('click', () => {
+      handleDecision('answer')
+    })
+    controlsEl.append(submitBtn)
+
+    const skipBtn = document.createElement('button')
+    skipBtn.type = 'button'
+    skipBtn.className = 'question-prompt-btn-skip'
+    skipBtn.textContent = 'Skip'
+    skipBtn.addEventListener('click', () => {
+      handleDecision('skip')
+    })
+    controlsEl.append(skipBtn)
+  }
+
+  buildQuestions()
+  for (const fs of fieldsets) {
+    el.append(fs)
+  }
+  el.append(statusEl, controlsEl)
+  renderControls()
+  updateStateAttr()
+
+  return el
+}
 
 /**
  * Bounded retry count for a transient (HTTP 503) cancel response. This handler
@@ -2539,7 +3351,7 @@ export function renderCancelControl(runId, cancelClient, onCancelDispatch) {
  * - Read-only: GET only for stream; approval decisions are operator-forwarded writes.
  */
 export function initOperatorStream(opts) {
-  const {runId, statusEl, noticeEl, outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, cancelEl, approvalClient: injectedApprovalClient, cancelClient: injectedCancelClient, endpointBase, fixtureSessionId} = opts
+  const {runId, statusEl, noticeEl, outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, cancelEl, questionsEl, questionBadgeEl, approvalClient: injectedApprovalClient, cancelClient: injectedCancelClient, questionClient: injectedQuestionClient, endpointBase, fixtureSessionId} = opts
 
   // Build the approval client lazily (only if approvalsEl is present).
   // Pass endpointBase and fixtureSessionId so fixture mode uses the fixture approval routes
@@ -2566,6 +3378,19 @@ export function initOperatorStream(opts) {
             },
       ))
     : null
+  // Build the question client lazily (only if questionsEl is present).
+  // rm-912 (contract 1.9.0): same endpointBase/fixtureSessionId plumbing as the
+  // approval client so fixture mode routes question reads/writes to the harness.
+  const questionClient = questionsEl !== undefined && questionsEl !== null
+    ? (injectedQuestionClient ?? buildQuestionClient(
+        endpointBase === undefined && fixtureSessionId === undefined
+          ? undefined
+          : {
+              ...(endpointBase === undefined ? {} : {endpointBase}),
+              ...(fixtureSessionId === undefined ? {} : {fixtureSessionId}),
+            },
+      ))
+    : null
 
   // The rendered cancel control instance ({el, notifyTerminal}), created lazily
   // the first time updateDOM sees a non-terminal run for this stream.
@@ -2574,6 +3399,9 @@ export function initOperatorStream(opts) {
   // Track rendered prompt elements by requestID so we can remove them on settle
   // without re-rendering the entire list. Map: requestID → DOM element.
   const renderedPrompts = new Map()
+  // rm-912: rendered question prompt elements by requestID (mirrors
+  // renderedPrompts above — same add/remove-without-rerender contract).
+  const renderedQuestionPrompts = new Map()
 
   let state = {
     connection: 'connecting',
@@ -2779,6 +3607,43 @@ export function initOperatorStream(opts) {
     }
 
     // Cancel control (R1/R2): render on non-terminal runs, hide once terminal.
+    // Question prompts (contract 1.9.0, rm-912): mirror of the approval block
+    // above. Safe DOM only (textContent), prompts keyed by requestID, settled
+    // prompts removed silently, badge shows the open count.
+    if (questionsEl !== undefined && questionsEl !== null && questionClient !== null) {
+      const runEntry = state.runs[runId]
+      const openQuestions = getOpenQuestions(runEntry)
+      const openQuestionIds = new Set(openQuestions.map(p => p.requestID))
+
+      for (const [reqId, promptEl] of renderedQuestionPrompts) {
+        if (!openQuestionIds.has(reqId)) {
+          promptEl.remove()
+          renderedQuestionPrompts.delete(reqId)
+        }
+      }
+
+      for (const prompt of openQuestions) {
+        if (!renderedQuestionPrompts.has(prompt.requestID)) {
+          const promptEl = renderQuestionPrompt(prompt, runId, questionClient, () => {})
+          renderedQuestionPrompts.set(prompt.requestID, promptEl)
+          questionsEl.append(promptEl)
+        }
+      }
+
+      questionsEl.hidden = openQuestions.length === 0
+
+      if (questionBadgeEl !== undefined && questionBadgeEl !== null) {
+        const hasOpen = hasOpenQuestions(runEntry)
+        if (hasOpen) {
+          questionBadgeEl.textContent = String(openQuestions.length)
+          questionBadgeEl.hidden = false
+        } else {
+          questionBadgeEl.textContent = ''
+          questionBadgeEl.hidden = true
+        }
+      }
+    }
+
     // Gated on run status via the reducer's `terminal` flag, not local optimism.
     if (cancelEl !== undefined && cancelEl !== null && cancelClient !== null) {
       const runEntry = state.runs[runId]
@@ -2813,6 +3678,8 @@ export function initOperatorStream(opts) {
   // Track whether we've done the reconcile GET for the current connection attempt.
   // Reset on each connect() call so reconnects trigger a fresh reconcile.
   let reconcileDone = false
+  // rm-912: one-shot guard for reconcileQuestions (mirrors reconcileDone).
+  let reconcileQuestionsDone = false
 
   // Monotonic counter incremented on every connect() call. Each reconcileApprovals
   // invocation captures the epoch before its await; if the epoch changed by the time
@@ -2827,6 +3694,7 @@ export function initOperatorStream(opts) {
     // This is the one-shot GET on (re)connect.
     if (prevConnection !== 'live' && state.connection === 'live') {
       reconcileApprovals()
+      reconcileQuestions()
     }
   }
 
@@ -2918,6 +3786,70 @@ export function initOperatorStream(opts) {
     dispatch({type: 'approval-reconcile', runId, pruneIds, addPrompts})
   }
 
+  /**
+   * Reconcile open question requests on (re)connect (contract 1.9.0, rm-912):
+   * mirror of reconcileApprovals — one-shot corrective GET on stream open.
+   *
+   * Snapshots locally-open request ids BEFORE the GET (race-proof against
+   * prompts opening via SSE during the await window); dispatches a single
+   * question-reconcile action only on success; on any failure dispatches
+   * nothing (open prompts preserved, fail-closed).
+   *
+   * Truncation guard: at or above GATEWAY_PENDING_QUESTIONS_CAP the recovered
+   * set may be incomplete, so pruneIds stays empty (additive-only).
+   *
+   * A 1.8.0-only gateway 404s the questions route: the reconcile then no-ops —
+   * question consumption self-gates on the observed contract version without
+   * a separate version probe.
+   */
+  async function reconcileQuestions() {
+    if (questionClient === null) return
+    if (reconcileQuestionsDone) return
+    reconcileQuestionsDone = true
+
+    const myEpoch = connectEpoch
+
+    const runEntry = state.runs[runId]
+    const preGetLocalOpenIds = getOpenQuestions(runEntry).map(p => p.requestID)
+
+    const listResult = await questionClient.listRunQuestions(runId)
+
+    if (myEpoch !== connectEpoch) return
+    if (!listResult.success) return
+
+    const recovered = listResult.data.requests
+
+    const recoveredOpenIds = new Set()
+    const addPrompts = []
+    let sawMalformed = false
+    for (const request of recovered) {
+      if (!isValidRecoveredQuestionRequest(request)) {
+        sawMalformed = true
+        continue
+      }
+      recoveredOpenIds.add(request.requestID)
+      addPrompts.push({
+        requestID: request.requestID,
+        questions: request.questions.map(question => ({
+          header: question.header,
+          text: question.text,
+          options: question.options.map(option => ({label: option.label, description: option.description})),
+          multiple: question.multiple,
+          custom: question.custom,
+        })),
+      })
+    }
+
+    if (sawMalformed) return
+
+    const truncationPossible = recovered.length >= GATEWAY_PENDING_QUESTIONS_CAP
+    const pruneIds = truncationPossible ? [] : preGetLocalOpenIds.filter(id => !recoveredOpenIds.has(id))
+
+    if (pruneIds.length === 0 && addPrompts.length === 0) return
+
+    dispatch({type: 'question-reconcile', runId, pruneIds, addPrompts})
+  }
+
   function connect() {
     // Don't fetch if close() was called
     if (aborted) return
@@ -2925,6 +3857,7 @@ export function initOperatorStream(opts) {
     // Reset reconcile flag for this connection attempt — each connect/reconnect
     // triggers a fresh one-shot reconcile GET when the stream goes live.
     reconcileDone = false
+    reconcileQuestionsDone = false
 
     // Advance the epoch so any in-flight reconcile from the previous connection
     // cycle sees a stale epoch and discards its result.

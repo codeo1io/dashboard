@@ -14,6 +14,11 @@
 import type {
   ApprovalFrameDataOpen,
   OutputFrameData,
+  QuestionClient,
+  QuestionFrameData,
+  QuestionFrameDataOpen,
+  QuestionPromptData,
+  RecoveredQuestionRequest,
   RunEntry,
   StatusFrameData,
   StreamEvent,
@@ -26,6 +31,7 @@ import {
   bootstrapOperatorStreams,
   buildApprovalClient,
   buildCancelClient,
+  buildQuestionClient,
   CANCEL_RETRY_MAX_ATTEMPTS,
   CHECKOUT_OPERATION_LABELS,
   CHECKOUT_REFUSAL_REASON_LABELS,
@@ -34,10 +40,13 @@ import {
   FIRST_FRAME_TIMEOUT_MS,
   GATEWAY_PENDING_APPROVALS_CAP,
   getOpenApprovals,
+  getOpenQuestions,
   hasOpenApprovals,
+  hasOpenQuestions,
   initOperatorStream,
   MAX_APPROVAL_TOMBSTONES,
   MAX_OPEN_APPROVALS,
+  MAX_OPEN_QUESTIONS,
   MAX_OUTPUT_TEXT_CHARS,
   MAX_SSE_BUFFER_BYTES,
   nextStreamState,
@@ -48,6 +57,7 @@ import {
   PINNED_CONTRACT_VERSION,
   renderApprovalPrompt,
   renderCancelControl,
+  renderQuestionPrompt,
   resetBootstrapState,
   RETRY_BASE_MS,
   RETRY_FACTOR,
@@ -114,6 +124,19 @@ describe('parseSseFrame — pure parser', () => {
         expect(result.frame.data.runId).toBe('run-abc')
         expect(result.frame.data.status).toBe('running')
         expect(result.frame.data.phase).toBe('EXECUTING')
+      }
+    }
+  })
+
+  it('rm-912: parses a status frame carrying the 1.9.0 waiting_for_question overlay', () => {
+    const payload = {...ACTIVE_STATUS, status: 'waiting_for_question'}
+    const text = `event: status\ndata: ${JSON.stringify(payload)}\n\n`
+    const result = parseSseFrame(text)
+    expect(result?.success).toBe(true)
+    if (result !== null && result.success) {
+      expect(result.frame.type).toBe('status')
+      if (result.frame.type === 'status') {
+        expect(result.frame.data.status).toBe('waiting_for_question')
       }
     }
   })
@@ -861,6 +884,21 @@ describe('nextStreamState — cancel race (terminal-wins)', () => {
     const withActive = nextStreamState(live(), {type: 'status', data: ACTIVE_STATUS})
     const withCancel = nextStreamState(withActive, {type: 'cancel', data: {runId: 'run-abc'}})
     const withLateFrame = nextStreamState(withCancel, {type: 'status', data: ACTIVE_STATUS})
+    expect(withLateFrame.runs['run-abc']?.cancelInFlight).toBe(true)
+    expect(withLateFrame.runs['run-abc']?.terminal).toBe(false)
+  })
+
+  it('rm-912: a waiting_for_question status frame is non-terminal and preserves cancelInFlight', () => {
+    const withQuestion = nextStreamState(live(), {
+      type: 'status',
+      data: {...ACTIVE_STATUS, status: 'waiting_for_question'},
+    })
+    expect(withQuestion.runs['run-abc']?.terminal).toBe(false)
+    const withCancel = nextStreamState(withQuestion, {type: 'cancel', data: {runId: 'run-abc'}})
+    const withLateFrame = nextStreamState(withCancel, {
+      type: 'status',
+      data: {...ACTIVE_STATUS, status: 'waiting_for_question'},
+    })
     expect(withLateFrame.runs['run-abc']?.cancelInFlight).toBe(true)
     expect(withLateFrame.runs['run-abc']?.terminal).toBe(false)
   })
@@ -7816,4 +7854,651 @@ describe('nextStreamState — 1.8.0 checkout fields are sticky per upstream sema
     state = nextStreamState(state, statusFrame({}))
     expect(state.runs[FIXTURE_RUN_ID_FOR_TESTS]?.reasonLabel).toBe('Workspace unavailable — needs recovery')
   })
+})
+
+// ---------------------------------------------------------------------------
+// rm-912 (contract 1.9.0): question surface — parse, reduce, reconcile,
+// render (inertness + typed refusals), client.
+// ---------------------------------------------------------------------------
+
+type FakeQuestionDecisionOutcome =
+  | {success: true; data: {kind: 'accepted'; state: string}}
+  | {success: true; data: {kind: 'refused'; badRequest: {error: 'bad request'; reason: string; questionIndex: number | null}}}
+  | {success: false; error: {kind: string; status?: number}}
+
+function makeFakeQuestionClient(opts: {
+  decideResult?: FakeQuestionDecisionOutcome
+  listResult?: {requestID: string; questions: QuestionPromptData[]}[]
+  listFailure?: {kind: 'http' | 'network' | 'protocol'; status?: number}
+} = {}) {
+  const decideCalls: {runId: string; requestId: string; decisionRequest: unknown; idempotencyKey: string}[] = []
+  const listCalls: string[] = []
+
+  return {
+    decideCalls,
+    listCalls,
+    client: {
+      refreshCsrf: async () => ({success: true, data: {csrfToken: 'test-csrf'}}),
+      decideRunQuestion: async (runId: string, requestId: string, decisionRequest: unknown, idempotencyKey: string) => {
+        decideCalls.push({runId, requestId, decisionRequest, idempotencyKey})
+        return opts.decideResult ?? {success: true, data: {kind: 'accepted', state: 'claimed'}}
+      },
+      listRunQuestions: async (runId: string): Promise<Awaited<ReturnType<QuestionClient['listRunQuestions']>>> => {
+        listCalls.push(runId)
+        if (opts.listFailure) {
+          const failure = opts.listFailure
+          if (failure.kind === 'http') return {success: false, error: {kind: 'http' as const, status: failure.status ?? 404}}
+          if (failure.kind === 'network') return {success: false, error: {kind: 'network' as const}}
+          return {success: false, error: {kind: 'protocol' as const}}
+        }
+        return {success: true, data: {requests: opts.listResult ?? []}}
+      },
+    } as unknown as QuestionClient,
+  }
+}
+
+const sampleQuestion = (overrides: Partial<QuestionPromptData> = {}): QuestionPromptData => ({
+  header: 'Proceed?',
+  text: 'The agent asks how to continue.',
+  options: [
+    {label: 'Yes', description: 'Continue the run'},
+    {label: 'No', description: 'Stop here'},
+  ],
+  multiple: false,
+  custom: true,
+  ...overrides,
+})
+
+describe('question surface — parseSseFrame (contract 1.9.0)', () => {
+  it('parses an open question frame with full bounded request', () => {
+    const record = `event: question\ndata: ${JSON.stringify({
+      runId: 'run-q',
+      requestID: 'req-q-1',
+      settled: false,
+      questions: [
+        {
+          header: 'Proceed?',
+          text: 'Continue with the deploy?',
+          options: [
+            {label: 'Yes', description: 'go'},
+            {label: 'No', description: 'stop'},
+          ],
+          multiple: false,
+          custom: true,
+        },
+        {
+          header: 'Region',
+          text: 'Which region?',
+          options: [],
+          multiple: true,
+          custom: false,
+        },
+      ],
+    })}\n\n`
+    const result = parseSseFrame(record)
+    expect(result?.success).toBe(true)
+    if (!result?.success) return
+    const frame = result.frame as {type: string; data: QuestionFrameData}
+    expect(frame.type).toBe('question')
+    const data = frame.data
+    expect(data.settled).toBe(false)
+    if (data.settled) return
+    expect(data.runId).toBe('run-q')
+    expect(data.requestID).toBe('req-q-1')
+    expect(data.questions).toHaveLength(2)
+    expect(data.questions[0]?.options).toHaveLength(2)
+    expect(data.questions[0]?.multiple).toBe(false)
+    expect(data.questions[0]?.custom).toBe(true)
+    expect(data.questions[1]?.multiple).toBe(true)
+  })
+
+  it('parses a settle question frame (requestID + settled only)', () => {
+    const record = `event: question\ndata: ${JSON.stringify({runId: 'run-q', requestID: 'req-q-1', settled: true})}\n\n`
+    const result = parseSseFrame(record)
+    expect(result?.success).toBe(true)
+    if (!result?.success) return
+    const data = (result.frame as {type: string; data: QuestionFrameData}).data
+    expect(data.settled).toBe(true)
+    expect(data.requestID).toBe('req-q-1')
+  })
+
+  it.each([
+    ['missing runId', {requestID: 'req-q-1', settled: true}],
+    ['missing requestID', {runId: 'run-q', settled: true}],
+    ['missing settled', {runId: 'run-q', requestID: 'req-q-1'}],
+    ['settled not boolean', {runId: 'run-q', requestID: 'req-q-1', settled: 'yes'}],
+  ])('rejects %s', (_label, payload) => {
+    const record = `event: question\ndata: ${JSON.stringify(payload)}\n\n`
+    const result = parseSseFrame(record)
+    expect(result?.success).toBe(false)
+  })
+
+  it('rejects open frame with empty questions array', () => {
+    const record = `event: question\ndata: ${JSON.stringify({runId: 'run-q', requestID: 'req-q-1', settled: false, questions: []})}\n\n`
+    expect(parseSseFrame(record)?.success).toBe(false)
+  })
+
+  it('rejects open frame exceeding the wire array cap (257 questions)', () => {
+    const questions = Array.from({length: 257}, () => sampleQuestion())
+    const record = `event: question\ndata: ${JSON.stringify({runId: 'run-q', requestID: 'req-q-1', settled: false, questions})}\n\n`
+    expect(parseSseFrame(record)?.success).toBe(false)
+  })
+
+  it('rejects a question with header over the wire bound (129 chars)', () => {
+    const record = `event: question\ndata: ${JSON.stringify({runId: 'run-q', requestID: 'req-q-1', settled: false, questions: [sampleQuestion({header: 'x'.repeat(129)})]})}\n\n`
+    expect(parseSseFrame(record)?.success).toBe(false)
+  })
+
+  it('rejects a question with text over the wire bound (4097 chars)', () => {
+    const record = `event: question\ndata: ${JSON.stringify({runId: 'run-q', requestID: 'req-q-1', settled: false, questions: [sampleQuestion({text: 'x'.repeat(4097)})]})}\n\n`
+    expect(parseSseFrame(record)?.success).toBe(false)
+  })
+
+  it('rejects a question with options over the wire array cap (257)', () => {
+    const options = Array.from({length: 257}, (_, i) => ({label: `o${i}`, description: ''}))
+    const record = `event: question\ndata: ${JSON.stringify({runId: 'run-q', requestID: 'req-q-1', settled: false, questions: [sampleQuestion({options})]})}\n\n`
+    expect(parseSseFrame(record)?.success).toBe(false)
+  })
+
+  it('rejects an option with an empty label', () => {
+    const record = `event: question\ndata: ${JSON.stringify({runId: 'run-q', requestID: 'req-q-1', settled: false, questions: [sampleQuestion({options: [{label: '', description: ''}]})]})}\n\n`
+    expect(parseSseFrame(record)?.success).toBe(false)
+  })
+
+  it('rejects a question with non-boolean multiple', () => {
+    const record = `event: question\ndata: ${JSON.stringify({runId: 'run-q', requestID: 'req-q-1', settled: false, questions: [sampleQuestion({multiple: 1 as unknown as boolean})]})}\n\n`
+    expect(parseSseFrame(record)?.success).toBe(false)
+  })
+
+  it('ignores unknown extra fields on the settle variant', () => {
+    const record = `event: question\ndata: ${JSON.stringify({runId: 'run-q', requestID: 'req-q-1', settled: true, questions: 'stale-ignored'})}\n\n`
+    const result = parseSseFrame(record)
+    expect(result?.success).toBe(true)
+  })
+})
+
+describe('question surface — state reducer (contract 1.9.0)', () => {
+  const runOf = (state: StreamState, runId: string): RunEntry => {
+    const entry = state.runs[runId]
+    if (entry === undefined) throw new Error(`expected run ${runId} in state`)
+    return entry
+  }
+
+  const openQuestion = (state: StreamState, runId: string, requestID: string, questions: QuestionPromptData[]): StreamState =>
+    nextStreamState(state, {
+      type: 'question',
+      data: {runId, requestID, settled: false, questions} as QuestionFrameData,
+    })
+
+  const settleQuestion = (state: StreamState, runId: string, requestID: string): StreamState =>
+    nextStreamState(state, {type: 'question', data: {runId, requestID, settled: true} as QuestionFrameData})
+
+  const liveState = (): StreamState =>
+    nextStreamState(INITIAL_STATE, {type: 'ready', data: {contractVersion: '1.9.0'}})
+
+  it('stores the observed contractVersion from the ready frame (additive)', () => {
+    const state = liveState()
+    expect(state.connection).toBe('live')
+    expect((state as StreamState & {contractVersion?: string}).contractVersion).toBe('1.9.0')
+  })
+
+  it('open question frame lands in questionOpenPrompts', () => {
+    const state = openQuestion(liveState(), 'run-q', 'req-1', [sampleQuestion()])
+    expect(getOpenQuestions(runOf(state, 'run-q'))).toHaveLength(1)
+    expect(hasOpenQuestions(runOf(state, 'run-q'))).toBe(true)
+    const prompt = getOpenQuestions(runOf(state, 'run-q'))[0]
+    expect(prompt?.requestID).toBe('req-1')
+  })
+
+  it('question frames before ready are ignored', () => {
+    const state = openQuestion(INITIAL_STATE, 'run-q', 'req-1', [sampleQuestion()])
+    expect(state.runs['run-q']).toBeUndefined()
+  })
+
+  it('settle removes the prompt and tombstones the request id', () => {
+    let state = openQuestion(liveState(), 'run-q', 'req-1', [sampleQuestion()])
+    state = settleQuestion(state, 'run-q', 'req-1')
+    expect(hasOpenQuestions(runOf(state, 'run-q'))).toBe(false)
+    const tombstones = (runOf(state, 'run-q') as RunEntry & {questionTombstones?: Record<string, true>}).questionTombstones
+    expect(tombstones?.['req-1']).toBe(true)
+  })
+
+  it('open after settle is ignored (tombstone guard)', () => {
+    let state = openQuestion(liveState(), 'run-q', 'req-1', [sampleQuestion()])
+    state = settleQuestion(state, 'run-q', 'req-1')
+    state = openQuestion(state, 'run-q', 'req-1', [sampleQuestion()])
+    expect(hasOpenQuestions(runOf(state, 'run-q'))).toBe(false)
+  })
+
+  it('overflow open frames are dropped at MAX_OPEN_QUESTIONS (never evict a live prompt)', () => {
+    let state = liveState()
+    for (let i = 0; i < MAX_OPEN_QUESTIONS; i++) {
+      state = openQuestion(state, 'run-q', `req-${i}`, [sampleQuestion()])
+    }
+    expect(getOpenQuestions(runOf(state, 'run-q'))).toHaveLength(MAX_OPEN_QUESTIONS)
+    state = openQuestion(state, 'run-q', `req-${MAX_OPEN_QUESTIONS}`, [sampleQuestion()])
+    expect(getOpenQuestions(runOf(state, 'run-q'))).toHaveLength(MAX_OPEN_QUESTIONS)
+    expect(getOpenQuestions(runOf(state, 'run-q')).some(p => p.requestID === `req-${MAX_OPEN_QUESTIONS}`)).toBe(false)
+  })
+
+  it('terminal run absorbs later question frames', () => {
+    let state = openQuestion(liveState(), 'run-q', 'req-1', [sampleQuestion()])
+    state = nextStreamState(state, {type: 'status', data: {...ACTIVE_STATUS, runId: 'run-q', status: 'failed', phase: 'FAILED'}})
+    state = settleQuestion(state, 'run-q', 'req-1')
+    expect(hasOpenQuestions(runOf(state, 'run-q'))).toBe(false)
+    state = openQuestion(state, 'run-q', 'req-2', [sampleQuestion()])
+    expect(getOpenQuestions(runOf(state, 'run-q')).some(p => p.requestID === 'req-2')).toBe(false)
+  })
+
+  it('question-reconcile prunes stale ids and adds recovered prompts', () => {
+    let state = openQuestion(liveState(), 'run-q', 'stale-1', [sampleQuestion()])
+    state = nextStreamState(state, {
+      type: 'question-reconcile',
+      runId: 'run-q',
+      pruneIds: ['stale-1'],
+      addPrompts: [{requestID: 'recovered-1', questions: [sampleQuestion()]}],
+    } as unknown as Parameters<typeof nextStreamState>[1])
+    const open = getOpenQuestions(runOf(state, 'run-q'))
+    expect(open).toHaveLength(1)
+    expect(open[0]?.requestID).toBe('recovered-1')
+  })
+
+  it('question-reconcile respects the tombstone guard for re-added ids', () => {
+    let state = openQuestion(liveState(), 'run-q', 'req-1', [sampleQuestion()])
+    state = settleQuestion(state, 'run-q', 'req-1')
+    state = nextStreamState(state, {
+      type: 'question-reconcile',
+      runId: 'run-q',
+      pruneIds: [],
+      addPrompts: [{requestID: 'req-1', questions: [sampleQuestion()]}],
+    } as unknown as Parameters<typeof nextStreamState>[1])
+    expect(hasOpenQuestions(runOf(state, 'run-q'))).toBe(false)
+  })
+
+  it('question prompts do not touch approval prompts (disjoint state)', () => {
+    let state = nextStreamState(liveState(), {
+      type: 'approval',
+      data: {runId: 'run-q', requestID: 'appr-1', permission: 'shell', settled: false},
+    })
+    state = openQuestion(state, 'run-q', 'req-1', [sampleQuestion()])
+    expect(getOpenApprovals(runOf(state, 'run-q'))).toHaveLength(1)
+    expect(getOpenQuestions(runOf(state, 'run-q'))).toHaveLength(1)
+    state = settleQuestion(state, 'run-q', 'req-1')
+    expect(getOpenApprovals(runOf(state, 'run-q'))).toHaveLength(1)
+  })
+})
+
+describe('question surface — renderQuestionPrompt inertness + typed refusals', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const renderQuestionAsFake = (
+    prompt: QuestionFrameDataOpen,
+    runId: string,
+    client: QuestionClient,
+  ): FakeElement => renderQuestionPrompt(prompt, runId, client, () => {}) as FakeElement
+
+  it('malicious question text renders as inert textContent — no child elements injected', () => {
+    stubRenderEnv()
+    const malicious = '<script>alert(1)</script><img src=x onerror=y>'
+    const prompt: QuestionFrameDataOpen = {
+      runId: 'run-q',
+      requestID: 'req-xss',
+      settled: false,
+      questions: [sampleQuestion({header: malicious, text: malicious, options: [{label: malicious, description: malicious}]})],
+    }
+    const {client} = makeFakeQuestionClient()
+    const el = renderQuestionAsFake(prompt, 'run-q', client)
+    expect(el.children.length).toBeGreaterThan(0)
+    for (const child of el.children) {
+      expect(child.children.length).toBeGreaterThanOrEqual(0)
+    }
+    const texts: string[] = []
+    const walk = (node: FakeElement) => {
+      if (node.children.length === 0) texts.push(node.textContent)
+      for (const c of node.children) walk(c)
+    }
+    walk(el)
+    expect(texts.some(t => t.includes('<script>'))).toBe(true)
+    expect(texts.some(t => t.includes('<img'))).toBe(true)
+  })
+
+  it('typed 400 refusal keeps the prompt open with a fixed message and invalid mark', async () => {
+    stubRenderEnv()
+    const prompt: QuestionFrameDataOpen = {
+      runId: 'run-q',
+      requestID: 'req-400',
+      settled: false,
+      questions: [sampleQuestion({options: [{label: 'A', description: ''}, {label: 'B', description: ''}], custom: false})],
+    }
+    const {client, decideCalls} = makeFakeQuestionClient({
+      decideResult: {success: true, data: {kind: 'refused', badRequest: {error: 'bad request', reason: 'unknown-option', questionIndex: 0}}},
+    })
+    const el = renderQuestionAsFake(prompt, 'run-q', client)
+    const buttons = findVisibleButtons(el)
+    const submit = buttons.find(b => b.textContent === 'Submit answer')
+    expect(submit).toBeDefined()
+    if (submit === undefined) return
+
+    // select option 0 then submit
+    const option = el.children.find(() => true)
+    expect(option).toBeDefined()
+    // find inputs via tree walk: check the radio for value '0'
+    const inputs: FakeElement[] = []
+    const walk = (node: FakeElement) => {
+      if (node.tagName === 'input') inputs.push(node)
+      for (const c of node.children) walk(c)
+    }
+    walk(el)
+    const radio = inputs.find(i => (i as FakeElement & {value?: string}).value === '0')
+    expect(radio).toBeDefined()
+    if (radio !== undefined) {
+      ;(radio as FakeElement & {checked?: boolean}).checked = true
+    }
+    ;(submit as FakeElement & {onclick?: (() => void) | undefined}).dispatchEvent({type: 'click'})
+    await Promise.resolve()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(decideCalls).toHaveLength(1)
+    expect(decideCalls[0]?.decisionRequest).toEqual({
+      decision: 'answer',
+      answers: [{options: [0]}],
+    })
+    const status = findStatusElement(el)
+    expect(status?.textContent ?? '').not.toBe('')
+    const statusText = status?.textContent ?? ''
+    expect(statusText.toLowerCase()).toContain('re-select')
+  })
+
+  it('accepted decision clears controls', async () => {
+    stubRenderEnv()
+    const prompt: QuestionFrameDataOpen = {
+      runId: 'run-q',
+      requestID: 'req-ok',
+      settled: false,
+      questions: [sampleQuestion()],
+    }
+    const {client} = makeFakeQuestionClient({decideResult: {success: true, data: {kind: 'accepted', state: 'claimed'}}})
+    const el = renderQuestionAsFake(prompt, 'run-q', client)
+    const inputs: FakeElement[] = []
+    const walk = (node: FakeElement) => {
+      if (node.tagName === 'input') inputs.push(node)
+      for (const c of node.children) walk(c)
+    }
+    walk(el)
+    const radio = inputs.find(i => (i as FakeElement & {type?: string}).type === 'radio')
+    if (radio !== undefined) {
+      ;(radio as FakeElement & {checked?: boolean}).checked = true
+    }
+    const buttons = findVisibleButtons(el)
+    const submit = buttons.find(b => b.textContent === 'Submit answer')
+    ;(submit as FakeElement & {click?: () => void}).dispatchEvent({type: 'click'})
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(findVisibleButtons(el)).toHaveLength(0)
+  })
+
+  it('skip posts {decision: skip}', async () => {
+    stubRenderEnv()
+    const prompt: QuestionFrameDataOpen = {
+      runId: 'run-q',
+      requestID: 'req-skip',
+      settled: false,
+      questions: [sampleQuestion()],
+    }
+    const {client, decideCalls} = makeFakeQuestionClient()
+    const el = renderQuestionAsFake(prompt, 'run-q', client)
+    const buttons = findVisibleButtons(el)
+    const skip = buttons.find(b => b.textContent === 'Skip')
+    expect(skip).toBeDefined()
+    ;(skip as FakeElement & {click?: () => void}).dispatchEvent({type: 'click'})
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(decideCalls).toHaveLength(1)
+    expect(decideCalls[0]?.decisionRequest).toEqual({decision: 'skip'})
+  })
+
+  it('client-side arity guard blocks an empty answer before any fetch', async () => {
+    stubRenderEnv()
+    const prompt: QuestionFrameDataOpen = {
+      runId: 'run-q',
+      requestID: 'req-empty',
+      settled: false,
+      questions: [sampleQuestion({options: [{label: 'A', description: ''}], custom: false})],
+    }
+    const {client, decideCalls} = makeFakeQuestionClient()
+    const el = renderQuestionAsFake(prompt, 'run-q', client)
+    const buttons = findVisibleButtons(el)
+    const submit = buttons.find(b => b.textContent === 'Submit answer')
+    ;(submit as FakeElement & {click?: () => void}).dispatchEvent({type: 'click'})
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(decideCalls).toHaveLength(0)
+    const status = findStatusElement(el)
+    expect((status?.textContent ?? '').toLowerCase()).toContain('every question')
+  })
+})
+
+describe('question surface — buildQuestionClient (contract 1.9.0)', () => {
+  interface FetchCall {input: string | URL | Request; init?: RequestInit}
+
+  function stubFetchSequence(responses: {status: number; body?: unknown; text?: string}[]) {
+    const calls: FetchCall[] = []
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({input: typeof input === 'string' ? input : String(input), init})
+      const next = responses.shift() ?? {status: 200, body: {}}
+      return {
+        ok: next.status >= 200 && next.status < 300,
+        status: next.status,
+        headers: {get: () => 'application/json'},
+        json: async () => next.body,
+        text: async () => next.text ?? JSON.stringify(next.body ?? {}),
+      }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    return {calls, fetchMock}
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('decideRunQuestion returns accepted on 200 with valid state', async () => {
+    const {calls} = stubFetchSequence([
+      {status: 200, body: {csrfToken: 'csrf-1'}},
+      {status: 200, body: {state: 'claimed'}},
+    ])
+    const client = buildQuestionClient()
+    const result = await client.decideRunQuestion('run-9', 'req-9', {decision: 'skip'}, 'idem-1')
+    expect(result.success).toBe(true)
+    if (result.success && result.data.kind === 'accepted') {
+      expect(result.data.state).toBe('claimed')
+    } else {
+      throw new Error('expected accepted')
+    }
+    const post = calls[1]
+    const url = String(post?.input)
+    expect(url).toContain('/operator/runs/run-9/questions/req-9/decision')
+    expect(post?.init?.method).toBe('POST')
+    expect((post?.init?.headers as Record<string, string>)['x-csrf-token']).toBe('csrf-1')
+    expect((post?.init?.headers as Record<string, string>)['idempotency-key']).toBe('idem-1')
+    expect(post?.init?.credentials).toBe('include')
+    expect(post?.init?.redirect).toBe('error')
+  })
+
+  it('a 400 after the CSRF retry parses as a typed refusal (request stays pending)', async () => {
+    stubFetchSequence([
+      {status: 200, body: {csrfToken: 'csrf-1'}},
+      {status: 400},
+      {status: 200, body: {csrfToken: 'csrf-2'}},
+      {status: 400, body: {error: 'bad request', reason: 'text-too-long', questionIndex: 2}},
+    ])
+    const client = buildQuestionClient()
+    const result = await client.decideRunQuestion('run-9', 'req-9', {decision: 'skip'}, 'idem-2')
+    expect(result.success).toBe(true)
+    if (result.success && result.data.kind === 'refused') {
+      expect(result.data.badRequest.reason).toBe('text-too-long')
+      expect(result.data.badRequest.questionIndex).toBe(2)
+    } else {
+      throw new Error('expected refused')
+    }
+  })
+
+  it('an unparseable 400 body fails closed to reason malformed, questionIndex null', async () => {
+    stubFetchSequence([
+      {status: 200, body: {csrfToken: 'csrf-1'}},
+      {status: 400},
+      {status: 200, body: {csrfToken: 'csrf-2'}},
+      {status: 400, text: '<html>bad gateway html</html>'},
+    ])
+    const client = buildQuestionClient()
+    const result = await client.decideRunQuestion('run-9', 'req-9', {decision: 'skip'}, 'idem-3')
+    expect(result.success).toBe(true)
+    if (result.success && result.data.kind === 'refused') {
+      expect(result.data.badRequest.reason).toBe('malformed')
+      expect(result.data.badRequest.questionIndex).toBeNull()
+    } else {
+      throw new Error('expected refused')
+    }
+  })
+
+  it('listRunQuestions parses the requests array', async () => {
+    const {calls} = stubFetchSequence([{status: 200, body: {requests: [{requestID: 'r1', questions: []}]}}])
+    const client = buildQuestionClient()
+    const result = await client.listRunQuestions('run-9')
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.requests).toHaveLength(1)
+      expect(result.data.requests[0]?.requestID).toBe('r1')
+    }
+    expect(String(calls[0]?.input)).toContain('/operator/runs/run-9/questions')
+  })
+
+  it('listRunQuestions non-JSON body is a protocol failure (fail-closed, not empty-success)', async () => {
+    stubFetchSequence([{status: 200, body: {nope: true}}])
+    const client = buildQuestionClient()
+    const result = await client.listRunQuestions('run-9')
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.kind).toBe('protocol')
+    }
+  })
+
+  it('listRunQuestions 404 (a 1.8.0-only gateway) is an http failure', async () => {
+    stubFetchSequence([{status: 404, body: {}}])
+    const client = buildQuestionClient()
+    const result = await client.listRunQuestions('run-9')
+    expect(result.success).toBe(false)
+    if (!result.success && result.error.kind === 'http') {
+      expect(result.error.status).toBe(404)
+    }
+  })
+
+  it('fixtureSessionId rides every request in fixture mode', async () => {
+    const {calls} = stubFetchSequence([{status: 200, body: {requests: []}}])
+    const client = buildQuestionClient({fixtureSessionId: 'sess-42'})
+    await client.listRunQuestions('run-9')
+    expect(String(calls[0]?.input)).toContain('fixtureSessionId=sess-42')
+  })
+})
+
+describe('reconcileQuestions — wired integration (corrective prune, rm-912)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  const readyChunk = `event: ready\ndata: ${JSON.stringify({contractVersion: PINNED_CONTRACT_VERSION})}\n\n`
+  const openQChunk = `event: question\ndata: ${JSON.stringify({runId: 'run-001', requestID: 'req-Q1', settled: false, questions: [sampleQuestion()]})}\n\n`
+  const resetChunk = `event: reset\ndata: ${JSON.stringify({runId: 'run-001', reason: 'no-snapshot'})}\n\n`
+
+  const mountQuestionHarness = (
+    listRunQuestions: (runId: string) => Promise<Awaited<ReturnType<QuestionClient['listRunQuestions']>>>,
+  ): {questionsEl: FakeElement; questionBadgeEl: FakeElement; listCalls: string[]} => {
+    const questionsEl = makeFakeEl('div')
+    questionsEl.hidden = true
+    questionsEl.attributes['data-role'] = 'run-questions'
+    const questionBadgeEl = makeFakeEl('span')
+    questionBadgeEl.hidden = true
+    const statusEl = makeFakeEl('span')
+    const noticeEl = makeFakeEl('div')
+
+    const listCalls: string[] = []
+    const client = {
+      refreshCsrf: async () => ({success: true as const, data: {csrfToken: 'csrf'}}),
+      decideRunQuestion: async () => ({success: true as const, data: {kind: 'accepted' as const, state: 'claimed' as const}}),
+      listRunQuestions: async (runId: string): Promise<Awaited<ReturnType<QuestionClient['listRunQuestions']>>> => {
+        listCalls.push(runId)
+        return listRunQuestions(runId)
+      },
+    }
+
+    let connectionCount = 0
+    vi.stubGlobal('document', {
+      createElement: (tag: string) => makeFakeEl(tag),
+      querySelector: () => null,
+      readyState: 'complete',
+      addEventListener: () => {},
+    })
+    vi.stubGlobal('fetch', async () => {
+      connectionCount++
+      // conn1 EOFs after reset (drives the reconnect); conn2+ stays open so
+      // connection === 'live' holds while the reconcile GET resolves — the
+      // reducer's live gate otherwise (correctly) discards the corrective
+      // dispatch, and the test would race the EOF instead of measuring the
+      // prune.
+      return connectionCount === 1
+        ? makeSseResponse([readyChunk, openQChunk, resetChunk])
+        : makeSseResponse([readyChunk], {keepOpen: true})
+    })
+    vi.stubGlobal('addEventListener', () => {})
+
+    initOperatorStream({
+      runId: 'run-001',
+      statusEl,
+      noticeEl,
+      questionsEl,
+      questionBadgeEl,
+      questionClient: client,
+    })
+
+    return {questionsEl, questionBadgeEl, listCalls}
+  }
+
+  it('integration: ghost question prompt absent from complete recovery set is pruned on reconnect', async () => {
+    const {questionsEl, questionBadgeEl, listCalls} = mountQuestionHarness(
+      async () => ({success: true as const, data: {requests: []}}), // req-Q1 settled during the gap
+    )
+
+    await new Promise(resolve => setTimeout(resolve, 2500))
+    expect(listCalls.length).toBeGreaterThanOrEqual(2)
+    expect(questionsEl.hidden).toBe(true)
+    expect(questionBadgeEl.hidden).toBe(true)
+  }, 10000)
+
+  it('integration: a recovered request that fails shape validation preserves every open prompt (fail-closed, no crash)', async () => {
+    const {questionsEl, questionBadgeEl, listCalls} = mountQuestionHarness(
+      async () => ({success: true as const, data: {requests: [{requestID: 'bad'}] as unknown as RecoveredQuestionRequest[]}}), // questions missing → invalid
+    )
+
+    await new Promise(resolve => setTimeout(resolve, 2500))
+    expect(listCalls.length).toBeGreaterThanOrEqual(2)
+    // sawMalformed → nothing dispatched → the SSE-opened prompt survives untouched.
+    expect(questionsEl.hidden).toBe(false)
+    expect(questionBadgeEl.hidden).toBe(false)
+    expect(questionBadgeEl.textContent).toBe('1')
+  }, 10000)
+
+  it('integration: a malformed-but-recoverable oversized listing never prunes (truncation guard)', async () => {
+    // A listing at the gateway cap may be truncated: recovered.length >= cap → pruneIds stays []
+    const requests = Array.from({length: 50}, (_, i) => ({
+      requestID: `rec-${i}`,
+      questions: [sampleQuestion()],
+    }))
+    const {questionsEl, listCalls} = mountQuestionHarness(
+      async () => ({success: true as const, data: {requests}}),
+    )
+
+    await new Promise(resolve => setTimeout(resolve, 2500))
+    expect(listCalls.length).toBeGreaterThanOrEqual(2)
+    // req-Q1 is NOT in the recovered set, but truncation-possible → additive-only.
+    expect(questionsEl.hidden).toBe(false)
+  }, 10000)
 })

@@ -23,9 +23,9 @@
 import type {Logger} from '../logger.ts'
 import type {Result} from '../result.ts'
 import type {PermissionReply} from './operator-contract/approval.ts'
-import type {OperatorCsrfToken, OperatorDecisionState, OperatorSessionInfo, OperatorWebStatus, PushSubscriptionMetadata, RepoSummary, RunStreamFrame, VapidKeyResponse} from './operator-contract/index.ts'
+import type {OperatorCsrfToken, OperatorDecisionState, OperatorSessionInfo, OperatorWebStatus, PendingQuestionsResponse, PushSubscriptionMetadata, QuestionDecisionErrorResponse, QuestionDecisionRequest, RepoSummary, RunStreamFrame, VapidKeyResponse} from './operator-contract/index.ts'
 import {err, ok} from '../result.ts'
-import {parseLaunchRunResponse, parseOperatorCsrfToken, parseOperatorSessionInfo, parsePushSubscriptionMetadata, parseRepoSummaryList, parseRunApprovalDecisionResponse, parseRunApprovalsResponse, parseRunSnapshotResponse, parseVapidKeyResponse} from './operator-contract/index.ts'
+import {parseLaunchRunResponse, parseOperatorCsrfToken, parseOperatorSessionInfo, parsePendingQuestionsResponse, parsePushSubscriptionMetadata, parseQuestionDecisionErrorResponse, parseQuestionDecisionResponse, parseRepoSummaryList, parseRunApprovalDecisionResponse, parseRunApprovalsResponse, parseRunSnapshotResponse, parseVapidKeyResponse} from './operator-contract/index.ts'
 import {MAX_SSE_BUFFER_BYTES} from './operator-sse-reader.ts'
 
 // ---------------------------------------------------------------------------
@@ -113,6 +113,19 @@ export interface RunApprovalsResponse {
 export interface RunApprovalDecisionResponse {
   readonly state: OperatorDecisionState
 }
+
+/**
+ * Response shape for POST /operator/runs/:runId/questions/:requestId/decision
+ * (contract 1.9.0). An HTTP 200 decision is `accepted` (with the gateway's
+ * terminal state); an HTTP 400 refusal is a DOMAIN OUTCOME, not a client
+ * error — the request stays pending and the typed body is surfaced for
+ * rendering (`{error, reason, questionIndex}`, with a fixed `malformed`/
+ * null fallback when the body does not parse, so no untrusted wire text is
+ * ever echoed). Transport failures remain `GatewayClientError`.
+ */
+export type RunQuestionDecisionResult =
+  | {kind: 'accepted'; state: 'claimed' | 'already_claimed' | 'already_settled' | 'failed_to_settle'}
+  | {kind: 'refused'; badRequest: QuestionDecisionErrorResponse}
 
 /** Decision verb type — re-exported from the vendored approval contract. */
 export type {PermissionReply}
@@ -288,6 +301,20 @@ export interface OperatorClient {
     idempotencyKey: string,
     csrfToken: string,
   ) => Promise<Result<RunApprovalDecisionResponse, GatewayClientError>>
+  /** GET /operator/runs/:runId/questions — contract 1.9.0 reconnect listing. */
+  readonly listRunQuestions: (runId: string) => Promise<Result<PendingQuestionsResponse, GatewayClientError>>
+  /**
+   * POST /operator/runs/:runId/questions/:requestId/decision — contract 1.9.0.
+   * A 400 refusal comes back as `{kind: 'refused', badRequest}` (the prompt
+   * stays open); transport failures as `GatewayClientError`.
+   */
+  readonly decideRunQuestion: (
+    runId: string,
+    requestId: string,
+    decision: QuestionDecisionRequest,
+    idempotencyKey: string,
+    csrfToken: string,
+  ) => Promise<Result<RunQuestionDecisionResult, GatewayClientError>>
   /**
    * GET /operator/push/vapid-key — no CSRF/idempotency. A 404 response is
    * translated into a `{pushDisabled: true}` success result, not an error.
@@ -865,6 +892,158 @@ export function createOperatorClient(options: OperatorClientOptions): OperatorCl
     return ok(parsed.data)
   }
 
+  async function listRunQuestions(runId: string): Promise<Result<PendingQuestionsResponse, GatewayClientError>> {
+    const runIdErr = requireRunId(runId)
+    if (runIdErr !== null) return err(runIdErr)
+
+    const raw = await fetchJson<unknown>(
+      `/operator/runs/${encodeURIComponent(runId)}/questions`,
+      '/operator/runs/:runId/questions',
+    )
+    if (!raw.success) return raw
+    const parsed = parsePendingQuestionsResponse(raw.data)
+    if (!parsed.success) {
+      const protocolErr: GatewayProtocolError = {kind: 'protocol', message: 'Failed to parse pending questions response'}
+      logger?.error('operator-client: pending questions parse error', {route: '/operator/runs/:runId/questions'})
+      return err(protocolErr)
+    }
+    return ok(parsed.data)
+  }
+
+  /**
+   * Question-decision transport: like fetchJson but an HTTP 400 body is READ
+   * (bounded, rm-822) and returned for typed refusal parsing instead of being
+   * dropped. Non-400 failures keep the coarse GatewayClientError shapes.
+   */
+  async function sendQuestionDecision(
+    path: string,
+    route: string,
+    init: RequestInit,
+  ): Promise<Result<{ok: true; data: unknown} | {ok: false; status: number; body400: unknown}, GatewayClientError>> {
+    const pathErr = validateOperatorPath(path)
+    if (pathErr !== null) return err(pathErr)
+
+    let response: Response
+    try {
+      response = await fetchImpl(path, init)
+    } catch {
+      const networkErr: GatewayNetworkError = {kind: 'network', message: 'Network error'}
+      logger?.error('operator-client: network error', {route})
+      return err(networkErr)
+    }
+
+    if (response.ok) {
+      try {
+        const bodyText = await readBodyTextWithCap(response, route, logger)
+        if (!bodyText.success) return bodyText
+        const raw: unknown = JSON.parse(bodyText.data)
+        return ok({ok: true, data: raw})
+      } catch {
+        const protocolErr: GatewayProtocolError = {kind: 'protocol', message: 'Failed to parse response JSON'}
+        logger?.error('operator-client: json parse error', {route})
+        return err(protocolErr)
+      }
+    }
+
+    if (response.status === 400) {
+      // Best-effort bounded read of the refusal body; any read/parse failure
+      // yields the null-body form and the refusal is parsed as 'malformed'.
+      let body: unknown = null
+      try {
+        const bodyText = await readBodyTextWithCap(response, route, logger)
+        if (bodyText.success) body = JSON.parse(bodyText.data)
+      } catch {
+        body = null
+      }
+      logger?.error('operator-client: question decision refused', {route, status: response.status})
+      return ok({ok: false, status: 400, body400: body})
+    }
+
+    const httpErr: GatewayHttpError = {kind: 'http', status: response.status}
+    logger?.error('operator-client: http error', {route, status: response.status})
+    return err(httpErr)
+  }
+
+  async function decideRunQuestion(
+    runId: string,
+    requestId: string,
+    decision: QuestionDecisionRequest,
+    idempotencyKey: string,
+    csrfToken: string,
+  ): Promise<Result<RunQuestionDecisionResult, GatewayClientError>> {
+    const runIdErr = requireRunId(runId)
+    if (runIdErr !== null) return err(runIdErr)
+
+    const requestIdErr = requireRequestId(requestId)
+    if (requestIdErr !== null) return err(requestIdErr)
+
+    const csrfGuard = requireCsrf(csrfToken)
+    if (csrfGuard !== null) return err(csrfGuard)
+
+    const idemGuard = requireIdempotencyKey(idempotencyKey)
+    if (idemGuard !== null) return err(idemGuard)
+
+    const path = `/operator/runs/${encodeURIComponent(runId)}/questions/${encodeURIComponent(requestId)}/decision`
+    const route = '/operator/runs/:runId/questions/:requestId/decision'
+    const init: RequestInit = {
+      method: 'POST',
+      redirect: 'error',
+      headers: {
+        'content-type': 'application/json',
+        'x-csrf-token': csrfToken,
+        'idempotency-key': idempotencyKey,
+      },
+      body: JSON.stringify(decision),
+    }
+
+    const send = async (token: string) =>
+      sendQuestionDecision(path, route, {
+        ...init,
+        headers: {
+          ...init.headers,
+          'x-csrf-token': token,
+        },
+      })
+
+    const first = await send(csrfToken)
+    if (!first.success) return first
+
+    // One CSRF-400 retry with a REFRESHED token and the SAME idempotency key
+    // (decideRunApproval pattern). The retry only fires on the NO-BODY form
+    // (a stale-CSRF 400 from the gateway carries no parseable refusal); a
+    // typed refusal with a reason/questionIndex is a genuine validation
+    // verdict and resending it can never succeed.
+    if (!first.data.ok && first.data.status === 400 && first.data.body400 === null) {
+      const refreshed = await refreshCsrf()
+      if (refreshed.success) {
+        const retried = await send(refreshed.data.csrfToken)
+        if (!retried.success) return retried
+        if (retried.data.ok) {
+          const parsedRetry = parseQuestionDecisionResponse(retried.data.data)
+          if (!parsedRetry.success) {
+            const protocolErr: GatewayProtocolError = {kind: 'protocol', message: 'Failed to parse question decision response'}
+            logger?.error('operator-client: question decision parse error', {route})
+            return err(protocolErr)
+          }
+          return ok({kind: 'accepted', state: parsedRetry.data.state})
+        }
+        return ok({kind: 'refused', badRequest: parseQuestionDecisionErrorResponse(retried.data.body400)})
+      }
+      // Refresh failed: fall through to surfacing the original 400.
+    }
+
+    if (!first.data.ok) {
+      return ok({kind: 'refused', badRequest: parseQuestionDecisionErrorResponse(first.data.body400)})
+    }
+    const parsed = parseQuestionDecisionResponse(first.data.data)
+    if (!parsed.success) {
+      const protocolErr: GatewayProtocolError = {kind: 'protocol', message: 'Failed to parse question decision response'}
+      logger?.error('operator-client: question decision parse error', {route})
+      return err(protocolErr)
+    }
+    return ok({kind: 'accepted', state: parsed.data.state})
+  }
+
   async function getVapidKey(): Promise<Result<VapidKeyResult, GatewayClientError>> {
     const raw = await fetchJson<unknown>('/operator/push/vapid-key', '/operator/push/vapid-key')
     if (!raw.success) {
@@ -1020,6 +1199,8 @@ export function createOperatorClient(options: OperatorClientOptions): OperatorCl
     connectRunStream,
     listRunApprovals,
     decideRunApproval,
+    listRunQuestions,
+    decideRunQuestion,
     getVapidKey,
     getPushSubscriptionMetadata,
     subscribePush,

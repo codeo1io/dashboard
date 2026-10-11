@@ -19,6 +19,15 @@
 
 import type {Result} from '../../result.ts'
 import type {OperatorDecisionState} from './approval.ts'
+import type {
+  PendingQuestionsResponse,
+  QuestionDecisionErrorResponse,
+  QuestionDecisionInvalidReason,
+  QuestionDecisionResponse,
+  QuestionOptionDetail,
+  QuestionPromptDetail,
+  QuestionRequestDetail,
+} from './question-frame.ts'
 import type {OperatorWebStatus} from './run-status.ts'
 
 import {err, ok} from '../../result.ts'
@@ -71,6 +80,7 @@ const VALID_WEB_STATUSES: ReadonlySet<string> = new Set([
   'blocked',
   'running',
   'waiting_for_approval',
+  'waiting_for_question',
   'succeeded',
   'failed',
   'cancelled',
@@ -176,4 +186,145 @@ export function parseRunApprovalDecisionResponse(input: unknown): Result<RunAppr
 
   const response: RunApprovalDecisionResult = {state: input.state as OperatorDecisionState}
   return ok(response)
+}
+
+// ---------------------------------------------------------------------------
+// Question surface (contract 1.9.0, rm-912) — GET questions / POST decision
+// ---------------------------------------------------------------------------
+
+/**
+ * Gateway build-side bounds, mirrored from fro-bot/agent
+ * approvals/question-detail.ts at v0.119.1: the registry refuses to register a
+ * request outside these, so a CONFORMING gateway never emits beyond them.
+ */
+export const QUESTION_BUILD_BOUNDS = {
+  maxQuestionsPerRequest: 8,
+  maxOptionsPerQuestion: 64,
+  maxHeaderLength: 128,
+  maxTextLength: 4096,
+  maxLabelLength: 256,
+  maxDescriptionLength: 1024,
+  maxAnswerTextLength: 4000,
+} as const
+
+/**
+ * Wire-side parse tolerance: the gateway's own untrusted-array safety net caps
+ * questions/options arrays at 256 before validation, and the pending-questions
+ * listing is hard-capped at 50 requests per call. The consumer parser accepts
+ * anything within these nets and fails closed above them.
+ */
+export const QUESTION_WIRE_CAPS = {
+  maxArrayEntries: 256,
+  maxPendingRequests: 50,
+} as const
+
+const QUESTION_DECISION_STATES: ReadonlySet<string> = new Set([
+  'claimed',
+  'already_claimed',
+  'already_settled',
+  'failed_to_settle',
+])
+
+const QUESTION_DECISION_REASONS: ReadonlySet<string> = new Set([
+  'malformed',
+  'arity-mismatch',
+  'unknown-option',
+  'multiple-not-allowed',
+  'empty-value',
+  'text-too-long',
+])
+
+function hasValidQuestionOptionShape(value: unknown): value is QuestionOptionDetail {
+  if (!isObject(value)) return false
+  return (
+    isCappedString(value.label, QUESTION_BUILD_BOUNDS.maxLabelLength) &&
+    isCappedString(value.description, QUESTION_BUILD_BOUNDS.maxDescriptionLength)
+  )
+}
+
+function hasValidQuestionPromptShape(value: unknown): value is QuestionPromptDetail {
+  if (!isObject(value)) return false
+  if (
+    !isCappedString(value.header, QUESTION_BUILD_BOUNDS.maxHeaderLength) ||
+    !isCappedString(value.text, QUESTION_BUILD_BOUNDS.maxTextLength) ||
+    typeof value.multiple !== 'boolean' ||
+    typeof value.custom !== 'boolean' ||
+    !Array.isArray(value.options) ||
+    value.options.length > QUESTION_BUILD_BOUNDS.maxOptionsPerQuestion
+  ) {
+    return false
+  }
+  return value.options.every(option => hasValidQuestionOptionShape(option))
+}
+
+function hasValidQuestionRequestShape(value: unknown): value is QuestionRequestDetail {
+  if (!isObject(value)) return false
+  if (
+    !isCappedString(value.requestID, MAX_ID_LENGTH) ||
+    !Array.isArray(value.questions) ||
+    value.questions.length === 0 ||
+    value.questions.length > QUESTION_WIRE_CAPS.maxArrayEntries
+  ) {
+    return false
+  }
+  return value.questions.every(question => hasValidQuestionPromptShape(question))
+}
+
+/**
+ * Parse an unknown value as a pending-questions listing response.
+ *
+ * Follows the approvals-listing precedent: any invalid item fails the whole
+ * list (never a partial render of untrusted text). The requests array is
+ * capped at the gateway's PENDING_QUESTIONS_MAX_RESULTS (50); a longer array
+ * is protocol drift, not truncation to render.
+ */
+export function parsePendingQuestionsResponse(input: unknown): Result<PendingQuestionsResponse, Error> {
+  if (!isObject(input) || !Array.isArray(input.requests) || input.requests.length > QUESTION_WIRE_CAPS.maxPendingRequests) {
+    return err(new Error('invalid pending questions response shape'))
+  }
+
+  const requests: QuestionRequestDetail[] = []
+  for (const item of input.requests) {
+    if (!hasValidQuestionRequestShape(item)) {
+      return err(new Error('invalid pending questions response shape'))
+    }
+    requests.push({
+      requestID: item.requestID,
+      questions: item.questions.map(question => ({
+        header: question.header,
+        text: question.text,
+        options: question.options.map(option => ({label: option.label, description: option.description})),
+        multiple: question.multiple,
+        custom: question.custom,
+      })),
+    })
+  }
+
+  return ok({requests})
+}
+
+/** Parse an unknown value as a question-decision 200 response. Fixed reason on failure. */
+export function parseQuestionDecisionResponse(input: unknown): Result<QuestionDecisionResponse, Error> {
+  if (!isObject(input) || typeof input.state !== 'string' || !QUESTION_DECISION_STATES.has(input.state)) {
+    return err(new Error('invalid question decision response shape'))
+  }
+  return ok({state: input.state as QuestionDecisionResponse['state']})
+}
+
+/**
+ * Parse an unknown value as a question-decision 400 body: {error: 'bad request',
+ * reason, questionIndex}. Used for typed refusal rendering (the prompt stays
+ * open). Fixed reason on failure — an unparseable 400 is surfaced as 'malformed'
+ * with questionIndex null rather than echoing any wire text.
+ */
+export function parseQuestionDecisionErrorResponse(input: unknown): QuestionDecisionErrorResponse {
+  const fallback: QuestionDecisionErrorResponse = {error: 'bad request', reason: 'malformed', questionIndex: null}
+  if (!isObject(input)) return fallback
+  if (typeof input.reason !== 'string' || !QUESTION_DECISION_REASONS.has(input.reason)) return fallback
+  const reason = input.reason as QuestionDecisionInvalidReason
+  if (input.questionIndex === null) return {error: 'bad request', reason, questionIndex: null}
+  if (typeof input.questionIndex !== 'number' || !Number.isInteger(input.questionIndex) || input.questionIndex < 0) {
+    return fallback
+  }
+  return {error: 'bad request', reason, questionIndex: input.questionIndex}
 }

@@ -1103,8 +1103,8 @@ describe('fixture runs index — GET /runs', () => {
     }
   })
 
-  it('statuses do NOT include stream-only values (blocked, waiting_for_approval)', async () => {
-    const STREAM_ONLY_STATUSES = new Set(['blocked', 'waiting_for_approval'])
+  it('statuses do NOT include stream-only values (blocked, waiting_for_approval, waiting_for_question)', async () => {
+    const STREAM_ONLY_STATUSES = new Set(['blocked', 'waiting_for_approval', 'waiting_for_question'])
     const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
     const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs`)
     const {runs: body} = await res.json() as {runs: Record<string, unknown>[]}

@@ -112,6 +112,8 @@ export function runStatusLabel(status: RunStatus): string {
       return 'Running'
     case 'waiting_for_approval':
       return 'Waiting for approval'
+    case 'waiting_for_question':
+      return 'Waiting for question'
     case 'blocked':
       return 'Blocked — cannot proceed'
     case 'failed':

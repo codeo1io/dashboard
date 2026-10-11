@@ -96,6 +96,12 @@ function makeFakeOperatorClient(
     subscribePush: () => {
       throw new Error('subscribePush must not be called during redirect')
     },
+    listRunQuestions: () => {
+      throw new Error('listRunQuestions must not be called during redirect')
+    },
+    decideRunQuestion: () => {
+      throw new Error('decideRunQuestion must not be called during redirect')
+    },
     unsubscribePush: () => {
       throw new Error('unsubscribePush must not be called during redirect')
     },

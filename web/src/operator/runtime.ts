@@ -50,6 +50,8 @@ export function discoverCardStreamTargets(runId: string): {
   coalescedEl: Element | null
   approvalsEl: Element | null
   badgeEl: Element | null
+  questionsEl: Element | null
+  questionBadgeEl: Element | null
   reasonEl: Element | null
   cancelEl: Element | null
 } {
@@ -61,6 +63,9 @@ export function discoverCardStreamTargets(runId: string): {
     coalescedEl: card?.querySelector('[data-role="run-output-coalesced"]') ?? null,
     approvalsEl: card?.querySelector('[data-role="run-approvals"]') ?? null,
     badgeEl: card?.querySelector('[data-role="approval-badge"]') ?? null,
+    // rm-912 (contract 1.9.0): question prompts + badge on the same card.
+    questionsEl: card?.querySelector('[data-role="run-questions"]') ?? null,
+    questionBadgeEl: card?.querySelector('[data-role="question-badge"]') ?? null,
     reasonEl: card?.querySelector('[data-role="run-reason"]') ?? null,
     cancelEl: card?.querySelector('[data-role="run-cancel"]') ?? null,
   }
@@ -288,6 +293,8 @@ async function defaultRuntimeLoader(opts?: {
       coalescedEl?: Element | null
       approvalsEl?: Element | null
       badgeEl?: Element | null
+      questionsEl?: Element | null
+      questionBadgeEl?: Element | null
       reasonEl?: Element | null
       cancelEl?: Element | null
       endpointBase?: string
@@ -335,7 +342,7 @@ async function defaultRuntimeLoader(opts?: {
 
     // Discover the per-card render targets so live output, coalescing hints,
     // approval prompts, and the approval badge all render — not just status.
-    const {outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, cancelEl} = discoverCardStreamTargets(runId)
+    const {outputEl, coalescedEl, approvalsEl, badgeEl, questionsEl, questionBadgeEl, reasonEl, cancelEl} = discoverCardStreamTargets(runId)
 
     try {
       const handle = streamMod.initOperatorStream({
@@ -346,6 +353,8 @@ async function defaultRuntimeLoader(opts?: {
         coalescedEl,
         approvalsEl,
         badgeEl,
+        questionsEl,
+        questionBadgeEl,
         reasonEl,
         cancelEl,
         endpointBase: opts?.endpointBase,

@@ -33,4 +33,16 @@ export const OPERATOR_CONTRACT_VERSION = '1.8.0'
  */
 export const SUPPORTED_OPERATOR_CONTRACT_VERSIONS: readonly string[] = [
   '1.8.0',
+  '1.9.0',
 ]
+
+/**
+ * rm-912 window entry (2026-10-10): '1.9.0' joined ADDITIVELY — the question
+ * surface (question frames, waiting_for_question, GET questions / POST decision,
+ * 400 {error,reason,questionIndex}) is a pure superset over 1.8.0 frames, so a
+ * 1.8.0-serving gateway remains fully parseable. '1.8.0' stays served until a
+ * deployed-gateway probe (the rm-157 pattern) proves a 1.9.0-only gateway;
+ * retiring '1.8.0' is a separate flip with its own dated evidence, never this
+ * window edit. Gateway source: fro-bot/agent PR #1749, first shipped v0.119.0
+ * (v0.119.1 current at 2026-10-10T11:08:26Z).
+ */

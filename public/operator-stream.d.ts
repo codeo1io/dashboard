@@ -46,6 +46,16 @@ export declare const FIRST_FRAME_TIMEOUT_MS: number
  * Used by reconcileApprovals to guard against truncated recovery responses.
  */
 export declare const GATEWAY_PENDING_APPROVALS_CAP: number
+// rm-912 (contract 1.9.0): question prompt-state and wire bounds.
+export declare const MAX_OPEN_QUESTIONS: number
+export declare const MAX_QUESTION_TOMBSTONES: number
+export declare const GATEWAY_PENDING_QUESTIONS_CAP: number
+export declare const QUESTION_WIRE_ARRAY_CAP: number
+export declare const QUESTION_WIRE_HEADER_MAX: number
+export declare const QUESTION_WIRE_TEXT_MAX: number
+export declare const QUESTION_WIRE_LABEL_MAX: number
+export declare const QUESTION_WIRE_DESCRIPTION_MAX: number
+export declare const QUESTION_WIRE_ANSWER_TEXT_MAX: number
 
 /** Operator-safe failure-reason code. */
 export type FailureKind =
@@ -318,6 +328,95 @@ export interface ApprovalFrameDataSettle {
 }
 
 export type ApprovalFrameData = ApprovalFrameDataOpen | ApprovalFrameDataSettle
+// rm-912 (contract 1.9.0): agent-question SSE frames. All text fields are
+// untrusted agent-authored plain text; rendered inertly (textContent only).
+/** One selectable option of a question. Both strings are untrusted plain text. */
+export interface QuestionOptionData {
+  /** Option label — also the submitted answer value when chosen. */
+  readonly label: string
+  /** Option description. Untrusted plain text. */
+  readonly description: string
+}
+
+/** One question of a request. All strings are untrusted plain text. */
+export interface QuestionPromptData {
+  /** Short label for the question. */
+  readonly header: string
+  /** The question text. */
+  readonly text: string
+  /** Selectable options; may be empty when only a custom answer is meaningful. */
+  readonly options: readonly QuestionOptionData[]
+  /** True when more than one option may be chosen. */
+  readonly multiple: boolean
+  /** True when a free-text answer is accepted in addition to the options. */
+  readonly custom: boolean
+}
+
+/** Open variant of the question frame: a request is pending for this run. */
+export interface QuestionFrameDataOpen {
+  /** The unique request identifier — matches the registry entry. */
+  readonly requestID: string
+  /** The run the question belongs to. */
+  readonly runId: string
+  /** Discriminant: false for open (pending) frames. */
+  readonly settled: false
+  /** One entry per question, in question order. Answers must match this arity. */
+  readonly questions: readonly QuestionPromptData[]
+}
+
+/** Settle/clear variant of the question frame: the request is resolved. */
+export interface QuestionFrameDataSettle {
+  /** The unique request identifier — matches the registry entry. */
+  readonly requestID: string
+  /** The run the question belonged to. */
+  readonly runId: string
+  /** Discriminant: true for settle/clear frames. */
+  readonly settled: true
+}
+
+/** SSE question-frame payload (open or settle variant). */
+export type QuestionFrameData = QuestionFrameDataOpen | QuestionFrameDataSettle
+
+/** A recovered open question request from the reconnect listing. */
+export interface RecoveredQuestionRequest {
+  readonly requestID: string
+  readonly questions: readonly QuestionPromptData[]
+}
+
+/** Fixed refusal-reason codes for a question-decision 400 body. */
+export type QuestionDecisionInvalidReason =
+  | 'malformed'
+  | 'arity-mismatch'
+  | 'unknown-option'
+  | 'multiple-not-allowed'
+  | 'empty-value'
+  | 'text-too-long'
+
+/** Typed question-decision 400 body ({error, reason, questionIndex}). */
+export interface QuestionDecisionBadRequest {
+  readonly error: 'bad request'
+  readonly reason: QuestionDecisionInvalidReason
+  /** The question the problem is in, or null when it concerns the whole request. */
+  readonly questionIndex: number | null
+}
+
+/** The browser client's accepted (HTTP 200) decision outcome. */
+export interface QuestionDecisionAccepted {
+  readonly kind: 'accepted'
+  /** claimed | already_claimed | already_settled | failed_to_settle */
+  readonly state: string
+}
+
+/** The browser client's refused (HTTP 400) decision outcome — request stays pending. */
+export interface QuestionDecisionRefused {
+  readonly kind: 'refused'
+  readonly badRequest: QuestionDecisionBadRequest
+}
+
+/** Outcome of decideRunQuestion: accepted, refused, or a failure Result. */
+export type QuestionDecisionOutcome =
+  | {readonly success: true; readonly data: QuestionDecisionAccepted | QuestionDecisionRefused}
+  | {readonly success: false; readonly error: {readonly kind: 'http'; readonly status: number} | {readonly kind: 'network'} | {readonly kind: 'protocol'}}
 
 export type StreamFrame =
   | {readonly type: 'ready'; readonly data: ReadyFrameData}
@@ -325,6 +424,7 @@ export type StreamFrame =
   | {readonly type: 'reset'; readonly data: ResetFrameData}
   | {readonly type: 'output'; readonly data: OutputFrameData}
   | {readonly type: 'approval'; readonly data: ApprovalFrameData}
+  | {readonly type: 'question'; readonly data: QuestionFrameData}
 
 // ---------------------------------------------------------------------------
 // Parse result
@@ -387,6 +487,10 @@ export interface RunEntry {
    * Use `getOpenApprovals(runEntry)` to read; never access directly.
    */
   readonly approvalOpenPrompts?: Readonly<Record<string, ApprovalFrameDataOpen>>
+  /** rm-912 (contract 1.9.0): open question-request prompts for this run, keyed by request id. */
+  readonly questionOpenPrompts?: Readonly<Record<string, QuestionFrameDataOpen>>
+  /** rm-912: null-prototype map of tombstoned question-request ids (settled/skipped/expired). */
+  readonly questionTombstones?: Readonly<Record<string, true>>
   /**
    * Null-prototype map of tombstoned requestIDs (requestID → true).
    * A tombstoned id means the prompt was settled; any later open for the same id is ignored.
@@ -416,6 +520,8 @@ export interface StreamState {
   readonly runs: Readonly<Record<string, RunEntry>>
   readonly retryCount: number
   readonly shouldReconnect: boolean
+  /** rm-912 (contract 1.9.0): contract version observed in the ready frame (additive). */
+  readonly contractVersion?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +552,21 @@ export interface ApprovalReconcileEvent {
   }[]
 }
 
+/**
+ * rm-912 (contract 1.9.0): corrective reconcile action dispatched by
+ * reconcileQuestions on (re)connect — same explicit pre-GET diff contract as
+ * ApprovalReconcileEvent (the reducer never re-derives the diff).
+ */
+export interface QuestionReconcileEvent {
+  readonly type: 'question-reconcile'
+  readonly runId: string
+  readonly pruneIds: readonly string[]
+  readonly addPrompts: readonly {
+    readonly requestID: string
+    readonly questions: readonly QuestionPromptData[]
+  }[]
+}
+
 // ---------------------------------------------------------------------------
 // Lifecycle events
 // ---------------------------------------------------------------------------
@@ -459,6 +580,7 @@ export type StreamEvent =
   | {readonly type: 'buffer-overflow'}
   | {readonly type: 'first-frame-timeout'}
   | ApprovalReconcileEvent
+  | QuestionReconcileEvent
   | CancelActionEvent
 
 // ---------------------------------------------------------------------------
@@ -523,6 +645,9 @@ export declare function hasOpenApprovals(runEntry: RunEntry | undefined | null):
  * Returns an empty array when there are no open prompts.
  */
 export declare function getOpenApprovals(runEntry: RunEntry | undefined | null): readonly ApprovalFrameDataOpen[]
+// rm-912 (contract 1.9.0): open-question helpers (canonical visibility signals).
+export declare function hasOpenQuestions(runEntry: RunEntry | undefined | null): boolean
+export declare function getOpenQuestions(runEntry: RunEntry | undefined | null): readonly QuestionFrameDataOpen[]
 
 // ---------------------------------------------------------------------------
 // DOM shell (browser-only — never called at module top-level)
@@ -561,6 +686,8 @@ export interface InitOptions {
   readonly badgeEl?: (HTMLElement & {hidden: boolean}) | null
   /** Injectable approval client for testing. If absent, buildApprovalClient() is used. */
   readonly approvalClient?: ApprovalClient | null
+  /** rm-912: injected question client override (fixture/testing). */
+  readonly questionClient?: QuestionClient | null
   /** Optional endpoint base for fixture mode (default: '/operator'). */
   readonly endpointBase?: string
   /** Fixture session ID (fixture mode only). Appended as query param to stream URL and approval requests. */
@@ -569,6 +696,10 @@ export interface InitOptions {
   readonly reasonEl?: Element | null
   /** Cancel control container element (data-role="run-cancel"). */
   readonly cancelEl?: (HTMLElement & {hidden: boolean}) | null
+  /** rm-912: question prompts root element; when absent the question UI is skipped. */
+  readonly questionsEl?: (HTMLElement & {hidden: boolean}) | null
+  /** rm-912: question badge element (open-question count). */
+  readonly questionBadgeEl?: HTMLElement | null
   /** Injectable cancel client for testing. If absent, buildCancelClient() is used. */
   readonly cancelClient?: CancelControlClient | null
 }
@@ -590,6 +721,30 @@ export declare function resetBootstrapState(): void
 
 /** Browser-direct approval client factory. Returns refreshCsrf/decideRunApproval/listRunApprovals. */
 export declare function buildApprovalClient(opts?: {readonly endpointBase?: string; readonly fixtureSessionId?: string}): ApprovalClient
+/**
+ * rm-912 (contract 1.9.0): browser-direct question client for the inline
+ * question prompt UI. Same fetch contract as the approval client (same-origin
+ * /operator paths, credentials 'include', redirect 'error', wall-clock
+ * bounded). decideRunQuestion returns an accepted outcome (HTTP 200), a typed
+ * refused outcome (HTTP 400 — the request stays pending), or a failure Result.
+ */
+export interface QuestionClient {
+  refreshCsrf: () => Promise<{success: boolean; data?: {csrfToken: string}; error?: unknown}>
+  decideRunQuestion: (
+    runId: string,
+    requestId: string,
+    decisionRequest: unknown,
+    idempotencyKey: string,
+  ) => Promise<QuestionDecisionOutcome>
+  listRunQuestions: (
+    runId: string,
+  ) => Promise<
+    | {readonly success: true; readonly data: {readonly requests: RecoveredQuestionRequest[]}}
+    | {readonly success: false; readonly error: {readonly kind: 'http'; readonly status: number} | {readonly kind: 'network'} | {readonly kind: 'protocol'}}
+  >
+}
+
+export declare function buildQuestionClient(opts?: {readonly endpointBase?: string; readonly fixtureSessionId?: string}): QuestionClient
 
 // ---------------------------------------------------------------------------
 // Browser-direct cancel client
@@ -604,7 +759,7 @@ export type CancelTerminalPhase = 'COMPLETED' | 'FAILED' | 'CANCELLED'
 export type RunPhase = 'PENDING' | 'ACKNOWLEDGED' | 'EXECUTING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
 
 /**
- * The 7-value operator-facing web status set. Mirrors
+ * The 8-value operator-facing web status set. Mirrors
  * src/gateway/operator-contract/run-status.ts OperatorWebStatus.
  */
 export type OperatorWebStatus =
@@ -612,6 +767,7 @@ export type OperatorWebStatus =
   | 'blocked'
   | 'running'
   | 'waiting_for_approval'
+  | 'waiting_for_question'
   | 'succeeded'
   | 'failed'
   | 'cancelled'
@@ -728,5 +884,16 @@ export declare function renderApprovalPrompt(
   prompt: ApprovalFrameDataOpen,
   runId: string,
   approvalClient: ApprovalClient,
+  onSettle: () => void,
+): HTMLElement
+/**
+ * rm-912 (contract 1.9.0): render one open question-request prompt. Safe DOM
+ * only (textContent); untrusted text displayed inertly; Answer/Skip controls
+ * with typed 400-refusal surfacing (the request stays pending).
+ */
+export declare function renderQuestionPrompt(
+  prompt: QuestionFrameDataOpen,
+  runId: string,
+  questionClient: QuestionClient,
   onSettle: () => void,
 ): HTMLElement

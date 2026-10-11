@@ -27,6 +27,7 @@ describe('runStatusLabel', () => {
     'queued',
     'running',
     'waiting_for_approval',
+    'waiting_for_question',
     'blocked',
     'failed',
     'cancelled',

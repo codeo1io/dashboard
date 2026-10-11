@@ -55,7 +55,7 @@ describe('parseRunSnapshotResponse', () => {
     }
   })
 
-  it.each(['waiting_for_approval', 'blocked'])(
+  it.each(['waiting_for_approval', 'waiting_for_question', 'blocked'])(
     'accepts endpoint-layer overlay status %s (snapshot layers them after projection)',
     status => {
       const result = parseRunSnapshotResponse({...validSnapshot, status})
