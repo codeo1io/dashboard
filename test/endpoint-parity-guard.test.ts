@@ -58,6 +58,7 @@ const ALLOWLIST: Record<string, string> = {
   'GET /assets/*': 'hashed SPA asset files served cache-immutable; content-addressed, not operator-facing rows',
   'GET /icon-*': 'PWA icon wildcard (favicon + maskable icons); see the PWA rows',
   'GET /registerSW.js': 'PWA registration helper delivered with the sw.js bundle (see the PWA row)',
+  'GET /static/operator-fetch-cap.js': 'operator runtime JS for the reverse-proxied gateway surface — docs/runbooks/gateway-access.md',
   'GET /static/operator-launch.js': 'operator runtime JS for the reverse-proxied gateway surface — docs/runbooks/gateway-access.md',
   'GET /static/operator-run-index.js': 'operator runtime JS for the reverse-proxied gateway surface — docs/runbooks/gateway-access.md',
   'GET /static/operator-stream.js': 'operator runtime JS for the reverse-proxied gateway surface — docs/runbooks/gateway-access.md',

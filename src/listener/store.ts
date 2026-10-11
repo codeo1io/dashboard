@@ -1,3 +1,4 @@
+import type {Logger} from '../logger.ts'
 /**
  * `node:sqlite`-backed persistence for the operator listener channel.
  *
@@ -49,23 +50,28 @@ const MAX_LIST_LIMIT = 200
  * a corrupt cell degrades to "no links" with every other field intact, and
  * every degraded read logs once so silent data loss cannot recur (the
  * endpoint stays 200 with the healthy rows).
+ *
+ * rm-904: the degradation log goes through the app logger (structured
+ * warning + route context, stderr channel discipline) instead of a bare
+ * console.warn — the Logger interface routes warnings to stderr with level
+ * tags, so degraded reads are greppable as logs, not stray console noise.
  */
-function parseLinksCell(raw: string, id: string): readonly ListenerLink[] {
+function parseLinksCell(raw: string, id: string, logger?: Logger): readonly ListenerLink[] {
   try {
     const parsed: unknown = JSON.parse(raw)
     if (Array.isArray(parsed)) return parsed as readonly ListenerLink[]
     throw new Error('not a JSON array')
   } catch (error) {
-    console.warn(
-      `[listener-store] degraded links cell on message ${id}: ${
-        error instanceof Error ? error.message : String(error)
-      } — serving empty links, other fields intact`,
-    )
+    logger?.warning('listener-store: degraded links cell, serving empty links', {
+      route: '/api/listener/messages',
+      messageId: id,
+      reason: error instanceof Error ? error.message : String(error),
+    })
     return []
   }
 }
 
-function rowToMessage(row: MessageRow): ListenerMessage {
+function rowToMessage(row: MessageRow, logger?: Logger): ListenerMessage {
   return {
     id: row.id,
     source: row.source as ListenerMessage['source'],
@@ -73,7 +79,7 @@ function rowToMessage(row: MessageRow): ListenerMessage {
     severity: row.severity as ListenerMessage['severity'],
     title: row.title,
     body: row.body,
-    links: parseLinksCell(row.links, row.id),
+    links: parseLinksCell(row.links, row.id, logger),
     dedupeKey: row.dedupe_key,
     createdAt: row.created_at,
     receivedAt: row.received_at,
@@ -81,10 +87,13 @@ function rowToMessage(row: MessageRow): ListenerMessage {
   }
 }
 
-export function createListenerStore(dbPath: string): ListenerStore {
+export function createListenerStore(dbPath: string, opts?: {logger?: Logger}): ListenerStore {
   if (dbPath !== ':memory:') {
     mkdirSync(dirname(dbPath), {recursive: true})
   }
+
+  // rm-904: structured degradation logging (see parseLinksCell above).
+  const logger = opts?.logger
 
   const db = new DatabaseSync(dbPath)
 
@@ -195,7 +204,7 @@ export function createListenerStore(dbPath: string): ListenerStore {
     const unreadCountRow = countUnreadStmt.get() as unknown as {n: number}
 
     return {
-      messages: rows.map(rowToMessage),
+      messages: rows.map(row => rowToMessage(row, logger)),
       unreadCount: unreadCountRow.n,
       prunedCount: prunedTotal,
     }

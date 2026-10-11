@@ -1282,6 +1282,64 @@ describe('createOperatorSseReader — buffer overflow', () => {
     expect(errors).toHaveLength(1)
     expect(closed).toBe(true)
   })
+
+  it('rm-904: exactly-at-cap does NOT trip (the boundary is > cap, and the count is exact)', async () => {
+    // 250_000 astral chars = exactly 1_000_000 UTF-8 bytes. An off-by-one or
+    // a UTF-16-counting implementation diverges here in opposite directions;
+    // the exact incremental counter must admit it.
+    const exactlyCap = '𝕏'.repeat(MAX_SSE_BUFFER_BYTES / 4)
+    expect(new TextEncoder().encode(exactlyCap).length).toBe(MAX_SSE_BUFFER_BYTES)
+    const {fetchImpl} = makeFakeFetch(makeResponse(200, [exactlyCap]))
+    const reader = createOperatorSseReader({fetchImpl})
+
+    const errors: Error[] = []
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: () => {},
+      onError: err => errors.push(err),
+      onClose: () => {},
+    })
+    expect(errors).toHaveLength(0)
+  })
+
+  it('rm-904: CRLF normalization shrink is counted exactly — a raw-byte adder would trip early', async () => {
+    // 499_999 'a' + 499_999 'b' + 2 CRLF junctions: the NORMALIZED buffer is
+    // exactly 1_000_000 bytes (at cap → admitted), while summing RAW chunk
+    // bytes gives 1_000_002 (over cap → a naive adder fails closed on a
+    // legitimate stream). Chunk-split straddles both CRLF junctions so the
+    // held-CR seam accounting is exercised.
+    const half = 'a'.repeat(MAX_SSE_BUFFER_BYTES / 2 - 1) // 499_999
+    const rest = 'b'.repeat(MAX_SSE_BUFFER_BYTES / 2 - 1)
+    const wire = `${half}\r\n${rest}\r\n`
+    const normalizedBytes = new TextEncoder().encode(wire.replaceAll('\r\n', '\n')).length
+    expect(normalizedBytes).toBe(MAX_SSE_BUFFER_BYTES)
+    // split right after the first junction's CR — the seam the incremental
+    // counter must survive (held CR + LF-leading next chunk).
+    const splitAt = half.length + 1
+    const {fetchImpl} = makeFakeFetch(makeResponse(200, [wire.slice(0, splitAt), wire.slice(splitAt)]))
+    const reader = createOperatorSseReader({fetchImpl})
+
+    const errors: Error[] = []
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: () => {},
+      onError: err => errors.push(err),
+      onClose: () => {},
+    })
+    expect(errors).toHaveLength(0)
+
+    // Companion: one more byte pushes the NORMALIZED count over the cap —
+    // the boundary still fires from the other side.
+    const overWire = `${half}\r\n${rest}b\r\n`
+    expect(new TextEncoder().encode(overWire.replaceAll('\r\n', '\n')).length).toBe(MAX_SSE_BUFFER_BYTES + 1)
+    const {fetchImpl: fetchImpl2} = makeFakeFetch(makeResponse(200, [overWire]))
+    const reader2 = createOperatorSseReader({fetchImpl: fetchImpl2})
+    const errors2: Error[] = []
+    await reader2.open('/operator/runs/run-001/stream', {
+      onEvent: () => {},
+      onError: err => errors2.push(err),
+      onClose: () => {},
+    })
+    expect(errors2).toHaveLength(1)
+  })
 })
 
 describe('createOperatorSseReader — flush path contract gate', () => {
