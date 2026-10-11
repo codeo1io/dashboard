@@ -1101,6 +1101,16 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   }
 
   // ── API routes ───────────────────────────────────────────────────────────────
+  // rm-896: fixture /api/monitoring seam — registered BEFORE the production
+  // /api router so the fixture route wins that exact path while every other
+  // /api/* request falls through to the real router. Guarded by the same
+  // fixture-harness gate as /__fixture/operator/* (dev/test env + loopback +
+  // explicit flag); the route itself stays behind the auth middleware like the
+  // real /api/monitoring (the visual server runs DASHBOARD_DEV_AUTOLOGIN=true).
+  if (fixtureHarnessActive) {
+    const {buildMonitoringFixtureApiRouter} = await import('./routes/monitoring-fixture.ts')
+    app.route('/api', buildMonitoringFixtureApiRouter())
+  }
   app.route('/api', buildApiRouter(getSnapshot))
 
   // ── Operator listener channel ───────────────────────────────────────────────
