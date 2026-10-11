@@ -450,6 +450,7 @@ export function nextStreamState(current, event) {
         // Contract version mismatch — fail closed, clear all run state
         return {
           connection: 'drift',
+          driftReason: 'contract-version',
           runs: Object.create(null),
           retryCount: current.retryCount,
           shouldReconnect: false,
@@ -459,6 +460,7 @@ export function nextStreamState(current, event) {
         ...current,
         connection: 'live',
         shouldReconnect: false,
+        firstFrameSeen: true,
       }
     }
 
@@ -786,10 +788,74 @@ export function nextStreamState(current, event) {
     }
 
     case 'stream-closed': {
+      // rm-866/rm-867: terminal truths survive the trailing EOF. A close
+      // arriving after the budget exhausted (failed), after contract drift,
+      // or while the run is parked as submitted-unobservable must not paint
+      // the benign "stream ended" notice over the real outcome.
+      if (
+        current.connection === 'failed' ||
+        current.connection === 'drift' ||
+        current.connection === 'submitted-unobservable'
+      ) {
+        return current
+      }
+      // rm-866: a stream that ends before ANY verified frame never
+      // legitimately "ended" — surface contract-drift truth with retry
+      // eligibility instead of the benign terminal close.
+      if (current.firstFrameSeen !== true) {
+        return {
+          ...current,
+          connection: 'drift',
+          driftReason: 'zero-frame',
+          shouldReconnect: true,
+        }
+      }
       return {
         ...current,
         connection: 'closed',
         shouldReconnect: false,
+      }
+    }
+    case 'frame-verified': {
+      // rm-866/rm-867: the first verified frame gates the zero-frame
+      // terminal truth. It deliberately does NOT reset the clean-EOF retry
+      // budget — consecutive accept-then-EOF cycles count even when each
+      // cycle delivers frames; a healthy stream proves itself by NOT
+      // ending, not by any single frame.
+      return {
+        ...current,
+        firstFrameSeen: true,
+      }
+    }
+    case 'clean-eof-reconnect': {
+      // rm-867: every clean-EOF-triggered reconnect joins the retry budget
+      // — the cap previously lived only in the error/reset transitions, so
+      // armed states that EOFed and re-armed without passing through those
+      // transitions (e.g. drift) retried forever at frozen backoff. The
+      // cycle is charged ONCE: when the transition that armed
+      // shouldReconnect already charged the budget this cycle (a reset
+      // frame mid-stream — the reader passes armedByReset), the EOF itself
+      // does not re-charge. Every other EOF charges: a frameless cycle
+      // never charged anything, and skipping it would loop forever at
+      // frozen backoff — the exact disease this item cures.
+      if (current.retryCount >= RETRY_MAX_COUNT) {
+        return {
+          ...current,
+          connection: 'failed',
+          shouldReconnect: false,
+        }
+      }
+      if (event.data?.armedByReset === true) {
+        return {
+          ...current,
+          shouldReconnect: true,
+        }
+      }
+      return {
+        ...current,
+        connection: 'reconnecting',
+        retryCount: current.retryCount + 1,
+        shouldReconnect: true,
       }
     }
 
@@ -2095,6 +2161,7 @@ export function initOperatorStream(opts) {
     runs: Object.create(null), // null-prototype to guard against __proto__ key pollution
     retryCount: 0,
     shouldReconnect: false,
+    firstFrameSeen: false,
   }
 
   let abortController = null
@@ -2102,6 +2169,11 @@ export function initOperatorStream(opts) {
   let firstFrameTimer = null // track pending first-frame timeout
   let aborted = false // set by close() to prevent late timer from fetching
   let announcedFailure = false
+  // rm-867: whether THIS connection cycle has verified at least one frame.
+  // An EOF after a frameless cycle always charges the retry budget; only a
+  // reset-armed cycle (frames arrived, then a reset charged) is already
+  // charged when its EOF lands. See the done branch's armedByReset.
+  let verifiedFrameThisCycle = false
 
   function updateDOM() {
     // Late-frame guard: after close(), no write of any kind (notice, status,
@@ -2139,7 +2211,9 @@ export function initOperatorStream(opts) {
         noticeEl.textContent = 'Connecting to run stream\u2026'
         noticeEl.hidden = false
       } else if (conn === 'drift') {
-        noticeEl.textContent = 'Stream version mismatch \u2014 refresh the page.'
+        noticeEl.textContent = state.driftReason === 'zero-frame'
+          ? 'Stream closed before any verified frame \u2014 reconnecting (contract drift or truncation).'
+          : 'Stream version mismatch \u2014 refresh the page.'
         noticeEl.hidden = false
       } else if (conn === 'not-found') {
         noticeEl.textContent = 'Run stream unavailable.'
@@ -2345,6 +2419,19 @@ export function initOperatorStream(opts) {
     }
   }
 
+  function noteVerifiedFrame() {
+    // rm-866/rm-867: the first verified (successfully parsed) frame gates
+    // the zero-frame terminal truth. Dispatched at most once per stream
+    // lifetime; the clean-EOF retry budget is unaffected (see the
+    // frame-verified reducer case). verifiedFrameThisCycle is per-CYCLE —
+    // it tells the done branch whether an EOF follows a reset-armed
+    // (already charged) cycle or a frameless one (which must charge).
+    verifiedFrameThisCycle = true
+    if (state.firstFrameSeen !== true) {
+      dispatch({type: 'frame-verified'})
+    }
+  }
+
   /**
    * Reconcile open approvals on (re)connect: one-shot corrective GET on stream open.
    *
@@ -2450,6 +2537,11 @@ export function initOperatorStream(opts) {
     // and wrongly dispatch first-frame-timeout on a recovering stream.
     clearFirstFrameTimer()
 
+    // rm-867: reset the per-cycle frame-verification marker — each cycle
+    // starts unverified and its EOF charges the budget unless a reset
+    // already charged it mid-cycle.
+    verifiedFrameThisCycle = false
+
     // Abort any superseded connection before starting a new one (rm-261).
     // Replacing the controller without aborting the old one strands that
     // fetch — its reader stays locked and the socket stays held, and browsers
@@ -2545,15 +2637,38 @@ export function initOperatorStream(opts) {
                   const flushResult = parseSseFrame(`${buffer}\n\n`)
                   if (flushResult !== null && flushResult.success) {
                     clearFirstFrameTimer()
+                    noteVerifiedFrame()
                     dispatch(flushResult.frame)
                   }
                   buffer = ''
                 }
                 // Stream ended — check if we should reconnect
+                // rm-866: the stream terminating ends the first-frame watch
+                // too. A backoff window longer than FIRST_FRAME_TIMEOUT_MS
+                // must not fire a stale timer mid-budget and park the card
+                // as submitted-unobservable.
+                clearFirstFrameTimer()
                 if (state.shouldReconnect) {
-                  scheduleReconnect()
+                  // rm-867: budget clean-EOF-triggered reconnects — accept-then-EOF
+                  // cycles used to retry forever at frozen backoff. Only an EOF
+                  // that follows a reset-armed cycle is already charged
+                  // (verifiedFrameThisCycle); a frameless cycle charges here.
+                  const armedByReset =
+                    state.connection === 'reconnecting' && verifiedFrameThisCycle
+                  dispatch({type: 'clean-eof-reconnect', data: {armedByReset}})
+                  if (state.shouldReconnect) {
+                    scheduleReconnect()
+                  }
                 } else {
                   dispatch({type: 'stream-closed'})
+                  // rm-866: a zero-frame EOF surfaced drift truth WITH retry
+                  // eligibility — act on it: schedule the budgeted retry
+                  // (rm-867). The drift notice stays visible through the
+                  // backoff window; consecutive zero-frame EOFs charge the
+                  // budget on the armed side and exhaustion lands failed.
+                  if (state.shouldReconnect) {
+                    scheduleReconnect()
+                  }
                 }
                 return
               }
@@ -2589,6 +2704,7 @@ export function initOperatorStream(opts) {
                 if (result !== null && result.success) {
                   // Clear the first-frame timer on the first successfully parsed frame
                   clearFirstFrameTimer()
+                  noteVerifiedFrame()
                   dispatch(result.frame)
                   // Parse failures are silently dropped (fail closed, no logging of frame data)
                 }

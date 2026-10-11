@@ -9,10 +9,13 @@ import type {InstallationRecord, InstallationsClient, RepoRecord} from '../src/g
 
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {
+  buildInstallationsClient,
   CORE_READ_PERMISSIONS,
   enumerateRepos,
+  EnumerationPageCeilingError,
   FetchInstallationsError,
   FULL_READ_PERMISSIONS,
+  MAX_ENUMERATION_PAGES,
   mintReadOnlyToken,
   OPTIONAL_READ_PERMISSIONS,
 } from '../src/github/installations.ts'
@@ -928,5 +931,87 @@ describe('token cache hygiene — bounded + departure-pruned', () => {
     // base+1 was refreshed, so it is still cached.
     await mintReadOnlyToken(base + 1, mint)
     expect(mintsFor(mint, base + 1)).toBe(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-868: enumeration walker page ceilings. Both REST walkers are bounded by
+// MAX_ENUMERATION_PAGES; hitting the ceiling is never silent — partial rows
+// are preserved, the census is flagged incomplete, and the ceiling is
+// signalled as a distinct degradation (not an installation failure).
+// ---------------------------------------------------------------------------
+
+describe('rm-868: enumeration walker page ceilings', () => {
+  it('installations walker terminates an endless-pages fixture at MAX_ENUMERATION_PAGES, signalling the ceiling with partial rows', async () => {
+    // Full (exactly per_page) pages forever — a short page means "last page"
+    // to the walker, so the endless fixture must never return one.
+    const endlessPage = () => ({
+      data: Array.from({length: 100}, (_, i) => ({
+        id: i + 1,
+        account: {login: `org-${i}`},
+        app_slug: 'fro-bot',
+      })),
+    })
+    const octokitRequest = vi.fn(async () => endlessPage())
+    const appClient = {octokit: {request: octokitRequest}}
+    const client = buildInstallationsClient(appClient as unknown as Parameters<typeof buildInstallationsClient>[0])
+
+    await expect(client.listInstallations()).rejects.toMatchObject({
+      failureReason: 'enumeration-page-ceiling',
+    })
+    expect(octokitRequest).toHaveBeenCalledTimes(MAX_ENUMERATION_PAGES)
+  })
+
+  it('enumerateRepos absorbs a capped installation census: partial rows kept, enumerationIncomplete flagged', async () => {
+    const partialInstallations = [makeInstall(1), makeInstall(2)]
+    const client = makeClient({
+      listInstallations: vi.fn().mockRejectedValue(
+        new EnumerationPageCeilingError('GET /app/installations page ceiling', {installations: partialInstallations}),
+      ),
+      listInstallationRepos: vi.fn().mockResolvedValue([makeRepo({node_id: 'REPO_A', full_name: 'org-a/repo-a'})]),
+    })
+
+    const result = await enumerateRepos(client)
+
+    expect(isOk(result)).toBe(true)
+    if (isOk(result)) {
+      expect(result.data.installations).toEqual(partialInstallations)
+      expect(result.data.enumerationIncomplete).toBe(true)
+      expect(result.data.repos.length).toBe(1)
+      expect(result.data.failedInstallationIds).toEqual([])
+    }
+  })
+
+  it('enumerateRepos absorbs a capped repos walk: partial repos kept, installation not counted failed, flagged incomplete', async () => {
+    const partialRepos = [makeRepo({node_id: 'REPO_HALF', full_name: 'org-a/partial'})]
+    const client = makeClient({
+      listInstallations: vi.fn().mockResolvedValue([makeInstall(1)]),
+      listInstallationRepos: vi.fn().mockRejectedValue(
+        new EnumerationPageCeilingError('GET /installation/repositories page ceiling', {repos: partialRepos}),
+      ),
+    })
+
+    const result = await enumerateRepos(client)
+
+    expect(isOk(result)).toBe(true)
+    if (isOk(result)) {
+      expect(result.data.repos.map(repo => repo.node_id)).toEqual(['REPO_HALF'])
+      expect(result.data.failedInstallationIds).toEqual([])
+      expect(result.data.enumerationIncomplete).toBe(true)
+    }
+  })
+
+  it('happy path stays complete: enumerationIncomplete false when no ceiling is hit', async () => {
+    const client = makeClient({
+      listInstallations: vi.fn().mockResolvedValue([makeInstall(1)]),
+      listInstallationRepos: vi.fn().mockResolvedValue([makeRepo({node_id: 'REPO_A', full_name: 'org-a/repo-a'})]),
+    })
+
+    const result = await enumerateRepos(client)
+
+    expect(isOk(result)).toBe(true)
+    if (isOk(result)) {
+      expect(result.data.enumerationIncomplete).toBe(false)
+    }
   })
 })
