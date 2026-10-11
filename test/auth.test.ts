@@ -246,6 +246,39 @@ describe('sanitizeErrorMessage (FIX #5)', () => {
     expect(sanitizeErrorMessage(msg)).toContain('[REDACTED]')
   })
 
+  it('redacts a dotted stateless installation token whole, app id included (rm-939)', () => {
+    // Stateless App installation tokens are ghs_<appid>.<jwt>.<sig> (~520
+    // chars, rollout complete 2026-10-02). With a realistic short app id the
+    // old pass could not match past the first dot and the JWT pass ate only
+    // the dotted body, stranding `ghs_604912.` with the app id exposed.
+    const msg = 'install token mint failed: ghs_604912.eyJhbGciOiJIUzI1NiJ9.SflKxwRJSMeKKF2notreal'
+    const out = sanitizeErrorMessage(msg)
+    expect(out).not.toContain('ghs_')
+    expect(out).not.toContain('604912')
+    expect(out).not.toContain('eyJ')
+    expect(out.split('[REDACTED]').length - 1).toBe(1)
+  })
+
+  it('redacts a dotted gho_ token to a single placeholder (rm-939)', () => {
+    const msg = 'refresh failed for gho_123456.eyJhbGciOiJIUzI1NiJ9.SflKxwRJSMeKKF2notreal at boundary'
+    const out = sanitizeErrorMessage(msg)
+    expect(out).not.toContain('gho_')
+    expect(out.split('[REDACTED]').length - 1).toBe(1)
+  })
+
+  it('redacts a dotted stateless token with a short app id, whole (rm-939)', () => {
+    // A 5-digit GitHub App id makes the first dotted segment 8 chars — too
+    // short for the JWT-shaped pass, and gh[opsu]_\w{10,} stops at the first
+    // dot — so the ENTIRE ghs_<appid>.<jwt>.<sig> token leaked. The
+    // dot-inclusive class collapses it to one placeholder.
+    const msg = 'install token mint failed: ghs_6049.eyJhbGciOiJIUzI1NiJ9.SflKxwRJSMeKKF2notreal'
+    const out = sanitizeErrorMessage(msg)
+    expect(out).not.toContain('ghs_')
+    expect(out).not.toContain('6049')
+    expect(out).not.toContain('eyJ')
+    expect(out.split('[REDACTED]').length - 1).toBe(1)
+  })
+
   it('redacts PEM blocks', () => {
     const pem = '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----'
     const msg = `key load failed: ${pem}`

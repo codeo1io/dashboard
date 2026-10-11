@@ -51,8 +51,11 @@ export function sanitizeErrorMessage(input: string): string {
   let out = input.replaceAll(/-----BEGIN[^-]+-----[\s\S]*?-----END[^-]+-----/g, REDACTED)
   // Strip JWT-shaped strings (three base64url segments separated by dots)
   out = out.replaceAll(/[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}/g, REDACTED)
-  // Strip GitHub tokens: gho_, ghs_, ghp_, ghu_, github_pat_
-  out = out.replaceAll(/gh[opsu]_\w{10,}/gi, REDACTED)
+  // Strip GitHub tokens: gho_, ghs_, ghp_, ghu_, github_pat_. The token
+  // class is dot-inclusive so a dotted stateless App installation token
+  // (ghs_<appid>.<jwt>.<sig>) collapses whole even when a short app id keeps
+  // the first segment under the JWT-shaped pass's 10-char floor (rm-939).
+  out = out.replaceAll(/gh[opsu]_[\w.-]{10,}/gi, REDACTED)
   out = out.replaceAll(/github_pat_\w{10,}/gi, REDACTED)
   // Strip bearer-looking long opaque tokens (40+ chars, e.g. OAuth tokens)
   out = out.replaceAll(/\b[\w-]{40,}\b/g, REDACTED)
