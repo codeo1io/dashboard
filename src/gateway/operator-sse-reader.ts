@@ -25,6 +25,7 @@
 
 import type {Logger} from '../logger.ts'
 import type {OperatorApprovalFrame} from './operator-contract/approval-frame.ts'
+import type {OperatorQuestionFrame, OperatorQuestionItem, OperatorQuestionOption} from './operator-contract/question-frame.ts'
 import type {ResetReason, RunStreamFrame} from './operator-contract/sse-frames.ts'
 import {parseOperatorCheckoutPreparation, parseOperatorCheckoutProvenance} from './operator-contract/provenance.ts'
 import {isOperatorFailureKind} from './operator-contract/run-status.ts'
@@ -54,6 +55,7 @@ const VALID_STATUSES: ReadonlySet<string> = new Set([
   'blocked',
   'running',
   'waiting_for_approval',
+  'waiting_for_question',
   'succeeded',
   'failed',
   'cancelled',
@@ -206,7 +208,15 @@ function parseSseRecord(record: string): SseParseResult | null {
           entityRef: candidate.entityRef,
           surface: candidate.surface as 'github' | 'discord' | 'web',
           phase: candidate.phase as 'PENDING' | 'ACKNOWLEDGED' | 'EXECUTING' | 'COMPLETED' | 'FAILED' | 'CANCELLED',
-          status: candidate.status as 'queued' | 'blocked' | 'running' | 'waiting_for_approval' | 'succeeded' | 'failed' | 'cancelled',
+          status: candidate.status as
+          | 'queued'
+          | 'blocked'
+          | 'running'
+          | 'waiting_for_approval'
+          | 'waiting_for_question'
+          | 'succeeded'
+          | 'failed'
+          | 'cancelled',
           startedAt: candidate.startedAt,
           stale: candidate.stale,
           ...(failureKind === undefined ? {} : {failureKind}),
@@ -310,6 +320,92 @@ function parseSseRecord(record: string): SseParseResult | null {
       }
       return {success: true, frame: {type: 'approval', data}}
     }
+  }
+
+  if (eventName === 'question') {
+    // operator-contract 1.9.0 (gateway v0.119.0 PR #1749). Fail-closed:
+    // runId/requestID are non-empty strings (gateway caps them at 128 chars,
+    // slash-free); settled is the boolean discriminator. Every question
+    // string field is bounded at 4000 chars and is inert display text — the
+    // operator surface renders it with textContent only. The settle variant
+    // carries only runId + requestID (everything else is ignored on settle).
+    if (
+      typeof candidate.runId !== 'string' ||
+      candidate.runId.length === 0 ||
+      candidate.runId.length > 128 ||
+      candidate.runId.includes('/') ||
+      typeof candidate.requestID !== 'string' ||
+      candidate.requestID.length === 0 ||
+      candidate.requestID.length > 128 ||
+      candidate.requestID.includes('/')
+    ) {
+      return {success: false, error: new Error('question frame missing required fields')}
+    }
+    if (typeof candidate.settled !== 'boolean') {
+      return {success: false, error: new Error('question frame has invalid settled discriminator')}
+    }
+    if (candidate.settled) {
+      const data: OperatorQuestionFrame = {
+        runId: candidate.runId,
+        requestID: candidate.requestID,
+        settled: true,
+      }
+      return {success: true, frame: {type: 'question', data}}
+    }
+    // Open variant: a non-empty questions array, each item bounded.
+    if (!Array.isArray(candidate.questions) || candidate.questions.length === 0) {
+      return {success: false, error: new Error('question frame missing required fields')}
+    }
+    const questions: OperatorQuestionItem[] = []
+    for (const rawQuestion of candidate.questions) {
+      if (typeof rawQuestion !== 'object' || rawQuestion === null || Array.isArray(rawQuestion)) {
+        return {success: false, error: new Error('question frame missing required fields')}
+      }
+      const question = rawQuestion as {
+        header?: unknown
+        text?: unknown
+        options?: unknown
+        multiple?: unknown
+        custom?: unknown
+      }
+      if (
+        typeof question.header !== 'string' ||
+        question.header.length === 0 ||
+        question.header.length > 4000 ||
+        typeof question.text !== 'string' ||
+        question.text.length > 4000 ||
+        typeof question.multiple !== 'boolean' ||
+        typeof question.custom !== 'boolean' ||
+        !Array.isArray(question.options)
+      ) {
+        return {success: false, error: new Error('question frame missing required fields')}
+      }
+      const options: OperatorQuestionOption[] = []
+      for (const rawOption of question.options) {
+        if (typeof rawOption !== 'object' || rawOption === null || Array.isArray(rawOption)) {
+          return {success: false, error: new Error('question frame missing required fields')}
+        }
+        const option = rawOption as {label?: unknown; description?: unknown}
+        if (
+          typeof option.label !== 'string' ||
+          option.label.length === 0 ||
+          option.label.length > 4000 ||
+          typeof option.description !== 'string' ||
+          option.description.length > 4000
+        ) {
+          return {success: false, error: new Error('question frame missing required fields')}
+        }
+        options.push({label: option.label, description: option.description})
+      }
+      questions.push({header: question.header, text: question.text, options, multiple: question.multiple, custom: question.custom})
+    }
+    const data: OperatorQuestionFrame = {
+      runId: candidate.runId,
+      requestID: candidate.requestID,
+      settled: false,
+      questions,
+    }
+    return {success: true, frame: {type: 'question', data}}
   }
 
   // Unknown event name — fixed error string, never echoes the name
