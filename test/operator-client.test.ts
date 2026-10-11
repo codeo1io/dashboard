@@ -17,7 +17,7 @@ import type {
   OperatorClientOptions,
   RunStreamEvent,
 } from '../src/gateway/operator-client.ts'
-import {describe, expect, it} from 'vitest'
+import {describe, expect, it, vi} from 'vitest'
 import {createOperatorClient, validateOperatorPath} from '../src/gateway/operator-client.ts'
 import {MAX_SSE_BUFFER_BYTES} from '../src/gateway/operator-sse-reader.ts'
 
@@ -3617,5 +3617,88 @@ describe('unsubscribePush', () => {
         expect(ctx.route).toBe('/operator/push/subscriptions/unsubscribe')
       }
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-900 — non-ok error bodies are released before the error is returned
+// ---------------------------------------------------------------------------
+
+describe('fetchJson — non-ok error bodies are cancelled (rm-900)', () => {
+  const validRequest: LaunchRunRequest = {
+    repo: 'owner/repo',
+    prompt: 'fix the bug',
+    idempotencyKey: 'idem-key-abc',
+    csrfToken: 'csrf-token-xyz',
+  }
+
+  it('cancels the unread 503 error body before returning the http error', async () => {
+    const response = new Response('service unavailable: gateway under load', {
+      status: 503,
+      headers: {'content-type': 'text/plain'},
+    })
+    const body = response.body
+    if (body === null) throw new Error('test setup: response body unexpectedly null')
+    const cancelSpy = vi.spyOn(body, 'cancel')
+    const client = createOperatorClient({
+      fetch: async () => response,
+      createEventStream: makeEventStream([]),
+    })
+    const result = await client.launchRun(validRequest)
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.kind).toBe('http')
+      if (result.error.kind === 'http') {
+        expect(result.error.status).toBe(503)
+      }
+    }
+    // The verdict is unchanged AND the unread body no longer pins its socket.
+    expect(cancelSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('every non-ok status releases the body exactly once per fetch (400, 404, 429, 500)', async () => {
+    for (const status of [400, 404, 429, 500]) {
+      // Fresh Response per fetch call: launchRun refreshes CSRF and resends
+      // once on a 400 (rm-485), so a shared Response would conflate cancels.
+      const responses: {cancelSpy: ReturnType<typeof vi.spyOn>}[] = []
+      const fetchImpl = async () => {
+        const response = new Response(JSON.stringify({error: 'gateway_error'}), {
+          status,
+          headers: {'content-type': 'application/json'},
+        })
+        const body = response.body
+        if (body === null) throw new Error('test setup: response body unexpectedly null')
+        const cancelSpy = vi.spyOn(body, 'cancel')
+        responses.push({cancelSpy})
+        return response
+      }
+      const client = createOperatorClient({
+        fetch: fetchImpl,
+        createEventStream: makeEventStream([]),
+      })
+      const result = await client.launchRun(validRequest)
+      expect(result.success).toBe(false)
+      expect(responses.length).toBeGreaterThanOrEqual(1)
+      for (const {cancelSpy} of responses) {
+        expect(cancelSpy).toHaveBeenCalledTimes(1)
+      }
+    }
+  })
+
+  it('ok responses are untouched — the body is read, never cancelled', async () => {
+    const response = new Response(JSON.stringify({runId: 'run-001', ok: true}), {
+      status: 200,
+      headers: {'content-type': 'application/json'},
+    })
+    const body = response.body
+    if (body === null) throw new Error('test setup: response body unexpectedly null')
+    const cancelSpy = vi.spyOn(body, 'cancel')
+    const client = createOperatorClient({
+      fetch: async () => response,
+      createEventStream: makeEventStream([]),
+    })
+    const result = await client.launchRun(validRequest)
+    expect(result.success).toBe(true)
+    expect(cancelSpy).not.toHaveBeenCalled()
   })
 })

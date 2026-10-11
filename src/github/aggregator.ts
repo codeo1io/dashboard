@@ -173,8 +173,15 @@ export interface AggregatorSnapshot {
 export interface SnapshotStore {
   /** Last persisted snapshot, or null when none is usable (fail-open). */
   readonly load: () => AggregatorSnapshot | null
-  /** Best-effort persist of the latest snapshot. */
-  readonly persist: (snapshot: AggregatorSnapshot) => void
+  /**
+   * Best-effort persist of the latest snapshot.
+   *
+   * rm-902: implementations should publish off the event loop — the file
+   * store returns a promise that resolves once the snapshot is on disk and
+   * never rejects; callers may ignore it. Synchronous implementations
+   * remain valid (the union return type accepts both).
+   */
+  readonly persist: (snapshot: AggregatorSnapshot) => void | Promise<void>
 }
 
 // ---------------------------------------------------------------------------
@@ -896,7 +903,14 @@ export function createAggregator(
   function setSnapshot(next: AggregatorSnapshot): void {
     lastGoodSnapshot = next
     try {
-      deps.snapshotStore?.persist(next)
+      // rm-902 — persist is now async (void | Promise<void>): the promise is
+      // fire-and-forget by contract; a sync throw (bad fake) still lands in
+      // the catch, a rejection lands in the .then rejection handler.
+      Promise.resolve(deps.snapshotStore?.persist(next)).then(undefined, error => {
+        logger.warning('Snapshot persist failed; continuing in-memory only', {
+          error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
+        })
+      })
     } catch (error) {
       logger.warning('Snapshot persist failed; continuing in-memory only', {
         error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
