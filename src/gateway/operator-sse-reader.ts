@@ -42,6 +42,12 @@ import {SUPPORTED_OPERATOR_CONTRACT_VERSIONS} from './operator-contract/version.
  * `buffer.length` — a JS string's length counts UTF-16 code units: astral
  * characters undercount 2× (3× worst case for 3-byte BMP chars), letting
  * multi-byte frames sail past a BYTES-named bound.
+ *
+ * rm-904: the append-side accounting is now genuinely incremental too —
+ * per appended fragment, CRLF-normalization shrink included — instead of
+ * re-encoding the whole buffer on every chunk (byte-true but quadratic).
+ * Mirror of the browser twin's nextBufferByteCount
+ * (public/operator-stream.js); both are pinned by boundary tests.
  */
 export const MAX_SSE_BUFFER_BYTES = 1_000_000
 
@@ -546,7 +552,8 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
           // opens the NEXT chunk forges a phantom record boundary and the frame
           // is dropped without even a parse error. Hold a trailing CR back and
           // let it normalize together with the following chunk.
-          let text = buffer + decoder.decode(value, {stream: true})
+          const decoded = decoder.decode(value, {stream: true})
+          let text = buffer + decoded
           let held = ''
           if (text.endsWith('\r')) {
             held = '\r'
@@ -555,8 +562,19 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
           // normalizeCrlf is idempotent on already-normalized text, so
           // re-normalizing the concatenation is safe; only the junction
           // between a held CR and a following LF changes.
+          //
+          // rm-904 exact incremental byte accounting (mirror of the browser
+          // twin's nextBufferByteCount): the already-normalized prefix —
+          // minus a held trailing CR, which is inert ASCII — cannot change
+          // under normalization, so only heldBefore+decoded can shrink (a
+          // CR-LF junction collapsing to LF). Decoded chunks never carry a
+          // dangling surrogate ({stream: true} buffers partial code points),
+          // so summing per-piece UTF-8 lengths equals the whole-buffer count
+          // without re-encoding the whole buffer every chunk.
+          const heldBefore = buffer.endsWith('\r') ? '\r' : ''
           buffer = normalizeCrlf(text) + held
-          bufferBytes = encoder.encode(buffer).length
+          bufferBytes =
+            bufferBytes - heldBefore.length + encoder.encode(normalizeCrlf(heldBefore + decoded)).length
         }
 
         // Hard buffer cap (UTF-8 bytes, rm-114) — fail closed if exceeded without a boundary

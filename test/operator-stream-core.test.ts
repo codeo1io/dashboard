@@ -40,6 +40,7 @@ import {
   MAX_OPEN_APPROVALS,
   MAX_OUTPUT_TEXT_CHARS,
   MAX_SSE_BUFFER_BYTES,
+  nextBufferByteCount,
   nextStreamState,
   parseCheckoutPreparation,
   parseCheckoutProvenance,
@@ -1358,6 +1359,60 @@ describe('appendStreamChunk — pending-CR chunk reassembly (rm-477)', () => {
   })
 })
 
+describe('nextBufferByteCount — incremental byte accounting (rm-904)', () => {
+  const encoder = new TextEncoder()
+
+  it('property: folding any chunk sequence, the incremental count always equals whole-buffer encode length', async () => {
+    // Reachable-state property: a live buffer is ALWAYS the output of
+    // appendStreamChunk folds (normalized interior + at most one held
+    // trailing CR), so the contract is checked over exactly those states:
+    // after every append, nextBufferByteCount's running total must equal a
+    // from-scratch encode of the folded buffer. Multi-byte BMP + astral
+    // chars, CRLF and lone-CR endings, and held-CR seams (buffer ending
+    // '\r') are the inputs where a UTF-16 counter or a raw-adder (no CRLF
+    // shrink) drifts from the truth.
+    const {assert, property, array, constantFrom} = await import('fast-check')
+    const alphabet = Array.from('a\r\n\u00E9\u4E2D\uD83D\uDE00\uD835\uDD4F \t"{}') // code points — never split a surrogate pair
+    const chunkArb = array(constantFrom(...alphabet), {minLength: 0, maxLength: 24}).map(
+      (chars: string[]) => chars.join(''),
+    )
+    const chunksArb = array(chunkArb, {minLength: 1, maxLength: 16})
+    assert(
+      property(chunksArb, (chunks: string[]) => {
+        let buffer = ''
+        let bytes = 0
+        for (const decoded of chunks) {
+          bytes = nextBufferByteCount(buffer, bytes, decoded)
+          buffer = appendStreamChunk(buffer, decoded)
+          expect(bytes).toBe(encoder.encode(buffer).length)
+        }
+      }),
+      {numRuns: 2000},
+    )
+  })
+
+  it('counts a CR-LF junction collapse exactly (held CR + LF-leading chunk shrinks by one byte)', () => {
+    const buffer = 'event: status\r' // ends with a held CR
+    const bufferBytes = encoder.encode(buffer).length
+    const decoded = '\ndata: x\n\n'
+    // appendStreamChunk collapses the \r\n junction: 'event: status\ndata: x\n\n'.
+    expect(nextBufferByteCount(buffer, bufferBytes, decoded)).toBe(
+      encoder.encode(appendStreamChunk(buffer, decoded)).length,
+    )
+  })
+
+  it('folding a stream chunk-by-chunk matches one-shot whole-buffer byte count', () => {
+    const chunks = ['event: status\r', '\ndata: {"a":"\u4E2D"}', '\r\n\r', '\nevent: done\r\n\r\n']
+    let buffer = ''
+    let bytes = 0
+    for (const chunk of chunks) {
+      bytes = nextBufferByteCount(buffer, bytes, chunk)
+      buffer = appendStreamChunk(buffer, chunk)
+    }
+    expect(bytes).toBe(encoder.encode(buffer).length)
+  })
+})
+
 describe('MAX_SSE_BUFFER_BYTES constant', () => {
   it('is a positive number', () => {
     expect(typeof MAX_SSE_BUFFER_BYTES).toBe('number')
@@ -2610,6 +2665,261 @@ describe('initOperatorStream — approval prompt DOM rendering', () => {
 
     expect(decideCalls).toHaveLength(0)
     expect(listCalls).toHaveLength(0)
+  })
+})
+
+function makeAmendmentEnv() {
+  const {client} = makeFakeApprovalClient()
+  const approvalsEl = makeFakeEl('div')
+  approvalsEl.hidden = true
+  approvalsEl.attributes['data-role'] = 'run-approvals'
+  const badgeEl = makeFakeEl('span')
+  badgeEl.hidden = true
+  badgeEl.attributes['data-role'] = 'approval-badge'
+  const statusEl = makeFakeEl('span')
+  const noticeEl = makeFakeEl('div')
+  vi.stubGlobal('document', {
+    createElement: (tag: string) => makeFakeEl(tag),
+    querySelector: () => null,
+    readyState: 'complete',
+    addEventListener: () => {},
+  })
+  vi.stubGlobal('addEventListener', () => {})
+  return {client, approvalsEl, badgeEl, statusEl, noticeEl}
+}
+
+function makeControlledStreamFetch() {
+  let resolveController: (c: ReadableStreamDefaultController<Uint8Array>) => void
+  const controllerReady = new Promise<ReadableStreamDefaultController<Uint8Array>>(resolve => {
+    resolveController = resolve
+  })
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      resolveController(c)
+    },
+  })
+  vi.stubGlobal('fetch', async () => ({
+    status: 200,
+    headers: {get: () => 'text/event-stream'},
+    body,
+  }))
+  return {controllerReady}
+}
+
+describe('rm-902: amended duplicate-open refreshes the rendered prompt in place', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const readyChunk = `event: ready\ndata: ${JSON.stringify({contractVersion: PINNED_CONTRACT_VERSION})}\n\n`
+  const openChunk = (data: Record<string, unknown>) => `event: approval\ndata: ${JSON.stringify(data)}\n\n`
+  const flush = async () => new Promise(resolve => setTimeout(resolve, 10))
+
+  const findPre = (el: FakeElement): FakeElement | undefined => el.children.find(c => c.tagName === 'pre')
+  const findPermEl = (el: FakeElement): FakeElement | undefined =>
+    el.children.find(c => c.className === 'approval-prompt-permission')
+  const findEditCaveat = (el: FakeElement): FakeElement | undefined =>
+    el.children.find(c => c.className === 'approval-prompt-caveat-edit')
+
+  it('reducer: duplicate open with amended content replaces the model entry', () => {
+    let state = nextStreamState(INITIAL_STATE, {type: 'ready', data: {contractVersion: PINNED_CONTRACT_VERSION}})
+    state = nextStreamState(state, {
+      type: 'approval',
+      data: {runId: 'run-001', requestID: 'req-001', permission: 'shell', command: 'echo ORIGINAL', settled: false},
+    })
+    state = nextStreamState(state, {
+      type: 'approval',
+      data: {runId: 'run-001', requestID: 'req-001', permission: 'edit', filepath: 'src/a.ts', settled: false},
+    })
+    const prompts = getOpenApprovals(state.runs['run-001'])
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]?.permission).toBe('edit')
+    expect(prompts[0]?.filepath).toBe('src/a.ts')
+    expect(prompts[0]?.command).toBeUndefined() // full replacement, not a merge
+  })
+
+  it('amended duplicate-open replaces the stale command on the SAME element', async () => {
+    const {client, approvalsEl, badgeEl, statusEl, noticeEl} = makeAmendmentEnv()
+    const {controllerReady} = makeControlledStreamFetch()
+    const encoder = new TextEncoder()
+
+    const handle = initOperatorStream({
+      runId: 'run-001',
+      statusEl,
+      noticeEl,
+      approvalsEl,
+      badgeEl,
+      approvalClient: client,
+    })
+
+    const controller = await controllerReady
+    controller.enqueue(
+      encoder.encode(
+        readyChunk +
+        openChunk({runId: 'run-001', requestID: 'req-001', permission: 'shell', command: 'echo ORIGINAL', settled: false}),
+      ),
+    )
+    await flush()
+
+    const firstEl = approvalsEl.children[0]
+    if (firstEl === undefined) throw new Error('expected a rendered prompt element')
+    expect(findPre(firstEl)?.textContent).toBe('echo ORIGINAL')
+    expect(findPermEl(firstEl)?.textContent).toBe('Shell command')
+
+    // Amended duplicate-open: same requestID, amended command.
+    controller.enqueue(
+      encoder.encode(
+        openChunk({runId: 'run-001', requestID: 'req-001', permission: 'shell', command: 'echo AMENDED', settled: false}),
+      ),
+    )
+    await flush()
+
+    expect(approvalsEl.children[0]).toBe(firstEl) // refreshed in place, never detached
+    expect(approvalsEl.children).toHaveLength(1)
+    expect(findPre(firstEl)?.textContent).toBe('echo AMENDED')
+    handle.close()
+  })
+
+  it('amended duplicate-open swapping permission class updates label, action, and edit caveat', async () => {
+    const {client, approvalsEl, badgeEl, statusEl, noticeEl} = makeAmendmentEnv()
+    const {controllerReady} = makeControlledStreamFetch()
+    const encoder = new TextEncoder()
+
+    const handle = initOperatorStream({
+      runId: 'run-001',
+      statusEl,
+      noticeEl,
+      approvalsEl,
+      badgeEl,
+      approvalClient: client,
+    })
+
+    const controller = await controllerReady
+    controller.enqueue(
+      encoder.encode(
+        readyChunk +
+        openChunk({runId: 'run-001', requestID: 'req-001', permission: 'shell', command: 'rm -rf /tmp/x', settled: false}),
+      ),
+    )
+    await flush()
+
+    const el = approvalsEl.children[0]
+    if (el === undefined) throw new Error('expected a rendered prompt element')
+    expect(findPermEl(el)?.textContent).toBe('Shell command')
+
+    // Amend into an edit-class prompt: label + gated filepath + visible edit caveat.
+    controller.enqueue(
+      encoder.encode(
+        openChunk({runId: 'run-001', requestID: 'req-001', permission: 'edit', filepath: 'src/server.ts', settled: false}),
+      ),
+    )
+    await flush()
+
+    expect(findPermEl(el)?.textContent).toBe('File edit')
+    expect(findPre(el)?.textContent).toBe('src/server.ts')
+    expect(findEditCaveat(el)?.hidden).toBe(false)
+    handle.close()
+  })
+
+  it('identical duplicate-open does not reset the interaction state (no flicker)', async () => {
+    const {client, approvalsEl, badgeEl, statusEl, noticeEl} = makeAmendmentEnv()
+    const {controllerReady} = makeControlledStreamFetch()
+    const encoder = new TextEncoder()
+
+    const handle = initOperatorStream({
+      runId: 'run-001',
+      statusEl,
+      noticeEl,
+      approvalsEl,
+      badgeEl,
+      approvalClient: client,
+    })
+
+    const controller = await controllerReady
+    const open = openChunk({runId: 'run-001', requestID: 'req-001', permission: 'shell', command: 'echo hi', settled: false})
+    controller.enqueue(encoder.encode(readyChunk + open))
+    await flush()
+
+    const el = approvalsEl.children[0]
+    if (el === undefined) throw new Error('expected a rendered prompt element')
+
+    // Operator arms the two-step always flow → state 'always-confirm'.
+    const alwaysBtn = findVisibleButtons(el).find(b => b.textContent === 'Always')
+    alwaysBtn?.dispatchEvent({type: 'click'})
+    expect(el.dataset.state).toBe('always-confirm')
+
+    // An identical duplicate-open (e.g. reconcile re-send) must not reset it.
+    controller.enqueue(encoder.encode(open))
+    await flush()
+
+    expect(approvalsEl.children[0]).toBe(el)
+    expect(el.dataset.state).toBe('always-confirm')
+    expect(findPre(el)?.textContent).toBe('echo hi')
+    handle.close()
+  })
+
+  it('an element with a live in-flight decision is not detached by an amendment', async () => {
+    const pendingDecide = new Promise<never>(() => {})
+    const client = {
+      refreshCsrf: async () => ({success: true as const, data: {csrfToken: 'csrf'}}),
+      decideRunApproval: async () => pendingDecide,
+      listRunApprovals: async () => ({success: true as const, data: {approvals: []}}),
+    }
+    const approvalsEl = makeFakeEl('div')
+    approvalsEl.hidden = true
+    approvalsEl.attributes['data-role'] = 'run-approvals'
+    const badgeEl = makeFakeEl('span')
+    badgeEl.hidden = true
+    badgeEl.attributes['data-role'] = 'approval-badge'
+    const statusEl = makeFakeEl('span')
+    const noticeEl = makeFakeEl('div')
+    vi.stubGlobal('document', {
+      createElement: (tag: string) => makeFakeEl(tag),
+      querySelector: () => null,
+      readyState: 'complete',
+      addEventListener: () => {},
+    })
+    vi.stubGlobal('addEventListener', () => {})
+    const {controllerReady} = makeControlledStreamFetch()
+    const encoder = new TextEncoder()
+
+    const handle = initOperatorStream({
+      runId: 'run-001',
+      statusEl,
+      noticeEl,
+      approvalsEl,
+      badgeEl,
+      approvalClient: client,
+    })
+
+    const controller = await controllerReady
+    controller.enqueue(
+      encoder.encode(
+        readyChunk +
+        openChunk({runId: 'run-001', requestID: 'req-001', permission: 'shell', command: 'echo ORIGINAL', settled: false}),
+      ),
+    )
+    await flush()
+
+    const el = approvalsEl.children[0]
+    if (el === undefined) throw new Error('expected a rendered prompt element')
+    const onceBtn = findVisibleButtons(el).find(b => b.textContent === 'Once')
+    onceBtn?.dispatchEvent({type: 'click'})
+    await flush()
+    expect(el.dataset.state).toBe('in-flight')
+
+    controller.enqueue(
+      encoder.encode(
+        openChunk({runId: 'run-001', requestID: 'req-001', permission: 'shell', command: 'echo AMENDED', settled: false}),
+      ),
+    )
+    await flush()
+
+    // Same element, still in-flight, with the amended content visible.
+    expect(approvalsEl.children[0]).toBe(el)
+    expect(el.dataset.state).toBe('in-flight')
+    expect(findPre(el)?.textContent).toBe('echo AMENDED')
+    handle.close()
   })
 })
 

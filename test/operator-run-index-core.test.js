@@ -126,6 +126,28 @@ describe('parseRunSummaryItem — error paths', () => {
     expect(result.success).toBe(false)
   })
 
+  // rm-904: empty and whitespace-only identity strings are not summaries —
+  // mirror of the server twin's hasValidRunSummaryShape rejection.
+  it('rm-904: rejects empty-string runId', () => {
+    const result = parseRunSummaryItem(makeValidSummary({runId: ''}))
+    expect(result.success).toBe(false)
+  })
+
+  it('rm-904: rejects whitespace-only runId', () => {
+    const result = parseRunSummaryItem(makeValidSummary({runId: '  '}))
+    expect(result.success).toBe(false)
+  })
+
+  it('rm-904: rejects empty-string repo', () => {
+    const result = parseRunSummaryItem(makeValidSummary({repo: ''}))
+    expect(result.success).toBe(false)
+  })
+
+  it('rm-904: rejects whitespace-only repo', () => {
+    const result = parseRunSummaryItem(makeValidSummary({repo: ' \t'}))
+    expect(result.success).toBe(false)
+  })
+
   it('rejects oversized repo (>512 chars)', () => {
     const result = parseRunSummaryItem(makeValidSummary({repo: 'x'.repeat(513)}))
     expect(result.success).toBe(false)

@@ -621,6 +621,53 @@ describe('parseRunsListResponse', () => {
       expect(result.data.runs[0]?.runId).toBe('run-1')
     }
   })
+
+  // rm-904: empty and whitespace-only identity strings are not summaries —
+  // the old type-only check admitted '' as a valid runId/repo.
+  it('rm-904: skips items with empty-string runId', () => {
+    const input = {
+      runs: [
+        {runId: 'run-1', repo: 'fro-bot/agent', status: 'running', createdAt: '2026-06-01T00:00:00.000Z'},
+        {runId: '', repo: 'fro-bot/agent', status: 'running', createdAt: '2026-06-01T00:00:00.000Z'},
+      ],
+    }
+    const result = parseRunsListResponse(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.runs).toHaveLength(1)
+      expect(result.data.runs[0]?.runId).toBe('run-1')
+    }
+  })
+
+  it('rm-904: skips items with whitespace-only runId', () => {
+    const result = parseRunsListResponse({
+      runs: [{runId: '   ', repo: 'fro-bot/agent', status: 'running', createdAt: '2026-06-01T00:00:00.000Z'}],
+    })
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.runs).toHaveLength(0)
+    }
+  })
+
+  it('rm-904: skips items with empty-string repo', () => {
+    const result = parseRunsListResponse({
+      runs: [{runId: 'run-1', repo: '', status: 'running', createdAt: '2026-06-01T00:00:00.000Z'}],
+    })
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.runs).toHaveLength(0)
+    }
+  })
+
+  it('rm-904: skips items with whitespace-only repo', () => {
+    const result = parseRunsListResponse({
+      runs: [{runId: 'run-1', repo: '\t\n', status: 'running', createdAt: '2026-06-01T00:00:00.000Z'}],
+    })
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.runs).toHaveLength(0)
+    }
+  })
 })
 
 // ---------------------------------------------------------------------------

@@ -61,11 +61,23 @@ function hasValidRunSummaryShape(value: unknown): value is RunSummary {
 
   const candidate = value as Record<string, unknown>
 
-  if (typeof candidate.runId !== 'string' || candidate.runId.length > MAX_ID_LENGTH) {
+  // rm-904: reject empty and whitespace-only runId — a summary with no
+  // identity is garbage, and the old type-only check admitted '' through the
+  // allowlist gate. Fail closed (item skipped by parseRunSummaryList).
+  if (
+    typeof candidate.runId !== 'string' ||
+    candidate.runId.trim() === '' ||
+    candidate.runId.length > MAX_ID_LENGTH
+  ) {
     return false
   }
 
-  if (typeof candidate.repo !== 'string' || candidate.repo.length > MAX_ID_LENGTH) {
+  // rm-904: same for repo — empty repo strings are not a valid summary identity.
+  if (
+    typeof candidate.repo !== 'string' ||
+    candidate.repo.trim() === '' ||
+    candidate.repo.length > MAX_ID_LENGTH
+  ) {
     return false
   }
 

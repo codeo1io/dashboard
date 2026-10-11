@@ -24,6 +24,13 @@
  * - Status labels are rendered from a local map, never from the raw wire string.
  */
 
+// rm-903: stateless shared size-cap helper for every JSON fetch on the operator
+// surface (see public/operator-fetch-cap.js — served at
+// /static/operator-fetch-cap.js). Relative specifier so the import resolves
+// both in the browser (/static/…) and in Node (public/ on disk) without a
+// second instance of anything stateful.
+import {readJsonWithCap} from './operator-fetch-cap.js'
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -651,6 +658,35 @@ export function appendStreamChunk(buffer, decoded) {
     text = text.slice(0, -1)
   }
   return normalizeCrlf(text) + held
+}
+
+// rm-904: shared UTF-8 encoder for the incremental buffer accounting below —
+// an immutable, stateless module constant (safe across module instances).
+const utf8Encoder = new TextEncoder()
+
+/**
+ * rm-904: exact UTF-8 byte count of the stream buffer after appending one
+ * decoded chunk — computed incrementally, never by re-encoding the whole
+ * buffer (the old `encoder.encode(buffer).length` on every chunk was
+ * byte-true but quadratic).
+ *
+ * Exactness: TextDecoder with {stream: true} never emits a dangling surrogate
+ * and the buffer is built only from such decodes, so encoding the pieces
+ * separately and summing equals encoding the concatenation. And
+ * appendStreamChunk normalizes only the seam: its output is
+ * normalizeCrlf(prefixSansHeld + decoded) + newHeld, where the already-
+ * normalized prefix (minus a held trailing CR, inert ASCII) is unchanged by
+ * normalization — only held+decoded can shrink (a CR-LF junction collapsing
+ * to a single LF). So the exact post-append count is
+ *   bufferBytes − held.length + byteLength(normalizeCrlf(held + decoded)).
+ *
+ * Property-pinned by test/operator-stream-core.test.ts:
+ *   nextBufferByteCount(buffer, byteLength(buffer), decoded)
+ *     === byteLength(appendStreamChunk(buffer, decoded))   for all inputs.
+ */
+export function nextBufferByteCount(buffer, bufferBytes, decoded) {
+  const held = buffer.endsWith('\r') ? '\r' : ''
+  return bufferBytes - held.length + utf8Encoder.encode(normalizeCrlf(held + decoded)).length
 }
 
 // ---------------------------------------------------------------------------
@@ -1578,7 +1614,9 @@ export function buildApprovalClient(opts) {
         headers: {'content-type': 'application/json'},
       })
       if (!res.ok) return {success: false, error: {kind: 'http', status: res.status}}
-      const data = await res.json()
+      // rm-903: capped read — an over-cap body throws into the catch below
+      // (network-class), never parsed as a truncated success.
+      const data = await readJsonWithCap(res)
       if (data === null || typeof data !== 'object' || typeof data.csrfToken !== 'string') {
         return {success: false, error: {kind: 'protocol'}}
       }
@@ -1649,7 +1687,8 @@ export function buildApprovalClient(opts) {
     if (res.ok) {
       let data
       try {
-        data = await res.json()
+        // rm-903: capped read — over-cap throws here → network-class failure.
+        data = await readJsonWithCap(res)
       } catch {
         return {success: false, error: {kind: 'network'}}
       }
@@ -1679,7 +1718,9 @@ export function buildApprovalClient(opts) {
         {headers: {'content-type': 'application/json'}},
       )
       if (!res.ok) return {success: false, error: {kind: 'http', status: res.status}}
-      const data = await res.json()
+      // rm-903: capped read — over-cap throws into the catch below
+      // (network-class): a truncated reconcile must never count as success.
+      const data = await readJsonWithCap(res)
       if (!data || !Array.isArray(data.approvals)) return {success: false, error: {kind: 'protocol'}}
       return {success: true, data: {approvals: data.approvals}}
     } catch {
@@ -1832,7 +1873,8 @@ export function buildCancelClient(opts) {
         logger?.error('operator-cancel-client: csrf http error', {route: CSRF_ROUTE_TEMPLATE, status: res.status})
         return {success: false, error: {kind: 'http', status: res.status}}
       }
-      const data = await res.json()
+      // rm-903: capped read — over-cap throws into the catch below.
+      const data = await readJsonWithCap(res)
       if (data === null || typeof data !== 'object' || typeof data.csrfToken !== 'string') {
         logger?.error('operator-cancel-client: csrf protocol error', {route: CSRF_ROUTE_TEMPLATE})
         return {success: false, error: {kind: 'protocol'}}
@@ -1900,7 +1942,9 @@ export function buildCancelClient(opts) {
     if (res.ok) {
       let data
       try {
-        data = await res.json()
+        // rm-903: capped read — over-cap throws here; a truncated body is a
+        // protocol failure, not a transport retry.
+        data = await readJsonWithCap(res)
       } catch {
         logger?.error('operator-cancel-client: json parse error', {route: ROUTE_TEMPLATE, status: res.status})
         return {success: false, error: {kind: 'protocol'}}
@@ -1934,6 +1978,81 @@ export function buildCancelClient(opts) {
  *   'already-settled'   — already_claimed/unavailable: inline settled copy
  */
 
+/**
+ * Safe permission label for an approval prompt — never the raw wire token.
+ * Shared by the first-open render and the rm-902 amended-content refresh so
+ * both paths render the identical allowlisted label.
+ */
+function approvalPermLabel(permission) {
+  switch (permission) {
+    case 'shell': return 'Shell command'
+    case 'edit': return 'File edit'
+    case 'external_directory': return 'External directory access'
+    case 'network': return 'Network access'
+    case 'read': return 'File read'
+    case 'write': return 'File write'
+    default: return 'Tool action'
+  }
+}
+
+/**
+ * The amendable content of an approval prompt — exactly the fields a duplicate
+ * open frame for the same requestID can replace in the reducer's model
+ * (permission/command/filepath; runId/requestID are the stable identity key).
+ */
+export function approvalPromptModelOf(prompt) {
+  return {
+    permission: prompt.permission,
+    ...(prompt.command === undefined ? {} : {command: prompt.command}),
+    ...(prompt.filepath === undefined ? {} : {filepath: prompt.filepath}),
+  }
+}
+
+/** Structural equality of two amendable-content models (missing key ≡ undefined). */
+export function sameApprovalPromptModel(a, b) {
+  return a.permission === b.permission && a.command === b.command && a.filepath === b.filepath
+}
+
+/**
+ * rm-902: refresh the amendable content of an ALREADY-rendered approval prompt
+ * in place. The reducer treats a duplicate open frame for an open requestID as
+ * a full model replacement (amended permission/command/filepath); before rm-902
+ * the render gate skipped any requestID already in renderedPrompts, so the
+ * operator kept deciding against stale content the gateway had already
+ * superseded.
+ *
+ * Only the amendable content mutates — permission label, gated action text,
+ * edit-class caveat visibility — via textContent/hidden (never innerHTML), and
+ * never by detaching the element: a prompt with a live in-flight decision must
+ * not be silently detached (its completion handlers close over the element).
+ * The amendable elements are always created by renderApprovalPrompt (hidden
+ * when unused), so refresh is purely property mutation — no structural insert
+ * or remove.
+ *
+ * Exported for the rm-902 regression suite; production caller:
+ * initOperatorStream's amended-duplicate-open path.
+ */
+export function refreshApprovalPromptContent(el, prompt) {
+  const permEl = el.querySelector('[data-role="approval-permission"]')
+  if (permEl !== null && permEl !== undefined) {
+    permEl.textContent = approvalPermLabel(prompt.permission)
+  }
+
+  const actionEl = el.querySelector('[data-role="approval-action"]')
+  if (actionEl !== null && actionEl !== undefined) {
+    const {command, filepath} = prompt
+    // textContent only — never innerHTML. Same injection-safety guarantee as
+    // the first-open path.
+    actionEl.textContent = command === undefined ? (filepath ?? '') : command
+    actionEl.hidden = command === undefined && filepath === undefined
+  }
+
+  const caveEl = el.querySelector('[data-role="approval-caveat-edit"]')
+  if (caveEl !== null && caveEl !== undefined) {
+    caveEl.hidden = !(prompt.permission === 'edit' || prompt.permission === 'external_directory')
+  }
+}
+
 export function renderApprovalPrompt(prompt, runId, approvalClient, _onSettle) {
   const {requestID, permission, command, filepath} = prompt
 
@@ -1941,17 +2060,7 @@ export function renderApprovalPrompt(prompt, runId, approvalClient, _onSettle) {
   const isEditClass = permission === 'edit' || permission === 'external_directory'
 
   // Safe permission label — never the raw token
-  const permLabel = (() => {
-    switch (permission) {
-      case 'shell': return 'Shell command'
-      case 'edit': return 'File edit'
-      case 'external_directory': return 'External directory access'
-      case 'network': return 'Network access'
-      case 'read': return 'File read'
-      case 'write': return 'File write'
-      default: return 'Tool action'
-    }
-  })()
+  const permLabel = approvalPermLabel(permission)
 
   // Build the prompt container
   const el = document.createElement('div')
@@ -1962,26 +2071,31 @@ export function renderApprovalPrompt(prompt, runId, approvalClient, _onSettle) {
   // Permission label
   const permEl = document.createElement('div')
   permEl.className = 'approval-prompt-permission'
+  permEl.setAttribute('data-role', 'approval-permission')
   permEl.textContent = permLabel
   el.append(permEl)
 
-  // Gated action — strictly inert textContent, never innerHTML
-  if (command !== undefined || filepath !== undefined) {
-    const actionEl = document.createElement('pre')
-    actionEl.className = 'approval-prompt-action'
-    actionEl.setAttribute('aria-label', 'Requested action (read-only)')
-    // textContent only — never innerHTML. This is the injection-safety guarantee.
-    actionEl.textContent = command === undefined ? (filepath ?? '') : command
-    el.append(actionEl)
-  }
+  // Gated action — strictly inert textContent, never innerHTML.
+  // rm-902: ALWAYS created (hidden when the prompt carries no action) so an
+  // amended duplicate-open can refresh the content purely via
+  // textContent/hidden — presence never changes structurally.
+  const actionEl = document.createElement('pre')
+  actionEl.className = 'approval-prompt-action'
+  actionEl.setAttribute('data-role', 'approval-action')
+  actionEl.setAttribute('aria-label', 'Requested action (read-only)')
+  // textContent only — never innerHTML. This is the injection-safety guarantee.
+  actionEl.textContent = command === undefined ? (filepath ?? '') : command
+  actionEl.hidden = command === undefined && filepath === undefined
+  el.append(actionEl)
 
-  // Edit-class caveat
-  if (isEditClass) {
-    const caveEl = document.createElement('p')
-    caveEl.className = 'approval-prompt-caveat-edit'
-    caveEl.textContent = 'File-level only \u2014 contents not previewed.'
-    el.append(caveEl)
-  }
+  // Edit-class caveat — always created (hidden for non-edit classes) for the
+  // same rm-902 in-place-refresh reason as the gated action above.
+  const caveEl = document.createElement('p')
+  caveEl.className = 'approval-prompt-caveat-edit'
+  caveEl.setAttribute('data-role', 'approval-caveat-edit')
+  caveEl.textContent = 'File-level only \u2014 contents not previewed.'
+  caveEl.hidden = !isEditClass
+  el.append(caveEl)
 
   // Access caveat
   const accessCaveEl = document.createElement('p')
@@ -2571,8 +2685,10 @@ export function initOperatorStream(opts) {
   // the first time updateDOM sees a non-terminal run for this stream.
   let cancelControl = null
 
-  // Track rendered prompt elements by requestID so we can remove them on settle
-  // without re-rendering the entire list. Map: requestID → DOM element.
+  // Track rendered prompts by requestID so they can be removed on settle
+  // without re-rendering the entire list, and refreshed in place when an
+  // amended duplicate-open replaces the reducer's model (rm-902).
+  // Map: requestID → {el: DOM element, model: amendable content it was built from}.
   const renderedPrompts = new Map()
 
   let state = {
@@ -2736,29 +2852,39 @@ export function initOperatorStream(opts) {
 
     // Approval prompts: render open prompts from getOpenApprovals(runEntry).
     // Uses safe DOM (textContent only — never innerHTML). Prompts are added/removed
-    // as the reducer state changes; settled prompts are removed silently.
+    // as the reducer state changes; settled prompts are removed silently. An
+    // amended duplicate-open (same requestID, replaced content) refreshes the
+    // already-rendered element in place (rm-902) — an identical re-send is a
+    // no-op so reconcile re-sends cannot flicker the interaction state.
     if (approvalsEl !== undefined && approvalsEl !== null && approvalClient !== null) {
       const runEntry = state.runs[runId]
       const openPrompts = getOpenApprovals(runEntry)
       const openIds = new Set(openPrompts.map(p => p.requestID))
 
       // Remove prompts that are no longer open (settled/dismissed)
-      for (const [reqId, promptEl] of renderedPrompts) {
+      for (const [reqId, rendered] of renderedPrompts) {
         if (!openIds.has(reqId)) {
-          promptEl.remove()
+          rendered.el.remove()
           renderedPrompts.delete(reqId)
         }
       }
 
-      // Add new prompts that aren't yet rendered
+      // Add new prompts that aren't yet rendered; refresh amended ones in place
       for (const prompt of openPrompts) {
-        if (!renderedPrompts.has(prompt.requestID)) {
+        const rendered = renderedPrompts.get(prompt.requestID)
+        if (rendered === undefined) {
           const promptEl = renderApprovalPrompt(prompt, runId, approvalClient, () => {
             // onSettle: called when the prompt decides to remove itself
             // (the reducer will handle the actual removal on the next settle frame)
           })
-          renderedPrompts.set(prompt.requestID, promptEl)
+          renderedPrompts.set(prompt.requestID, {el: promptEl, model: approvalPromptModelOf(prompt)})
           approvalsEl.append(promptEl)
+        } else {
+          const model = approvalPromptModelOf(prompt)
+          if (!sameApprovalPromptModel(rendered.model, model)) {
+            refreshApprovalPromptContent(rendered.el, prompt)
+            rendered.model = model
+          }
         }
       }
 
@@ -3048,8 +3174,12 @@ export function initOperatorStream(opts) {
                 // would terminate its line early, so the LF opening the next
                 // chunk would forge a phantom record boundary and silently
                 // drop the frame. The held CR normalizes with the next chunk.
-                buffer = appendStreamChunk(buffer, decoder.decode(value, {stream: true}))
-                bufferBytes = encoder.encode(buffer).length
+                const decoded = decoder.decode(value, {stream: true})
+                // rm-904: count BEFORE appending — the function takes the
+                // pre-append buffer — and incrementally (never re-encode the
+                // whole buffer).
+                bufferBytes = nextBufferByteCount(buffer, bufferBytes, decoded)
+                buffer = appendStreamChunk(buffer, decoded)
               }
 
               // Hard buffer cap (UTF-8 bytes, rm-114) — abort the reader and fail

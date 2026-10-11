@@ -8,6 +8,11 @@
  * - credentials:'include', redirect:'error' on all fetch calls.
  */
 
+// rm-903: stateless shared size-cap helper (see public/operator-fetch-cap.js).
+// Relative specifier so the import resolves in the browser (/static/…) and in
+// Node (public/ on disk) without a second instance of anything stateful.
+import {readJsonWithCap} from './operator-fetch-cap.js'
+
 export const RUN_INDEX_CAP = 100
 
 /** Timeout for the /runs fetch — matches server-side Gateway fetch timeout precedent. */
@@ -81,11 +86,22 @@ export function parseRunSummaryItem(input) {
 
   const candidate = input
 
-  if (typeof candidate.runId !== 'string' || candidate.runId.length > MAX_ID_LENGTH) {
+  // rm-904: reject empty and whitespace-only runId/repo — mirror of the
+  // server twin's hasValidRunSummaryShape (src/gateway/operator-contract/
+  // run-summary.ts); the old type-only check admitted '' as a summary identity.
+  if (
+    typeof candidate.runId !== 'string' ||
+    candidate.runId.trim() === '' ||
+    candidate.runId.length > MAX_ID_LENGTH
+  ) {
     return {success: false, error: 'invalid run summary shape'}
   }
 
-  if (typeof candidate.repo !== 'string' || candidate.repo.length > MAX_ID_LENGTH) {
+  if (
+    typeof candidate.repo !== 'string' ||
+    candidate.repo.trim() === '' ||
+    candidate.repo.length > MAX_ID_LENGTH
+  ) {
     return {success: false, error: 'invalid run summary shape'}
   }
 
@@ -234,7 +250,9 @@ export async function fetchRunIndex(opts) {
 
   let body
   try {
-    body = await res.json()
+    // rm-903: capped read — over-cap throws here → the unavailable path,
+    // never a truncated listing.
+    body = await readJsonWithCap(res)
   } catch {
     return {kind: 'unavailable'}
   }
