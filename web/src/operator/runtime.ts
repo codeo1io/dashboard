@@ -375,7 +375,7 @@ async function defaultRuntimeLoader(opts?: {
 
     // Discover the per-card render targets so live output, coalescing hints,
     // approval prompts, and the approval badge all render — not just status.
-    const {outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, cancelEl, checkoutEl, questionsEl} = discoverCardStreamTargets(runId)
+    const {outputEl, coalescedEl, gapEl, approvalsEl, badgeEl, reasonEl, cancelEl, checkoutEl, questionsEl} = discoverCardStreamTargets(runId)
     const summaryStatus = discoverCardSummaryStatus(runId)
 
     // A re-expanded card must never keep question DOM from a previous attach: the stream and
