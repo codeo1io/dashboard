@@ -1986,6 +1986,14 @@ async function refreshCsrf(endpointBase, fixtureSessionId, timeoutMs) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Fork hardening (rm-594, kept per #16393): bound every approval-client fetch —
+ * CSRF fetch, decision POST, list — with its own timeout signal, exactly as the
+ * question client is bounded by QUESTION_FETCH_TIMEOUT_MS. An unbounded
+ * approval fetch otherwise pins a decision or a list poll open forever.
+ */
+export const APPROVAL_FETCH_TIMEOUT_MS = 10_000
+
+/**
  * Build a browser-direct approval client for the inline approval prompt UI.
  *
  * Uses same-origin relative paths (owned by the public reverse proxy in production,
@@ -2150,14 +2158,6 @@ export const QUESTION_CLAIM_RECHECK_DELAYS_MS = Object.freeze([2000, 5000, 10_00
  * from the cancel client's bound because the recovery differs, though the value is the same.
  */
 export const QUESTION_FETCH_TIMEOUT_MS = 10_000
-
-/**
- * Fork hardening (rm-594, kept per #16393): bound every approval-client fetch —
- * CSRF fetch, decision POST, list — with its own timeout signal, exactly as the
- * question client above is bounded by QUESTION_FETCH_TIMEOUT_MS. An unbounded
- * approval fetch otherwise pins a decision or a list poll open forever.
- */
-export const APPROVAL_FETCH_TIMEOUT_MS = 10_000
 
 /** One pending-list entry `{requestID, questions}` (no per-item runId), or null when invalid. */
 function parsePendingQuestionEntry(value) {
