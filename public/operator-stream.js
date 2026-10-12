@@ -583,6 +583,21 @@ function normalizeCrlf(text) {
   return text.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
 }
 
+// rm-477: append one decoded read() chunk to the stream buffer, holding a
+// trailing CR back so it cannot be normalized to LF before the next chunk
+// reveals whether it is half of a CRLF pair. Exported for the twin suite —
+// the server reader (src/gateway/operator-sse-reader.ts) carries the same
+// pending-CR logic inline and both are pinned by chunk-split regressions.
+export function appendStreamChunk(buffer, decoded) {
+  let text = buffer + decoded
+  let held = ''
+  if (text.endsWith('\r')) {
+    held = '\r'
+    text = text.slice(0, -1)
+  }
+  return normalizeCrlf(text) + held
+}
+
 // ---------------------------------------------------------------------------
 // Question frame parser
 //
@@ -700,9 +715,9 @@ export function parseSseFrame(record) {
   const normalized = normalizeCrlf(record)
   const lines = normalized.split('\n')
   let eventName
-  // rm-854 — WHATWG SSE 9.2.6: consecutive data lines accumulate and join with
-  // a single newline (previously last-wins, which silently misparsed conforming
-  // multi-line senders). Single-line records parse byte-identically.
+  // rm-854: WHATWG SSE 9.2.6 — multiple data lines in one record join with a
+  // newline (last-wins would silently truncate a sender that splits the record
+  // at a JSON token boundary). Single-line records parse byte-identically.
   const dataLines = []
 
   for (const line of lines) {
@@ -716,7 +731,6 @@ export function parseSseFrame(record) {
       dataLines.push(line.slice('data:'.length).trim())
     }
   }
-
   const dataLine = dataLines.length > 0 ? dataLines.join('\n') : undefined
 
   // Comment-only record (heartbeat) — produce no frame
@@ -2140,8 +2154,7 @@ export const QUESTION_FETCH_TIMEOUT_MS = 10_000
 /**
  * Fork hardening (rm-594, kept per #16393): bound every approval-client fetch —
  * CSRF fetch, decision POST, list — with its own timeout signal, exactly as the
- * question and cancel clients above/below are bounded by their constants.
- * Upstream's 2026.10.18 extraction left the approval client unbounded; a hung
+ * question client above is bounded by QUESTION_FETCH_TIMEOUT_MS. An unbounded
  * approval fetch otherwise pins a decision or a list poll open forever.
  */
 export const APPROVAL_FETCH_TIMEOUT_MS = 10_000
@@ -2382,7 +2395,7 @@ export function buildQuestionClient(opts) {
  *
  * Does NOT log the raw ID value — callers must use the error code only.
  */
-function validateDynamicId(id) {
+export function validateDynamicId(id) {
   if (id.trim() === '') return false
   if (id.includes('/') || id.includes('\\')) return false
   if (/%(?:2f|5c)/i.test(id)) return false
@@ -3871,7 +3884,6 @@ export function initOperatorStream(opts) {
       }
       if (coalescedEl) {
         // Show the fixed hint when output was coalesced or truncated — never an echoed count.
-        coalescedEl.textContent = 'Streamed output was coalesced or truncated; intermediate text may be missing.'
         const flagged = runEntry?.outputCoalesced === true || runEntry?.outputTruncated === true
         coalescedEl.hidden = !flagged
       }
@@ -4508,6 +4520,12 @@ export function initOperatorStream(opts) {
     firstFrameTimer = setTimeout(() => {
       firstFrameTimer = null
       dispatch({type: 'first-frame-timeout'})
+      // A stalled stream means the pending read may never settle — abort so the
+      // reader and socket release instead of stranding (rm-261). The read loop's
+      // catch swallows abort-caused rejections, so no phantom close is dispatched.
+      if (state.connection === 'submitted-unobservable') {
+        connectionController.abort()
+      }
     }, FIRST_FRAME_TIMEOUT_MS)
 
     // Build the stream URL — runId is used only here, never logged.
@@ -4529,16 +4547,21 @@ export function initOperatorStream(opts) {
         if (response.status === 404) {
           clearFirstFrameTimer()
           dispatch({type: 'http-status', code: 404})
+          // The response body is never read on this path — abort so the socket
+          // releases instead of stranding until GC (rm-261).
+          connectionController.abort()
           return
         }
         if (response.status === 429) {
           clearFirstFrameTimer()
           dispatch({type: 'http-status', code: 429})
+          connectionController.abort() // unread body — release the socket (rm-261)
           return
         }
         if (response.status !== 200) {
           clearFirstFrameTimer()
           dispatch({type: 'network-error'})
+          connectionController.abort() // unread body — release the socket (rm-261)
           scheduleReconnect()
           return
         }
@@ -4547,11 +4570,13 @@ export function initOperatorStream(opts) {
         if (!contentType.startsWith('text/event-stream')) {
           clearFirstFrameTimer()
           dispatch({type: 'network-error'})
+          connectionController.abort() // unread body — release the socket (rm-261)
           return
         }
         if (!response.body) {
           clearFirstFrameTimer()
           dispatch({type: 'network-error'})
+          connectionController.abort() // release the socket (rm-261)
           scheduleReconnect()
           return
         }
@@ -4584,8 +4609,11 @@ export function initOperatorStream(opts) {
               }
 
               if (value) {
-                // Normalize CRLF on each appended chunk
-                buffer += normalizeCrlf(decoder.decode(value, {stream: true}))
+                // rm-477: hold a trailing CR back — normalizing it to LF now
+                // would terminate its line early, so the LF opening the next
+                // chunk would forge a phantom record boundary and silently
+                // drop the frame. The held CR normalizes with the next chunk.
+                buffer = appendStreamChunk(buffer, decoder.decode(value, {stream: true}))
               }
 
               // Hard buffer cap — abort the reader and fail closed terminally
