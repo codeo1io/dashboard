@@ -23,7 +23,6 @@ import type {
   StreamHandle,
   StreamState,
 } from '../public/operator-stream.js'
-import type {ApprovalFrameDataOpen, OutputFrameData, RunEntry, StreamState} from '../public/operator-stream.js'
 import fc from 'fast-check'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {
@@ -126,458 +125,6 @@ const INITIAL_STATE: StreamState = {
   shouldReconnect: false,
 }
 
-interface FakeStatusEl {
-  textContent: string
-  className: string
-  classList: {add: () => void; remove: () => void}
-}
-
-interface FakeCard {
-  dataset: {runId: string}
-  querySelector: () => FakeStatusEl
-}
-
-function makeFakeCard(runId: string): FakeCard {
-  return {
-    dataset: {runId},
-    querySelector: () => ({textContent: '', className: '', classList: {add() {}, remove() {}}}),
-  }
-}
-
-interface FakeSection {
-  querySelector: (sel: string) => {textContent: string; hidden: boolean} | null
-  querySelectorAll: () => FakeCard[]
-}
-
-interface FakeDocument {
-  querySelector: (sel: string) => FakeSection | {textContent: string; hidden: boolean} | null
-  readyState: string
-  addEventListener: () => void
-}
-
-async function withFakeBrowser(
-  cards: FakeCard[],
-  sectionPresent: boolean,
-  run: () => void,
-): Promise<string[]> {
-  const fetchCalls: string[] = []
-
-  const section: FakeSection = {
-    querySelector: (sel: string) =>
-      sel.includes('stream-status') ? {textContent: '', hidden: false} : null,
-    querySelectorAll: () => cards,
-  }
-
-  const noticeEl = {textContent: '', hidden: false}
-
-  const fakeDocument: FakeDocument = {
-    querySelector: (sel: string) => {
-      if (sel === '[data-role="run-index-list"]') return sectionPresent ? section : null
-      if (sel === '[data-role="stream-status"]') return sectionPresent ? noticeEl : null
-      return null
-    },
-    readyState: 'complete',
-    addEventListener() {},
-  }
-
-  vi.stubGlobal('document', fakeDocument)
-  vi.stubGlobal(
-    'fetch',
-    async (url: string) => {
-      fetchCalls.push(url)
-      return new Promise<Response>(() => {}) // never settles — no real streaming in the test
-    },
-  )
-  vi.stubGlobal('addEventListener', () => {})
-
-  try {
-    run()
-  } finally {
-    vi.unstubAllGlobals()
-  }
-
-  return fetchCalls
-}
-
-interface FakeElement {
-  tagName: string
-  textContent: string
-  hidden: boolean
-  className: string
-  children: FakeElement[]
-  attributes: Record<string, string>
-  style: Record<string, string>
-  dataset: Record<string, string>
-  eventListeners: Record<string, ((...args: unknown[]) => void)[]>
-  querySelector: (sel: string) => FakeElement | null
-  querySelectorAll: (sel: string) => FakeElement[]
-  append: (...nodes: FakeElement[]) => void
-  remove: () => void
-  setAttribute: (name: string, value: string) => void
-  getAttribute: (name: string) => string | null
-  classList: {add: (cls: string) => void; remove: (cls: string) => void; contains: (cls: string) => boolean}
-  addEventListener: (event: string, handler: (...args: unknown[]) => void) => void
-  dispatchEvent: (event: {type: string; stopPropagation?: () => void}) => void
-}
-
-function makeFakeEl(tagName = 'div'): FakeElement {
-  // Setting textContent to '' clears children, mirroring real DOM behavior.
-  let textContentValue = ''
-  const el = {
-    tagName,
-    get textContent() { return textContentValue },
-    set textContent(v: string) {
-      textContentValue = v
-      if (v === '') {
-        el.children = []
-      }
-    },
-    hidden: false,
-    className: '',
-    children: [] as FakeElement[],
-    attributes: {} as Record<string, string>,
-    style: {} as Record<string, string>,
-    dataset: {} as Record<string, string>,
-    eventListeners: {} as Record<string, ((...args: unknown[]) => void)[]>,
-    querySelector(sel: string): FakeElement | null {
-      for (const child of el.children) {
-        if (sel.includes('data-role=')) {
-          const role = sel.match(/data-role="([^"]+)"/)?.[1]
-          if (role !== undefined && role !== '' && child.attributes['data-role'] === role) return child
-        }
-        if (sel.startsWith('#')) {
-          const id = sel.slice(1)
-          if (child.attributes.id === id) return child
-        }
-        const found = child.querySelector(sel)
-        if (found !== null) return found
-      }
-      return null
-    },
-    querySelectorAll(sel: string): FakeElement[] {
-      const results: FakeElement[] = []
-      for (const child of el.children) {
-        if (sel === 'button') {
-          if (child.tagName === 'button') results.push(child)
-          results.push(...child.querySelectorAll(sel))
-        } else if (sel.includes('data-role=')) {
-          const role = sel.match(/data-role="([^"]+)"/)?.[1]
-          if (role !== undefined && role !== '' && child.attributes['data-role'] === role) results.push(child)
-          results.push(...child.querySelectorAll(sel))
-        } else {
-          results.push(...child.querySelectorAll(sel))
-        }
-      }
-      return results
-    },
-    append(...nodes: FakeElement[]) {
-      for (const node of nodes) {
-        el.children.push(node)
-      }
-    },
-    remove() {}, // parent would need to remove from children
-    setAttribute(name: string, value: string) {
-      el.attributes[name] = value
-    },
-    getAttribute(name: string): string | null {
-      return el.attributes[name] ?? null
-    },
-    classList: {
-      add(_cls: string) {},
-      remove(_cls: string) {},
-      contains(_cls: string) { return false },
-    },
-    addEventListener(event: string, handler: (...args: unknown[]) => void) {
-      if (!el.eventListeners[event]) el.eventListeners[event] = []
-      el.eventListeners[event].push(handler)
-    },
-    dispatchEvent(event: {type: string; stopPropagation?: () => void}) {
-      // Real DOM events always carry stopPropagation; default to a no-op so
-      // callers that dispatch a bare {type: 'click'} still work.
-      const eventWithDefaults = {stopPropagation: () => {}, ...event}
-      const handlers = el.eventListeners[event.type] ?? []
-      for (const h of handlers) h(eventWithDefaults)
-    },
-  } satisfies FakeElement
-  return el
-}
-
-type ListRunApprovalsResult =
-  | {success: true; data: {approvals: {requestID: string; permission: string; command?: string; filepath?: string}[]}}
-  | {success: false; error: {kind: 'http'; status: number}}
-  | {success: false; error: {kind: 'network'}}
-  | {success: false; error: {kind: 'protocol'}}
-
-function makeFakeApprovalClient(opts: {
-  decideResult?: {success: boolean; data?: {state: string}; error?: {kind: string; status?: number}}
-  listResult?: {requestID: string; permission: string; command?: string; filepath?: string}[]
-  listFailure?: {kind: 'http'; status: number} | {kind: 'network'} | {kind: 'protocol'}
-} = {}) {
-  const decideCalls: {runId: string; requestId: string; decision: string; idempotencyKey: string}[] = []
-  const listCalls: string[] = []
-
-  return {
-    decideCalls,
-    listCalls,
-    client: {
-      refreshCsrf: async () => ({success: true, data: {csrfToken: 'test-csrf'}}),
-      decideRunApproval: async (runId: string, requestId: string, decision: string, idempotencyKey: string) => {
-        decideCalls.push({runId, requestId, decision, idempotencyKey})
-        return opts.decideResult ?? {success: true, data: {state: 'claimed'}}
-      },
-      listRunApprovals: async (runId: string): Promise<ListRunApprovalsResult> => {
-        listCalls.push(runId)
-        if (opts.listFailure) {
-          const failure = opts.listFailure
-          if (failure.kind === 'http') return {success: false, error: {kind: 'http', status: failure.status}}
-          if (failure.kind === 'network') return {success: false, error: {kind: 'network'}}
-          return {success: false, error: {kind: 'protocol'}}
-        }
-        return {success: true, data: {approvals: opts.listResult ?? []}}
-      },
-    },
-  }
-}
-
-function makeApprovalTestEnv(opts: {
-  approvalClientOpts?: Parameters<typeof makeFakeApprovalClient>[0]
-} = {}) {
-  const {client, decideCalls, listCalls} = makeFakeApprovalClient(opts.approvalClientOpts)
-
-  const approvalsEl = makeFakeEl('div')
-  approvalsEl.hidden = true
-  approvalsEl.attributes['data-role'] = 'run-approvals'
-
-  const badgeEl = makeFakeEl('span')
-  badgeEl.hidden = true
-  badgeEl.attributes['data-role'] = 'approval-badge'
-
-  const statusEl = makeFakeEl('span')
-  const noticeEl = makeFakeEl('div')
-
-  const createdElements: FakeElement[] = []
-  vi.stubGlobal('document', {
-    createElement: (tag: string) => {
-      const el = makeFakeEl(tag)
-      createdElements.push(el)
-      return el
-    },
-    querySelector: () => null,
-    readyState: 'complete',
-    addEventListener: () => {},
-  })
-  vi.stubGlobal('fetch', async () => new Promise<Response>(() => {}))
-  vi.stubGlobal('addEventListener', () => {})
-
-  return {approvalsEl, badgeEl, statusEl, noticeEl, client, decideCalls, listCalls, createdElements}
-}
-
-/** Stub a minimal browser environment for renderApprovalPrompt tests. */
-function stubRenderEnv() {
-  vi.stubGlobal('document', {
-    createElement: (tag: string) => makeFakeEl(tag),
-    querySelector: () => null,
-    readyState: 'complete',
-    addEventListener: () => {},
-  })
-  vi.stubGlobal('fetch', async () => new Promise<Response>(() => {}))
-  vi.stubGlobal('addEventListener', () => {})
-}
-
-function renderPromptAsFake(
-  prompt: ApprovalFrameDataOpen,
-  runId: string,
-  client: ReturnType<typeof makeFakeApprovalClient>['client'],
-): FakeElement {
-  return renderApprovalPrompt(prompt, runId, client, () => {}) as FakeElement
-}
-
-function findVisibleButtons(el: FakeElement): FakeElement[] {
-  const buttons: FakeElement[] = []
-  for (const child of el.children) {
-    if (child.hidden) continue
-    if (child.tagName === 'button') buttons.push(child)
-    buttons.push(...findVisibleButtons(child))
-  }
-  return buttons
-}
-
-function findStatusElement(el: FakeElement): FakeElement | undefined {
-  for (const child of el.children) {
-    if (child.attributes.role === 'status') return child
-    const found = findStatusElement(child)
-    if (found !== undefined) return found
-  }
-  return undefined
-}
-
-/**
- * Build a fake SSE ReadableStream that emits the given SSE text chunks.
- * Pass `keepOpen: true` to leave the stream open after all chunks are emitted.
- * By default the stream closes after all chunks, triggering the reconnect path.
- */
-function makeSseStream(chunks: string[], opts: {keepOpen?: boolean} = {}): ReadableStream<Uint8Array> {
-  const encoder = new TextEncoder()
-  return new ReadableStream<Uint8Array>({
-    start(controller) {
-      for (const chunk of chunks) {
-        controller.enqueue(encoder.encode(chunk))
-      }
-      if (!opts.keepOpen) {
-        controller.close()
-      }
-    },
-  })
-}
-
-function makeSseResponse(chunks: string[], opts: {keepOpen?: boolean} = {}): Response {
-  return {
-    ok: true,
-    status: 200,
-    headers: {get: (h: string) => (h === 'content-type' ? 'text/event-stream' : null)},
-    body: makeSseStream(chunks, opts),
-  } as unknown as Response
-}
-
-// ---------------------------------------------------------------------------
-// Fixture SSE scenario integration (browser reducer path)
-// ---------------------------------------------------------------------------
-// These tests verify that the typed fixture scenarios serialize to SSE bytes
-// that the browser-side parseSseFrame + nextStreamState reducer can consume.
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// fixtureSessionId propagation to stream URL and approval client
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Late-frame guard — closed stream must not mutate shared noticeEl
-// ---------------------------------------------------------------------------
-
-function makeUnavailableTestStatusEl(initial = 'Pending') {
-  return {textContent: initial, className: 'status-queued', classList: {add(_cls: string) {}, remove() {}}, dataset: {}, hidden: false}
-}
-
-function makeUnavailableTestNoticeEl() {
-  return {textContent: '', hidden: false, dataset: {connectionState: ''}}
-}
-
-interface FakeCancelOutcome {
-  success: boolean
-  data?: {ok: true; runId: string; phase: string}
-  error?: {kind: string; status?: number}
-}
-
-/** Build a fake cancel client for renderCancelControl tests. */
-function makeFakeCancelClient(opts: {
-  cancelResult?: FakeCancelOutcome
-  cancelResults?: FakeCancelOutcome[]
-  refreshCsrfResult?: {success: boolean; data?: {csrfToken: string}; error?: {kind: string; status?: number}}
-} = {}) {
-  const cancelCalls: {runId: string; idempotencyKey: string; csrfToken: string}[] = []
-  let callIndex = 0
-  return {
-    cancelCalls,
-    client: {
-      refreshCsrf: async () => opts.refreshCsrfResult ?? {success: true, data: {csrfToken: 'test-csrf'}},
-      cancelRun: async (runId: string, idempotencyKey: string, csrfToken: string): Promise<FakeCancelOutcome> => {
-        cancelCalls.push({runId, idempotencyKey, csrfToken})
-        if (opts.cancelResults !== undefined) {
-          const result = opts.cancelResults[Math.min(callIndex, opts.cancelResults.length - 1)]
-          callIndex++
-          return result ?? {success: true, data: {ok: true, runId, phase: 'CANCELLED'}}
-        }
-        return opts.cancelResult ?? {success: true, data: {ok: true, runId, phase: 'CANCELLED'}}
-      },
-    } as unknown as Parameters<typeof renderCancelControl>[1],
-  }
-}
-
-function stubCancelRenderEnv() {
-  vi.stubGlobal('document', {
-    createElement: (tag: string) => makeFakeEl(tag),
-    querySelector: () => null,
-    readyState: 'complete',
-    addEventListener: () => {},
-  })
-  vi.stubGlobal('fetch', async () => new Promise<Response>(() => {}))
-  vi.stubGlobal('addEventListener', () => {})
-  vi.stubGlobal('crypto', {randomUUID: () => 'test-uuid-cancel'})
-}
-
-// ---------------------------------------------------------------------------
-// Reducer — latest valid wins, per field; provenance and preparation exclusive
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Leak guard — sentinel `fixture-` strings stay inside in-memory state
-// ---------------------------------------------------------------------------
-
-// rm-842 seam: SHAs are shared with the ck section below; hoisted here because
-// ckSentinelStatus (this section) runs before that section's textual position.
-const CK_SHA_A = 'a'.repeat(40)
-const CK_SHA_B = 'b'.repeat(40)
-const CK_SHA_C = 'c'.repeat(40)
-
-function ckSentinelStatus(): Record<string, unknown> {
-  return ckStatusPayload({
-    phase: 'FAILED',
-    status: 'failed',
-    checkoutProvenance: ckObserved({
-      observation: ckObservation({head: {kind: 'attached', branch: 'fixture-sentinel-branch', sha: CK_SHA_A}}),
-      remote: {kind: 'checked', defaultBranch: 'fixture-sentinel-default', sha: CK_SHA_B, checkedAt: 'fixture-sentinel-checked-at', change: 'unchanged'},
-    }),
-    checkoutPreparation: {
-      outcome: 'refused',
-      reason: 'obstructed',
-      obstructions: [{path: 'fixture-sentinel-path', kind: 'exact-conflict'}],
-    },
-  })
-}
-
-/** A stand-in global that records the name of every property read or written on it. */
-function ckAccessRecorder(log: string[]): object {
-  return new Proxy({}, {
-    get(_target, prop) {
-      log.push(String(prop))
-      return () => {}
-    },
-    set(_target, prop) {
-      log.push(String(prop))
-      return true
-    },
-  })
-}
-
-/** A fake element that records every value written to it — text, attributes, classes, dataset, style. */
-function ckRecordingElement(writes: string[]): Record<string, unknown> {
-  const dataset = new Proxy({}, {
-    set(_target, prop, value) {
-      writes.push(`dataset.${String(prop)}=${String(value)}`)
-      return true
-    },
-  })
-  const target: Record<string, unknown> = {
-    textContent: '',
-    className: '',
-    hidden: false,
-    dataset,
-    classList: {add: (...tokens: string[]) => writes.push(...tokens), remove: () => {}},
-    style: {setProperty: (name: string, value: string) => writes.push(`${name}=${value}`)},
-    setAttribute: (name: string, value: string) => writes.push(`${name}=${value}`),
-    children: [] as Record<string, unknown>[],
-    append(...nodes: Record<string, unknown>[]) {
-      ;(target.children as Record<string, unknown>[]).push(...nodes)
-    },
-  }
-  return new Proxy(target, {
-    set(object, prop, value) {
-      object[String(prop)] = value
-      writes.push(`${String(prop)}=${String(value)}`)
-      return true
-    },
-  })
-}
 function makeLifecycleElements(): {statusEl: FakeElement; noticeEl: FakeElement} {
   return {statusEl: makeFakeEl('span'), noticeEl: makeFakeEl('div')}
 }
@@ -7836,6 +7383,10 @@ describe('CSS selector ↔ question-region emitter agreement', () => {
 // Checkout provenance / checkout preparation — browser trust boundary
 // ===========================================================================
 
+const CK_SHA_A = 'a'.repeat(40)
+const CK_SHA_B = 'b'.repeat(40)
+const CK_SHA_C = 'c'.repeat(40)
+
 function ckStatusPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     runId: 'run-ck-001',
@@ -11938,6 +11489,198 @@ describe('approval client — unchanged by the question client', () => {
     u4Handles.push(handle)
     await vi.advanceTimersByTimeAsync(10)
     expect(listed).toEqual([Q_RUN])
+  })
+})
+describe('appendStreamChunk — pending-CR chunk reassembly (rm-477)', () => {
+  it('holds a trailing CR instead of normalizing it to LF', () => {
+    expect(appendStreamChunk('', 'event: status\r')).toBe('event: status\r')
+    expect(appendStreamChunk('event: status\r', '')).toBe('event: status\r')
+  })
+
+  it('pairs a held CR with an LF arriving in the next chunk', () => {
+    expect(appendStreamChunk('event: status\r', '\ndata: {"runId":"run-abc"}\r')).toBe(
+      'event: status\ndata: {"runId":"run-abc"}\r',
+    )
+  })
+
+  it('collapses a CRLF pair that arrives within one chunk', () => {
+    expect(appendStreamChunk('', 'event: status\r\ndata: x\r\n\r\n')).toBe('event: status\ndata: x\n\n')
+  })
+
+  it('still normalizes lone CRs inside a chunk, holding only the final one', () => {
+    // The trailing CR stays pending — if the stream continues with an LF it
+    // collapses; if the stream ends, the done() flush parses buffer + '\n\n'
+    // and the parser's internal normalization resolves the held CR, so the
+    // final record is delivered exactly as before the fix (EOF parity).
+    expect(appendStreamChunk('', 'event: reset\rdata: {"runId":"r"}\r\r')).toBe(
+      'event: reset\ndata: {"runId":"r"}\n\r',
+    )
+    expect(appendStreamChunk('', 'a\rb\r')).toBe('a\nb\r')
+  })
+
+  it('property: any split of any wire text reassembles identically to a single chunk', () => {
+    const frame =
+      `event: status\r\ndata: ${
+        JSON.stringify({
+          runId: 'run-abc',
+          entityRef: 'fro-bot/agent',
+          surface: 'github',
+          phase: 'EXECUTING',
+          status: 'running',
+          startedAt: '2026-06-20T10:00:00Z',
+          stale: false,
+        })
+      }\r\n\r\n`
+    fc.assert(
+      fc.property(fc.constant(frame), fc.nat(frame.length - 1), (text, split) => {
+        const folded = appendStreamChunk(appendStreamChunk('', text.slice(0, split)), text.slice(split))
+        const whole = appendStreamChunk('', text)
+        expect(folded).toBe(whole)
+      }),
+      {numRuns: 300},
+    )
+  })
+})
+
+describe('buildApprovalClient — wall-clock fetch bound (rm-594)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('every approval-surface fetch (refreshCsrf / decide POSTs / listRunApprovals) carries an AbortSignal', async () => {
+    const signals: (AbortSignal | null | undefined)[] = []
+    vi.stubGlobal('fetch', async (url: unknown, init?: RequestInit) => {
+      signals.push(init?.signal)
+      const path = String(url)
+      if (path.includes('/csrf')) {
+        return {ok: true, status: 200, json: async () => ({csrfToken: 'test-csrf-token'})}
+      }
+      if (path.includes('/decision')) {
+        return {ok: true, status: 200, json: async () => ({state: 'claimed'})}
+      }
+      return {ok: true, status: 200, json: async () => ({approvals: []})}
+    })
+    const client = buildApprovalClient()
+    expect((await client.refreshCsrf()).success).toBe(true)
+    expect((await client.decideRunApproval('run-001', 'req-001', 'once', 'idem-key-abc')).success).toBe(true)
+    expect((await client.listRunApprovals('run-001')).success).toBe(true)
+    // 5 calls = refreshCsrf(1) + decide's csrf(1) + decide POST(1) + list(1)… the
+    // exact count is not the contract; the contract is that EVERY call carried
+    // a live signal from browserFetch's feature-detected AbortSignal.timeout.
+    expect(signals.length).toBeGreaterThanOrEqual(4)
+    for (const signal of signals) {
+      expect(signal).toBeInstanceOf(AbortSignal)
+    }
+  })
+
+  it('a never-resolving refreshCsrf hits the bound and maps to a network error (not an eternal pending state)', async () => {
+    vi.stubGlobal('fetch', async (_input: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        const err = new Error('The operation was aborted')
+        err.name = 'AbortError'
+        reject(err)
+      })
+    }))
+    const client = buildApprovalClient()
+    const result = await client.refreshCsrf()
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error?.kind).toBe('network')
+    }
+  }, 15_000)
+
+  it('a never-resolving decide POST (csrf fetch healthy) hits the bound and maps to a network error — the operator is not stranded with every control disabled', async () => {
+    vi.stubGlobal('fetch', async (input: string, init?: RequestInit) => {
+      if (String(input).includes('/csrf')) {
+        return {ok: true, status: 200, json: async () => ({csrfToken: 'test-csrf-token'})}
+      }
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          const err = new Error('The operation was aborted')
+          err.name = 'AbortError'
+          reject(err)
+        })
+      })
+    })
+    const client = buildApprovalClient()
+    const result = await client.decideRunApproval('run-001', 'req-001', 'once', 'idem-key-abc')
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error?.kind).toBe('network')
+    }
+  }, 15_000)
+})
+
+describe('connection lifecycle — stranded connections abort (rm-261)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  it('contract drift stops the read loop and aborts the connection', async () => {
+    const {statusEl, noticeEl} = makeLifecycleElements()
+    stubLifecycleDom()
+    const signals: AbortSignal[] = []
+    const driftReady = `event: ready\ndata: ${JSON.stringify({contractVersion: '0.0.0'})}\n\n`
+    const trailing = `event: status\ndata: ${JSON.stringify(ACTIVE_STATUS)}\n\n`
+    vi.stubGlobal('fetch', async (_url: unknown, init?: {signal?: AbortSignal}) => {
+      if (init?.signal !== undefined) signals.push(init.signal)
+      return makeSseResponse([driftReady, trailing], {keepOpen: true})
+    })
+
+    initOperatorStream({runId: 'run-001', statusEl, noticeEl})
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    expect(noticeEl.dataset.connectionState).toBe('drift')
+    expect(signals.length).toBe(1)
+    expect(signals[0]?.aborted).toBe(true) // reader released, socket closed
+  })
+
+  it('first-frame timeout on a stalled stream aborts the pending connection', async () => {
+    const {statusEl, noticeEl} = makeLifecycleElements()
+    stubLifecycleDom()
+    const signals: AbortSignal[] = []
+    let fetchCount = 0
+    vi.stubGlobal('fetch', async (_url: unknown, init?: {signal?: AbortSignal}) => {
+      fetchCount++
+      if (init?.signal !== undefined) signals.push(init.signal)
+      return makeSseResponse([], {keepOpen: true}) // stalls: never emits a frame
+    })
+
+    vi.useFakeTimers()
+    initOperatorStream({runId: 'run-001', statusEl, noticeEl})
+    await vi.advanceTimersByTimeAsync(FIRST_FRAME_TIMEOUT_MS + 100)
+
+    expect(noticeEl.dataset.connectionState).toBe('submitted-unobservable')
+    expect(signals[0]?.aborted).toBe(true) // the stalled read is released
+    expect(fetchCount).toBe(1) // deliberate stop does not schedule a reconnect
+  })
+
+  it('non-200 response aborts the unread response body instead of stranding it', async () => {
+    const {statusEl, noticeEl} = makeLifecycleElements()
+    stubLifecycleDom()
+    const signals: AbortSignal[] = []
+    let fetchCount = 0
+    vi.stubGlobal('fetch', async (_url: unknown, init?: {signal?: AbortSignal}) => {
+      fetchCount++
+      if (init?.signal !== undefined) signals.push(init.signal)
+      return {
+        ok: false,
+        status: 503,
+        headers: {get: () => 'text/html'},
+        body: makeSseStream(['x'.repeat(1024)], {keepOpen: true}), // never drained
+      } as unknown as Response
+    })
+
+    initOperatorStream({runId: 'run-001', statusEl, noticeEl})
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    expect(signals[0]?.aborted).toBe(true) // response body cancelled, socket released
+    expect(fetchCount).toBe(1) // backoff (1s) has not fired within the tick
+    expect(noticeEl.dataset.connectionState).toBeTruthy()
+  })
+})
+
 describe('rm-854 — parseSseFrame joins consecutive data lines (WHATWG SSE 9.2.6)', () => {
   it('joins two data lines with a newline instead of last-wins', () => {
     // A conforming sender splits the record at a JSON token boundary; only the

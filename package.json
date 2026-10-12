@@ -15,7 +15,7 @@
     "lint": "eslint --cache --cache-location node_modules/.cache/eslint/",
     "fix": "eslint --fix",
     "pretest": "pnpm build:web",
-    "test": "vitest run && vitest run --config web/vitest.config.ts"
+    "test": "node scripts/run-test-legs.ts"
   },
   "dependencies": {
     "@bfra.me/es": "0.1.0",
