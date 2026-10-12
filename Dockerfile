@@ -13,12 +13,12 @@
 # --platform flag and COPY cannot express deletions, so this is the minimal
 # target-executed step the design allows — see the rm-558 CI-time note in
 # .github/workflows/release.yaml).
-ARG NODE_IMAGE=node:24-trixie-slim@sha256:173f125896c3087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6
+ARG NODE_IMAGE=node:24-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66
 
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS builder
 
 # Enable corepack for pnpm
-RUN corepack enable && corepack prepare pnpm@11.28.3 --activate
+RUN corepack enable && corepack prepare pnpm@11.28.5 --activate
 
 WORKDIR /app
 
@@ -38,7 +38,7 @@ RUN pnpm build:web
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS prod-deps
 
 # Enable corepack for pnpm
-RUN corepack enable && corepack prepare pnpm@11.28.3 --activate
+RUN corepack enable && corepack prepare pnpm@11.28.5 --activate
 
 WORKDIR /app
 
