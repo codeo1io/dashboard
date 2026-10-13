@@ -24,16 +24,20 @@ import type {
   OperatorCsrfToken,
   OperatorError,
   OperatorOk,
+  OperatorPushHealth,
   OperatorSessionInfo,
 } from './responses.ts'
 
 import {err, ok} from '../../result.ts'
+import {OPERATOR_PUSH_HEALTH_STATUSES} from './responses.ts'
 
 // ---------------------------------------------------------------------------
 // OperatorSessionInfo
 // ---------------------------------------------------------------------------
 
-function hasValidOperatorSessionInfoShape(value: unknown): value is OperatorSessionInfo {
+function hasValidOperatorSessionInfoShape(
+  value: unknown,
+): value is Omit<OperatorSessionInfo, 'push'> & {readonly push?: unknown} {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return false
   }
@@ -48,10 +52,20 @@ function hasValidOperatorSessionInfoShape(value: unknown): value is OperatorSess
   )
 }
 
+function hasValidOperatorPushHealthShape(value: unknown): value is OperatorPushHealth {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+
+  const status = (value as Record<string, unknown>).status
+  return typeof status === 'string' && (OPERATOR_PUSH_HEALTH_STATUSES as readonly string[]).includes(status)
+}
+
 /**
  * Parse an unknown value as OperatorSessionInfo.
  *
- * Returns ok(value) when the input has the required shape.
+ * Returns ok(value) when the input has the required shape; a malformed optional
+ * `push` health is dropped rather than rejecting the session.
  * Returns err(Error) with a FIXED reason string when validation fails —
  * the error message never echoes any part of the input.
  */
@@ -60,7 +74,12 @@ export function parseOperatorSessionInfo(input: unknown): Result<OperatorSession
     return err(new Error('invalid operator session info shape'))
   }
 
-  return ok(input)
+  return ok({
+    operatorId: input.operatorId,
+    login: input.login,
+    expiresAt: input.expiresAt,
+    ...(hasValidOperatorPushHealthShape(input.push) ? {push: {status: input.push.status}} : {}),
+  })
 }
 
 // ---------------------------------------------------------------------------

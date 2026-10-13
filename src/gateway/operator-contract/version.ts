@@ -12,4 +12,11 @@
 // Security constraint: the version is BUILD-TIME pinned and is never supplied or
 // negotiated over the wire. Any endpoint reading a version header must reject
 // unrecognized versions fail-closed.
-export const OPERATOR_CONTRACT_VERSION = '1.9.0'
+//
+// Changelog (latest first; entry text never restates the version literal — the
+// conformance suite enforces the const below as the directory's only literal):
+//   current — added the closed set of push notification trigger kinds
+//             (`OperatorPushTriggerKind` / `OPERATOR_PUSH_TRIGGER_KINDS`), also the wire `data.type`, and
+//             optional authenticated-session push health in the operator session-info response
+//             (`OperatorSessionInfo.push` / `OperatorPushHealthStatus` / `OPERATOR_PUSH_HEALTH_STATUSES`).
+export const OPERATOR_CONTRACT_VERSION = '1.10.0'
