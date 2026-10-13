@@ -520,7 +520,14 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
           return false // stop
         }
         if (frame.data.contractVersion !== OPERATOR_CONTRACT_VERSION) {
-          logger?.error('sse-reader: contract version mismatch', {route: ROUTE_TEMPLATE})
+          // Observability carries both versions in STRUCTURED LOG FIELDS only;
+          // the Error message stays no-echo (a malformed version must never
+          // flow into error text) — pinned by the reader no-echo tests.
+          logger?.error('sse-reader: contract version mismatch', {
+            route: ROUTE_TEMPLATE,
+            serverVersion: frame.data.contractVersion,
+            clientVersion: OPERATOR_CONTRACT_VERSION,
+          })
           drifted = true
           onError(new Error('contract-drift: server contract version does not match client'))
           onClose()

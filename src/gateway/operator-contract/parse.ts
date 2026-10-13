@@ -24,10 +24,13 @@ import type {
   OperatorCsrfToken,
   OperatorError,
   OperatorOk,
+  OperatorPushHealth,
+  OperatorPushHealthStatus,
   OperatorSessionInfo,
 } from './responses.ts'
 
 import {err, ok} from '../../result.ts'
+import {OPERATOR_PUSH_HEALTH_STATUSES} from './responses.ts'
 
 // ---------------------------------------------------------------------------
 // OperatorSessionInfo
@@ -49,18 +52,42 @@ function hasValidOperatorSessionInfoShape(value: unknown): value is OperatorSess
 }
 
 /**
+ * OperatorPushHealth shape guard. `status` must be one of the
+ * canonical statuses; anything else is treated as malformed (and stripped
+ * by parseOperatorSessionInfo — never a rejection).
+ */
+function hasValidOperatorPushHealthShape(value: unknown): value is OperatorPushHealth {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+
+  const candidate = value as Record<string, unknown>
+  return OPERATOR_PUSH_HEALTH_STATUSES.includes(candidate.status as OperatorPushHealthStatus)
+}
+
+/**
  * Parse an unknown value as OperatorSessionInfo.
  *
  * Returns ok(value) when the input has the required shape.
  * Returns err(Error) with a FIXED reason string when validation fails —
  * the error message never echoes any part of the input.
+ *
+ * The optional `push` diagnostic is kept when valid and STRIPPED when
+ * malformed — a bad diagnostic never rejects an otherwise valid session.
  */
 export function parseOperatorSessionInfo(input: unknown): Result<OperatorSessionInfo, Error> {
   if (hasValidOperatorSessionInfoShape(input) === false) {
     return err(new Error('invalid operator session info shape'))
   }
 
-  return ok(input)
+  const candidate = input as OperatorSessionInfo & {push?: unknown}
+  if (candidate.push === undefined || hasValidOperatorPushHealthShape(candidate.push)) {
+    return ok(input)
+  }
+
+  const stripped: Record<string, unknown> = {...candidate}
+  delete stripped.push
+  return ok(stripped as unknown as OperatorSessionInfo)
 }
 
 // ---------------------------------------------------------------------------

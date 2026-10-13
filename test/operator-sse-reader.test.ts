@@ -697,6 +697,24 @@ describe('createOperatorSseReader — contract-version gate', () => {
     expect(errors[0]?.message).not.toContain(DRIFTED_VERSION)
   })
 
+  it('contract-drift log fields carry both server and client versions (1.10.0 drift observability)', async () => {
+    const sseText = `event: ready\ndata: {"contractVersion":"${DRIFTED_VERSION}"}\n\n`
+    const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
+    const {logger, messages} = makeCapturingLogger()
+    const reader = createOperatorSseReader({fetchImpl, logger})
+
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: () => {},
+      onError: () => {},
+      onClose: () => {},
+    })
+
+    const driftLog = messages.find(m => m.includes('contract version mismatch'))
+    expect(driftLog).toBeDefined()
+    expect(driftLog).toContain(`"serverVersion":"${DRIFTED_VERSION}"`)
+    expect(driftLog).toContain(`"clientVersion":"${OPERATOR_CONTRACT_VERSION}"`)
+  })
+
   it('a later major version followed by status and output dispatches nothing', async () => {
     const statusPayload = {
       runId: 'run-001',

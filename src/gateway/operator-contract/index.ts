@@ -93,8 +93,12 @@ export type {
   OperatorCsrfToken,
   OperatorError,
   OperatorOk,
+  OperatorPushHealth,
+  OperatorPushHealthStatus,
+  OperatorPushTriggerKind,
   OperatorSessionInfo,
 } from './responses.ts'
+export {OPERATOR_PUSH_HEALTH_STATUSES, OPERATOR_PUSH_TRIGGER_KINDS} from './responses.ts'
 export {
   parseLaunchRunResponse,
   parseRunApprovalDecisionResponse,

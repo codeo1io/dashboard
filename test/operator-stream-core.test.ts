@@ -690,6 +690,15 @@ describe('nextStreamState — ready frame', () => {
     expect(state.connection).toBe('drift')
   })
 
+  it('drift state records the observed contract version for the notice (1.10.0 drift observability)', () => {
+    const state = nextStreamState(INITIAL_STATE, {
+      type: 'ready',
+      data: {contractVersion: '0.0.1'},
+    })
+    expect(state.connection).toBe('drift')
+    expect((state as {contractVersion?: unknown}).contractVersion).toBe('0.0.1')
+  })
+
   it('does not retain any run status on drift', () => {
     // Pre-populate a run, then drift
     const withRun = nextStreamState(INITIAL_STATE, {
@@ -11843,5 +11852,66 @@ describe('rm-853 — nextStreamState output seq-gap detection', () => {
     expect(gapEl.hidden).toBe(false)
     expect(gapEl.textContent).not.toBe('')
     expect(coalescedEl.hidden).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Drift notice observability — the notice names both sides and the cure (1.10.0)
+// ---------------------------------------------------------------------------
+
+describe('initOperatorStream — drift notice names pinned and observed versions', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('mismatched ready frame renders server + client versions and update-required advice', async () => {
+    const noticeEl = {
+      textContent: '',
+      hidden: true,
+      dataset: {connectionState: ''},
+    }
+    const statusEl = {
+      textContent: '',
+      className: '',
+      classList: {add: () => {}},
+      dataset: {},
+      hidden: false,
+    }
+
+    const sseText = 'event: ready\ndata: {"contractVersion":"0.0.1"}\n\n'
+    const encoder = new TextEncoder()
+    const chunks: {done: boolean; value?: Uint8Array}[] = [
+      {done: false, value: encoder.encode(sseText)},
+      {done: true},
+    ]
+    let readIndex = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: {get: () => 'text/event-stream'},
+        body: {
+          getReader: () => ({
+            read: async () => chunks[readIndex++],
+          }),
+        },
+      }),
+    )
+
+    initOperatorStream({
+      runId: 'run-drift-notice',
+      statusEl,
+      noticeEl,
+      endpointBase: '/operator',
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 30))
+
+    expect(noticeEl.dataset.connectionState).toBe('drift')
+    expect(noticeEl.textContent).toContain('Stream version mismatch')
+    expect(noticeEl.textContent).toContain('dashboard update required')
+    expect(noticeEl.textContent).toContain('0.0.1')
+    expect(noticeEl.textContent).toContain(PINNED_CONTRACT_VERSION)
   })
 })

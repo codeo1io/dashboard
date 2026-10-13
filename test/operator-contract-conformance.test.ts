@@ -55,6 +55,8 @@ import {
   MAX_QUESTIONS_PER_REQUEST,
   OBSTRUCTION_KINDS,
   OPERATOR_CONTRACT_VERSION,
+  OPERATOR_PUSH_HEALTH_STATUSES,
+  OPERATOR_PUSH_TRIGGER_KINDS,
   parseOperatorCancelResponse,
   parseOperatorCheckoutPreparation,
   parseOperatorCheckoutProvenance,
@@ -785,6 +787,33 @@ describe('parseOperatorSessionInfo', () => {
     expect(result.success).toBe(true)
   })
 
+  it('keeps a valid push diagnostic (1.10.0)', () => {
+    const input = {operatorId: 42, login: 'octocat', expiresAt: 4070908800000, push: {status: 'degraded'}}
+    const result = parseOperatorSessionInfo(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.push).toEqual({status: 'degraded'})
+    }
+  })
+
+  it('strips a malformed push diagnostic instead of rejecting (1.10.0 fail-open)', () => {
+    const input = {operatorId: 42, login: 'octocat', expiresAt: 4070908800000, push: {status: 'exploded'}}
+    const result = parseOperatorSessionInfo(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect('push' in result.data).toBe(false)
+    }
+  })
+
+  it('strips a non-object push diagnostic (1.10.0 fail-open)', () => {
+    const input = {operatorId: 42, login: 'octocat', expiresAt: 4070908800000, push: 'not-an-object'}
+    const result = parseOperatorSessionInfo(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect('push' in result.data).toBe(false)
+    }
+  })
+
   it('rejects string expiresAt (canonical type is number)', () => {
     const input = {operatorId: 42, login: 'octocat', expiresAt: '2099-01-01T00:00:00Z'}
     const result = parseOperatorSessionInfo(input)
@@ -822,6 +851,16 @@ describe('parseOperatorSessionInfo', () => {
     const input = {operatorId: 1, login: 'x', expiresAt: Infinity}
     const result = parseOperatorSessionInfo(input)
     expect(result.success).toBe(false)
+  })
+})
+
+describe('push diagnostics vocabularies (1.10.0)', () => {
+  it('OPERATOR_PUSH_TRIGGER_KINDS is the exact approval|question|run_failed triple', () => {
+    expect([...OPERATOR_PUSH_TRIGGER_KINDS]).toEqual(['approval', 'question', 'run_failed'])
+  })
+
+  it('OPERATOR_PUSH_HEALTH_STATUSES is the exact ready|degraded|unknown triple', () => {
+    expect([...OPERATOR_PUSH_HEALTH_STATUSES]).toEqual(['ready', 'degraded', 'unknown'])
   })
 })
 

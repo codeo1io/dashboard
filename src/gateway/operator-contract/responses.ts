@@ -24,7 +24,40 @@ export interface OperatorSessionInfo {
   readonly operatorId: number
   readonly login: string
   readonly expiresAt: number
+  /** Optional push diagnostics; stripped when malformed. */
+  readonly push?: OperatorPushHealth
 }
+
+/**
+ * Optional push health diagnostics attached to a session.
+ *
+ * - `status`: the gateway's self-reported push-delivery health. A gateway
+ *   that never enables push reports `unknown`; a gateway with a healthy
+ *   registration reports `ready`; any fault in the pipeline reports
+ *   `degraded`.
+ * - Absent when the gateway does not attach push diagnostics.
+ */
+export interface OperatorPushHealth {
+  readonly status: OperatorPushHealthStatus
+}
+
+/** Push health statuses, in the order the gateway reports them. */
+export const OPERATOR_PUSH_HEALTH_STATUSES = ['ready', 'degraded', 'unknown'] as const
+
+/** The status of push delivery from the gateway. */
+export type OperatorPushHealthStatus = (typeof OPERATOR_PUSH_HEALTH_STATUSES)[number]
+
+/**
+ * The push trigger kinds the gateway can notify on.
+ *
+ * - `approval`: an operator approval is waiting.
+ * - `question`: a question to the operator is waiting.
+ * - `run_failed`: a run reached the FAILED terminal phase.
+ */
+export const OPERATOR_PUSH_TRIGGER_KINDS = ['approval', 'question', 'run_failed'] as const
+
+/** A trigger kind the gateway can push on. */
+export type OperatorPushTriggerKind = (typeof OPERATOR_PUSH_TRIGGER_KINDS)[number]
 
 /**
  * Canonical response shape for GET /operator/session/csrf.

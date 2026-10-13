@@ -12,4 +12,8 @@
 // Security constraint: the version is BUILD-TIME pinned and is never supplied or
 // negotiated over the wire. Any endpoint reading a version header must reject
 // unrecognized versions fail-closed.
-export const OPERATOR_CONTRACT_VERSION = '1.9.0'
+// Push-diagnostics release: OperatorSessionInfo gains an optional `push`
+// health field (stripped when malformed, never a rejection); push-health
+// statuses and push-trigger kinds join the exported surface.
+// Additive only — an older client remains wire-compatible.
+export const OPERATOR_CONTRACT_VERSION = '1.10.0'

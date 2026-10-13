@@ -30,7 +30,7 @@
 // ---------------------------------------------------------------------------
 
 /** Contract version this client expects on the ready frame. */
-export const PINNED_CONTRACT_VERSION = '1.9.0'
+export const PINNED_CONTRACT_VERSION = '1.10.0'
 
 /** Base delay in milliseconds for exponential backoff. */
 export const RETRY_BASE_MS = 1000
@@ -1011,6 +1011,8 @@ function settleQuestionInState(current, base, runId, requestID) {
  *
  * Drift is absorbing: once in drift, ready/status do not move back to live.
  * A status before any ready is not rendered.
+ * The drift state records the observed server version (state.contractVersion)
+ * so the notice can name both sides without an error-message echo.
  */
 export function nextStreamState(current, event) {
   switch (event.type) {
@@ -1020,12 +1022,15 @@ export function nextStreamState(current, event) {
         return current
       }
       if (event.data.contractVersion !== PINNED_CONTRACT_VERSION) {
-        // Contract version mismatch — fail closed, clear all run state
+        // Contract version mismatch — fail closed, clear all run state.
+        // The observed version rides the drift state (NOT the error message —
+        // no-echo) so the notice can render both sides.
         return {
           connection: 'drift',
           runs: Object.create(null),
           retryCount: current.retryCount,
           shouldReconnect: false,
+          contractVersion: event.data.contractVersion,
         }
       }
       return {
@@ -1986,6 +1991,14 @@ async function refreshCsrf(endpointBase, fixtureSessionId, timeoutMs) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Fork hardening (rm-594, kept per #16393): bound every approval-client fetch —
+ * CSRF fetch, decision POST, list — with its own timeout signal, exactly as the
+ * question client above is bounded by QUESTION_FETCH_TIMEOUT_MS. An unbounded
+ * approval fetch otherwise pins a decision or a list poll open forever.
+ */
+export const APPROVAL_FETCH_TIMEOUT_MS = 10_000
+
+/**
  * Build a browser-direct approval client for the inline approval prompt UI.
  *
  * Uses same-origin relative paths (owned by the public reverse proxy in production,
@@ -2150,14 +2163,6 @@ export const QUESTION_CLAIM_RECHECK_DELAYS_MS = Object.freeze([2000, 5000, 10_00
  * from the cancel client's bound because the recovery differs, though the value is the same.
  */
 export const QUESTION_FETCH_TIMEOUT_MS = 10_000
-
-/**
- * Fork hardening (rm-594, kept per #16393): bound every approval-client fetch —
- * CSRF fetch, decision POST, list — with its own timeout signal, exactly as the
- * question client above is bounded by QUESTION_FETCH_TIMEOUT_MS. An unbounded
- * approval fetch otherwise pins a decision or a list poll open forever.
- */
-export const APPROVAL_FETCH_TIMEOUT_MS = 10_000
 
 /** One pending-list entry `{requestID, questions}` (no per-item runId), or null when invalid. */
 function parsePendingQuestionEntry(value) {
@@ -3749,7 +3754,9 @@ export function initOperatorStream(opts) {
         noticeEl.textContent = 'Connecting to run stream\u2026'
         noticeEl.hidden = false
       } else if (conn === 'drift') {
-        noticeEl.textContent = 'Stream version mismatch \u2014 refresh the page.'
+        const observed =
+          typeof state.contractVersion === 'string' ? state.contractVersion : 'unknown'
+        noticeEl.textContent = `Stream version mismatch \u2014 dashboard update required (server \u2014${observed}, client \u2014${PINNED_CONTRACT_VERSION}).`
         noticeEl.hidden = false
       } else if (conn === 'not-found') {
         noticeEl.textContent = 'Run stream unavailable.'
