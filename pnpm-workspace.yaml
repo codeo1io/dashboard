@@ -56,7 +56,12 @@ overrides:
   # @opencode-ai/plugin>effect; >=4.2.0 is the patched line
   # (rescued by content from run b4aac9ba / PR #82 via cycle-13;
   # the batch's internal rm-171 numbering collided with landed ids).
-  toml: '>=4.2.0'
+  # 2026-10-09 rider (run 1c814809d084, rm-841, landed 2026-10-13 at the
+  # integrate): floor raised '>=4.2.0' -> '>=4.3.0' as prophylactic parity
+  # with upstream #582 — the locked resolution was already 4.3.0, so the
+  # raise forces no re-resolution; the pnpm-lock.yaml overrides mirror
+  # moved in the same change (the overrides==floors convention).
+  toml: '>=4.3.0'
   # All ten npm-DB undici advisories patch at >=7.29.1 (highs
   # GHSA-rfgv-xxqx-mfg5 + GHSA-w293-vg96-wgc3); the floor deliberately takes
   # the published 7.x tip 7.30.0, not the bare minimum. 7.29.1 itself sits in
@@ -67,7 +72,28 @@ overrides:
   # NEWLY indexed advisory BY DESIGN and the undici 8 + jsdom 30 migration
   # rides rm-271's majors window. undici is dev-transitive via jsdom.
   undici@7: '>=7.30.0 <8.0.0'
-  # upstream 2026.10.17: new advisory floor
+  # source-map-js is dev-transitive along ~16 paths (@eslint/css-tree, the
+  # @tailwindcss/* chain, vite > postcss); GHSA-68fv-2mgg-jv7q is HIGH
+  # (event-loop DoS; published 2026-09-18, vulnerable >=1.0.0 <1.2.2 — the
+  # patched 1.2.2, published 2026-09-30T14:08Z, is the minimumReleaseAge-mature
+  # tip), indexed into the audit DB only between 2026-10-05 and 2026-10-06 —
+  # AFTER every recorded audit-0 of the 2026-10-05 era.
+  # 2026-10-13 rider (conductor integrate conflict 5e7fd5e1, merge of
+  # candidate 04c66e8 into 6acea88): this floor was carried unchanged by
+  # base 88e423a and by the candidate, and was dropped by HEAD's
+  # upstream-adoption reconcile (upstream never had it) with no ROADMAP
+  # def recording a retirement — restored here as merge collateral repair,
+  # not a policy change. The lock already resolves source-map-js@1.2.2, so
+  # the restored floor forces no re-resolution; the pnpm-lock.yaml
+  # overrides mirror moved in the same change (the overrides==floors
+  # convention).
+  source-map-js: '>=1.2.2 <2.0.0'
+  # upstream 2026.10.17: new advisory floor. Converges with run
+  # 1c814809d084's rm-841 cap lift (landed 2026-10-13 at the integrate:
+  # '>=0.18.2 <0.19.0' -> '>=0.18.2 <1.0.0', katex 0.18.10 -> 0.19.0) —
+  # two lineages, one range; the upstream key form `katex@0` is kept
+  # because it is what the adopted upstream bytes and the lockfile mirror
+  # carry.
   katex@0: '>=0.18.2 <1.0.0'
 
 shamefullyHoist: true
