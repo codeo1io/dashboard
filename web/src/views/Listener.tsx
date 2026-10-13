@@ -203,6 +203,15 @@ function MessageCard({ msg, isAcking, onAck }: { msg: ListenerMessage; isAcking:
           <span className="listener-source">
             {msg.source}/{msg.kind}
           </span>
+          {msg.linksCorrupt && (
+            <span
+              data-testid="listener-links-corrupt-flag"
+              title="This row's stored links cell was malformed — links hidden, message kept (degraded row)"
+              className="listener-severity severity-warning"
+            >
+              links unreadable
+            </span>
+          )}
           {isUnread && (
             <span
               title="Unread"

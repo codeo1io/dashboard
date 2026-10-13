@@ -34,6 +34,13 @@ export interface ListenerMessage extends IngestMessage {
   readonly id: string
   readonly receivedAt: string
   readonly read: boolean
+  /**
+   * rm-1434: present ONLY when the row's stored links cell was malformed and
+   * the row was degraded on read (links emptied, every other field intact).
+   * The flag makes the degradation distinguishable in the UI from a message
+   * that genuinely has no links — never a silent empty list, never a throw.
+   */
+  readonly linksCorrupt?: true
 }
 
 export interface MessagesResponse {

@@ -1,4 +1,8 @@
 import type {IngestMessage} from '../src/listener/contract.ts'
+import {mkdtempSync, rmSync} from 'node:fs'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
+import {DatabaseSync} from 'node:sqlite'
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {createListenerStore, type ListenerStore} from '../src/listener/store.ts'
 
@@ -167,5 +171,104 @@ describe('listener store', () => {
 
   it('close does not throw', () => {
     expect(() => store.close()).not.toThrow()
+  })
+})
+
+describe('listener store — poison-row resilience (rm-1434)', () => {
+  // A malformed links cell is injected DIRECTLY through a second sqlite handle
+  // — the real-world corruption paths (crash mid-write, manual edit, schema
+  // drift) all bypass the store's own writes, so the test must too. The store
+  // stays open on the same file, exactly like the live process would be.
+  let dir: string
+  let store: ListenerStore
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'listener-poison-'))
+    store = createListenerStore(join(dir, 'messages.db'))
+    return () => {
+      store.close()
+      rmSync(dir, {recursive: true, force: true})
+    }
+  })
+
+  /** Overwrites one row's links cell with raw bytes, bypassing the store. */
+  function poisonLinksCell(id: string, raw: string): void {
+    const handle = new DatabaseSync(join(dir, 'messages.db'))
+    handle.prepare('UPDATE messages SET links = ? WHERE id = ?').run(raw, id)
+    handle.close()
+  }
+
+  it('a malformed links cell degrades the row visibly on list — no throw, no silent empty', () => {
+    const good = store.insert(makeMessage({dedupeKey: 'good'}))
+    const bad = store.insert(
+      makeMessage({dedupeKey: 'bad', links: [{label: 'Run', url: 'https://example.com/run'}]}),
+    )
+    poisonLinksCell(bad.id, '{not json')
+
+    const listed = store.list({})
+
+    // The list path survives and every row renders.
+    expect(listed.messages).toHaveLength(2)
+    expect(listed.unreadCount).toBe(2)
+
+    const degraded = listed.messages.find(message => message.id === bad.id)
+    expect(degraded?.links).toEqual([])
+    expect(degraded?.linksCorrupt).toBe(true)
+    // Degraded ≠ empty: the row itself is intact.
+    expect(degraded?.title).toBe('Autoheal restarted gateway')
+    expect(degraded?.read).toBe(false)
+
+    // Healthy neighbors carry no flag — the marker stays distinguishable.
+    const healthy = listed.messages.find(message => message.id === good.id)
+    expect(healthy?.linksCorrupt).toBeUndefined()
+    expect(healthy?.links).toEqual([])
+  })
+
+  it('valid JSON with the wrong shape degrades too (non-array, bad entry, missing fields)', () => {
+    const first = store.insert(makeMessage({dedupeKey: 'shape-1'}))
+    const second = store.insert(makeMessage({dedupeKey: 'shape-2'}))
+    const third = store.insert(makeMessage({dedupeKey: 'shape-3'}))
+    poisonLinksCell(first.id, '"just a string"')
+    poisonLinksCell(second.id, '[{"label": 7, "url": "https://example.com"}]')
+    poisonLinksCell(third.id, '[{"label": "Run"}]')
+
+    for (const id of [first.id, second.id, third.id]) {
+      const row = store.list({}).messages.find(message => message.id === id)
+      expect(row?.linksCorrupt, id).toBe(true)
+      expect(row?.links, id).toEqual([])
+    }
+  })
+
+  it('the ingest path survives a poisoned table: new inserts land and a dedupe replay REPAIRS the cell', () => {
+    const poisoned = store.insert(makeMessage({dedupeKey: 'replay-me', links: [{label: 'Old', url: 'https://example.com/old'}]}))
+    poisonLinksCell(poisoned.id, '{not json')
+
+    // Ingest while the table holds a malformed row: no throw.
+    const fresh = store.insert(makeMessage({dedupeKey: 'fresh'}))
+    expect(fresh.id).toBeTruthy()
+
+    // Dedupe replay onto the poisoned row rewrites the links cell with fresh
+    // JSON — the upsert is the natural repair path, and it must keep working.
+    const replay = store.insert(
+      makeMessage({dedupeKey: 'replay-me', links: [{label: 'New', url: 'https://example.com/new'}]}),
+    )
+    expect(replay.id).toBe(poisoned.id)
+
+    const row = store.list({}).messages.find(message => message.id === poisoned.id)
+    expect(row?.linksCorrupt).toBeUndefined()
+    expect(row?.links).toEqual([{label: 'New', url: 'https://example.com/new'}])
+  })
+
+  it('unreadOnly and ack paths are unaffected by a degraded row', () => {
+    const degraded = store.insert(makeMessage({dedupeKey: 'degraded'}))
+    poisonLinksCell(degraded.id, '{not json')
+
+    const unread = store.list({unreadOnly: true}).messages
+    expect(unread).toHaveLength(1)
+    expect(unread[0]?.linksCorrupt).toBe(true)
+
+    expect(store.ack(degraded.id).acked).toBe(true)
+    expect(store.list({}).unreadCount).toBe(0)
+    expect(store.ackAll()).toBe(0)
   })
 })

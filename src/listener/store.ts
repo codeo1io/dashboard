@@ -40,7 +40,39 @@ const DEFAULT_LIST_LIMIT = 100
 const MIN_LIST_LIMIT = 1
 const MAX_LIST_LIMIT = 200
 
+/** Shared shape guard (mirrors contract.ts): a non-null, non-array object. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+/**
+ * rm-1434: defensive read of the only JSON-in-TEXT column read back through
+ * `JSON.parse`. One malformed cell (crash mid-write, manual sqlite edit,
+ * retention-pruning schema drift) must degrade THAT row visibly — never throw
+ * on the list path, never silently mask as a normal zero-link message.
+ * Any deviation from the stored shape (bad JSON, non-array, non-record or
+ * non-string entries) degrades the row; the intact fields survive.
+ */
+function readStoredLinks(raw: string): {links: readonly ListenerLink[]; linksCorrupt: boolean} {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return {links: [], linksCorrupt: true}
+  }
+  if (!Array.isArray(parsed)) return {links: [], linksCorrupt: true}
+  const links: ListenerLink[] = []
+  for (const entry of parsed) {
+    if (!isRecord(entry)) return {links: [], linksCorrupt: true}
+    const {label, url} = entry
+    if (typeof label !== 'string' || typeof url !== 'string') return {links: [], linksCorrupt: true}
+    links.push({label, url})
+  }
+  return {links, linksCorrupt: false}
+}
+
 function rowToMessage(row: MessageRow): ListenerMessage {
+  const {links, linksCorrupt} = readStoredLinks(row.links)
   return {
     id: row.id,
     source: row.source as ListenerMessage['source'],
@@ -48,7 +80,8 @@ function rowToMessage(row: MessageRow): ListenerMessage {
     severity: row.severity as ListenerMessage['severity'],
     title: row.title,
     body: row.body,
-    links: JSON.parse(row.links) as readonly ListenerLink[],
+    links,
+    ...(linksCorrupt ? {linksCorrupt: true} : {}),
     dedupeKey: row.dedupe_key,
     createdAt: row.created_at,
     receivedAt: row.received_at,

@@ -270,6 +270,58 @@ describe('ListenerChannel', () => {
     expect(screen.getByTestId('listener-pruned-notice')).toHaveTextContent('retention (500')
   })
 
+  // rm-1434: a server-flagged poison row must render as a VISIBLE degraded
+  // row — the flag is what separates "links were unreadable" from "no links".
+  it('rm-1434: flags a degraded row (corrupt links cell) without hiding the message, and leaves healthy rows unflagged', async () => {
+    vi.mocked(listenerApi.fetchListenerMessages).mockResolvedValueOnce({
+      ok: true,
+      data: {
+        messages: [
+          {
+            id: 'msg-degraded',
+            source: 'infra' as const,
+            kind: 'deploy-health',
+            severity: 'warning' as const,
+            title: 'Poisoned row',
+            body: 'Links cell was malformed; the row survives.',
+            createdAt: '2026-10-15T12:00:00Z',
+            receivedAt: '2026-10-15T12:00:01Z',
+            read: false,
+            links: [],
+            linksCorrupt: true as const,
+          },
+          {
+            id: 'msg-healthy',
+            source: 'agent' as const,
+            kind: 'run-note',
+            severity: 'info' as const,
+            title: 'Healthy row',
+            body: 'Nothing wrong here.',
+            createdAt: '2026-10-15T12:01:00Z',
+            receivedAt: '2026-10-15T12:01:01Z',
+            read: true,
+            links: [{label: 'Run', url: 'https://example.com/run'}],
+          },
+        ],
+        unreadCount: 1,
+        prunedCount: 0,
+        droppedCount: 0,
+      },
+    })
+
+    render(<ListenerChannel />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    // Both rows render; the degraded one is flagged, the healthy one is not.
+    expect(screen.getByText('Poisoned row')).toBeInTheDocument()
+    expect(screen.getByText('Healthy row')).toBeInTheDocument()
+    expect(screen.getByTestId('listener-links-corrupt-flag')).toBeInTheDocument()
+    expect(screen.getAllByTestId('listener-links-corrupt-flag')).toHaveLength(1)
+    expect(screen.getByText('Run ↗')).toHaveAttribute('href', 'https://example.com/run')
+  })
+
   // rm-155 regressions: the poll latch must release even when the transport
   // never settles, and the in-flight request must be aborted on unmount.
   describe('rm-155 poll hygiene', () => {

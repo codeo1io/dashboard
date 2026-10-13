@@ -14,6 +14,8 @@ export interface ListenerMessage {
   readonly title: string
   readonly body: string
   readonly links: readonly ListenerLink[]
+  /** rm-1434: server flag — the stored links cell was malformed, links were dropped, row degraded. Absent on healthy rows. */
+  readonly linksCorrupt?: true
   readonly createdAt: string
   readonly receivedAt: string
   readonly read: boolean
@@ -62,6 +64,11 @@ function parseMessage(item: unknown): ListenerMessage | null {
     }
   }
 
+  // rm-1434: the server's poison-row flag rides through untouched — the UI
+  // renders the degraded state from it (server-side links were dropped because
+  // the stored cell was malformed, which is NOT the same as "no links").
+  const linksCorrupt = item.linksCorrupt === true
+
   return {
     id,
     source,
@@ -73,6 +80,7 @@ function parseMessage(item: unknown): ListenerMessage | null {
     receivedAt,
     read,
     links: parsedLinks,
+    ...(linksCorrupt ? { linksCorrupt: true as const } : {}),
   }
 }
 

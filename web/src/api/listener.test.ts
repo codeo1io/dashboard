@@ -129,6 +129,52 @@ describe('listener API', () => {
       }
     })
 
+    it('rm-1434: the server’s poison-row flag rides through to the UI DTO (degraded ≠ dropped)', async () => {
+      const mockData = {
+        messages: [
+          {
+            id: 'degraded',
+            source: 'infra',
+            kind: 'deploy-health',
+            severity: 'warning',
+            title: 'Degraded',
+            body: 'body',
+            createdAt: '2026-10-15T12:00:00Z',
+            receivedAt: '2026-10-15T12:00:01Z',
+            read: false,
+            links: [],
+            linksCorrupt: true
+          },
+          {
+            id: 'healthy',
+            source: 'infra',
+            kind: 'deploy-health',
+            severity: 'warning',
+            title: 'Healthy',
+            body: 'body',
+            createdAt: '2026-10-15T12:01:00Z',
+            receivedAt: '2026-10-15T12:01:01Z',
+            read: false,
+            links: []
+          }
+        ],
+        unreadCount: 2
+      }
+
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+      const res = await fetchListenerMessages()
+      expect(res.ok).toBe(true)
+      if (res.ok) {
+        expect(res.data.droppedCount).toBe(0)
+        const degraded = res.data.messages.find(m => m.id === 'degraded')
+        const healthy = res.data.messages.find(m => m.id === 'healthy')
+        // The flag is carried through untouched so the UI can render the
+        // degraded state; a flagged row is NOT a client-side drift drop.
+        expect(degraded?.linksCorrupt).toBe(true)
+        expect(healthy?.linksCorrupt).toBeUndefined()
+      }
+    })
+
     it('rm-244/rm-243: surfaces server prunedCount alongside client droppedCount', async () => {
       const mockData = {
         messages: [],
