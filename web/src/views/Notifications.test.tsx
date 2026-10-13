@@ -17,6 +17,10 @@ vi.mock('../push/capability.ts', () => ({
 
 vi.mock('../push/subscribe.ts', () => ({
   INITIAL_RECONCILE_SWEEP_CACHE: {},
+  // rm-1420: the view now registers the push-only SW by default instead of
+  // injecting a bare `ready` wait. Default stub resolves immediately; the
+  // subscribe flows here mock subscribeOptIn itself, so the dep is inert.
+  ensurePushServiceWorker: vi.fn().mockResolvedValue({pushManager: {}}),
   // rm-600: the view now calls getVapidKey() at sweep cadence to keep the
   // key-version cache fresh. Default stub is fail-open (push-disabled, no
   // key) so existing tests are unaffected; the rm-600 wiring tests override
@@ -696,7 +700,11 @@ describe('Notifications Component', () => {
     fireEvent.click(syncBtn)
     expect(postMessage).toHaveBeenCalledWith({
       type: 'MOCK_SYNTHETIC_PUSH',
-      payload: {type: 'approval'},
+      payload: {
+        title: 'Fro Bot',
+        body: 'Synthetic approval request (dev aid).',
+        data: {type: 'approval', route: '/'},
+      },
     })
   })
 

@@ -3,12 +3,13 @@ import {getPushSupport} from '../push/capability.ts'
 import {getLogoutAbortSignal} from '../push/logout-abort.ts'
 import {
   INITIAL_RECONCILE_SWEEP_CACHE,
+  ensurePushServiceWorker,
   resubscribeStaleKey,
   runReconcileSweep,
   subscribeOptIn,
   unsubscribeOptOut,
 } from '../push/subscribe.ts'
-import type {MinimalServiceWorkerRegistration, ReconcileSweepCache} from '../push/subscribe.ts'
+import type {ReconcileSweepCache} from '../push/subscribe.ts'
 import {buildPushClient} from '../push/subscribe.ts'
 import {getNotificationCopy} from './notifications-copy.ts'
 import type {NotificationUiState} from './notifications-copy.ts'
@@ -181,7 +182,7 @@ export function Notifications({
       try {
         if (result.action === 'register') {
           const outcome = await subscribeOptIn({
-            serviceWorkerReady: () => navigator.serviceWorker.ready as unknown as Promise<MinimalServiceWorkerRegistration>,
+            serviceWorkerReady: ensurePushServiceWorker,
             requestPermission: () => Notification.requestPermission(),
             pushClient,
             signal: getLogoutAbortSignal(),
@@ -200,7 +201,7 @@ export function Notifications({
           }
         } else if (result.action === 'resubscribe') {
           const outcome = await resubscribeStaleKey({
-            serviceWorkerReady: () => navigator.serviceWorker.ready as unknown as Promise<MinimalServiceWorkerRegistration>,
+            serviceWorkerReady: ensurePushServiceWorker,
             requestPermission: () => Notification.requestPermission(),
             pushClient,
             signal: getLogoutAbortSignal(),
@@ -360,7 +361,7 @@ export function Notifications({
     setInFlight(true)
     try {
       const outcome = await subscribeOptIn({
-        serviceWorkerReady: () => navigator.serviceWorker.ready as unknown as Promise<MinimalServiceWorkerRegistration>,
+        serviceWorkerReady: ensurePushServiceWorker,
         requestPermission: () => Notification.requestPermission(),
         pushClient,
         signal: getLogoutAbortSignal(),
@@ -511,7 +512,13 @@ export function Notifications({
                 if (navigator.serviceWorker && navigator.serviceWorker.controller) {
                   navigator.serviceWorker.controller.postMessage({
                     type: 'MOCK_SYNTHETIC_PUSH',
-                    payload: {type: 'approval'},
+                    // Gateway wire shape (#615): the synthetic fixture runs
+                    // through the same read path as a real push.
+                    payload: {
+                      title: 'Fro Bot',
+                      body: 'Synthetic approval request (dev aid).',
+                      data: {type: 'approval', route: '/'},
+                    },
                   })
                 }
               }}
