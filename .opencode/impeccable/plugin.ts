@@ -17,7 +17,9 @@ function createDefaultRunner(input: PluginInput): DetectorRunner {
   return async (payload, opts) => {
     const scriptPath = `${opts.worktree}/${HOOK_SCRIPT_RELATIVE_PATH}`
     const stdinBody = new Response(JSON.stringify(payload))
-    const proc = await input.$`node ${scriptPath} < ${stdinBody}`
+    // rm-990: capture the Bun-$ shell handle before awaiting so an abort can
+    // reap the child; otherwise a sentinel-timeout abandons a live hook.mjs.
+    const command = input.$`node ${scriptPath} < ${stdinBody}`
       .cwd(opts.worktree)
       // Note: do NOT set IMPECCABLE_HOOK_DEPTH — hook.mjs treats any depth value
       // as a re-entrancy signal and no-ops. The bridge runs hook.mjs as a plain
@@ -32,6 +34,17 @@ function createDefaultRunner(input: PluginInput): DetectorRunner {
       })
       .nothrow()
       .quiet()
+    if (opts.signal) {
+      opts.signal.addEventListener(
+        'abort',
+        () => {
+          const reapable = command as unknown as { abort?: (signal?: AbortSignal) => void }
+          reapable.abort?.(opts.signal)
+        },
+        { once: true },
+      )
+    }
+    const proc = await command
     return {
       stdout: proc.stdout.toString(),
       stderr: proc.stderr.toString(),
