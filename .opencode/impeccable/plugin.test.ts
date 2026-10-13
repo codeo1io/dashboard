@@ -8,6 +8,7 @@ import {
   extractTouchedPaths,
   isMutatingTool,
   type DetectorRunResult,
+  type DetectorRunner,
 } from './hook-bridge.ts'
 
 function makeOutput(initial = 'ok') {
@@ -311,5 +312,67 @@ describe('fail-loud', () => {
     const output2 = makeOutput()
     await hook(makeInput(), output2)
     expect(output2.output).toBe('ok')
+  })
+})
+
+describe('sentinel-timeout child reaping (rm-990)', () => {
+  it('aborts the runner signal when the timeout wins, so no child survives', async () => {
+    let abortReason: string | null = null
+    const runner: DetectorRunner = (_payload, opts) =>
+      new Promise((resolve, reject) => {
+        if (!opts.signal) {
+          reject(new Error('hook-bridge did not pass an abort signal to the runner'))
+          return
+        }
+        opts.signal.addEventListener(
+          'abort',
+          () => {
+            abortReason = String(opts.signal?.reason ?? 'aborted')
+            resolve({ stdout: '', stderr: '', exitCode: 0 })
+          },
+          { once: true },
+        )
+      })
+    const hook = createHook({ runDetector: runner, worktree: '/repo', timeoutMs: 15 })
+    const output = makeOutput()
+    await expect(hook(makeInput(), output)).resolves.toBeUndefined()
+    expect(abortReason).toBeTruthy()
+    expect(output.output).toBe('ok')
+  })
+
+  it('does not abort when the detector completes in time', async () => {
+    let aborted = false
+    const runner: DetectorRunner = (_payload, opts) =>
+      new Promise(resolve => {
+        opts.signal?.addEventListener('abort', () => {
+          aborted = true
+        }, { once: true })
+        setTimeout(() => resolve({ stdout: '', stderr: '', exitCode: 0 }), 5)
+      })
+    const hook = createHook({ runDetector: runner, worktree: '/repo', timeoutMs: 1000 })
+    const output = makeOutput()
+    await expect(hook(makeInput(), output)).resolves.toBeUndefined()
+    expect(aborted).toBe(false)
+    expect(output.output).toBe('ok')
+  })
+
+  it('swallows the runner rejection that arrives after an abort (no unhandled rejection)', async () => {
+    const runner: DetectorRunner = (_payload, opts) =>
+      new Promise((_resolve, reject) => {
+        opts.signal?.addEventListener(
+          'abort',
+          () => {
+            setTimeout(() => reject(new Error('killed by abort')), 0)
+          },
+          { once: true },
+        )
+      })
+    const hook = createHook({ runDetector: runner, worktree: '/repo', timeoutMs: 15 })
+    const output = makeOutput()
+    await expect(hook(makeInput(), output)).resolves.toBeUndefined()
+    await new Promise(resolve => {
+      setTimeout(resolve, 10)
+    })
+    expect(output.output).toBe('ok')
   })
 })
