@@ -2936,6 +2936,38 @@ describe('late <time> — a card first shown without updatedAt gains it when a l
     expect(card._children).toHaveLength(childCountBefore)
     expect(card.querySelector('[data-role="run-updated-at"]')).toBeNull()
   })
+
+  // rm-1441 (upstream fro-bot/dashboard#585): a fetched summary's updatedAt can lag
+  // the client-side time the stream painted on its last status transition of an
+  // adopted card. The card's timestamp is monotonic: an older view leaves it
+  // untouched; an equal or newer view advances it as before.
+  it('a view older than the painted timestamp never moves it backwards (rm-1441 monotonic guard)', async () => {
+    const runId = 'run-late-time-monotonic-001'
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    const optimistic = makeStatusOnlyOptimisticCard(cards, runId)
+
+    stubFetchRuns([makeValidSummary({runId, status: 'running', updatedAt: LATE_UPDATED_AT})])
+    await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
+    const timeEl = optimistic.querySelector('[data-role="run-updated-at"]')
+    expect(timeEl).not.toBeNull()
+    expect(timeEl.attributes.datetime).toBe(LATE_UPDATED_AT)
+
+    // Older summary value (13:00 < 14:00): the painted 14:00 survives.
+    stubFetchRuns([makeValidSummary({runId, status: 'running', updatedAt: '2026-06-26T13:00:00.000Z'})])
+    await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
+    expect(optimistic.querySelector('[data-role="run-updated-at"]').attributes.datetime).toBe(LATE_UPDATED_AT)
+
+    // Equal value: rewritten (same instant, still forward-or-equal).
+    stubFetchRuns([makeValidSummary({runId, status: 'running', updatedAt: LATE_UPDATED_AT})])
+    await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
+    expect(optimistic.querySelector('[data-role="run-updated-at"]').attributes.datetime).toBe(LATE_UPDATED_AT)
+
+    // Newer summary value (15:00): advances.
+    stubFetchRuns([makeValidSummary({runId, status: 'running', updatedAt: '2026-06-26T15:00:00.000Z'})])
+    await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
+    expect(optimistic.querySelector('[data-role="run-updated-at"]').attributes.datetime).toBe('2026-06-26T15:00:00.000Z')
+  })
 })
 
 // ---------------------------------------------------------------------------

@@ -52,13 +52,17 @@ treat output as a side-channel that may arrive empty:
 // render: show output only when non-empty; an empty final clears any stale text
 const outputText = runEntry?.outputText
 if (typeof outputText === 'string' && outputText !== '') {
-  outputEl.textContent = outputText
+  renderRunOutput(outputEl, outputText)   // rm-1440: allowlist-markdown builder
   outputEl.hidden = false
 } else {
   outputEl.textContent = ''   // clear any stale text, e.g. after an empty final
   outputEl.hidden = true
 }
 ```
+
+(The `renderRunOutput` indirection is rm-1440, below. A live non-terminal run
+with no output yet renders a compact in-card waiting state instead — see
+rm-1441.)
 
 The empty-final guarantee means the reducer's authoritative-final path (`final:true`
 replaces accumulated text) now runs for every run, including silent ones. Ensure the
@@ -97,14 +101,25 @@ accumulated output. Spread the prior entry:
 This is the trap of adding state to a reducer entry that other event handlers also
 write: every handler that builds that entry must preserve the new fields.
 
-### Render free-form text via textContent only
+### Render free-form text via an allowlist tokenizer, never HTML interpretation
 
 The `text` field is free-form agent output and is **not** allowlist-gateable, so it
-cannot be sanitized by enumeration like status/phase values. Render it through
-`textContent` / a text node — never HTML interpolation, never `innerHTML`. The SSR
-element ships empty and hidden; only the client writes it. Never render any other
-frame field (`runId`, `seq`, `droppedCount`) as free text — surface a *fixed* label
-for the coalesced/truncated hint instead of echoing a count.
+cannot be sanitized by enumeration like status/phase values. Since rm-1440
+(upstream fro-bot/dashboard#586) the accumulated text renders through
+`public/operator-run-output.js` — an allowlist Markdown tokenizer that builds
+DOM nodes directly with `createElement` + `textContent` only. The rule the plain
+`textContent` assignment used to carry is unchanged in spirit: the text is never
+interpolated as HTML, and there is no `innerHTML` / `insertAdjacentHTML` /
+`document.write` anywhere on the run-output path (a structural guard test pins
+that). Unknown or disallowed tokens — raw HTML tags, link syntax, strikethrough
+— degrade to verbatim `textContent`, so `<script>alert(1)</script>` renders as
+literal text. Re-render is change-guarded at chunk boundaries: the DOM rebuild
+runs only when the accumulated text advanced, never on status-only frames.
+
+Every other invariant still holds literally: the SSR element ships empty and
+hidden; only the client writes it. Never render any other frame field (`runId`,
+`seq`, `droppedCount`) as free text — surface a *fixed* label for the
+coalesced/truncated hint instead of echoing a count.
 
 ### Bound cumulative accumulation
 
