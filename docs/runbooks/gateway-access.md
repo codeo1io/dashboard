@@ -145,6 +145,8 @@ never proxies raw HTTP: its server-side operator client carries the operator ses
 this env gates the Caddy→gateway hop, not the dashboard. Topology background in
 `docs/solutions/security-issues/gateway-operator-oauth-rate-limit-shared-key-behind-caddy-2026-09-21.md`.
 
+**Sign-in unreachable when the rate-limit and OAuth stores fill (fro-bot/agent #1784, gateway v0.120.0).** Fixed upstream in v0.120.0 — "keep operator sign-in reachable when the rate-limit and OAuth stores fill" — so a deployment pinned below v0.120.0 carries a named sign-in outage mode: sign-in dies while the gateway itself still serves, and the `start`-with-no-callback discriminator below points upstream of the handler, at store pressure, not at OAuth config. Before debugging auth: check the deployed gateway version (`bunx @marcusrbrown/infra gateway ps` or the compose image tag) and the health of the stores it depends on; if below v0.120.0, store fill is the standing suspect. Same batch note as the recovery-order runbook (rm-1014, 2026-10-13).
+
 **Logs are sensitive.** The CLI prints a warning for a reason — output can carry Discord tokens,
 S3 credentials, and user data. Never paste it into an issue, PR, or commit message. Extract the
 fields you need and delete the capture.

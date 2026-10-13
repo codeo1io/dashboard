@@ -1161,7 +1161,7 @@ const rm265StatusPayload = {
   startedAt: '2026-06-18T20:00:00Z',
   stale: false,
 }
-const rm265ReadyText = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+const rm265ReadyText = `event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\n`
 const rm265StatusText = `event: status\r\ndata: ${JSON.stringify(rm265StatusPayload)}\r\n\r\n`
 
 async function collectFrames(chunks: string[]): Promise<{events: RunStreamFrame[]; errors: Error[]}> {
