@@ -35,6 +35,13 @@ describe('readServerBindConfig — server bind address (issue #13)', () => {
     expect(() => readServerBindConfig({DASHBOARD_PORT: 'abc'})).toThrow(/DASHBOARD_PORT/)
   })
 
+  it('throws on non-decimal DASHBOARD_PORT spellings (rm-180 port-path: whole-string grammar)', () => {
+    // Number() alone accepted these as valid integers; the house grammar is /^\d+$/.
+    for (const bad of ['0x10', '1e2', '12.5', '+80']) {
+      expect(() => readServerBindConfig({DASHBOARD_PORT: bad}), bad).toThrow(/DASHBOARD_PORT/)
+    }
+  })
+
   it('throws on an out-of-range DASHBOARD_PORT', () => {
     expect(() => readServerBindConfig({DASHBOARD_PORT: '70000'})).toThrow(/DASHBOARD_PORT/)
     expect(() => readServerBindConfig({DASHBOARD_PORT: '0'})).toThrow(/DASHBOARD_PORT/)

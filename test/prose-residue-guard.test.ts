@@ -46,6 +46,7 @@ const EXCLUDED_PREFIXES = [
   'docs/prioritization/',
   'docs/ideation/',
   'docs/brainstorms/',
+  'docs/plans/',
   'web/dist/',
 ]
 

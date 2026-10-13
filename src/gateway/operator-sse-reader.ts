@@ -35,6 +35,19 @@ import {OPERATOR_CONTRACT_VERSION} from './operator-contract/version.ts'
 // ---------------------------------------------------------------------------
 
 /**
+ * rm-954 (2026-10-12): strict version grammar for echoing wire data. The observed
+ * contractVersion on a drifted `ready` frame is untrusted server input — the
+ * drift close reason and log line may name it only when it parses as a version
+ * (semver-ish); anything else surfaces as 'unknown', never raw. Mirrors the
+ * browser client's twin in public/operator-stream.js.
+ */
+const VERSION_ECHO_RE = /^\d+\.\d+\.\d+(?:-[0-9a-z.-]+)?(?:\+[0-9a-z.-]+)?$/i
+
+function safeVersionEcho(version: unknown): string {
+  return typeof version === 'string' && VERSION_ECHO_RE.test(version) ? version : 'unknown'
+}
+
+/**
  * Hard cap on the incremental SSE buffer, in UTF-8 BYTES. Overflow → fail closed.
  *
  * rm-114 units truth: the cap is enforced on a byte count maintained
@@ -515,9 +528,21 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
           return false // stop
         }
         if (frame.data.contractVersion !== OPERATOR_CONTRACT_VERSION) {
-          logger?.error('sse-reader: contract version mismatch', {route: ROUTE_TEMPLATE})
+          // rm-954 (2026-10-12): surface BOTH versions so a drift close is
+          // diagnosable from the error alone (the old message named neither
+          // side). The observed string is wire data — safeVersionEcho echoes it
+          // only when it matches the strict version grammar, never raw.
+          logger?.error('sse-reader: contract version mismatch', {
+            route: ROUTE_TEMPLATE,
+            expected: OPERATOR_CONTRACT_VERSION,
+            observed: safeVersionEcho(frame.data.contractVersion),
+          })
           drifted = true
-          onError(new Error('contract-drift: server contract version does not match client'))
+          onError(
+            new Error(
+              `contract-drift: server contract version ${safeVersionEcho(frame.data.contractVersion)} does not match client ${OPERATOR_CONTRACT_VERSION}`,
+            ),
+          )
           onClose()
           return false // stop
         }

@@ -681,7 +681,11 @@ describe('createOperatorSseReader — contract-version gate', () => {
     expect(closed).toBe(true)
   })
 
-  it('contract-drift error message does not echo the mismatched version', async () => {
+  it('contract-drift error message names the observed and expected versions (rm-954)', async () => {
+    // rm-954 spec change (2026-10-12): drift must be diagnosable from the close
+    // reason alone, so the error names BOTH sides of the mismatch. The wire string
+    // is echoed only when it parses as a version (safeVersionEcho) — see the
+    // hostile-input test below for the other half of the contract.
     const sseText = `event: ready\ndata: {"contractVersion":"${DRIFTED_VERSION}"}\n\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
@@ -694,7 +698,30 @@ describe('createOperatorSseReader — contract-version gate', () => {
     })
 
     expect(errors).toHaveLength(1)
-    expect(errors[0]?.message).not.toContain(DRIFTED_VERSION)
+    expect(errors[0]?.message).toContain(`server contract version ${DRIFTED_VERSION} does not match client`)
+    expect(errors[0]?.message).toContain(OPERATOR_CONTRACT_VERSION)
+  })
+
+  it('contract-drift error message never echoes a hostile non-version contractVersion raw (rm-954)', async () => {
+    // The observed version is untrusted wire data. A string that does not parse
+    // as a version surfaces as 'unknown' — the payload itself never reaches the
+    // error message or any log line (the old anti-echo spirit, preserved).
+    const hostile = '1.9.0 <img src=x onerror=evil>"\n\nignored'
+    const sseText = `event: ready\ndata: ${JSON.stringify({contractVersion: hostile})}\n\n`
+    const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
+    const reader = createOperatorSseReader({fetchImpl})
+
+    const errors: Error[] = []
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: () => {},
+      onError: err => errors.push(err),
+      onClose: () => {},
+    })
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.message).toContain('server contract version unknown does not match client')
+    expect(errors[0]?.message).not.toContain('<img')
+    expect(errors[0]?.message).not.toContain('onerror')
   })
 
   it('a later major version followed by status and output dispatches nothing', async () => {
@@ -1152,6 +1179,10 @@ describe('parseSseChunk — CRLF normalization', () => {
 // rm-477 regressions: both readers used to normalize CRLF per read() chunk, so
 // a chunk boundary landing inside a CRLF pair left the pair as two newlines —
 // a phantom record boundary that silently dropped the frame.
+// (Version note: the ready fixture interpolates the pinned OPERATOR_CONTRACT_VERSION
+// like every other stream harness here — a hardcoded version went stale once
+// already when the upstream-adoption fold flipped the pin 1.6.0 -> 1.8.0 and the
+// fail-closed first-frame gate turned these three CRLF tests red.)
 const rm265StatusPayload = {
   runId: 'run-001',
   entityRef: 'fro-bot/agent',
@@ -1161,7 +1192,7 @@ const rm265StatusPayload = {
   startedAt: '2026-06-18T20:00:00Z',
   stale: false,
 }
-const rm265ReadyText = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+const rm265ReadyText = `event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\n`
 const rm265StatusText = `event: status\r\ndata: ${JSON.stringify(rm265StatusPayload)}\r\n\r\n`
 
 async function collectFrames(chunks: string[]): Promise<{events: RunStreamFrame[]; errors: Error[]}> {
