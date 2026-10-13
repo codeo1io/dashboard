@@ -46,6 +46,7 @@ const EXCLUDED_PREFIXES = [
   'docs/prioritization/',
   'docs/ideation/',
   'docs/brainstorms/',
+  'docs/plans/',
   'web/dist/',
 ]
 
@@ -87,12 +88,22 @@ const ALLOWED_MENTIONS: Record<string, string[]> = {
 // '-', ' ', '_', or none — covers self-hosted / self hosted / self_hosted /
 // selfhosted and wiki-writer / wiki_writer / wiki writer / wikiwriter.
 // Extended by the cycle-10 review fix (F5) from self[- ]hosted|wiki[-_]writ.
+// Vite materializes TS config bundles as `<name>.timestamp-<hash>.mjs` next to
+// the config for the instants a vitest run is loading it. The bundle embeds the
+// config source verbatim, so an otherwise-allowlisted historical comment (e.g.
+// the vitest.config.ts self-hosted sizing note) reappears under the transient's
+// name and raced this walk red once in a concurrent multi-file battery
+// (2026-10-12, run 153834df implement battery). Ephemeral generated state, the
+// same class as the excluded dirs above — never prose to police.
+const EXCLUDED_BASENAME_PATTERN = /\.timestamp-\w+\.mjs$/
+
 const TERM_PATTERN = /self[- _]?hosted|wiki[- _]?writ/i
 
 function isExcluded(relPath: string): boolean {
   const segments = relPath.split('/')
   if (segments.some(s => EXCLUDED_DIRS.has(s))) return true
   if (segments.slice(0, -1).some(s => EXCLUDED_DIR_SUFFIXES.includes(s))) return true
+  if (EXCLUDED_BASENAME_PATTERN.test(segments.at(-1) ?? relPath)) return true
   if (EXCLUDED_FILES.has(relPath)) return true
   if (EXCLUDED_PREFIXES.some(p => relPath.startsWith(p))) return true
   return false
