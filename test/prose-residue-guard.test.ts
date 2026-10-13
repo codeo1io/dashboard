@@ -81,6 +81,14 @@ const ALLOWED_MENTIONS: Record<string, string[]> = {
     '# off the single self-hosted runner by PR #11/#12), so nothing persists on',
     '# self-hosted era got for free. It keys on the pnpm-lockfile hash + node',
   ],
+  'docs/plans/2026-10-10-001-feat-operator-contract-1-9-0-questions-plan.md': [
+    // 2026-10-10 prior-art dossier (survey-era record, qualified by the note
+    // above its JSON fence): quotes the surveyed scope/dispositions verbatim,
+    // including the upstream write-side service this fork excludes by invariant.
+    '"scope": "dashboard repo: public/, src/gateway/, src/routes/operator-fixture-harness.ts, web/src/{operator,push,sw.ts}, test/operator-*; wiki-writer/src grep-only",',
+    '"path_or_symbol": "wiki-writer/src",',
+    '"insufficiency_reason": "Owns wiki writes, not browser prompts."',
+  ],
 }
 
 // Term variants for the retired-tool prose classes (rm-164): separators

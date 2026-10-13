@@ -91,6 +91,11 @@ The gateway's question bridge (fro-bot/agent#1749, first released in `v0.119.0`)
 
 ## Prior-Art Survey
 
+> Historical record (2026-10-10): the JSON dossier below quotes that date's
+> surveyed scope and dispositions verbatim, including its references to the
+> upstream write-side service that this fork's read-only invariant excludes.
+> Those references are survey-era facts, not current capability claims.
+
 ```json
 {
   "schema_version": 2,

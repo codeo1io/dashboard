@@ -57,14 +57,55 @@ describe('fork exclusion invariants (rm-131)', () => {
     expect(existsSync(resolve(repoRoot, '.github/renovate.json5'))).toBe(false)
   })
 
-  it('Dockerfile pins pnpm 11.28.3 in both stages', () => {
-    expect(read('Dockerfile').match(/pnpm@11\.28\.3/g)?.length).toBe(2)
+  // rm-1013 (cycle-2 batch B2, 2026-10-13): the pnpm pin is SINGLE-SOURCED.
+  // The 11.27/11.28 drift class regrew twice under per-file pinning (cycle 5
+  // restored Dockerfile corepack literals; cycle 10 bumped them in lockstep
+  // with packageManager and the files had split again by 6ec2328), so this
+  // guard now asserts the SPLIT'S ABSENCE instead of any literal version:
+  // package.json's `packageManager` is the only `pnpm@<version>` literal
+  // across pin-bearing files, and the Dockerfile carries no
+  // `corepack prepare pnpm@` pin — corepack resolves the pin at the first
+  // pnpm call. Version-agnostic by construction: the next bump moves one
+  // file and this assertion stays green (re-adjudicates rm-131's literal;
+  // rm-140's pnpm-12 adoption becomes a one-file bump).
+  it('pnpm is pinned exactly once, in packageManager (rm-1013 single-source)', () => {
+    const pkg = JSON.parse(read('package.json')) as {packageManager?: string}
+    expect(pkg.packageManager ?? '').toMatch(/^pnpm@\d+\.\d+\.\d+$/)
+    expect(read('Dockerfile')).not.toMatch(/corepack prepare pnpm@/)
+
+    // Pin-bearing surfaces: everywhere a pnpm version pin could live and
+    // take effect. Historical prose under docs/ and the should-release.test.ts
+    // fixture literals are records, not pins — out of scope by design.
+    const pinBearing = [
+      'package.json',
+      'Dockerfile',
+      'pnpm-workspace.yaml',
+      '.npmrc',
+      ...execSync('git ls-files .github/workflows .github/actions', {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+        .split('\n')
+        .filter(Boolean),
+    ]
+    const pins: string[] = []
+    for (const file of pinBearing) {
+      if (!existsSync(resolve(repoRoot, file))) continue
+      for (const match of readFileSync(resolve(repoRoot, file), 'utf8').matchAll(
+        /pnpm@\d+(?:\.\d+)+/g,
+      )) {
+        pins.push(`${file}: ${match[0]}`)
+      }
+    }
+    expect(pins).toEqual([`package.json: ${pkg.packageManager}`])
   })
 
-  it('package.json packageManager pins pnpm 11.28.3', () => {
-    const pkg = JSON.parse(read('package.json')) as {packageManager?: string}
-    expect(pkg.packageManager).toBe('pnpm@11.28.3')
-  })
+  // rm-140 dated re-evaluation (2026-10-13, cycle-2 batch B2): pnpm 12.11.2
+  // exists beyond the 11.28.5 pin; ADOPTION DEFERRED (majors wait for the
+  // platform-matrix riders; recovery-order runbook step 4). When adopted it
+  // is now a ONE-FILE bump: package.json's packageManager alone — this guard
+  // stays green through it (rm-1013).
 
   it('.gitignore keeps the run-state entries guarded against upstream merges (rm-159 residue)', () => {
     const text = read('.gitignore')
