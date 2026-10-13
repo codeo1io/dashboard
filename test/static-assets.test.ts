@@ -15,7 +15,7 @@ import {existsSync, readdirSync, statSync} from 'node:fs'
 import {join, resolve} from 'node:path'
 import process from 'node:process'
 import {afterEach, describe, expect, it} from 'vitest'
-import {PINNED_CONTRACT_VERSION} from '../public/operator-stream.js'
+import {ACCEPTED_CONTRACT_VERSIONS, PINNED_CONTRACT_VERSION} from '../public/operator-stream.js'
 import {OPERATOR_CONTRACT_VERSION} from '../src/gateway/operator-contract/version.ts'
 import {FIXTURE_QUESTION_SCENARIO_ROWS} from '../src/gateway/operator-fixture-sse.ts'
 import {buildDashboardApp} from '../src/server.ts'
@@ -889,13 +889,16 @@ describe('security — raw failure reason codes security invariants', () => {
 })
 
 describe('security — operator-stream.js contract pin and checkout-field boundary', () => {
-  it('holds exactly one version literal (the pin), and imports no server code', async () => {
+  it('holds exactly the pin plus the accepted-ladder literals, and imports no server code', async () => {
     const fs = await import('node:fs/promises')
     const src = await fs.readFile('public/operator-stream.js', 'utf8')
-    // Strip comments so prose that names a version cannot hide a second pin.
+    // Strip comments so prose that names a version cannot hide extra pins.
     const code = src.replaceAll(/\/\*[\s\S]*?\*\//g, '').replaceAll(/(^|[^:])\/\/.*$/gm, '$1')
-    const literals = code.match(/['"`]\d+\.\d+\.\d+['"`]/g) ?? []
-    expect(literals).toHaveLength(1)
+    const literals = (code.match(/['"`]\d+\.\d+\.\d+['"`]/g) ?? []).map(literal => literal.slice(1, -1))
+    // rm-1016: the browser twin carries the same accepted ladder as the server
+    // contract — the pin first, then each ladder rung (the pin is the ladder's
+    // floor, so it appears twice: standalone pin + first rung), nothing else.
+    expect(literals).toEqual([PINNED_CONTRACT_VERSION, ...ACCEPTED_CONTRACT_VERSIONS])
     expect(code).toMatch(/export const PINNED_CONTRACT_VERSION = ['"]\d+\.\d+\.\d+['"]/)
     expect(code).not.toMatch(/from\s+['"][^'"]*(?:src\/|\.ts['"])/)
     expect(code).not.toMatch(/\bimport\s*\(/)

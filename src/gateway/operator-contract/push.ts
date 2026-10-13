@@ -24,6 +24,17 @@ import type {Result} from '../../result.ts'
 
 import {err, ok} from '../../result.ts'
 
+/**
+ * Operator push trigger kinds — exported by the gateway since the push minor
+ * (fro-bot/agent #1787). The gateway stamps each Web Push payload's `data.type`
+ * with one of them. The dashboard's notification builder consumes exactly this
+ * vocabulary. Kept in the gateway's export order and spelling so a later absorb
+ * reconciles by identity.
+ */
+export type OperatorPushTriggerKind = 'approval' | 'question' | 'run_failed'
+
+export const OPERATOR_PUSH_TRIGGER_KINDS: readonly OperatorPushTriggerKind[] = ['approval', 'question', 'run_failed']
+
 // Practical caps: keyVersion strings and endpoint hashes are well under 512
 // chars; ISO 8601 dates are at most ~35 chars.
 const MAX_ID_LENGTH = 512

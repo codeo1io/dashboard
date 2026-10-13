@@ -6,8 +6,10 @@
  * closed on every error path.
  *
  * Security invariants:
- * - Contract-version gate: the first frame must be 'ready' with a matching
- *   contractVersion. A mismatch triggers a fail-closed drift error and stops
+ * - Contract-version gate: the first frame must be 'ready' with a
+ *   contractVersion inside the accepted forward-support ladder
+ *   (ACCEPTED_CONTRACT_VERSIONS, floor OPERATOR_CONTRACT_VERSION). Anything
+ *   outside the ladder triggers a fail-closed drift error and stops
  *   all further frame dispatch.
  * - No runId or dynamic path segment is ever logged — only the route template.
  * - No response body text is included in errors (no-oracle).
@@ -28,7 +30,7 @@ import type {ResetReason, RunStreamFrame} from './operator-contract/sse-frames.t
 import {parseOperatorCheckoutPreparation, parseOperatorCheckoutProvenance} from './operator-contract/provenance.ts'
 import {parseQuestionFrame} from './operator-contract/question-frame.ts'
 import {isOperatorFailureKind} from './operator-contract/run-status.ts'
-import {OPERATOR_CONTRACT_VERSION} from './operator-contract/version.ts'
+import {isAcceptedContractVersion} from './operator-contract/version.ts'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -405,8 +407,9 @@ export interface OperatorSseReaderOptions {
  * 5. Reads the body as a ReadableStream, feeds an incremental SSE parser with
  *    CRLF normalization and a hard buffer cap (MAX_SSE_BUFFER_BYTES).
  * 6. Enforces the contract-version gate via handleFrame(): the first frame must
- *    be 'ready' with contractVersion === OPERATOR_CONTRACT_VERSION. A mismatch
- *    triggers a fail-closed drift error and stops all further frame dispatch.
+ *    be 'ready' with contractVersion inside the accepted ladder (floor
+ *    OPERATOR_CONTRACT_VERSION). Anything outside the ladder triggers a
+ *    fail-closed drift error and stops all further frame dispatch.
  *    Both the streaming path and the EOF flush path go through handleFrame().
  * 7. On stream end, calls onClose.
  *
@@ -519,7 +522,7 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
           onClose()
           return false // stop
         }
-        if (frame.data.contractVersion !== OPERATOR_CONTRACT_VERSION) {
+        if (!isAcceptedContractVersion(frame.data.contractVersion)) {
           logger?.error('sse-reader: contract version mismatch', {route: ROUTE_TEMPLATE})
           drifted = true
           onError(new Error('contract-drift: server contract version does not match client'))

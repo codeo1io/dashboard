@@ -29,8 +29,19 @@
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Contract version this client expects on the ready frame. */
+/** Contract version this client expects on the ready frame (deployed floor). */
 export const PINNED_CONTRACT_VERSION = '1.9.0'
+
+/**
+ * Forward-support ladder — the ready frame's contractVersion may be any of
+ * these (rm-1016, gateway contract 1.10.0/1.11.0):
+ *   1.9.0  — deployed floor (infra gateway v0.119.2)
+ *   1.10.0 — agent #1787 (push trigger kinds) + #1788 (session push health)
+ *   1.11.0 — agent #1825 (waiting statuses across stream/reconnects/summaries)
+ * Anything else still drifts absorbing, exactly as before. The pin above stays
+ * the floor and moves only when the deployed gateway moves.
+ */
+export const ACCEPTED_CONTRACT_VERSIONS = ['1.9.0', '1.10.0', '1.11.0']
 
 /** Base delay in milliseconds for exponential backoff. */
 export const RETRY_BASE_MS = 1000
@@ -112,8 +123,18 @@ const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled'])
 /**
  * Statuses a run-list summary can carry (the run index parser keeps only these). The optional
  * `summaryStatus` init option is accepted only from this set; anything else is dropped.
+ * Since gateway contract 1.11.0 (agent #1825) the two waiting overlays are also
+ * run-summary statuses — a waiting run may arrive via the index summary alone.
  */
-const SUMMARY_STATUSES = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled'])
+export const SUMMARY_STATUSES = new Set([
+  'queued',
+  'running',
+  'succeeded',
+  'failed',
+  'cancelled',
+  'waiting_for_approval',
+  'waiting_for_question',
+])
 
 /** In-card copy for an expired run snapshot. Dashboard-owned; never wire text. */
 const OUTPUT_UNAVAILABLE_COPY = 'Output no longer available.'
@@ -1019,8 +1040,8 @@ export function nextStreamState(current, event) {
       if (current.connection === 'drift') {
         return current
       }
-      if (event.data.contractVersion !== PINNED_CONTRACT_VERSION) {
-        // Contract version mismatch — fail closed, clear all run state
+      if (!ACCEPTED_CONTRACT_VERSIONS.includes(event.data.contractVersion)) {
+        // Contract version outside the forward-support ladder — fail closed, clear all run state
         return {
           connection: 'drift',
           runs: Object.create(null),

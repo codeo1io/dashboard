@@ -11845,3 +11845,128 @@ describe('rm-853 — nextStreamState output seq-gap detection', () => {
     expect(coalescedEl.hidden).toBe(true)
   })
 })
+
+// ---------------------------------------------------------------------------
+// rm-1016: additive contract ladder + waiting-state summaries (1.10.0/1.11.0).
+// Twin of the server reader's ladder tests: the pinned floor stays 1.9.0 while
+// forward versions inside the accepted set ride through; anything else drifts
+// absorbing. Waiting_for_* statuses are now also run-summary statuses.
+// ---------------------------------------------------------------------------
+
+describe('nextStreamState — additive contract ladder (rm-1016)', () => {
+  it.each(['1.9.0', '1.10.0', '1.11.0'])('accepts ready contractVersion %s', version => {
+    const state = nextStreamState(INITIAL_STATE, {type: 'ready', data: {contractVersion: version}})
+    expect(state.connection).toBe('live')
+  })
+
+  it.each(['1.8.0', '1.12.0', '2.0.0', '1.10', '1.11.0-rc1', 'garbage'])(
+    'drifts absorbing on ready contractVersion %s outside the ladder',
+    version => {
+      const state = nextStreamState(INITIAL_STATE, {type: 'ready', data: {contractVersion: version}})
+      expect(state.connection).toBe('drift')
+      expect(state.shouldReconnect).toBe(false)
+      expect(Object.keys(state.runs)).toHaveLength(0)
+    },
+  )
+
+  it('ACCEPTED_CONTRACT_VERSIONS equals the ladder and still contains the pinned floor', async () => {
+    const mod = await import('../public/operator-stream.js')
+    expect([...mod.ACCEPTED_CONTRACT_VERSIONS]).toEqual(['1.9.0', '1.10.0', '1.11.0'])
+    expect(mod.ACCEPTED_CONTRACT_VERSIONS).toContain(mod.PINNED_CONTRACT_VERSION)
+  })
+
+  it('browser ladder stays lockstep with the server reader ladder', async () => {
+    const server = await import('../src/gateway/operator-contract/version.ts')
+    const mod = await import('../public/operator-stream.js')
+    expect([...mod.ACCEPTED_CONTRACT_VERSIONS]).toEqual([...server.ACCEPTED_CONTRACT_VERSIONS])
+    expect(mod.PINNED_CONTRACT_VERSION).toBe(server.OPERATOR_CONTRACT_VERSION)
+  })
+})
+
+describe('SUMMARY_STATUSES — waiting members (rm-1016)', () => {
+  it('run-summary status set now carries waiting_for_approval and waiting_for_question', async () => {
+    const mod = await import('../public/operator-stream.js')
+    expect([...mod.SUMMARY_STATUSES].sort()).toEqual(
+      ['cancelled', 'failed', 'queued', 'running', 'succeeded', 'waiting_for_approval', 'waiting_for_question'].sort(),
+    )
+  })
+
+  it('stays lockstep with the run-index parser set', async () => {
+    const runIndex = await import('../public/operator-run-index.js')
+    const mod = await import('../public/operator-stream.js')
+    expect([...mod.SUMMARY_STATUSES].sort()).toEqual([...runIndex.VALID_RUN_SUMMARY_STATUSES].sort())
+  })
+})
+
+describe('initOperatorStream — waiting-state render, exactly once across sources (rm-1016)', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  const RUN = 'run-waiting'
+  const record = (event: string, data: unknown) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+  const waitingQuestionStatus = {
+    runId: RUN,
+    entityRef: 'fro-bot/agent',
+    surface: 'github',
+    phase: 'EXECUTING',
+    status: 'waiting_for_question',
+    startedAt: '2026-10-14T10:00:00Z',
+    stale: false,
+  }
+
+  async function paint(records: string[], summaryStatus?: string) {
+    const statusEl = makeFakeEl('span')
+    statusEl.classList.add = (cls: string) => {
+      statusEl.className = `${statusEl.className} ${cls}`.trim()
+    }
+    const noticeEl = makeFakeEl('div')
+    let read = 0
+    vi.stubGlobal('document', {createElement: (tag: string) => makeFakeEl(tag)})
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, status: 200, headers: {get: () => 'text/event-stream'},
+      body: {getReader: () => ({read: async () => read++ === 0
+        ? {done: false, value: new TextEncoder().encode(records.join(''))}
+        : new Promise(() => {})})},
+    }))
+    const handle = initOperatorStream({
+      runId: RUN,
+      statusEl: statusEl as never,
+      noticeEl: noticeEl as never,
+      ...(summaryStatus === undefined ? {} : {summaryStatus: summaryStatus as never}),
+    })
+    await new Promise(resolve => setTimeout(resolve, 30))
+    handle.close()
+    return {statusEl, noticeEl}
+  }
+
+  it('summary waiting_for_question + live waiting_for_question frame → one label, one status class, no duplication', async () => {
+    const {statusEl, noticeEl} = await paint([
+      record('ready', {contractVersion: PINNED_CONTRACT_VERSION}),
+      record('status', waitingQuestionStatus),
+    ], 'waiting_for_question')
+    expect(statusEl.textContent).toBe('Waiting for answer')
+    const tokens = statusEl.className.match(/status-[\w-]+/g) ?? []
+    expect(tokens.filter(t => t.startsWith('status-waiting')).length).toBe(1)
+    expect(noticeEl.textContent).toBe('')
+  })
+
+  it('summary waiting_for_approval + running frame with an open approval folds to Waiting for approval once', async () => {
+    const {statusEl} = await paint([
+      record('ready', {contractVersion: PINNED_CONTRACT_VERSION}),
+      record('status', {...waitingQuestionStatus, status: 'running'}),
+      record('approval', {runId: RUN, requestID: 'req-waiting-001', settled: false, permission: 'shell', command: 'echo fixture'}),
+    ], 'waiting_for_approval')
+    expect(statusEl.textContent).toBe('Waiting for approval')
+    const tokens = statusEl.className.match(/status-[\w-]+/g) ?? []
+    expect(tokens.filter(t => t.startsWith('status-')).length).toBe(1)
+  })
+
+  it('waiting summary + no-snapshot reset: stream stays live and never paints a second/terminal status over it', async () => {
+    const {statusEl, noticeEl} = await paint([
+      record('ready', {contractVersion: PINNED_CONTRACT_VERSION}),
+      record('reset', {runId: RUN, reason: 'no-snapshot'}),
+    ], 'waiting_for_question')
+    // The summary label is the index render; with no run entry the stream writes nothing.
+    expect(statusEl.textContent).toBe('')
+    expect(noticeEl.dataset.connectionState).toBe('live')
+  })
+})

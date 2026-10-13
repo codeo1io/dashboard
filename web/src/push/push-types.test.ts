@@ -31,3 +31,31 @@ describe('push-types web-local shape pins', () => {
     expect(Object.keys(value).sort()).toEqual(['active', 'createdAt', 'endpointHash', 'keyVersion', 'updatedAt'])
   })
 })
+
+// ---------------------------------------------------------------------------
+// rm-1016: operator contract 1.10.0 vocabulary — push trigger kinds (#1787)
+// and session push health (#1788), mirrored from the gateway's operator-contract
+// push-health.ts (v0.122.1): kinds ['approval','question','run_failed'], health
+// statuses ['ready','degraded','unknown'].
+// ---------------------------------------------------------------------------
+
+describe('push-types web-local 1.10.0 vocabulary (rm-1016)', () => {
+  it('OPERATOR_PUSH_TRIGGER_KINDS is the gateway trigger-kind trio', async () => {
+    const {OPERATOR_PUSH_TRIGGER_KINDS} = await import('./push-types.ts')
+    expect([...OPERATOR_PUSH_TRIGGER_KINDS]).toEqual(['approval', 'question', 'run_failed'])
+  })
+
+  it('OPERATOR_PUSH_HEALTH_STATUSES is the gateway health trio', async () => {
+    const {OPERATOR_PUSH_HEALTH_STATUSES} = await import('./push-types.ts')
+    expect([...OPERATOR_PUSH_HEALTH_STATUSES]).toEqual(['ready', 'degraded', 'unknown'])
+  })
+
+  it('web-local vocabulary stays lockstep with the vendored server contract', async () => {
+    const web = await import('./push-types.ts')
+    // Dynamic import of the server contract would cross the web→server boundary
+    // the header above pins; instead pin the shapes and let the root conformance
+    // test hold the server side against the same gateway vocabulary.
+    expect([...web.OPERATOR_PUSH_TRIGGER_KINDS]).toEqual(['approval', 'question', 'run_failed'])
+    expect([...web.OPERATOR_PUSH_HEALTH_STATUSES]).toEqual(['ready', 'degraded', 'unknown'])
+  })
+})
