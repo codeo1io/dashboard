@@ -1236,16 +1236,46 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   }
 
   // ── SPA static asset serving ─────────────────────────────────────────────
+  // rm-690 (2026-10-07, repository-maintenance cycle:1 run b2a3ae9bf75b):
+  // cache policy for the static surfaces. Vite content-hashes everything under
+  // /assets/* (index-Dy_WXR3M.js style), so a given URL's bytes can never
+  // change — RFC 8246 (HTTP Immutable Responses) and the MDN Cache-Control
+  // `immutable` entry make a one-year public lifetime sound; the status guard
+  // keeps a missed 404 from being pinned for a year. The unhashed surfaces
+  // (/icon-*, manifest.webmanifest) revalidate every load via an explicit
+  // no-cache; sw.js and /registerSW.js already carry a stronger no-store
+  // family (the pre-secureHeaders CSP-bypass middleware and the wrapper
+  // below). Adapter note for the next @hono/node-server bump: 2.1.3's
+  // serveStatic sets ONLY Last-Modified and has no ETag /
+  // If-Modified-Since handling (no 304s), so these headers are the entire
+  // caching story — re-derive.
+  // Re-grafted 2026-10-11 (conductor integrate 08a0abac): the 2026-10-17
+  // upstream adoption dropped this block and its tests; restored verbatim
+  // from lineage 88e423a with this merge.
+  app.use('/assets/*', async (c, next) => {
+    await next()
+    if (c.res.status === 200) {
+      c.res.headers.set('cache-control', 'public, max-age=31536000, immutable')
+    }
+  })
   app.use('/assets/*', serveStatic({root: webDistRoot}))
+  app.use('/icon-*', async (c, next) => {
+    await next()
+    if (c.res.status === 200) {
+      c.res.headers.set('cache-control', 'no-cache')
+    }
+  })
   app.use('/icon-*', serveStatic({root: webDistRoot}))
 
   // ── PWA manifest ─────────────────────────────────────────────────────────
   // serveStatic serves .webmanifest as application/octet-stream by default.
   // This middleware must be registered BEFORE serveStatic to override Content-Type.
   // application/manifest+json is required for PWA installability.
+  // rm-690: the manifest is unhashed, so it revalidates every load (no-cache).
   app.use('/manifest.webmanifest', async (c, next) => {
     await next()
     c.res.headers.set('content-type', 'application/manifest+json; charset=UTF-8')
+    c.res.headers.set('cache-control', 'no-cache')
   })
   app.use('/manifest.webmanifest', serveStatic({root: webDistRoot}))
 
@@ -1492,8 +1522,14 @@ export function readServerBindConfig(env: NodeJS.ProcessEnv = process.env): Serv
   const rawPort = env.DASHBOARD_PORT?.trim()
   let port = 3000
   if (rawPort !== undefined && rawPort !== '') {
-    const parsed = Number(rawPort)
-    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    // rm-180 port-path rider (2026-10-10): whole-string decimal grammar, the
+    // house convention used by envIntOrDefault above — a bare Number() here
+    // accepted '0x10'/'1e2' spellings as valid ports. Fail-loud stays.
+    if (!/^\d+$/.test(rawPort)) {
+      throw new Error(`DASHBOARD_PORT must be an integer in 1-65535, got: ${rawPort}`)
+    }
+    const parsed = Number.parseInt(rawPort, 10)
+    if (parsed < 1 || parsed > 65535) {
       throw new Error(`DASHBOARD_PORT must be an integer in 1-65535, got: ${rawPort}`)
     }
     port = parsed

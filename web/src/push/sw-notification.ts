@@ -13,7 +13,14 @@
  * generic "Run failed" copy — the raw label is NEVER rendered.
  */
 
-export type PushNotificationType = 'approval' | 'run_failed' | 'question'
+/**
+ * The closed set of push-payload types this SW can render (mirrors the
+ * operator-contract push trigger kinds; pinned together by a parity test).
+ * Tuple-first so the union is derived, not duplicated.
+ */
+export const PUSH_NOTIFICATION_TYPES = ['approval', 'run_failed', 'question'] as const
+
+export type PushNotificationType = (typeof PUSH_NOTIFICATION_TYPES)[number]
 
 /**
  * Allowlisted `failureLabel` values. An unrecognized label (including any
@@ -59,7 +66,7 @@ const COPY_MAP: Record<PushNotificationType, (failureLabel: string | undefined) 
 }
 
 function isKnownType(value: unknown): value is PushNotificationType {
-  return value === 'approval' || value === 'run_failed' || value === 'question'
+  return typeof value === 'string' && (PUSH_NOTIFICATION_TYPES as readonly string[]).includes(value)
 }
 
 /**

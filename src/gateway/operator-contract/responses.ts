@@ -1,3 +1,4 @@
+import type {OperatorPushHealth} from './push.ts'
 import type {TerminalPhase} from './run-status.ts'
 
 /**
@@ -19,11 +20,15 @@ import type {TerminalPhase} from './run-status.ts'
  *   Prefer this over `login` for any access-control or audit decision.
  * - `login`: GitHub display login (mutable, for display only).
  * - `expiresAt`: ms-since-epoch timestamp of the sooner of absolute or idle expiry.
+ * - `push`: optional coarse push-subsystem health; omitted when the gateway has
+ *   push unconfigured. A malformed block is dropped at parse time — never a
+ *   session-level rejection (the session itself stays usable).
  */
 export interface OperatorSessionInfo {
   readonly operatorId: number
   readonly login: string
   readonly expiresAt: number
+  readonly push?: OperatorPushHealth
 }
 
 /**

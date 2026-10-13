@@ -47,6 +47,7 @@ import {readdirSync, readFileSync} from 'node:fs'
 import {join} from 'node:path'
 import ts from 'typescript'
 import {describe, expect, it} from 'vitest'
+import {PINNED_CONTRACT_VERSION} from '../public/operator-stream.js'
 import {
   CHECKOUT_OPERATIONS,
   CHECKOUT_REFUSAL_REASONS,
@@ -55,6 +56,8 @@ import {
   MAX_QUESTIONS_PER_REQUEST,
   OBSTRUCTION_KINDS,
   OPERATOR_CONTRACT_VERSION,
+  OPERATOR_PUSH_HEALTH_STATUSES,
+  OPERATOR_PUSH_TRIGGER_KINDS,
   parseOperatorCancelResponse,
   parseOperatorCheckoutPreparation,
   parseOperatorCheckoutProvenance,
@@ -79,6 +82,7 @@ import {
   UPDATE_FAILURE_REASONS,
 } from '../src/gateway/operator-contract/index.ts'
 import {isOperatorFailureKind, OPERATOR_FAILURE_KINDS} from '../src/gateway/operator-contract/run-status.ts'
+import {PUSH_NOTIFICATION_TYPES} from '../web/src/push/sw-notification.ts'
 
 // ---------------------------------------------------------------------------
 // Type-level assignability: dashboard types ↔ canonical contract types
@@ -263,6 +267,14 @@ describe('OPERATOR_CONTRACT_VERSION', () => {
     const text = readFileSync(join(CONTRACT_DIR, 'version.ts'), 'utf8')
     const code = blankRanges(text, commentRanges(text))
     expect(findVersionLiterals(code)).toEqual([OPERATOR_CONTRACT_VERSION])
+  })
+
+  it('the browser client pins the same version (public/operator-stream.js PINNED_CONTRACT_VERSION)', () => {
+    // The vendored reader and the browser client each fail-close on a ready
+    // frame whose version does not match their own pin — if the two pins ever
+    // diverge, one surface accepts frames the other rejects. Adoption bumps
+    // both literals as one atomic unit; this pins that invariant.
+    expect(PINNED_CONTRACT_VERSION).toBe(OPERATOR_CONTRACT_VERSION)
   })
 })
 
@@ -524,6 +536,26 @@ describe('question runtime vocabularies', () => {
     expect(QUESTION_OPTION_DESCRIPTION_MAX_LENGTH).toBe(1024)
     expect(MAX_QUESTIONS_PER_REQUEST).toBe(8)
     expect(MAX_OPTIONS_PER_QUESTION).toBe(64)
+  })
+})
+
+describe('push runtime vocabularies', () => {
+  it('trigger kinds: the exported list equals the union, with no duplicates', () => {
+    expect([...OPERATOR_PUSH_TRIGGER_KINDS].toSorted()).toEqual(['approval', 'question', 'run_failed'])
+    expect(new Set(OPERATOR_PUSH_TRIGGER_KINDS).size).toBe(OPERATOR_PUSH_TRIGGER_KINDS.length)
+  })
+
+  it('health statuses: the exported list equals the union, with no duplicates', () => {
+    expect([...OPERATOR_PUSH_HEALTH_STATUSES].toSorted()).toEqual(['degraded', 'ready', 'unknown'])
+    expect(new Set(OPERATOR_PUSH_HEALTH_STATUSES).size).toBe(OPERATOR_PUSH_HEALTH_STATUSES.length)
+  })
+
+  it('the service-worker notification types mirror the contract trigger kinds (set parity)', () => {
+    // web/src/push/sw-notification.ts renders the payload kinds the gateway
+    // emits; the contract's trigger kinds are the wire truth. Set parity (not
+    // order parity) — each list is free to order for its own readability.
+    expect([...PUSH_NOTIFICATION_TYPES].toSorted()).toEqual([...OPERATOR_PUSH_TRIGGER_KINDS].toSorted())
+    expect(new Set(PUSH_NOTIFICATION_TYPES).size).toBe(PUSH_NOTIFICATION_TYPES.length)
   })
 })
 
@@ -820,6 +852,65 @@ describe('parseOperatorSessionInfo', () => {
 
   it('rejects non-finite expiresAt (Infinity)', () => {
     const input = {operatorId: 1, login: 'x', expiresAt: Infinity}
+    const result = parseOperatorSessionInfo(input)
+    expect(result.success).toBe(false)
+  })
+
+  it('projects the session onto the closed DTO (extra fields dropped from the output)', () => {
+    const input = {operatorId: 42, login: 'octocat', expiresAt: 4070908800000, extra: 'ignored'}
+    const result = parseOperatorSessionInfo(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(Object.keys(result.data).toSorted()).toEqual(['expiresAt', 'login', 'operatorId'])
+    }
+  })
+
+  it('projects a valid push block to exactly {status} (extra fields dropped)', () => {
+    const input = {operatorId: 42, login: 'octocat', expiresAt: 4070908800000, push: {status: 'ready', extra: 'dropped'}}
+    const result = parseOperatorSessionInfo(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.push).toEqual({status: 'ready'})
+    }
+  })
+
+  it('round-trips every declared push health status', () => {
+    for (const status of OPERATOR_PUSH_HEALTH_STATUSES) {
+      const result = parseOperatorSessionInfo({operatorId: 1, login: 'x', expiresAt: 1000, push: {status}})
+      expect(result.success, `status=${status}`).toBe(true)
+      if (result.success) {
+        expect(result.data.push).toEqual({status})
+      }
+    }
+  })
+
+  it('drops a malformed push block without rejecting the session (fail-open diagnostics)', () => {
+    // Push health is diagnostics: a bad block must never lock the operator
+    // out of an otherwise-valid session.
+    for (const bad of [{status: 'bogus'}, {status: 7}, { }, 'ready', [], null, 42]) {
+      const result = parseOperatorSessionInfo({operatorId: 1, login: 'x', expiresAt: 1000, push: bad})
+      expect(result.success, `push=${JSON.stringify(bad)}`).toBe(true)
+      if (result.success) {
+        expect(result.data.push).toBeUndefined()
+      }
+    }
+  })
+
+  it('omits push when absent or explicitly undefined', () => {
+    for (const input of [
+      {operatorId: 1, login: 'x', expiresAt: 1000},
+      {operatorId: 1, login: 'x', expiresAt: 1000, push: undefined},
+    ]) {
+      const result = parseOperatorSessionInfo(input)
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect('push' in result.data).toBe(false)
+      }
+    }
+  })
+
+  it('still rejects bad required fields regardless of a valid push block', () => {
+    const input = {operatorId: 1.5, login: 'x', expiresAt: 1000, push: {status: 'ready'}}
     const result = parseOperatorSessionInfo(input)
     expect(result.success).toBe(false)
   })

@@ -98,6 +98,32 @@ export function parsePushHandoffState(input: unknown): Result<PushHandoffState, 
 }
 
 /**
+ * The closed set of events that produce an operator push notification. The
+ * kind crosses the wire as `data.type` on the push payload itself.
+ */
+export const OPERATOR_PUSH_TRIGGER_KINDS = ['approval', 'question', 'run_failed'] as const
+
+export type OperatorPushTriggerKind = (typeof OPERATOR_PUSH_TRIGGER_KINDS)[number]
+
+/**
+ * The closed set of push-subsystem health statuses the gateway reports on the
+ * operator session. Omitted entirely when push is unconfigured — there is no
+ * 'disabled' status on the wire.
+ */
+export const OPERATOR_PUSH_HEALTH_STATUSES = ['ready', 'degraded', 'unknown'] as const
+
+export type OperatorPushHealthStatus = (typeof OPERATOR_PUSH_HEALTH_STATUSES)[number]
+
+/**
+ * Coarse push-subsystem health carried on the operator session. Projected to
+ * exactly this field at parse time; extra fields are dropped, and a malformed
+ * block is dropped (never a session-level rejection).
+ */
+export interface OperatorPushHealth {
+  readonly status: OperatorPushHealthStatus
+}
+
+/**
  * Safe subscription metadata, mirroring the Gateway's
  * `GET /operator/push/subscriptions` response. Opaque endpoint hash only —
  * NEVER the raw endpoint, p256dh, or auth subscription keys.

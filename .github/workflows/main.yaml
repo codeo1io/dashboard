@@ -126,6 +126,9 @@ jobs:
 
       # No explicit "Build web" step: the pretest hook (package.json) builds the
       # client before vitest runs, so a separate step would build it twice.
+      # `pnpm test` runs BOTH legs (server + web) with independent accounting:
+      # scripts/run-tests.ts executes each leg unconditionally and aggregates
+      # their exit codes, so neither leg can hide behind the other's failure.
       - name: 🧪 Run Tests
         run: pnpm test
 

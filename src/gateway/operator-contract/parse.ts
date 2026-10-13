@@ -19,6 +19,7 @@
  */
 
 import type {Result} from '../../result.ts'
+import type {OperatorPushHealth, OperatorPushHealthStatus} from './push.ts'
 import type {
   OperatorCancelResponse,
   OperatorCsrfToken,
@@ -26,8 +27,8 @@ import type {
   OperatorOk,
   OperatorSessionInfo,
 } from './responses.ts'
-
 import {err, ok} from '../../result.ts'
+import {OPERATOR_PUSH_HEALTH_STATUSES} from './push.ts'
 
 // ---------------------------------------------------------------------------
 // OperatorSessionInfo
@@ -49,18 +50,57 @@ function hasValidOperatorSessionInfoShape(value: unknown): value is OperatorSess
 }
 
 /**
+ * Project an unknown value onto the closed push-health block. Returns
+ * undefined for anything malformed — a bad block is DROPPED, never a
+ * session-level rejection. Extra fields are dropped by projection.
+ */
+function parsePushHealth(value: unknown): OperatorPushHealth | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined
+  }
+
+  const candidate = value as Record<string, unknown>
+  if (
+    typeof candidate.status !== 'string' ||
+    !(OPERATOR_PUSH_HEALTH_STATUSES as readonly string[]).includes(candidate.status)
+  ) {
+    return undefined
+  }
+
+  // Closed DTO — project exactly the declared field; never spread input.
+  return {status: candidate.status as OperatorPushHealthStatus}
+}
+
+/**
  * Parse an unknown value as OperatorSessionInfo.
  *
  * Returns ok(value) when the input has the required shape.
  * Returns err(Error) with a FIXED reason string when validation fails —
  * the error message never echoes any part of the input.
+ *
+ * The optional push-health block is fail-open: a valid block is projected to
+ * exactly `{status}` (extras dropped), a malformed block is dropped, and the
+ * session itself still parses — push diagnostics must never lock the operator
+ * out. Required fields stay strict: a bad operatorId/login/expiresAt still
+ * rejects.
  */
 export function parseOperatorSessionInfo(input: unknown): Result<OperatorSessionInfo, Error> {
   if (hasValidOperatorSessionInfoShape(input) === false) {
     return err(new Error('invalid operator session info shape'))
   }
 
-  return ok(input)
+  const pushHealth =
+    'push' in input && input.push !== undefined ? parsePushHealth(input.push) : undefined
+
+  // Closed DTO — copy only declared fields; never spread input.
+  const sessionInfo: OperatorSessionInfo = {
+    operatorId: input.operatorId,
+    login: input.login,
+    expiresAt: input.expiresAt,
+    ...(pushHealth === undefined ? {} : {push: pushHealth}),
+  }
+
+  return ok(sessionInfo)
 }
 
 // ---------------------------------------------------------------------------
