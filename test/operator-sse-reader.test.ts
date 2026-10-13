@@ -18,7 +18,7 @@ import fc from 'fast-check'
 import {describe, expect, it, vi} from 'vitest'
 import {OPERATOR_CONTRACT_VERSION} from '../src/gateway/operator-contract/version.ts'
 import {FIXTURE_RUN_ID_FOR_TESTS, FIXTURE_SCENARIO_NAMES, serializeScenarioToSse} from '../src/gateway/operator-fixture-sse.ts'
-import {createOperatorSseReader, MAX_SSE_BUFFER_BYTES, parseSseChunk} from '../src/gateway/operator-sse-reader.ts'
+import {createOperatorSseReader, MAX_SSE_BUFFER_BYTES, OperatorContractDriftError, parseSseChunk} from '../src/gateway/operator-sse-reader.ts'
 
 /** A version that can never equal the pin: the pinned major, incremented. Derived so a bump needs no test edit. */
 const DRIFTED_VERSION = `${Number(OPERATOR_CONTRACT_VERSION.split('.')[0]) + 1}.0.0`
@@ -697,6 +697,46 @@ describe('createOperatorSseReader — contract-version gate', () => {
     expect(errors[0]?.message).not.toContain(DRIFTED_VERSION)
   })
 
+  it('contract-drift error is typed and carries pinned + observed versions (rm-967)', async () => {
+    const sseText = `event: ready\ndata: {"contractVersion":"${DRIFTED_VERSION}"}\n\n`
+    const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
+    const reader = createOperatorSseReader({fetchImpl})
+
+    const errors: Error[] = []
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: () => {},
+      onError: err => errors.push(err),
+      onClose: () => {},
+    })
+
+    expect(errors).toHaveLength(1)
+    const drift = errors[0] as OperatorContractDriftError
+    expect(drift).toBeInstanceOf(OperatorContractDriftError)
+    expect(drift.kind).toBe('contract-drift')
+    expect(drift.clientVersion).toBe(OPERATOR_CONTRACT_VERSION)
+    expect(drift.observedVersion).toBe(DRIFTED_VERSION)
+    expect(drift.message).toBe('contract-drift: server contract version does not match client')
+  })
+
+  it('contract-drift log payload carries both versions but never the runId (rm-967)', async () => {
+    const {logger, messages} = makeCapturingLogger()
+    const sseText = `event: ready\ndata: {"contractVersion":"${DRIFTED_VERSION}"}\n\n`
+    const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
+    const reader = createOperatorSseReader({fetchImpl, logger})
+
+    await reader.open('/operator/runs/run-secret-id-xyz/stream', {
+      onEvent: () => {},
+      onError: () => {},
+      onClose: () => {},
+    })
+
+    const driftLog = messages.find(m => m.includes('contract version mismatch'))
+    expect(driftLog).toBeDefined()
+    expect(driftLog).toContain(`"clientVersion":"${OPERATOR_CONTRACT_VERSION}"`)
+    expect(driftLog).toContain(`"observedVersion":"${DRIFTED_VERSION}"`)
+    expect(driftLog).not.toContain('run-secret-id-xyz')
+  })
+
   it('a later major version followed by status and output dispatches nothing', async () => {
     const statusPayload = {
       runId: 'run-001',
@@ -1152,6 +1192,10 @@ describe('parseSseChunk — CRLF normalization', () => {
 // rm-477 regressions: both readers used to normalize CRLF per read() chunk, so
 // a chunk boundary landing inside a CRLF pair left the pair as two newlines —
 // a phantom record boundary that silently dropped the frame.
+// (Version note: the ready fixture interpolates the pinned OPERATOR_CONTRACT_VERSION
+// like every other stream harness here — a hardcoded version went stale once
+// already when the upstream-adoption fold flipped the pin 1.6.0 -> 1.8.0 and the
+// fail-closed first-frame gate turned these three CRLF tests red.)
 const rm265StatusPayload = {
   runId: 'run-001',
   entityRef: 'fro-bot/agent',
@@ -1161,7 +1205,7 @@ const rm265StatusPayload = {
   startedAt: '2026-06-18T20:00:00Z',
   stale: false,
 }
-const rm265ReadyText = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+const rm265ReadyText = `event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\n`
 const rm265StatusText = `event: status\r\ndata: ${JSON.stringify(rm265StatusPayload)}\r\n\r\n`
 
 async function collectFrames(chunks: string[]): Promise<{events: RunStreamFrame[]; errors: Error[]}> {

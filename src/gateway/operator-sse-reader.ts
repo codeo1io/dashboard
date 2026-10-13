@@ -45,6 +45,28 @@ import {OPERATOR_CONTRACT_VERSION} from './operator-contract/version.ts'
  */
 export const MAX_SSE_BUFFER_BYTES = 1_000_000
 
+/**
+ * Typed contract-drift error (rm-967): the message is a FIXED reason string
+ * (no-oracle — it never echoes frame data), while the pinned and observed
+ * contract versions ride the properties so callers and tests can surface them.
+ */
+export class OperatorContractDriftError extends Error {
+  readonly kind = 'contract-drift' as const
+  readonly clientVersion: string
+  readonly observedVersion: string
+
+  constructor(clientVersion: string, observedVersion: string) {
+    super('contract-drift: server contract version does not match client')
+    this.name = 'OperatorContractDriftError'
+    this.clientVersion = clientVersion
+    this.observedVersion = observedVersion
+  }
+}
+
+export function contractDriftError(clientVersion: string, observedVersion: string): OperatorContractDriftError {
+  return new OperatorContractDriftError(clientVersion, observedVersion)
+}
+
 // ---------------------------------------------------------------------------
 // Allowlists for value-gated fields
 // ---------------------------------------------------------------------------
@@ -116,7 +138,10 @@ function normalizeCrlf(text: string): string {
 function parseSseRecord(record: string): SseParseResult | null {
   const lines = record.split('\n')
   let eventName: string | undefined
-  let dataLine: string | undefined
+  // rm-854 — WHATWG SSE 9.2.6: consecutive data lines accumulate and join with a
+  // single newline (previously last-wins, which misparsed conforming multi-line
+  // senders). Single-line records parse byte-identically.
+  const dataLines: string[] = []
 
   for (const line of lines) {
     if (line.startsWith(':')) {
@@ -126,9 +151,11 @@ function parseSseRecord(record: string): SseParseResult | null {
     if (line.startsWith('event:')) {
       eventName = line.slice('event:'.length).trim()
     } else if (line.startsWith('data:')) {
-      dataLine = line.slice('data:'.length).trim()
+      dataLines.push(line.slice('data:'.length).trim())
     }
   }
+
+  const dataLine: string | undefined = dataLines.length > 0 ? dataLines.join('\n') : undefined
 
   // A record with only comment lines produces no frame
   if (eventName === undefined && dataLine === undefined) {
@@ -515,9 +542,17 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
           return false // stop
         }
         if (frame.data.contractVersion !== OPERATOR_CONTRACT_VERSION) {
-          logger?.error('sse-reader: contract version mismatch', {route: ROUTE_TEMPLATE})
+          // Fail closed on a contract-version mismatch. The error message stays a
+          // FIXED reason string (no-oracle — never echo the observed frame), while
+          // the pinned and observed versions ride the structured log payload and
+          // the typed error properties so observability keeps them (rm-967).
+          logger?.error('sse-reader: contract version mismatch', {
+            route: ROUTE_TEMPLATE,
+            clientVersion: OPERATOR_CONTRACT_VERSION,
+            observedVersion: frame.data.contractVersion,
+          })
           drifted = true
-          onError(new Error('contract-drift: server contract version does not match client'))
+          onError(contractDriftError(OPERATOR_CONTRACT_VERSION, frame.data.contractVersion))
           onClose()
           return false // stop
         }
