@@ -41,11 +41,19 @@ const EXCLUDED_FILES = new Set([
   'test/prose-residue-guard.test.ts', // this file
 ])
 const EXCLUDED_DIR_SUFFIXES = ['node_modules', 'dist', 'coverage']
+// Vite writes ephemeral `<config>.timestamp-<hash>.mjs` TS-config bundles while
+// a concurrent vitest run boots; they embed config source verbatim, so an
+// otherwise-allowlisted historical comment can reappear under the transient's
+// name and fail the walk flakily (seen 2026-10-12, 1 failure in 3 multi-file
+// runs, 0 in isolation). They exist only mid-run and are never committed —
+// exclude by basename pattern.
+const EXCLUDED_BASENAME_PATTERN = /\.timestamp-\w+\.mjs$/
 const EXCLUDED_PREFIXES = [
   'docs/solutions/',
   'docs/prioritization/',
   'docs/ideation/',
   'docs/brainstorms/',
+  'docs/plans/',
   'web/dist/',
 ]
 
@@ -95,6 +103,8 @@ function isExcluded(relPath: string): boolean {
   if (segments.slice(0, -1).some(s => EXCLUDED_DIR_SUFFIXES.includes(s))) return true
   if (EXCLUDED_FILES.has(relPath)) return true
   if (EXCLUDED_PREFIXES.some(p => relPath.startsWith(p))) return true
+  const basename = segments.at(-1) ?? ''
+  if (EXCLUDED_BASENAME_PATTERN.test(basename)) return true
   return false
 }
 

@@ -444,7 +444,7 @@ describe('defaultRuntimeLoader — single-open accordion via onSelectRun/onRunLa
       // so these tests exercise the exact same lookup `_attachStream` calls. If the
       // production fix in runtime.ts were reverted, discoverCardStreamTargets would
       // return all-nulls and the regression tests below would fail.
-      const {outputEl, coalescedEl, approvalsEl, badgeEl, checkoutEl} = discoverCardStreamTargets(runId)
+      const {outputEl, coalescedEl, gapEl, approvalsEl, badgeEl, checkoutEl} = discoverCardStreamTargets(runId)
       attachedTargets.push({runId, checkoutEl})
       const handle = streamMod.initOperatorStream({
         runId,
@@ -452,6 +452,7 @@ describe('defaultRuntimeLoader — single-open accordion via onSelectRun/onRunLa
         noticeEl,
         outputEl: outputEl as unknown as (HTMLElement & {hidden: boolean}) | null,
         coalescedEl: coalescedEl as unknown as (HTMLElement & {hidden: boolean}) | null,
+        gapEl: gapEl as unknown as (HTMLElement & {hidden: boolean}) | null,
         approvalsEl: approvalsEl as unknown as (HTMLElement & {hidden: boolean}) | null,
         badgeEl: badgeEl as unknown as (HTMLElement & {hidden: boolean}) | null,
         checkoutEl: checkoutEl as unknown as (HTMLElement & {hidden: boolean}) | null,
@@ -550,6 +551,10 @@ describe('defaultRuntimeLoader — single-open accordion via onSelectRun/onRunLa
     coalescedEl.dataset.role = 'run-output-coalesced'
     coalescedEl.hidden = true
     card.append(coalescedEl)
+    const gapEl = document.createElement('div')
+    gapEl.dataset.role = 'run-output-gap'
+    gapEl.hidden = true
+    card.append(gapEl)
     const approvalsEl = document.createElement('div')
     approvalsEl.dataset.role = 'run-approvals'
     approvalsEl.hidden = true
@@ -837,7 +842,7 @@ describe('defaultRuntimeLoader — question region and summary status wiring', (
   })
 
   it('a status class outside the run-summary allowlist is never passed as summaryStatus', async () => {
-    document.body.innerHTML = `${cardHtml('run-q-wait', 'status-waiting_for_approval')}${cardHtml('run-q-evil', 'status-evil')}${cardHtml('run-q-none', '')}<div data-role="stream-status"></div>`
+    document.body.innerHTML = `${cardHtml('run-q-wait', 'status-waiting-for-approval')}${cardHtml('run-q-evil', 'status-evil')}${cardHtml('run-q-none', '')}<div data-role="stream-status"></div>`
     const {runtime, initCalls, select} = await mountLoader()
 
     select('run-q-wait')
@@ -913,6 +918,9 @@ describe('discoverCardStreamTargets', () => {
     const coalescedEl = document.createElement('div')
     coalescedEl.dataset.role = 'run-output-coalesced'
     card.append(coalescedEl)
+    const gapEl = document.createElement('div')
+    gapEl.dataset.role = 'run-output-gap'
+    card.append(gapEl)
     const approvalsEl = document.createElement('div')
     approvalsEl.dataset.role = 'run-approvals'
     card.append(approvalsEl)
@@ -922,6 +930,7 @@ describe('discoverCardStreamTargets', () => {
     document.body.append(card)
 
     const result = discoverCardStreamTargets('run-full')
+    expect(result.gapEl).toBe(gapEl)
 
     expect(result.outputEl).toBe(outputEl)
     expect(result.coalescedEl).toBe(coalescedEl)
