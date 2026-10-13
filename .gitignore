@@ -53,3 +53,7 @@ playwright-report/
 # Conductor engine state (progress breadcrumbs) — run artifacts only, never
 # tracked (see test/fork-exclusion-guard.test.ts: both entries are guarded).
 .conductor/
+
+# Cloned dependency source mirrors are machine-local evidence trees; only the
+# clonedeps.json pin manifest is tracked (see docs/runbooks/clonedeps-mirror.md).
+.slim/clonedeps/repos/

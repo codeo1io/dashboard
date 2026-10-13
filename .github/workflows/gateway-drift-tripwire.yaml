@@ -1,0 +1,106 @@
+---
+name: Gateway Drift Tripwire
+# rm-968 (drift observability + tripwire), folding the rm-204 rider's deployed-gateway
+# health probe. Alert-only, read-only: the tripwire script classifies drift across the
+# three in-repo gateway pins (fro-bot.yaml agent pin, operator-contract version.ts,
+# operator-stream.js PINNED_CONTRACT_VERSION) against live fro-bot/agent release
+# metadata; when repo issues are enabled it also maintains one deduplicated tracking
+# issue per drift kind and auto-closes them on a green verdict. Exit 1 is the
+# authoritative drift signal either way.
+#
+# Distinct from the sibling drift workflows: base-drift.yaml watches the container base
+# image + package-manager pins; upstream-drift.yaml watches the upstream dashboard
+# commit window. This one watches the GATEWAY the Fro Bot workflow runs — the repo's
+# #1 recurring drift class (contract split-brain).
+#
+# Cadence anchor: fro-bot/agent auto-releases land Sunday/Wednesday 20:00 UTC
+# (pending-release PR cadence, verified 2026-10-12), so this runs the morning after
+# each release window, off the hour and clear of the sibling slots (04:13, 05:17).
+#
+# INERT-WHILE-DARK note (2026-10-12): repo Actions have been disabled GitHub-side
+# since 2026-10-09T01:59:31Z (workflow_dispatch 422 'Actions has been disabled for
+# this repository'; recovery signal = any run newer than that, per rm-979's
+# resurrection lane). Until then this workflow is dormant by force, not by choice —
+# run `node scripts/gateway-drift-tripwire.ts --dry-run` locally in the meantime.
+on:
+  schedule:
+    - cron: '41 6 * * 1,4'
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: gateway-drift-tripwire
+  cancel-in-progress: false
+jobs:
+  tripwire:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        # repo pin convention (matches audit.yaml / release.yaml); f392d41b… was
+        # unverified and off-convention
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Run the tripwire
+        id: tripwire
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # deployed-health rider (rm-204): unset/empty => skip-graceful, not drift.
+          # Derive the host from the marcusrbrown/infra checkout (apps/gateway/
+          # upstream.json; docs/runbooks/gateway-access.md) and store it here.
+          GATEWAY_HEALTH_URL: ${{ secrets.GATEWAY_HEALTH_URL }}
+        run: |
+          set +e
+          node scripts/gateway-drift-tripwire.ts --json "$RUNNER_TEMP/gateway-drift.json"
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [ "$rc" -ge 2 ]; then
+            # tool error: fail loud on the tool (mirrors base-drift.yaml)
+            exit "$rc"
+          fi
+          exit 0
+      - name: Maintain deduplicated drift issues (when issues are enabled)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          rc="${{ steps.tripwire.outputs.rc }}"
+          issues_enabled=$(gh api repos/:owner/:repo --jq '.has_issues')
+          if [ "$issues_enabled" != 'true' ]; then
+            echo 'repo issues disabled — issue maintenance skipped (exit code remains authoritative)'
+            if [ "$rc" = '1' ]; then exit 1; fi
+            exit 0
+          fi
+          gh label create 'gateway-drift' --color BFD4F2 --description 'gateway drift tripwire (rm-968)' || true
+          node - <<'NODE' > "$RUNNER_TEMP/kinds.txt"
+          const fs = require('node:fs');
+          const r = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/gateway-drift.json', 'utf8'));
+          for (const f of r.findings) {
+            fs.writeFileSync(process.env.RUNNER_TEMP + '/issue-' + f.kind + '.md', f.body);
+            console.log(f.kind + '\t' + f.label + '\t' + f.title);
+          }
+          NODE
+          if [ "$rc" = '1' ]; then
+            while IFS=$'\t' read -r kind label title; do
+              gh label create "$label" --color D93F0B --description "gateway drift: $kind" || true
+              open=$(gh issue list --label "$label" --state open --json number --jq 'length')
+              if [ "$open" = '0' ]; then
+                gh issue create --label "$label" --label 'gateway-drift' \
+                  --title "$title" --body-file "$RUNNER_TEMP/issue-$kind.md"
+                echo "opened drift issue for $kind"
+              else
+                echo "drift issue for $kind already open (dedup)"
+              fi
+            done < "$RUNNER_TEMP/kinds.txt"
+            exit 1
+          fi
+          # green: auto-close any open drift issues
+          for n in $(gh issue list --label 'gateway-drift' --state open --json number --jq '.[].number'); do
+            gh issue close "$n" --comment 'gateway drift tripwire green — auto-closing (rm-968)'
+          done
+          exit 0
