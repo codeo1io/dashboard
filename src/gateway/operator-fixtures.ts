@@ -18,6 +18,15 @@ export const FIXTURE_SESSION: SessionDto = {
   expiresAt: Date.parse('2099-01-01T00:00:00Z'),
 }
 
+// Contract 1.10.0 parity: the additive optional `push` health on
+// OperatorSessionInfo (status from OPERATOR_PUSH_HEALTH_STATUSES).
+export const FIXTURE_SESSION_WITH_PUSH: SessionDto = {
+  operatorId: 1,
+  login: 'fixture-operator',
+  expiresAt: Date.parse('2099-01-01T00:00:00Z'),
+  push: {status: 'ready'},
+}
+
 export const FIXTURE_CSRF: CsrfDto = {
   // NOTE: This is a fixture placeholder — never a real CSRF token.
   // The token value is intentionally generic and not rendered in the UI.

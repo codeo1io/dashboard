@@ -1152,6 +1152,10 @@ describe('parseSseChunk — CRLF normalization', () => {
 // rm-477 regressions: both readers used to normalize CRLF per read() chunk, so
 // a chunk boundary landing inside a CRLF pair left the pair as two newlines —
 // a phantom record boundary that silently dropped the frame.
+// (Version note: the ready fixture interpolates the pinned OPERATOR_CONTRACT_VERSION
+// like every other stream harness here — a hardcoded version went stale once
+// already when the upstream-adoption fold flipped the pin 1.6.0 -> 1.8.0 and the
+// fail-closed first-frame gate turned these three CRLF tests red.)
 const rm265StatusPayload = {
   runId: 'run-001',
   entityRef: 'fro-bot/agent',
@@ -1161,7 +1165,7 @@ const rm265StatusPayload = {
   startedAt: '2026-06-18T20:00:00Z',
   stale: false,
 }
-const rm265ReadyText = 'event: ready\ndata: {"contractVersion":"1.6.0"}\n\n'
+const rm265ReadyText = `event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\n`
 const rm265StatusText = `event: status\r\ndata: ${JSON.stringify(rm265StatusPayload)}\r\n\r\n`
 
 async function collectFrames(chunks: string[]): Promise<{events: RunStreamFrame[]; errors: Error[]}> {
