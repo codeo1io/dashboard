@@ -390,9 +390,9 @@ export interface RunEntry {
   readonly outputCoalesced?: boolean
   /** True if accumulated output exceeded the cap and was truncated. */
   readonly outputTruncated?: boolean
-  /** rm-853: true once any non-final delta skipped seq values (frames dropped before the reducer). Sticky for the run. */
+  /** rm-853: true once any non-final delta skipped seq values beyond the server's dropped-count credit (frames missing after crediting coalesced drops). Sticky for the run. */
   readonly outputGapDetected?: boolean
-  /** rm-853: accumulated count of seq values skipped across the run. Never rendered as a raw number. */
+  /** rm-853: accumulated count of seq values skipped minus the server-reported dropped (coalesced) credit. Never rendered as a raw number. */
   readonly outputGapMissing?: number
   /**
    * Pre-resolved dashboard display label for a known failure reason. Set only when
