@@ -103,3 +103,46 @@ const COPY: Record<NotificationUiState, NotificationStateCopy> = {
 export function getNotificationCopy(state: NotificationUiState): NotificationStateCopy {
   return COPY[state]
 }
+
+/**
+ * Copy for the gateway-observed session push health (contract 1.10.0, agent
+ * #1788), rendered in the Notifications settings card and the Monitoring
+ * header. Coarse and non-oracle by construction: the statuses come from the
+ * vendored OPERATOR_PUSH_HEALTH_STATUSES and the copy never interpolates any
+ * gateway data.
+ */
+export interface PushHealthCopy {
+  readonly label: string
+  readonly detail: string
+}
+
+const PUSH_HEALTH_COPY: Record<'ready' | 'degraded' | 'unknown', PushHealthCopy> = {
+  ready: {
+    label: 'Push delivery healthy',
+    detail: 'The gateway observed push delivery working within the last hour. Observed readiness — not a per-device delivery guarantee.',
+  },
+  degraded: {
+    label: 'Push delivery degraded',
+    detail: 'The gateway observed a push self-test or delivery failure recently. Notifications may not arrive until it recovers.',
+  },
+  unknown: {
+    label: 'Push health unknown',
+    detail: 'Push is configured, but the gateway has nothing fresh to report (no observation in the last hour). Never read as healthy.',
+  },
+}
+
+export function getPushHealthCopy(status: 'ready' | 'degraded' | 'unknown'): PushHealthCopy {
+  return PUSH_HEALTH_COPY[status]
+}
+
+/**
+ * Human labels for the closed set of events that produce an operator push
+ * notification (contract 1.10.0, agent #1787). Used by the launch drawer so
+ * the enumerated kinds render from the one tuple — a new kind extends the
+ * tuple and the copy map together.
+ */
+export const PUSH_TRIGGER_KIND_LABELS: Readonly<Record<'approval' | 'question' | 'run_failed', string>> = {
+  approval: 'pending approvals',
+  question: 'pending questions',
+  run_failed: 'failed runs',
+}

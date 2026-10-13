@@ -27,6 +27,9 @@ import {createOperatorRuntime} from '../operator/runtime.ts'
 import type {OperatorRuntimeHandle} from '../operator/runtime.ts'
 import {isActionDisabled} from '../operator/state.ts'
 import type {OperatorState} from '../operator/state.ts'
+import {readPushEnabledMeta} from '../push/session-health.ts'
+import {PUSH_TRIGGER_KINDS} from '../push/push-types.ts'
+import {PUSH_TRIGGER_KIND_LABELS} from './notifications-copy.ts'
 
 // Question and expired-snapshot fixture scenarios. Gated on DEV (replaced at build time) so their
 // names never reach the production bundle; the fixture build and tests keep them.
@@ -93,6 +96,11 @@ export function Operator({state = 'loading', onRuntimeStateChange, fixtureMode, 
   onRuntimeStateChangeRef.current = onRuntimeStateChange
 
   const [isLaunchOpen, setIsLaunchOpen] = useState(false)
+  // rm-980: the launch drawer enumerates what a push notification covers,
+  // rendered from the one contract tuple (contract 1.10.0, agent #1787) so a
+  // new trigger kind updates the drawer copy automatically. Only shown when
+  // the deployment has push enabled.
+  const [pushEnabled] = useState(readPushEnabledMeta)
   const triggerBtnRef = useRef<HTMLButtonElement>(null)
   const drawerRef = useRef<HTMLDivElement>(null)
   const formRef = useRef<HTMLFormElement>(null)
@@ -420,6 +428,19 @@ export function Operator({state = 'loading', onRuntimeStateChange, fixtureMode, 
                   id="repo-picker-container"
                   className="operator-form-group"
                 />
+
+                {pushEnabled && (
+                  <p
+                    data-testid="launch-push-trigger-kinds"
+                    style={{
+                      margin: 0,
+                      fontSize: 'var(--text-body-sm)',
+                      color: 'var(--color-text-muted)',
+                    }}
+                  >
+                    Push notifications cover {PUSH_TRIGGER_KINDS.map(kind => PUSH_TRIGGER_KIND_LABELS[kind]).join(', ')}.
+                  </p>
+                )}
 
                 <form id="launch-form" ref={formRef} className="operator-form">
                   <label

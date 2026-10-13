@@ -6,13 +6,27 @@
  * from `src/` — the web→server boundary guard stays exception-free.
  */
 import {describe, expect, it} from 'vitest'
-import type {HandoffState, PushSubscriptionMetadata, VapidKeyResponse} from './push-types.ts'
-import {VALID_HANDOFF_STATES} from './push-types.ts'
+import type {HandoffState, PushHealthStatus, PushSubscriptionMetadata, VapidKeyResponse} from './push-types.ts'
+import {PUSH_HEALTH_STATUSES, PUSH_TRIGGER_KINDS, VALID_HANDOFF_STATES} from './push-types.ts'
 
 describe('push-types web-local shape pins', () => {
   it('HandoffState value set is the five derived states', () => {
     const expected: HandoffState[] = ['push_disabled', 'not_subscribed', 'subscribed', 'stale_key', 'inactive']
     expect(VALID_HANDOFF_STATES).toEqual(new Set(expected))
+  })
+
+  // contract 1.10.0 (agent #1787/#1788): the two new vocabularies are
+  // web-local duplicates of the vendored sets — pinned here and equated to
+  // the vendored tuples cross-tree by the server conformance test.
+  it('PushHealthStatus value set is exactly ready/degraded/unknown (no disabled on the wire)', () => {
+    const expected: PushHealthStatus[] = ['ready', 'degraded', 'unknown']
+    expect([...PUSH_HEALTH_STATUSES]).toEqual(expected)
+    expect(new Set(PUSH_HEALTH_STATUSES).size).toBe(PUSH_HEALTH_STATUSES.length)
+  })
+
+  it('PushTriggerKind value set is exactly approval/question/run_failed', () => {
+    expect([...PUSH_TRIGGER_KINDS]).toEqual(['approval', 'question', 'run_failed'])
+    expect(new Set(PUSH_TRIGGER_KINDS).size).toBe(PUSH_TRIGGER_KINDS.length)
   })
 
   it('VapidKeyResponse has exactly publicKey + keyVersion', () => {

@@ -690,6 +690,38 @@ describe('nextStreamState — ready frame', () => {
     expect(state.connection).toBe('drift')
   })
 
+  it('drift state carries both versions (rm-980): pinned and observed', () => {
+    // The browser-side drift surface is the same shape the server sse-reader
+    // now emits — the operator copy renders these two coarse constants, so
+    // no second reproduction is needed to see what the client pins vs what
+    // the gateway observed.
+    const state = nextStreamState(INITIAL_STATE, {
+      type: 'ready',
+      data: {contractVersion: '2.0.0'},
+    })
+    expect(state.connection).toBe('drift')
+    expect(state.driftVersions).toEqual({pinned: PINNED_CONTRACT_VERSION, observed: '2.0.0'})
+  })
+
+  it('drift state caps the observed version it carries at 64 chars', () => {
+    const longObserved = '9.0.0-'.padEnd(300, 'x')
+    const state = nextStreamState(INITIAL_STATE, {
+      type: 'ready',
+      data: {contractVersion: longObserved},
+    })
+    expect(state.connection).toBe('drift')
+    expect(state.driftVersions?.observed).toBe(longObserved.slice(0, 64))
+  })
+
+  it('a live state carries no drift versions', () => {
+    const state = nextStreamState(INITIAL_STATE, {
+      type: 'ready',
+      data: {contractVersion: PINNED_CONTRACT_VERSION},
+    })
+    expect(state.connection).toBe('live')
+    expect(state.driftVersions).toBeUndefined()
+  })
+
   it('does not retain any run status on drift', () => {
     // Pre-populate a run, then drift
     const withRun = nextStreamState(INITIAL_STATE, {

@@ -681,7 +681,14 @@ describe('createOperatorSseReader — contract-version gate', () => {
     expect(closed).toBe(true)
   })
 
-  it('contract-drift error message does not echo the mismatched version', async () => {
+  it('contract-drift error message carries the pinned and observed versions, and nothing else from the payload', async () => {
+    // rm-980: the drift error deliberately carries BOTH version strings — an
+    // operator reading the log must see what the client pins vs what the
+    // gateway observed without a second reproduction. Both are coarse
+    // contract constants (validated shape, capped), so this is not an oracle
+    // surface; the surrounding no-oracle rule still holds for everything
+    // else — the message must carry no other wire detail (runId, entityRef,
+    // raw body) than the two versions.
     const sseText = `event: ready\ndata: {"contractVersion":"${DRIFTED_VERSION}"}\n\n`
     const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
     const reader = createOperatorSseReader({fetchImpl})
@@ -694,7 +701,33 @@ describe('createOperatorSseReader — contract-version gate', () => {
     })
 
     expect(errors).toHaveLength(1)
-    expect(errors[0]?.message).not.toContain(DRIFTED_VERSION)
+    expect(errors[0]?.message).toContain('contract-drift')
+    expect(errors[0]?.message).toContain(OPERATOR_CONTRACT_VERSION)
+    expect(errors[0]?.message).toContain(DRIFTED_VERSION)
+    // No other wire detail rides along: the message is the fixed prefix plus
+    // the two capped version strings.
+    expect(errors[0]?.message).toBe(
+      `contract-drift: server contract version ${DRIFTED_VERSION} does not match client ${OPERATOR_CONTRACT_VERSION}`,
+    )
+  })
+
+  it('caps the echoed observed version at 64 chars in the contract-drift message', async () => {
+    const longObserved = '9.0.0-'.padEnd(300, 'x')
+    const sseText = `event: ready\ndata: {"contractVersion":"${longObserved}"}\n\n`
+    const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
+    const reader = createOperatorSseReader({fetchImpl})
+
+    const errors: Error[] = []
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: () => {},
+      onError: err => errors.push(err),
+      onClose: () => {},
+    })
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.message).toContain('contract-drift')
+    expect(errors[0]?.message).toContain(longObserved.slice(0, 64))
+    expect(errors[0]?.message).not.toContain(longObserved.slice(0, 65))
   })
 
   it('a later major version followed by status and output dispatches nothing', async () => {

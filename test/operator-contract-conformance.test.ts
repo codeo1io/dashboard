@@ -55,6 +55,8 @@ import {
   MAX_QUESTIONS_PER_REQUEST,
   OBSTRUCTION_KINDS,
   OPERATOR_CONTRACT_VERSION,
+  OPERATOR_PUSH_HEALTH_STATUSES,
+  OPERATOR_PUSH_TRIGGER_KINDS,
   parseOperatorCancelResponse,
   parseOperatorCheckoutPreparation,
   parseOperatorCheckoutProvenance,
@@ -79,6 +81,7 @@ import {
   UPDATE_FAILURE_REASONS,
 } from '../src/gateway/operator-contract/index.ts'
 import {isOperatorFailureKind, OPERATOR_FAILURE_KINDS} from '../src/gateway/operator-contract/run-status.ts'
+import {PUSH_HEALTH_STATUSES, PUSH_TRIGGER_KINDS} from '../web/src/push/push-types.ts'
 
 // ---------------------------------------------------------------------------
 // Type-level assignability: dashboard types ↔ canonical contract types
@@ -822,6 +825,95 @@ describe('parseOperatorSessionInfo', () => {
     const input = {operatorId: 1, login: 'x', expiresAt: Infinity}
     const result = parseOperatorSessionInfo(input)
     expect(result.success).toBe(false)
+  })
+
+  // contract 1.10.0 (agent #1788): the optional push-health diagnostic field
+  // is validated when present and DROPPED when malformed — it can never reject
+  // an otherwise valid session. Mirrors the gateway parse exactly.
+  it.each(['ready', 'degraded', 'unknown'] as const)('keeps a valid push health report (status %s)', status => {
+    const input = {operatorId: 1, login: 'x', expiresAt: 1000, push: {status}}
+    const result = parseOperatorSessionInfo(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.push).toEqual({status})
+    }
+  })
+
+  it('drops a malformed push health report (string status) instead of rejecting the session', () => {
+    const input = {operatorId: 1, login: 'x', expiresAt: 1000, push: {status: 'fixture-not-a-status'}}
+    const result = parseOperatorSessionInfo(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.push).toBeUndefined()
+    }
+  })
+
+  it('drops a malformed push health report (non-object / array / null) instead of rejecting the session', () => {
+    for (const push of ['ready', 42, null, [], {status: 1}, {}]) {
+      const result = parseOperatorSessionInfo({operatorId: 1, login: 'x', expiresAt: 1000, push})
+      expect(result.success, `push=${JSON.stringify(push)}`).toBe(true)
+      if (result.success) {
+        expect(result.data.push).toBeUndefined()
+      }
+    }
+  })
+
+  it('a session without push stays without push (pre-1.10.0 gateway session)', () => {
+    const result = parseOperatorSessionInfo({operatorId: 1, login: 'x', expiresAt: 1000})
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.push).toBeUndefined()
+    }
+  })
+
+  it('does not leak extra push fields into the parsed value', () => {
+    const input = {operatorId: 1, login: 'x', expiresAt: 1000, push: {status: 'ready', detail: 'should-not-cross'}}
+    const result = parseOperatorSessionInfo(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.push).toEqual({status: 'ready'})
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Contract 1.10.0: push health + push trigger kinds vocabularies
+// ---------------------------------------------------------------------------
+
+// Exhaustive over the unions: adding or removing a member without updating a
+// record fails tsc.
+const PUSH_HEALTH_STATUS_RECORD = {
+  ready: true,
+  degraded: true,
+  unknown: true,
+} satisfies Record<(typeof OPERATOR_PUSH_HEALTH_STATUSES)[number], true>
+
+const PUSH_TRIGGER_KIND_RECORD = {
+  approval: true,
+  question: true,
+  run_failed: true,
+} satisfies Record<(typeof OPERATOR_PUSH_TRIGGER_KINDS)[number], true>
+
+describe('push health and trigger kind vocabularies (contract 1.10.0)', () => {
+  it('OPERATOR_PUSH_HEALTH_STATUSES equals its union, no duplicates', () => {
+    expect([...OPERATOR_PUSH_HEALTH_STATUSES].toSorted()).toEqual(Object.keys(PUSH_HEALTH_STATUS_RECORD).toSorted())
+    expect(new Set(OPERATOR_PUSH_HEALTH_STATUSES).size).toBe(OPERATOR_PUSH_HEALTH_STATUSES.length)
+  })
+
+  it('OPERATOR_PUSH_TRIGGER_KINDS equals its union, no duplicates', () => {
+    expect([...OPERATOR_PUSH_TRIGGER_KINDS].toSorted()).toEqual(Object.keys(PUSH_TRIGGER_KIND_RECORD).toSorted())
+    expect(new Set(OPERATOR_PUSH_TRIGGER_KINDS).size).toBe(OPERATOR_PUSH_TRIGGER_KINDS.length)
+  })
+
+  // The web-local duplicates (web/src/push/push-types.ts) must equal the
+  // vendored sets byte-for-byte — same pattern as the validate-dynamic-id
+  // parity guard, proven importable cross-tree from a server test.
+  it('web-local PUSH_HEALTH_STATUSES equals the vendored set', () => {
+    expect([...PUSH_HEALTH_STATUSES]).toEqual([...OPERATOR_PUSH_HEALTH_STATUSES])
+  })
+
+  it('web-local PUSH_TRIGGER_KINDS equals the vendored set', () => {
+    expect([...PUSH_TRIGGER_KINDS]).toEqual([...OPERATOR_PUSH_TRIGGER_KINDS])
   })
 })
 

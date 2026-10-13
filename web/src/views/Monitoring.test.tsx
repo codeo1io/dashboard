@@ -247,3 +247,71 @@ describe('Monitoring (rm-192 red-repo drill-down)', () => {
     })
   })
 })
+
+describe('Monitoring — session push health line (rm-980, contract 1.10.0)', () => {
+  let metaTag: HTMLMetaElement | null = null
+
+  const addMetaTag = () => {
+    metaTag = document.createElement('meta')
+    metaTag.setAttribute('name', 'push-enabled')
+    metaTag.setAttribute('content', 'true')
+    document.head.appendChild(metaTag)
+  }
+
+  const removeMetaTag = () => {
+    if (metaTag && metaTag.parentNode) metaTag.parentNode.removeChild(metaTag)
+    metaTag = null
+  }
+
+  const stubSession = (body: unknown, status = 200) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(body), {status, headers: {'content-type': 'application/json'}})),
+    )
+  }
+
+  beforeEach(() => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValue({ok: true, data: makeData()})
+  })
+
+  afterEach(() => {
+    removeMetaTag()
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  it('shows the gateway-observed degraded delivery status in the header', async () => {
+    addMetaTag()
+    stubSession({operatorId: 1, login: 'op', expiresAt: 1, push: {status: 'degraded'}})
+    await act(async () => {
+      render(<Monitoring />)
+    })
+    expect(screen.getByTestId('monitoring-push-health')).toHaveTextContent('Push delivery degraded')
+  })
+
+  it('shows the ready status in the header', async () => {
+    addMetaTag()
+    stubSession({operatorId: 1, login: 'op', expiresAt: 1, push: {status: 'ready'}})
+    await act(async () => {
+      render(<Monitoring />)
+    })
+    expect(screen.getByTestId('monitoring-push-health')).toHaveTextContent('Push delivery healthy')
+  })
+
+  it('renders no health line when the deployment has no push meta', async () => {
+    stubSession({operatorId: 1, login: 'op', expiresAt: 1, push: {status: 'ready'}})
+    await act(async () => {
+      render(<Monitoring />)
+    })
+    expect(screen.queryByTestId('monitoring-push-health')).toBeNull()
+  })
+
+  it('renders no health line for an unconfigured or failed session read', async () => {
+    addMetaTag()
+    stubSession({operatorId: 1, login: 'op', expiresAt: 1})
+    await act(async () => {
+      render(<Monitoring />)
+    })
+    expect(screen.queryByTestId('monitoring-push-health')).toBeNull()
+  })
+})

@@ -769,3 +769,75 @@ describe('Notifications Component', () => {
     })
   })
 })
+
+describe('Notifications — session push health (rm-980, contract 1.10.0)', () => {
+  let metaTag: HTMLMetaElement | null = null
+
+  const addMetaTag = () => {
+    metaTag = document.createElement('meta')
+    metaTag.setAttribute('name', 'push-enabled')
+    metaTag.setAttribute('content', 'true')
+    document.head.appendChild(metaTag)
+  }
+
+  const removeMetaTag = () => {
+    if (metaTag && metaTag.parentNode) metaTag.parentNode.removeChild(metaTag)
+    metaTag = null
+  }
+
+  const stubSession = (body: unknown, status = 200) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(body), {status, headers: {'content-type': 'application/json'}})),
+    )
+  }
+
+  beforeEach(() => {
+    localStorage.clear()
+    vi.clearAllMocks()
+    removeMetaTag()
+    vi.mocked(getPushSupport).mockReturnValue({supported: true, needsInstall: false})
+    vi.mocked(getNotificationPermission).mockReturnValue('default')
+  })
+
+  afterEach(() => {
+    removeMetaTag()
+    vi.unstubAllGlobals()
+  })
+
+  it('renders the gateway-observed degraded status on the settings card', async () => {
+    addMetaTag()
+    stubSession({operatorId: 1, login: 'op', expiresAt: 1, push: {status: 'degraded'}})
+    await act(async () => {
+      render(<Notifications />)
+    })
+    expect(screen.getByTestId('notifications-push-health')).toHaveTextContent('Push delivery degraded')
+  })
+
+  it('renders the ready status as observed-healthy copy', async () => {
+    addMetaTag()
+    stubSession({operatorId: 1, login: 'op', expiresAt: 1, push: {status: 'ready'}})
+    await act(async () => {
+      render(<Notifications />)
+    })
+    expect(screen.getByTestId('notifications-push-health')).toHaveTextContent('Push delivery healthy')
+  })
+
+  it('renders nothing for a session without a push field (pre-1.10.0 gateway)', async () => {
+    addMetaTag()
+    stubSession({operatorId: 1, login: 'op', expiresAt: 1})
+    await act(async () => {
+      render(<Notifications />)
+    })
+    expect(screen.queryByTestId('notifications-push-health')).toBeNull()
+  })
+
+  it('renders nothing when the session read fails (fail-closed, quiet)', async () => {
+    addMetaTag()
+    stubSession({}, 500)
+    await act(async () => {
+      render(<Notifications />)
+    })
+    expect(screen.queryByTestId('notifications-push-health')).toBeNull()
+  })
+})

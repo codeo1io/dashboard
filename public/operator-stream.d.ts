@@ -482,6 +482,13 @@ export interface StreamState {
    * status frame with no output since shows the unavailable state; an output frame clears the mark.
    */
   readonly snapshotMissing?: Readonly<Record<string, true>>
+  /**
+   * Present only on the `drift` state produced by a ready-frame contract-version
+   * mismatch: both coarse version constants (the client pin and what the gateway
+   * actually sent), so a drift consumer can see which side moved without
+   * rendering raw wire data (rm-980, mirroring the sse-reader fail-closed error).
+   */
+  readonly driftVersions?: {readonly pinned: string; readonly observed: string}
 }
 
 // ---------------------------------------------------------------------------

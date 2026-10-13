@@ -1,6 +1,9 @@
-import {useState} from 'react'
+import {useEffect, useState} from 'react'
 import {fetchMonitoring, type FetchMonitoringResult, type MonitoringData, type MonitoringRepo} from '../api/monitoring.ts'
 import {useBoundedPoll} from '../hooks/useBoundedPoll.ts'
+import {fetchSessionPushHealth, readPushEnabledMeta} from '../push/session-health.ts'
+import type {SessionPushHealthResult} from '../push/session-health.ts'
+import {getPushHealthCopy} from './notifications-copy.ts'
 
 type ViewState =
   | {state: 'loading'}
@@ -20,6 +23,22 @@ export const MONITORING_FETCH_TIMEOUT_MS = 15000
  */
 export function Monitoring() {
   const [viewState, setViewState] = useState<ViewState>({state: 'loading'})
+  // rm-980: gateway-observed session push health (contract 1.10.0) as a
+  // one-line delivery-subsystem indicator next to repo health. Quiet unless
+  // the gateway actually OBSERVED a status — unconfigured deployments and
+  // failed reads render nothing.
+  const [metaEnabled] = useState(readPushEnabledMeta)
+  const [sessionHealth, setSessionHealth] = useState<SessionPushHealthResult | null>(null)
+  useEffect(() => {
+    if (!metaEnabled) return
+    let cancelled = false
+    void fetchSessionPushHealth().then(result => {
+      if (!cancelled) setSessionHealth(result)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [metaEnabled])
 
   // rm-251: the view consumes the shared bounded-poll hook (the rm-155
   // Listener.tsx lifecycle). The previous inline copy had no timeout race,
@@ -56,6 +75,22 @@ export function Monitoring() {
         <h2 className="operator-section-heading" style={{marginBottom: 0}}>
           Repository Monitoring
         </h2>
+        {sessionHealth?.kind === 'health' && (
+          <span
+            data-testid="monitoring-push-health"
+            title={getPushHealthCopy(sessionHealth.status).detail}
+            style={{
+              marginLeft: 'auto',
+              fontSize: 'var(--text-label)',
+              fontFamily: 'var(--font-mono)',
+              textTransform: 'uppercase',
+              letterSpacing: 'var(--tracking-label)',
+              color: sessionHealth.status === 'ready' ? 'var(--color-success)' : 'var(--color-error)',
+            }}
+          >
+            {getPushHealthCopy(sessionHealth.status).label}
+          </span>
+        )}
       </div>
 
       {viewState.state === 'loading' && (

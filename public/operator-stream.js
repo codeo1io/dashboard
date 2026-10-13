@@ -29,8 +29,10 @@
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Contract version this client expects on the ready frame. */
-export const PINNED_CONTRACT_VERSION = '1.9.0'
+/** Contract version this client expects on the ready frame (vendored from
+ * src/gateway/operator-contract/version.ts — kept in lockstep by the
+ * agent-pin contract cross-check test). */
+export const PINNED_CONTRACT_VERSION = '1.10.0'
 
 /** Base delay in milliseconds for exponential backoff. */
 export const RETRY_BASE_MS = 1000
@@ -1020,12 +1022,21 @@ export function nextStreamState(current, event) {
         return current
       }
       if (event.data.contractVersion !== PINNED_CONTRACT_VERSION) {
-        // Contract version mismatch — fail closed, clear all run state
+        // Contract version mismatch — fail closed, clear all run state. The
+        // drift state carries BOTH versions (coarse contract constants from
+        // the authenticated gateway stream — never operator-supplied detail)
+        // so state consumers and tests can see which side moved, mirroring
+        // the sse-reader's fail-closed error (rm-980).
+        const observedContractVersion =
+          typeof event.data.contractVersion === 'string'
+            ? event.data.contractVersion.slice(0, 64)
+            : String(event.data.contractVersion).slice(0, 64)
         return {
           connection: 'drift',
           runs: Object.create(null),
           retryCount: current.retryCount,
           shouldReconnect: false,
+          driftVersions: {pinned: PINNED_CONTRACT_VERSION, observed: observedContractVersion},
         }
       }
       return {
@@ -1986,6 +1997,15 @@ async function refreshCsrf(endpointBase, fixtureSessionId, timeoutMs) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Fork hardening (rm-594, kept per #16393): bound every approval-client fetch —
+ * CSRF fetch, decision POST, list — with its own timeout signal, exactly as the
+ * question client above is bounded by QUESTION_FETCH_TIMEOUT_MS. An unbounded
+ * approval fetch otherwise pins a decision or a list poll open forever.
+ * Declared before buildApprovalClient's first use (no-use-before-define).
+ */
+export const APPROVAL_FETCH_TIMEOUT_MS = 10_000
+
+/**
  * Build a browser-direct approval client for the inline approval prompt UI.
  *
  * Uses same-origin relative paths (owned by the public reverse proxy in production,
@@ -2150,14 +2170,6 @@ export const QUESTION_CLAIM_RECHECK_DELAYS_MS = Object.freeze([2000, 5000, 10_00
  * from the cancel client's bound because the recovery differs, though the value is the same.
  */
 export const QUESTION_FETCH_TIMEOUT_MS = 10_000
-
-/**
- * Fork hardening (rm-594, kept per #16393): bound every approval-client fetch —
- * CSRF fetch, decision POST, list — with its own timeout signal, exactly as the
- * question client above is bounded by QUESTION_FETCH_TIMEOUT_MS. An unbounded
- * approval fetch otherwise pins a decision or a list poll open forever.
- */
-export const APPROVAL_FETCH_TIMEOUT_MS = 10_000
 
 /** One pending-list entry `{requestID, questions}` (no per-item runId), or null when invalid. */
 function parsePendingQuestionEntry(value) {

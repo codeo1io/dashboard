@@ -522,7 +522,18 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
         if (frame.data.contractVersion !== OPERATOR_CONTRACT_VERSION) {
           logger?.error('sse-reader: contract version mismatch', {route: ROUTE_TEMPLATE})
           drifted = true
-          onError(new Error('contract-drift: server contract version does not match client'))
+          // Fixed prefix + the two coarse version strings (both are contract
+          // constants on the wire, never operator-supplied detail). Carrying
+          // pinned-vs-observed lets the operator see WHICH side moved — rm-980.
+          const observed =
+            typeof frame.data.contractVersion === 'string'
+              ? frame.data.contractVersion.slice(0, 64)
+              : String(frame.data.contractVersion).slice(0, 64)
+          onError(
+            new Error(
+              `contract-drift: server contract version ${observed} does not match client ${OPERATOR_CONTRACT_VERSION}`,
+            ),
+          )
           onClose()
           return false // stop
         }

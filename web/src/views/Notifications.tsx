@@ -1,6 +1,8 @@
 import {useCallback, useEffect, useRef, useState} from 'react'
 import {getPushSupport} from '../push/capability.ts'
 import {getLogoutAbortSignal} from '../push/logout-abort.ts'
+import {fetchSessionPushHealth, readPushEnabledMeta} from '../push/session-health.ts'
+import type {SessionPushHealthResult} from '../push/session-health.ts'
 import {
   INITIAL_RECONCILE_SWEEP_CACHE,
   resubscribeStaleKey,
@@ -10,7 +12,7 @@ import {
 } from '../push/subscribe.ts'
 import type {MinimalServiceWorkerRegistration, ReconcileSweepCache} from '../push/subscribe.ts'
 import {buildPushClient} from '../push/subscribe.ts'
-import {getNotificationCopy} from './notifications-copy.ts'
+import {getNotificationCopy, getPushHealthCopy} from './notifications-copy.ts'
 import type {NotificationUiState} from './notifications-copy.ts'
 
 /**
@@ -19,12 +21,6 @@ import type {NotificationUiState} from './notifications-copy.ts'
  * clears it — the KEY STRING is the storage contract and never changes.
  */
 export const DISMISS_SETTINGS_KEY = 'fro-bot-notifications-dismissed'
-
-function readPushEnabledMeta(): boolean {
-  if (typeof document === 'undefined') return false
-  const meta = document.querySelector('meta[name="push-enabled"]')
-  return meta?.getAttribute('content') === 'true'
-}
 
 interface NotificationsProps {
   /**
@@ -61,6 +57,14 @@ export function Notifications({
   const configReady = pushConfigReady ?? true
   const [metaEnabled] = useState<boolean>(readPushEnabledMeta)
   const [currentUiState, setCurrentUiState] = useState<NotificationUiState>('not-requested')
+  // rm-980: gateway-observed session push health (contract 1.10.0, agent
+  // #1788). One-shot read once the push config settles; `null` until then,
+  // and QUIET (nothing rendered) for unconfigured/unavailable — a
+  // pre-1.10.0 gateway (no `push` field) or a failed read must never render
+  // an error surface on the settings card. This sits ON TOP of rm-693's
+  // inactive-reason ladder: the ladder stays the local-subscription truth,
+  // this line is the gateway-side delivery truth.
+  const [sessionHealth, setSessionHealth] = useState<SessionPushHealthResult | null>(null)
   const [inFlight, setInFlight] = useState(false)
   const [isCardDismissed, setIsCardDismissed] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false
@@ -339,6 +343,26 @@ export function Notifications({
     return () => window.removeEventListener('appinstalled', handleAppInstalled)
   }, [metaEnabled, runSweep])
 
+  // rm-980: one-shot session push-health read (contract 1.10.0). Gated on
+  // the same configReady signal as the sweep so dev fixture mode never reads
+  // the production endpoint; endpoint base derives from the push base by
+  // stripping '/push'. Fail-closed: every failure resolves unavailable and
+  // renders nothing.
+  useEffect(() => {
+    if (!metaEnabled || !configReady) return
+    let cancelled = false
+    void fetchSessionPushHealth({
+      endpointBase: pushEndpointBase?.replace(/\/+push\/?$/, ''),
+      fixtureSessionId: pushFixtureSessionId,
+      signal: getLogoutAbortSignal(),
+    }).then(result => {
+      if (!cancelled) setSessionHealth(result)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [metaEnabled, configReady, pushEndpointBase, pushFixtureSessionId])
+
   // A11y Focus Management: Move focus to the primary CTA or the status headline on transitions
   useEffect(() => {
     if (ctaRef.current) {
@@ -462,6 +486,18 @@ export function Notifications({
             className="text-label font-mono text-highlight uppercase tracking-label"
           >
             {copy.recoveryHint}
+          </p>
+        )}
+
+        {sessionHealth?.kind === 'health' && (
+          <p
+            data-testid="notifications-push-health"
+            title={getPushHealthCopy(sessionHealth.status).detail}
+            className={`text-label font-mono uppercase tracking-label ${
+              sessionHealth.status === 'ready' ? 'text-success' : 'text-highlight'
+            }`}
+          >
+            {getPushHealthCopy(sessionHealth.status).label}
           </p>
         )}
 

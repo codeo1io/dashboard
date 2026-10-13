@@ -901,3 +901,47 @@ describe('Operator — stream and status announcement hooks', () => {
     expect(noticeEl).toHaveClass('operator-stream-status')
   })
 })
+
+describe('Operator — launch drawer push trigger kinds (rm-980, contract 1.10.0)', () => {
+  let metaTag: HTMLMetaElement | null = null
+
+  const addMetaTag = () => {
+    metaTag = document.createElement('meta')
+    metaTag.setAttribute('name', 'push-enabled')
+    metaTag.setAttribute('content', 'true')
+    document.head.appendChild(metaTag)
+  }
+
+  const removeMetaTag = () => {
+    if (metaTag && metaTag.parentNode) metaTag.parentNode.removeChild(metaTag)
+    metaTag = null
+  }
+
+  afterEach(() => {
+    removeMetaTag()
+  })
+
+  it('enumerates the trigger kinds from the contract tuple when push is enabled', async () => {
+    addMetaTag()
+    const {act} = await import('react')
+    render(<Operator state="ready" />)
+    const triggerBtn = screen.getByTestId('launch-trigger-btn')
+    await act(async () => {
+      triggerBtn.click()
+    })
+    const line = screen.getByTestId('launch-push-trigger-kinds')
+    expect(line.textContent).toContain('pending approvals')
+    expect(line.textContent).toContain('pending questions')
+    expect(line.textContent).toContain('failed runs')
+  })
+
+  it('shows no trigger-kind line when the deployment has push disabled', async () => {
+    const {act} = await import('react')
+    render(<Operator state="ready" />)
+    const triggerBtn = screen.getByTestId('launch-trigger-btn')
+    await act(async () => {
+      triggerBtn.click()
+    })
+    expect(screen.queryByTestId('launch-push-trigger-kinds')).toBeNull()
+  })
+})

@@ -39,6 +39,16 @@ export interface VapidKeyResponse {
   readonly keyVersion: string
 }
 
+/**
+ * The closed set of events that produce an operator push notification
+ * (agent #1787 push trigger kinds). The kind crosses the wire as `data.type` on
+ * the push payload. The union is derived from the tuple so the two cannot
+ * drift. The web-side duplicate lives at web/src/push/push-types.ts
+ * (PUSH_TRIGGER_KINDS) and is pinned equal by the conformance suite.
+ */
+export const OPERATOR_PUSH_TRIGGER_KINDS = ['approval', 'question', 'run_failed'] as const
+export type OperatorPushTriggerKind = (typeof OPERATOR_PUSH_TRIGGER_KINDS)[number]
+
 function hasValidVapidKeyShape(value: unknown): value is VapidKeyResponse {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return false
