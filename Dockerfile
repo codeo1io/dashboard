@@ -18,7 +18,7 @@ ARG NODE_IMAGE=node:24-trixie-slim@sha256:173f125896c3087845bfb27465a0df4ea41952
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS builder
 
 # Enable corepack for pnpm
-RUN corepack enable && corepack prepare pnpm@11.28.3 --activate
+RUN corepack enable && corepack prepare pnpm@11.28.5 --activate
 
 WORKDIR /app
 
@@ -38,7 +38,7 @@ RUN pnpm build:web
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS prod-deps
 
 # Enable corepack for pnpm
-RUN corepack enable && corepack prepare pnpm@11.28.3 --activate
+RUN corepack enable && corepack prepare pnpm@11.28.5 --activate
 
 WORKDIR /app
 

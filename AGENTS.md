@@ -91,10 +91,14 @@ view of Fro Bot's cross-repo footprint.
   workflow now sets `branch-pr` for those triggers; verify delivery by confirming a
   fro-bot-authored PR exists, not by reading run status. See
   `docs/solutions/workflow-issues/workflow-output-mode-auto-discarded-agent-fixes-2026-08-31.md`.
-- The `Fro Bot` workflow on this fork is `disabled_manually` (verified 2026-09-19):
-  codeo1io/dashboard has no `FRO_BOT_PAT` secret, so the daily cron would fail on
-  every run. Re-enabling it without provisioning that secret resurrects the failing
-  cron — check `gh workflow list` state and secret presence before flipping it back on.
+- The `Fro Bot` workflow is `active` again (re-verified 2026-10-13) but the repo
+  still has no `FRO_BOT_PAT` secret, and repo-wide Actions execution has been
+  dark since 2026-10-09 (newest run 2026-10-09T01:59:31Z; `workflow_dispatch`
+  returns HTTP 422 "Actions has been disabled for this repository") — so no cron
+  runs at all. Before relying on it, re-check `gh api
+  repos/codeo1io/dashboard/actions/runs?per_page=1` and `gh api
+  repos/codeo1io/dashboard/actions/secrets`: once Actions returns, the cron
+  fails on every run without the secret.
 
 ## Cloned Dependency Source
 
