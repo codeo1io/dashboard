@@ -277,11 +277,18 @@ describe('compute-release-tag — default currentUtcMonth fallback', () => {
 // ---------------------------------------------------------------------------
 
 describe('compute-release-tag — git non-zero exit', () => {
-  it('exits nonzero and stderr contains "ERROR: git tag exited with status" when run outside a git repo', () => {
+  it('exits nonzero and stderr contains "ERROR: git tag failed with status" when run outside a git repo', () => {
     // A plain temp directory (not a git repo) causes `git tag -l` to exit nonzero.
+    // GIT_CEILING_DIRECTORIES stops git's upward discovery walk: on hosts whose
+    // TMPDIR lives inside a git repo (e.g. ~/.hermes/cache/scratch under the
+    // versioned ~/.hermes), the "non-git" temp dir would otherwise still resolve
+    // to that enclosing repo and git would exit 0 — the failure under test can
+    // never reproduce. Ceiling at the temp dir's parent makes the walk stop.
     const nonGitDir = mkdtempSync(join(tmpdir(), 'calver-nogit-'))
     try {
-      const {stderr, exitCode} = runScript(nonGitDir, '2026.07')
+      const {stderr, exitCode} = runScript(nonGitDir, '2026.07', {
+        GIT_CEILING_DIRECTORIES: tmpdir(),
+      })
       expect(exitCode).not.toBe(0)
       expect(stderr).toContain('ERROR: git tag failed with status')
     } finally {
