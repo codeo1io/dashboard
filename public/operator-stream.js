@@ -30,7 +30,7 @@
 // ---------------------------------------------------------------------------
 
 /** Contract version this client expects on the ready frame. */
-export const PINNED_CONTRACT_VERSION = '1.9.0'
+export const PINNED_CONTRACT_VERSION = '1.10.0'
 
 /** Base delay in milliseconds for exponential backoff. */
 export const RETRY_BASE_MS = 1000
@@ -583,6 +583,21 @@ function normalizeCrlf(text) {
   return text.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
 }
 
+// rm-477: append one decoded read() chunk to the stream buffer, holding a
+// trailing CR back so it cannot be normalized to LF before the next chunk
+// reveals whether it is half of a CRLF pair. Exported for the twin suite —
+// the server reader (src/gateway/operator-sse-reader.ts) carries the same
+// pending-CR logic inline and both are pinned by chunk-split regressions.
+export function appendStreamChunk(buffer, decoded) {
+  let text = buffer + decoded
+  let held = ''
+  if (text.endsWith('\r')) {
+    held = '\r'
+    text = text.slice(0, -1)
+  }
+  return normalizeCrlf(text) + held
+}
+
 // ---------------------------------------------------------------------------
 // Question frame parser
 //
@@ -700,7 +715,10 @@ export function parseSseFrame(record) {
   const normalized = normalizeCrlf(record)
   const lines = normalized.split('\n')
   let eventName
-  let dataLine
+  // rm-854: WHATWG SSE 9.2.6 — multiple data lines in one record join with a
+  // newline (last-wins would silently truncate a sender that splits the record
+  // at a JSON token boundary). Single-line records parse byte-identically.
+  const dataLines = []
 
   for (const line of lines) {
     if (line.startsWith(':')) {
@@ -710,9 +728,10 @@ export function parseSseFrame(record) {
     if (line.startsWith('event:')) {
       eventName = line.slice('event:'.length).trim()
     } else if (line.startsWith('data:')) {
-      dataLine = line.slice('data:'.length).trim()
+      dataLines.push(line.slice('data:'.length).trim())
     }
   }
+  const dataLine = dataLines.length > 0 ? dataLines.join('\n') : undefined
 
   // Comment-only record (heartbeat) — produce no frame
   if (eventName === undefined && dataLine === undefined) {
@@ -1222,6 +1241,22 @@ export function nextStreamState(current, event) {
       const prevCoalesced = prev?.outputCoalesced ?? false
       const coalesced = prevCoalesced || (typeof droppedCount === 'number' && droppedCount > 0)
 
+      // rm-853 — client-side gap detection: a non-final delta that skips seq values
+      // means frames never reached the reducer (parse drops, transport truncation).
+      // Latch the signal and accumulate the missing-frame count; never echo the
+      // count — the UI renders a fixed-label notice. A first-seen delta (prevSeq
+      // -1) never counts: seq may legitimately start above 0. final frames never
+      // count: they replace the text authoritatively. Duplicate/stale seqs never
+      // raise a false gap.
+      const prevGapDetected = prev?.outputGapDetected ?? false
+      const prevGapMissing = prev?.outputGapMissing ?? 0
+      let gapDetected = prevGapDetected
+      let gapMissing = prevGapMissing
+      if (!final && prevSeq >= 0 && seq > prevSeq + 1) {
+        gapDetected = true
+        gapMissing += seq - (prevSeq + 1)
+      }
+
       let nextText = prevText
       let nextSeq = prevSeq
       if (final) {
@@ -1256,6 +1291,8 @@ export function nextStreamState(current, event) {
         outputFinal: final ? true : (prev?.outputFinal ?? false),
         outputCoalesced: coalesced,
         outputTruncated: truncated,
+        outputGapDetected: gapDetected,
+        outputGapMissing: gapMissing,
       }
       // An output frame proves the snapshot is not missing: clear the mark and any unavailable state.
       delete nextOutputEntry.outputUnavailable
@@ -1839,17 +1876,21 @@ export function hasOpenQuestions(runEntry) {
 
 /**
  * The status to render for a run: the wire status adjusted by what the browser knows about
- * open questions. Computed at render and NEVER stored — the next `running` frame would
- * overwrite a stored derived value.
+ * open approval prompts and open questions. Computed at render and NEVER stored — the next
+ * `running` frame would overwrite a stored derived value. Precedence is terminal, then
+ * approval, then question.
  *
  *   1. Terminal wins.
- *   2. Wire `waiting_for_approval` stays (the gateway lets approval win over questions).
- *   3. A `running` run with any open question is `waiting_for_question`.
- *   4. A wire `waiting_for_question` with an open question stays; with none, once a question
+ *   2. Wire `waiting_for_approval` stays.
+ *   3. A `running` or `waiting_for_question` run with any open approval prompt is
+ *      `waiting_for_approval`. The gateway does not re-send status when an approval opens, so
+ *      the wire value alone cannot show it.
+ *   4. A `running` run with any open question is `waiting_for_question`.
+ *   5. A wire `waiting_for_question` with an open question stays; with none, once a question
  *      reconcile has completed in the current connection cycle, it is really `running`. (Before
  *      that, a missed settle frame cannot be told from a question the list has not yet shown, so
  *      the wire value is kept.)
- *   5. Anything else is the wire value (so `queued` and `blocked` stay put).
+ *   6. Anything else is the wire value (so `queued` and `blocked` stay put).
  *
  * @param {object|undefined|null} runEntry - A RunEntry from the stream state's runs map.
  * @returns {string} The status value to label and style; '' when there is no entry.
@@ -1859,6 +1900,9 @@ export function getEffectiveStatus(runEntry) {
   const wire = runEntry.status
   if (runEntry.terminal === true) return wire
   if (wire === 'waiting_for_approval') return wire
+  if ((wire === 'running' || wire === 'waiting_for_question') && hasOpenApprovals(runEntry)) {
+    return 'waiting_for_approval'
+  }
   if (wire === 'running') return hasOpenQuestions(runEntry) ? 'waiting_for_question' : wire
   if (wire === 'waiting_for_question') {
     if (hasOpenQuestions(runEntry)) return wire
@@ -1967,6 +2011,14 @@ async function refreshCsrf(endpointBase, fixtureSessionId, timeoutMs) {
  * @param {string} [opts.fixtureSessionId] - Fixture session ID (fixture mode only).
  * @returns {object} An object with refreshCsrf(), decideRunApproval(), and listRunApprovals() methods.
  */
+/**
+ * Fork hardening (rm-594, kept per #16393): bound every approval-client fetch —
+ * CSRF fetch, decision POST, list — with its own timeout signal, exactly as the
+ * question client above is bounded by QUESTION_FETCH_TIMEOUT_MS. An unbounded
+ * approval fetch otherwise pins a decision or a list poll open forever.
+ */
+export const APPROVAL_FETCH_TIMEOUT_MS = 10_000
+
 export function buildApprovalClient(opts) {
   const endpointBase = opts?.endpointBase ?? '/operator'
   const fixtureSessionId = opts?.fixtureSessionId
@@ -2106,15 +2158,6 @@ export const QUESTION_CLAIM_RECHECK_DELAYS_MS = Object.freeze([2000, 5000, 10_00
  * from the cancel client's bound because the recovery differs, though the value is the same.
  */
 export const QUESTION_FETCH_TIMEOUT_MS = 10_000
-
-/**
- * Fork hardening (rm-594, kept per #16393): bound every approval-client fetch —
- * CSRF fetch, decision POST, list — with its own timeout signal, exactly as the
- * question and cancel clients above/below are bounded by their constants.
- * Upstream's 2026.10.18 extraction left the approval client unbounded; a hung
- * approval fetch otherwise pins a decision or a list poll open forever.
- */
-export const APPROVAL_FETCH_TIMEOUT_MS = 10_000
 
 /** One pending-list entry `{requestID, questions}` (no per-item runId), or null when invalid. */
 function parsePendingQuestionEntry(value) {
@@ -2352,7 +2395,7 @@ export function buildQuestionClient(opts) {
  *
  * Does NOT log the raw ID value — callers must use the error code only.
  */
-function validateDynamicId(id) {
+export function validateDynamicId(id) {
   if (id.trim() === '') return false
   if (id.includes('/') || id.includes('\\')) return false
   if (/%(?:2f|5c)/i.test(id)) return false
@@ -3305,7 +3348,7 @@ function makeQuestionNoteCard(status) {
  * - Read-only: GET only for stream; approval decisions are operator-forwarded writes.
  */
 export function initOperatorStream(opts) {
-  const {runId, statusEl, noticeEl, outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, checkoutEl, cancelEl, questionsEl, approvalClient: injectedApprovalClient, cancelClient: injectedCancelClient, questionClient: injectedQuestionClient, endpointBase, fixtureSessionId} = opts
+  const {runId, statusEl, noticeEl, outputEl, coalescedEl, gapEl, approvalsEl, badgeEl, reasonEl, checkoutEl, cancelEl, questionsEl, approvalClient: injectedApprovalClient, cancelClient: injectedCancelClient, questionClient: injectedQuestionClient, endpointBase, fixtureSessionId} = opts
 
   // The run-list summary status for this run, when the caller has one. Only a known summary status
   // is kept; it lets a no-snapshot reset close an expired terminal run without a status frame.
@@ -3322,6 +3365,18 @@ export function initOperatorStream(opts) {
     questionsEl.textContent = ''
     questionsEl.classList?.add('question-region')
     questionsEl.hidden = true
+  }
+
+  // The approval and cancel regions belong to the card and outlive any one stream attachment, so
+  // each attachment starts them empty: a re-expanded card never stacks a second prompt or Cancel
+  // control on top of the previous attachment's.
+  if (approvalsEl !== undefined && approvalsEl !== null) {
+    approvalsEl.textContent = ''
+    approvalsEl.hidden = true
+  }
+  if (cancelEl !== undefined && cancelEl !== null) {
+    cancelEl.textContent = ''
+    cancelEl.hidden = true
   }
 
   // Build the approval client lazily (only if approvalsEl is present).
@@ -3731,7 +3786,7 @@ export function initOperatorStream(opts) {
     if (statusEl) {
       const runEntry = state.runs[runId]
       if (runEntry && (state.connection === 'live' || runEntry.terminal)) {
-        // The effective status folds open questions into the wire status; it is derived here
+        // The effective status folds open approvals and questions into the wire status; it is derived here
         // on every render and never stored.
         const effectiveStatus = getEffectiveStatus(runEntry)
         // Render label from local map, never the raw wire string into textContent
@@ -3831,6 +3886,12 @@ export function initOperatorStream(opts) {
         // Show the fixed hint when output was coalesced or truncated — never an echoed count.
         const flagged = runEntry?.outputCoalesced === true || runEntry?.outputTruncated === true
         coalescedEl.hidden = !flagged
+      }
+      if (gapEl) {
+        // rm-853 — client-side gap signal: frames were skipped before the reducer
+        // (parse drops or transport truncation). Fixed label, never an echoed count.
+        gapEl.textContent = 'Some streamed frames were dropped; intermediate output may be missing.'
+        gapEl.hidden = runEntry?.outputGapDetected !== true
       }
     }
 
@@ -4459,6 +4520,12 @@ export function initOperatorStream(opts) {
     firstFrameTimer = setTimeout(() => {
       firstFrameTimer = null
       dispatch({type: 'first-frame-timeout'})
+      // A stalled stream means the pending read may never settle — abort so the
+      // reader and socket release instead of stranding (rm-261). The read loop's
+      // catch swallows abort-caused rejections, so no phantom close is dispatched.
+      if (state.connection === 'submitted-unobservable') {
+        connectionController.abort()
+      }
     }, FIRST_FRAME_TIMEOUT_MS)
 
     // Build the stream URL — runId is used only here, never logged.
@@ -4480,16 +4547,21 @@ export function initOperatorStream(opts) {
         if (response.status === 404) {
           clearFirstFrameTimer()
           dispatch({type: 'http-status', code: 404})
+          // The response body is never read on this path — abort so the socket
+          // releases instead of stranding until GC (rm-261).
+          connectionController.abort()
           return
         }
         if (response.status === 429) {
           clearFirstFrameTimer()
           dispatch({type: 'http-status', code: 429})
+          connectionController.abort() // unread body — release the socket (rm-261)
           return
         }
         if (response.status !== 200) {
           clearFirstFrameTimer()
           dispatch({type: 'network-error'})
+          connectionController.abort() // unread body — release the socket (rm-261)
           scheduleReconnect()
           return
         }
@@ -4498,11 +4570,13 @@ export function initOperatorStream(opts) {
         if (!contentType.startsWith('text/event-stream')) {
           clearFirstFrameTimer()
           dispatch({type: 'network-error'})
+          connectionController.abort() // unread body — release the socket (rm-261)
           return
         }
         if (!response.body) {
           clearFirstFrameTimer()
           dispatch({type: 'network-error'})
+          connectionController.abort() // release the socket (rm-261)
           scheduleReconnect()
           return
         }
@@ -4535,8 +4609,11 @@ export function initOperatorStream(opts) {
               }
 
               if (value) {
-                // Normalize CRLF on each appended chunk
-                buffer += normalizeCrlf(decoder.decode(value, {stream: true}))
+                // rm-477: hold a trailing CR back — normalizing it to LF now
+                // would terminate its line early, so the LF opening the next
+                // chunk would forge a phantom record boundary and silently
+                // drop the frame. The held CR normalizes with the next chunk.
+                buffer = appendStreamChunk(buffer, decoder.decode(value, {stream: true}))
               }
 
               // Hard buffer cap — abort the reader and fail closed terminally
@@ -4643,7 +4720,10 @@ export function initOperatorStream(opts) {
       // in-flight cancel attempt can never fire/mutate after close().
       if (cancelControl !== null) {
         cancelControl.dispose()
+        // A disposed control can no longer cancel; remove it rather than leave an inert button.
+        cancelControl.el.remove()
       }
+      if (cancelEl !== undefined && cancelEl !== null) cancelEl.hidden = true
       state = nextStreamState(state, {type: 'stream-closed'})
     },
   }
@@ -4691,10 +4771,11 @@ export function bootstrapOperatorStreams(opts) {
     const statusEl = card.querySelector('[data-role="run-status"]')
     const outputEl = card.querySelector('[data-role="run-output"]')
     const coalescedEl = card.querySelector('[data-role="run-output-coalesced"]')
+    const gapEl = card.querySelector('[data-role="run-output-gap"]')
     // Discover the approval region and badge elements
     const approvalsEl = card.querySelector('[data-role="run-approvals"]')
     const badgeEl = card.querySelector('[data-role="approval-badge"]')
-    handles.push(initOperatorStream({runId, statusEl, noticeEl, outputEl, coalescedEl, approvalsEl, badgeEl, endpointBase, fixtureSessionId}))
+    handles.push(initOperatorStream({runId, statusEl, noticeEl, outputEl, coalescedEl, gapEl, approvalsEl, badgeEl, endpointBase, fixtureSessionId}))
   }
 
   _bootstrapHandles = handles

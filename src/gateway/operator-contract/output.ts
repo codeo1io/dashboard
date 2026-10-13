@@ -3,6 +3,9 @@
  *
  * Vendored from fro-bot/agent
  * packages/gateway/src/operator-contract/output.ts.
+ * Distinct assistant text parts/messages arrive already separated by a blank line (`\n\n`), inserted once by the
+ * producer (`execute/run-core.ts`), so concatenating delta `text` yields the same string as the terminal frame.
+ * Clients must concatenate deltas verbatim and must not add their own separators.
  *
  * Delivered as `event: output` on GET /operator/runs/:runId/stream, emitted
  * BEFORE the terminal `status` frame.

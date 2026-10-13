@@ -785,6 +785,33 @@ describe('parseOperatorSessionInfo', () => {
     expect(result.success).toBe(true)
   })
 
+  it('accepts a valid optional push health and preserves it', () => {
+    const input = {operatorId: 42, login: 'octocat', expiresAt: 4070908800000, push: {status: 'ready'}}
+    const result = parseOperatorSessionInfo(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.push).toEqual({status: 'ready'})
+    }
+  })
+
+  it('drops a malformed optional push health instead of rejecting the session', () => {
+    const input = {operatorId: 42, login: 'octocat', expiresAt: 4070908800000, push: {status: 'flying'}}
+    const result = parseOperatorSessionInfo(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.push).toBeUndefined()
+    }
+  })
+
+  it('keeps the session push-less when the gateway omits push entirely', () => {
+    const input = {operatorId: 42, login: 'octocat', expiresAt: 4070908800000}
+    const result = parseOperatorSessionInfo(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect('push' in result.data).toBe(false)
+    }
+  })
+
   it('rejects string expiresAt (canonical type is number)', () => {
     const input = {operatorId: 42, login: 'octocat', expiresAt: '2099-01-01T00:00:00Z'}
     const result = parseOperatorSessionInfo(input)
