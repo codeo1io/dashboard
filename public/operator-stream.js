@@ -1967,6 +1967,15 @@ async function refreshCsrf(endpointBase, fixtureSessionId, timeoutMs) {
  * @param {string} [opts.fixtureSessionId] - Fixture session ID (fixture mode only).
  * @returns {object} An object with refreshCsrf(), decideRunApproval(), and listRunApprovals() methods.
  */
+/**
+ * Fork hardening (rm-594, kept per #16393): bound every approval-client fetch —
+ * CSRF fetch, decision POST, list — with its own timeout signal, exactly as the
+ * question and cancel clients below are bounded by their constants.
+ * Upstream's 2026.10.18 extraction left the approval client unbounded; a hung
+ * approval fetch otherwise pins a decision or a list poll open forever.
+ */
+export const APPROVAL_FETCH_TIMEOUT_MS = 10_000
+
 export function buildApprovalClient(opts) {
   const endpointBase = opts?.endpointBase ?? '/operator'
   const fixtureSessionId = opts?.fixtureSessionId
@@ -2106,15 +2115,6 @@ export const QUESTION_CLAIM_RECHECK_DELAYS_MS = Object.freeze([2000, 5000, 10_00
  * from the cancel client's bound because the recovery differs, though the value is the same.
  */
 export const QUESTION_FETCH_TIMEOUT_MS = 10_000
-
-/**
- * Fork hardening (rm-594, kept per #16393): bound every approval-client fetch —
- * CSRF fetch, decision POST, list — with its own timeout signal, exactly as the
- * question and cancel clients above/below are bounded by their constants.
- * Upstream's 2026.10.18 extraction left the approval client unbounded; a hung
- * approval fetch otherwise pins a decision or a list poll open forever.
- */
-export const APPROVAL_FETCH_TIMEOUT_MS = 10_000
 
 /** One pending-list entry `{requestID, questions}` (no per-item runId), or null when invalid. */
 function parsePendingQuestionEntry(value) {
@@ -2352,7 +2352,7 @@ export function buildQuestionClient(opts) {
  *
  * Does NOT log the raw ID value — callers must use the error code only.
  */
-function validateDynamicId(id) {
+export function validateDynamicId(id) {
   if (id.trim() === '') return false
   if (id.includes('/') || id.includes('\\')) return false
   if (/%(?:2f|5c)/i.test(id)) return false

@@ -11,11 +11,80 @@
  */
 import type {GitHubOAuthClient} from '../src/auth/oauth.ts'
 import {Buffer} from 'node:buffer'
+import {existsSync, readdirSync, statSync} from 'node:fs'
+import {join, resolve} from 'node:path'
 import process from 'node:process'
 import {afterEach, describe, expect, it} from 'vitest'
 import {PINNED_CONTRACT_VERSION} from '../public/operator-stream.js'
 import {OPERATOR_CONTRACT_VERSION} from '../src/gateway/operator-contract/version.ts'
 import {FIXTURE_QUESTION_SCENARIO_ROWS} from '../src/gateway/operator-fixture-sse.ts'
+// ---------------------------------------------------------------------------
+// CSP header tests
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Static asset serving tests
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// /operator → / redirect
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Flag-off: static route not mounted
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Operator runtime JS assets — always served regardless of operatorUiEnabled
+//
+// Root / now owns the operator shell. The browser-side runtime modules
+// (operator-stream.js, operator-launch.js) must be served unconditionally
+// because the SPA shell at / always depends on them — the old operatorUiEnabled
+// flag-gate was for the SSR /operator route, not the root app.
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// PWA SW asset serving — /sw.js
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// PWA SW asset serving — /registerSW.js
+// ---------------------------------------------------------------------------
+// NOTE: vite-plugin-pwa only emits registerSW.js when using auto-register mode.
+// Since the app uses useRegisterSW() in a component (ReloadPrompt), the
+// registration code is bundled into the main JS chunk and registerSW.js is NOT
+// emitted. The route remains in isPublicPath for forward-compatibility.
+// ---------------------------------------------------------------------------
+// PWA manifest serving — /manifest.webmanifest
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Auth boundary: SW assets are public but protected routes are still gated
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Production build artifact assertions — web/dist must be fixture-free
+//
+// These tests scan the compiled browser bundle and service-worker output after
+// `pnpm build:web`. Fixture imports are dev-gated so Vite removes the module
+// request strings from production output. The pretest hook runs build:web before
+// vitest, so web/dist is always fresh when these tests run.
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Service worker cache boundary — fixture routes are not intercepted
+//
+// The SW uses a deny-by-default NavigationRoute with an explicit denylist.
+// /__fixture/* paths are not in the SW route table, so they naturally pass
+// through to the server. These tests prove the SW source does not add fixture
+// route handling and does not precache or runtime-cache fixture paths.
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// DASHBOARD_WEB_DIST static root override
+//
+// The server must read DASHBOARD_WEB_DIST (defaulting to ./web/dist) and use it
+// for all SPA static asset routes: /, /assets/*, /icon-*, /manifest.webmanifest,
+// /sw.js, /registerSW.js, and the missing-index warning.
+//
+// Tests here verify:
+// 1. Default root is ./web/dist (production unchanged).
+// 2. DASHBOARD_WEB_DIST env var is forwarded to the app config.
+// 3. package.json dev:fixture script sets DASHBOARD_WEB_DIST=./web/dist-fixture.
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// CSP invariant: existing worker-src/manifest-src 'self' already covers SW+manifest
+// ---------------------------------------------------------------------------
 import {buildDashboardApp} from '../src/server.ts'
 import {SessionManager} from '../src/session.ts'
 
@@ -47,7 +116,7 @@ async function buildTestApp(operatorUiEnabled: boolean) {
     cookieKey: TEST_KEY,
     oauthClient: makeFakeOAuthClient(),
     fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null, enumerationIncomplete: 0, refreshDurationMs: null, refreshDegraded: false}),
     operatorUiEnabled,
   })
 }
@@ -56,106 +125,6 @@ async function authedGet(app: Awaited<ReturnType<typeof buildTestApp>>, path: st
   const cookie = makeSessionCookie()
   return app.request(path, {headers: {cookie: `session=${cookie}`}})
 }
-
-// ---------------------------------------------------------------------------
-// CSP header tests
-// ---------------------------------------------------------------------------
-
-
-// ---------------------------------------------------------------------------
-// Static asset serving tests
-// ---------------------------------------------------------------------------
-
-
-// ---------------------------------------------------------------------------
-// /operator → / redirect
-// ---------------------------------------------------------------------------
-
-
-// ---------------------------------------------------------------------------
-// Flag-off: static route not mounted
-// ---------------------------------------------------------------------------
-
-
-// ---------------------------------------------------------------------------
-// Operator runtime JS assets — always served regardless of operatorUiEnabled
-//
-// Root / now owns the operator shell. The browser-side runtime modules
-// (operator-stream.js, operator-launch.js) must be served unconditionally
-// because the SPA shell at / always depends on them — the old operatorUiEnabled
-// flag-gate was for the SSR /operator route, not the root app.
-// ---------------------------------------------------------------------------
-
-
-// ---------------------------------------------------------------------------
-// PWA SW asset serving — /sw.js
-// ---------------------------------------------------------------------------
-
-
-// ---------------------------------------------------------------------------
-// PWA SW asset serving — /registerSW.js
-// ---------------------------------------------------------------------------
-// NOTE: vite-plugin-pwa only emits registerSW.js when using auto-register mode.
-// Since the app uses useRegisterSW() in a component (ReloadPrompt), the
-// registration code is bundled into the main JS chunk and registerSW.js is NOT
-// emitted. The route remains in isPublicPath for forward-compatibility.
-
-
-// ---------------------------------------------------------------------------
-// PWA manifest serving — /manifest.webmanifest
-// ---------------------------------------------------------------------------
-
-
-// ---------------------------------------------------------------------------
-// Auth boundary: SW assets are public but protected routes are still gated
-// ---------------------------------------------------------------------------
-
-
-
-// ---------------------------------------------------------------------------
-// Production build artifact assertions — web/dist must be fixture-free
-//
-// These tests scan the compiled browser bundle and service-worker output after
-// `pnpm build:web`. Fixture imports are dev-gated so Vite removes the module
-// request strings from production output. The pretest hook runs build:web before
-// vitest, so web/dist is always fresh when these tests run.
-// ---------------------------------------------------------------------------
-
-
-// ---------------------------------------------------------------------------
-// Service worker cache boundary — fixture routes are not intercepted
-//
-// The SW uses a deny-by-default NavigationRoute with an explicit denylist.
-// /__fixture/* paths are not in the SW route table, so they naturally pass
-// through to the server. These tests prove the SW source does not add fixture
-// route handling and does not precache or runtime-cache fixture paths.
-// ---------------------------------------------------------------------------
-
-
-// ---------------------------------------------------------------------------
-// DASHBOARD_WEB_DIST static root override
-//
-// The server must read DASHBOARD_WEB_DIST (defaulting to ./web/dist) and use it
-// for all SPA static asset routes: /, /assets/*, /icon-*, /manifest.webmanifest,
-// /sw.js, /registerSW.js, and the missing-index warning.
-//
-// Tests here verify:
-// 1. Default root is ./web/dist (production unchanged).
-// 2. DASHBOARD_WEB_DIST env var is forwarded to the app config.
-// 3. package.json dev:fixture script sets DASHBOARD_WEB_DIST=./web/dist-fixture.
-// ---------------------------------------------------------------------------
-
-
-
-
-// ---------------------------------------------------------------------------
-// CSP invariant: existing worker-src/manifest-src 'self' already covers SW+manifest
-// ---------------------------------------------------------------------------
-
-
-
-import {existsSync, readdirSync, statSync} from 'node:fs'
-import {join, resolve} from 'node:path'
 const DENIED_PERMISSIONS = 'accelerometer=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()'
 
 describe('security headers — CSP', () => {
@@ -721,7 +690,7 @@ describe('DASHBOARD_WEB_DIST — static root override', () => {
       cookieKey: TEST_KEY,
       oauthClient: makeFakeOAuthClient(),
       fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null, enumerationIncomplete: 0, refreshDurationMs: null, refreshDegraded: false}),
     })
     // /sw.js is served from web/dist — 200 confirms the default root is correct
     const res = await app.request('/sw.js')
@@ -739,7 +708,7 @@ describe('DASHBOARD_WEB_DIST — static root override', () => {
       cookieKey: TEST_KEY,
       oauthClient: makeFakeOAuthClient(),
       fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null, enumerationIncomplete: 0, refreshDurationMs: null, refreshDegraded: false}),
       webDistRoot: './web/dist-fixture',
     })
     const res = await app.request('/sw.js')
@@ -753,7 +722,7 @@ describe('DASHBOARD_WEB_DIST — static root override', () => {
       cookieKey: TEST_KEY,
       oauthClient: makeFakeOAuthClient(),
       fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+      getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null, enumerationIncomplete: 0, refreshDurationMs: null, refreshDegraded: false}),
       // No webDistRoot injected — reads from env
     })
     const res = await app.request('/sw.js')
@@ -772,7 +741,7 @@ describe('DASHBOARD_WEB_DIST — production guard: dist-fixture must not be used
           cookieKey: TEST_KEY,
           oauthClient: makeFakeOAuthClient(),
           fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-          getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+          getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null, enumerationIncomplete: 0, refreshDurationMs: null, refreshDegraded: false}),
           webDistRoot: './web/dist-fixture',
         }),
       ).rejects.toThrow(/dist-fixture.*production|production.*dist-fixture/i)
@@ -791,7 +760,7 @@ describe('DASHBOARD_WEB_DIST — production guard: dist-fixture must not be used
           cookieKey: TEST_KEY,
           oauthClient: makeFakeOAuthClient(),
           fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-          getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+          getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null, enumerationIncomplete: 0, refreshDurationMs: null, refreshDegraded: false}),
           webDistRoot: './web/dist-fixture',
         }),
       ).resolves.toBeDefined()
@@ -810,7 +779,7 @@ describe('DASHBOARD_WEB_DIST — production guard: dist-fixture must not be used
           cookieKey: TEST_KEY,
           oauthClient: makeFakeOAuthClient(),
           fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-          getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
+          getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null, enumerationIncomplete: 0, refreshDurationMs: null, refreshDegraded: false}),
           webDistRoot: './web/dist',
         }),
       ).resolves.toBeDefined()
@@ -1165,4 +1134,3 @@ describe('rm-498 — % rejection compatibility (allowPercentInPath stays unset)'
     expect(offenders).toEqual([])
   })
 })
-

@@ -95,7 +95,7 @@ The gateway's question bridge (fro-bot/agent#1749, first released in `v0.119.0`)
 {
   "schema_version": 2,
   "verdict": "extend",
-  "scope": "dashboard repo: public/, src/gateway/, src/routes/operator-fixture-harness.ts, web/src/{operator,push,sw.ts}, test/operator-*; wiki-writer/src grep-only",
+  "scope": "dashboard repo: public/, src/gateway/, src/routes/operator-fixture-harness.ts, web/src/{operator,push,sw.ts}, test/operator-*; wiki-editing/src grep-only",
   "freshness": {
     "vcs_reference": "6634bc3538117c8fe8c58d2d7c2d14a005be5953"
   },
@@ -153,10 +153,10 @@ The gateway's question bridge (fro-bot/agent#1749, first released in `v0.119.0`)
       "insufficiency_reason": "Owns run cancellation, not prompt open/settle/list; its retry pattern is reusable but its state machine is not."
     },
     {
-      "path_or_symbol": "wiki-writer/src",
+      "path_or_symbol": "wiki-editing/src",
       "description": "Separate write-side service; grep found no prompt, settle, or tombstone vocabulary.",
       "disposition": "insufficient",
-      "insufficiency_reason": "Owns wiki writes, not browser prompts."
+      "insufficiency_reason": "Owns wiki-side edits, not browser prompts."
     }
   ]
 }
