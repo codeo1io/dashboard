@@ -789,7 +789,6 @@
   white-space: normal;
 }
 
-[data-role="run-output-coalesced"] {
 [data-role="run-output-coalesced"],
 [data-role="run-output-gap"] {
   display: inline-block;
