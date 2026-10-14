@@ -64,6 +64,7 @@ import {buildListenerRouter} from './routes/listener.ts'
 import {readOptionalMultilineSecret, readOptionalSecret} from './secrets.ts'
 import {loadCookieKey, SessionManager} from './session.ts'
 import {installShutdownHandlers} from './shutdown.ts'
+import {createPublicStatic} from './static-files.ts'
 
 /**
  * rm-172: cache TTL for the injected SPA shell served at '/'. The shell is read
@@ -1196,20 +1197,25 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       c.res = new Response(null, {status: 304, headers: c.res.headers})
     }
   }
+  // /static files are un-hashed and not precached, so without this a browser can heuristically reuse a
+  // stale module next to a fresh bundle after a deploy. Registered before every /static mount below.
+  const publicStatic = createPublicStatic('./public')
+  app.use('/static/*', publicStatic.revalidate)
+
   app.use(
     '/static/operator-stream.js',
     operatorRuntimeCaching,
-    serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}),
+    publicStatic.serve,
   )
   app.use(
     '/static/operator-launch.js',
     operatorRuntimeCaching,
-    serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}),
+    publicStatic.serve,
   )
   app.use(
     '/static/operator-run-index.js',
     operatorRuntimeCaching,
-    serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}),
+    publicStatic.serve,
   )
 
   // ── Operator UI skeleton route ────────────────────────────────────────────────
@@ -1223,7 +1229,7 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     // /static/ is in isPublicPath so unauthenticated browsers can load assets.
     // Note: operator-stream.js and operator-launch.js are already mounted above;
     // this catch-all additionally serves operator.css and any other static assets.
-    app.use('/static/*', serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}))
+    app.use('/static/*', publicStatic.serve)
   }
 
   // ── Fixture harness routes (DEV-ONLY) ─────────────────────────────────────
