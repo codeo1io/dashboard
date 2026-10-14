@@ -125,6 +125,13 @@ export const FIXTURE_SCENARIO_NAMES = {
   expired_completed_silent: 'expired_completed_silent',
   /** ready → reset no-snapshot → running status → output; the stream stays open. */
   running_after_no_snapshot: 'running_after_no_snapshot',
+
+  // -- Waiting-overlay runs (rm-1016, gateway contract 1.11.0, agent #1825): the
+  // -- run-list summary and the live stream both speak the waiting statuses. --
+  /** ready(1.11.0) → waiting_for_question status → output; held open. */
+  waiting_for_question_summary: 'waiting_for_question_summary',
+  /** ready(1.11.0) → running status → open approval → output; held open. */
+  waiting_for_approval_summary: 'waiting_for_approval_summary',
 } as const
 
 /** Union of all canonical scenario name values. */
@@ -171,6 +178,8 @@ export type QuestionScenarioName =
   | 'expired_completed_terminal_frame'
   | 'expired_completed_silent'
   | 'running_after_no_snapshot'
+  | 'waiting_for_question_summary'
+  | 'waiting_for_approval_summary'
 
 const FIXTURE_RUN_ID_MALFORMED = 'run-fixture-malformed-001'
 
@@ -183,6 +192,14 @@ export const FIXTURE_RUN_ID_FOR_TESTS = 'run-fixture-test-001'
 
 /** Unsupported contract version for the drift scenario — explicitly not the pinned version. */
 const FIXTURE_DRIFT_CONTRACT_VERSION = '0.0.0-fixture-drift'
+
+/**
+ * Contract version spoken by the gateway contract 1.11.0 waiting-summary scenarios
+ * (rm-1016): the recent-runs index itself can now carry waiting_for_question /
+ * waiting_for_approval, and a forward gateway announces 1.11.0 on its ready frame.
+ * Both parsers must accept the version and the statuses in the same pass.
+ */
+const FIXTURE_WAITING_CONTRACT_VERSION = '1.11.0'
 
 /**
  * Known/unknown reason codes for reason-bearing scenarios — shared with the
@@ -858,7 +875,7 @@ export interface FixtureQuestionScript {
 
 interface QuestionScenarioSpec {
   /** Status the recent-runs row shows before the stream is opened (the card's summary status). */
-  readonly summaryStatus: 'running' | 'succeeded'
+  readonly summaryStatus: 'running' | 'succeeded' | 'waiting_for_question' | 'waiting_for_approval'
   /** The stream ends open, as the gateway's does for a run that is not finished. */
   readonly holdOpen: boolean
   readonly script: FixtureQuestionScript
@@ -981,12 +998,40 @@ const QUESTION_SCENARIO_SPECS: Readonly<Record<QuestionScenarioName, QuestionSce
       statusFrame(runId, 'running', 'EXECUTING', QUESTION_STARTED_AT) +
       outputFrame(runId, '[Fixture output — synthetic run result after the snapshot reset]', false, 0),
   },
+
+  // -- Gateway contract 1.11.0 (agent #1825): waiting statuses arrive via the run-list
+  //    summary and the live stream alike; the scenarios speak 1.11.0 on the ready frame
+  //    so the version ladder and the waiting statuses are proven in one pass. --
+  waiting_for_question_summary: {
+    // The index already knows the run is waiting; the stream confirms it. Both
+    // parsers must render exactly one Waiting-for-answer state from either source.
+    summaryStatus: 'waiting_for_question',
+    holdOpen: true,
+    script: {openRequests: []},
+    build: runId =>
+      readyFrame(FIXTURE_WAITING_CONTRACT_VERSION) +
+      statusFrame(runId, 'waiting_for_question', 'EXECUTING', QUESTION_STARTED_AT) +
+      outputFrame(runId, '[Fixture output — synthetic progress while the run waits for an answer]', false, 0),
+  },
+  waiting_for_approval_summary: {
+    // The index row says waiting_for_approval while the wire status is still running;
+    // the open approval frame is what makes the fold — index and stream agree on
+    // Waiting for approval without either source duplicating the state.
+    summaryStatus: 'waiting_for_approval',
+    holdOpen: true,
+    script: {openRequests: []},
+    build: runId =>
+      readyFrame(FIXTURE_WAITING_CONTRACT_VERSION) +
+      statusFrame(runId, 'running', 'EXECUTING', QUESTION_STARTED_AT) +
+      approvalOpenFrame(runId, 'req-fixture-approval-waiting', 'shell', 'echo fixture-waiting') +
+      outputFrame(runId, '[Fixture output — synthetic progress while the run waits for an approval]', false, 0),
+  },
 }
 
 /** Rows for the recent-runs list: one per question or expired-snapshot scenario. Order follows FIXTURE_SCENARIO_NAMES. */
 export const FIXTURE_QUESTION_SCENARIO_ROWS: readonly {
   readonly scenario: QuestionScenarioName
-  readonly summaryStatus: 'running' | 'succeeded'
+  readonly summaryStatus: 'running' | 'succeeded' | 'waiting_for_question' | 'waiting_for_approval'
 }[] = (Object.keys(QUESTION_SCENARIO_SPECS) as QuestionScenarioName[]).map(scenario => ({
   scenario,
   summaryStatus: QUESTION_SCENARIO_SPECS[scenario].summaryStatus,

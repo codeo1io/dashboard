@@ -44,6 +44,8 @@ const QUESTION_FIXTURE_SCENARIOS: readonly {readonly value: string; readonly lab
       {value: 'expired_completed_terminal_frame', label: 'Expired run: terminal frame after reset'},
       {value: 'expired_completed_silent', label: 'Expired run: silent after reset'},
       {value: 'running_after_no_snapshot', label: 'Running run after reset'},
+      {value: 'waiting_for_question_summary', label: 'Waiting for answer (summary + stream)'},
+      {value: 'waiting_for_approval_summary', label: 'Waiting for approval (summary + stream)'},
     ]
   : []
 

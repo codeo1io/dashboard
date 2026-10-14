@@ -24,10 +24,12 @@ import type {
   OperatorCsrfToken,
   OperatorError,
   OperatorOk,
+  OperatorPushHealth,
   OperatorSessionInfo,
 } from './responses.ts'
 
 import {err, ok} from '../../result.ts'
+import {OPERATOR_PUSH_HEALTH_STATUSES} from './responses.ts'
 
 // ---------------------------------------------------------------------------
 // OperatorSessionInfo
@@ -54,13 +56,37 @@ function hasValidOperatorSessionInfoShape(value: unknown): value is OperatorSess
  * Returns ok(value) when the input has the required shape.
  * Returns err(Error) with a FIXED reason string when validation fails —
  * the error message never echoes any part of the input.
+ *
+ * `push` (the session push-health gateway minor, agent #1788) is a display supplement:
+ * a well-formed value rides through, anything malformed normalizes to
+ * ABSENT instead of rejecting the session (RunSummary.failureKind policy —
+ * load-bearing session fields stay strict, supplements stay soft).
  */
 export function parseOperatorSessionInfo(input: unknown): Result<OperatorSessionInfo, Error> {
   if (hasValidOperatorSessionInfoShape(input) === false) {
     return err(new Error('invalid operator session info shape'))
   }
 
+  const candidate = input as OperatorSessionInfo & {push?: unknown}
+  if (candidate.push !== undefined && !hasValidPushHealthShape(candidate.push)) {
+    const {operatorId, login, expiresAt} = candidate
+    return ok({operatorId, login, expiresAt})
+  }
+
   return ok(input)
+}
+
+function hasValidPushHealthShape(value: unknown): value is OperatorPushHealth {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+  // The gateway shape is exactly `{status}` — one field, closed value set
+  // (push health omitted entirely when push is not configured).
+  const keys = Object.keys(value)
+  if (keys.length !== 1 || keys[0] !== 'status') {
+    return false
+  }
+  return (OPERATOR_PUSH_HEALTH_STATUSES as readonly string[]).includes((value as {status: unknown}).status as string)
 }
 
 // ---------------------------------------------------------------------------

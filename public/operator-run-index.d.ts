@@ -3,8 +3,19 @@
  * Loaded only by web/src/operator/runtime.ts via dynamic import with ?manual=1.
  */
 
-/** Index-only status set. Stream-only statuses (blocked, waiting_for_approval) are excluded. */
-export type RunSummaryStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+/**
+ * Index-only status set. Stream-only statuses (blocked) are excluded; the two
+ * waiting members ARE index statuses as of operator contract 1.11.0 (agent
+ * #1825) — a run can appear in the recent-runs list already waiting.
+ */
+export type RunSummaryStatus =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'waiting_for_approval'
+  | 'waiting_for_question'
 
 /** Operator-safe failure-reason code. */
 export type FailureKind =
@@ -64,6 +75,12 @@ export declare function parseRunSummaryList(
 export declare function buildRunSafeView(summary: ParsedRunSummary): RunSafeView
 
 export declare const FETCH_TIMEOUT_MS: number
+
+/** Format an ISO timestamp as a coarse relative time string ('just now' | 'N minutes ago' | …). */
+export declare function formatRelativeTime(isoString: string, nowMs?: number): string
+
+/** Mark the launch-created card expanded so the next index paint keeps it operable (safe-DOM). */
+export declare function markCardExpandedForLaunch(runId: string): void
 
 export declare function fetchRunIndex(opts?: {endpointBase?: string; fixtureSessionId?: string}): Promise<RunIndexResult>
 
