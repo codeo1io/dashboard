@@ -11,7 +11,10 @@ export default defineConfig(
     // .agents/ is a vendored shared-skill bundle (e.g. .agents/skills/impeccable) of
     // third-party .mjs/.md files — not our source; linting it reports tens of thousands
     // of errors.
-    ignores: ['docs/plans/**', 'docs/solutions/**', 'docs/brainstorms/**', 'web/**', '.agents/**', '.opencode/**'],
+    // '.slim/**': read-only dependency-source mirrors (AGENTS.md Cloned
+    // Dependency Source) carry their own lint configs and dependencies; the
+    // root config must never evaluate them.
+    ignores: ['.slim/**', 'docs/plans/**', 'docs/solutions/**', 'docs/brainstorms/**', 'web/**', '.agents/**', '.opencode/**'],
     typescript: {
       tsconfigPath: './tsconfig.json',
       // Enforce Node 24 strip-only TypeScript compatibility: rejects parameter properties,

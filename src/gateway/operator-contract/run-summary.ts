@@ -19,10 +19,21 @@ import {err, ok} from '../../result.ts'
 import {isOperatorFailureKind} from './run-status.ts'
 
 /**
- * Index-only status set. 'blocked' and 'waiting_for_approval' are stream-only
- * overlays — never produced by the run-summary projector.
+ * Index-only status set. waiting_for_approval and waiting_for_question join
+ * the run-summary projector's output at newer gateway contract versions
+ * (newer agent releases onward). The parser is forward-tolerant: an
+ * unrecognized status string is kept and flagged rather than rejected, so a
+ * newer gateway never makes a run vanish from the index (rm-1408).
+ * 'blocked' alone remains a stream-only overlay.
  */
-export type RunSummaryStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+export type RunSummaryStatus =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'waiting_for_approval'
+  | 'waiting_for_question'
 
 /**
  * Operator-safe projection of a run's summary.
@@ -46,12 +57,19 @@ export const RUN_INDEX_CAP = 100
 const MAX_ID_LENGTH = 512
 const MAX_DATE_LENGTH = 128
 
-const VALID_RUN_SUMMARY_STATUSES: ReadonlySet<string> = new Set([
+/**
+ * The closed set of run-summary statuses this parser recognizes. Kept in
+ * lockstep with the RunSummaryStatus union; exported so the parity test can
+ * pin it against public/operator-run-index.js (rm-1408).
+ */
+export const VALID_RUN_SUMMARY_STATUSES: ReadonlySet<string> = new Set([
   'queued',
   'running',
   'succeeded',
   'failed',
   'cancelled',
+  'waiting_for_approval',
+  'waiting_for_question',
 ])
 
 function hasValidRunSummaryShape(value: unknown): value is RunSummary {
