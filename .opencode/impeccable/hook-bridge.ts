@@ -129,7 +129,7 @@ export interface DetectorRunResult {
 /** Injectable subprocess runner: given the hook payload and the worktree cwd, returns the detector's stdout/stderr/exitCode. */
 export type DetectorRunner = (
   payload: ReturnType<typeof buildHookPayload>,
-  opts: { worktree: string },
+  opts: { worktree: string; signal?: AbortSignal },
 ) => Promise<DetectorRunResult>
 
 export interface CreateHookOptions {
@@ -226,9 +226,14 @@ export function createHook(options: CreateHookOptions) {
         sessionID: input.sessionID,
       })
 
+      const reaper = new AbortController()
+      const runnerPromise = options.runDetector(payload, {
+        worktree: options.worktree,
+        signal: reaper.signal,
+      })
       let result: DetectorRunResult | typeof TIMEOUT_SENTINEL
       try {
-        result = await withTimeout(options.runDetector(payload, { worktree: options.worktree }), timeoutMs)
+        result = await withTimeout(runnerPromise, timeoutMs)
       } catch (err) {
         warnOnce(`[impeccable] design hook bridge failed: ${err instanceof Error ? err.message : String(err)}`)
         return
@@ -236,7 +241,12 @@ export function createHook(options: CreateHookOptions) {
 
       if (result === TIMEOUT_SENTINEL) {
         // Degrade to no-op on timeout, no warning — this is expected
-        // backpressure, not a broken bridge.
+        // backpressure, not a broken bridge. The race loser is still running,
+        // though: signal the runner to reap its child, and swallow the
+        // rejection the reap produces (this hook invocation has already
+        // returned and must not surface an unhandled rejection).
+        void runnerPromise.catch(() => {})
+        reaper.abort()
         return
       }
 
