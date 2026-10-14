@@ -5,9 +5,21 @@
 
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 
-import {buildRunSafeView, FETCH_TIMEOUT_MS, fetchRunIndex, formatRelativeTime, initOperatorRunIndex, markCardExpandedForLaunch, markRunStreamAttached, parseRunSummaryItem, parseRunSummaryList, resetRunIndexState, RUN_INDEX_CAP, FAILURE_REASON_LABELS as RUN_INDEX_FAILURE_REASON_LABELS, VALID_RUN_SUMMARY_STATUSES} from '../public/operator-run-index.js'
+import {buildRunSafeView, FETCH_TIMEOUT_MS, fetchRunIndex, formatRelativeTime, initOperatorRunIndex, markCardExpandedForLaunch, markRunStreamAttached, parseRunSummaryItem, parseRunSummaryList, refreshOperatorRunIndex, resetRunIndexState, RUN_INDEX_CAP, FAILURE_REASON_LABELS as RUN_INDEX_FAILURE_REASON_LABELS, RUN_STATUS_CLASS_TOKENS, VALID_RUN_SUMMARY_STATUSES} from '../public/operator-run-index.js'
 import {FAILURE_REASON_LABELS as STREAM_FAILURE_REASON_LABELS} from '../public/operator-stream.js'
 import {isOperatorFailureKind, OPERATOR_FAILURE_KINDS} from '../src/gateway/operator-contract/run-status.ts'
+import {parseRunSummary as parseServerRunSummary} from '../src/gateway/operator-contract/run-summary.ts'
+
+/** The seven statuses a run summary can carry, with the label each renders. Never the raw wire string. */
+const SUMMARY_STATUS_LABELS = {
+  queued: 'Queued',
+  running: 'Running',
+  waiting_for_approval: 'Waiting for approval',
+  waiting_for_question: 'Waiting for answer',
+  succeeded: 'Succeeded',
+  failed: 'Failed',
+  cancelled: 'Cancelled',
+}
 
 function makeValidSummary(overrides = {}) {
   return {
@@ -106,9 +118,10 @@ describe('parseRunSummaryItem — error paths', () => {
     expect(result.success).toBe(false)
   })
 
-  it('rejects stream-only status: waiting_for_approval', () => {
-    const result = parseRunSummaryItem(makeValidSummary({status: 'waiting_for_approval'}))
-    expect(result.success).toBe(false)
+  it.each(['waiting_for_approval', 'waiting_for_question'])('accepts the waiting status %s', status => {
+    const result = parseRunSummaryItem(makeValidSummary({status}))
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.status).toBe(status)
   })
 
   it('rejects stream-only status: blocked', () => {
@@ -200,15 +213,27 @@ describe('parseRunSummaryList — cap and dedupe', () => {
   })
 })
 
-describe('VALID_RUN_SUMMARY_STATUSES — exact index-only set', () => {
-  it('contains exactly the five index-only statuses', () => {
-    const expected = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled'])
-    expect(VALID_RUN_SUMMARY_STATUSES).toEqual(expected)
+describe('VALID_RUN_SUMMARY_STATUSES — exact summary set', () => {
+  it('contains exactly the seven summary statuses', () => {
+    expect(VALID_RUN_SUMMARY_STATUSES).toEqual(new Set(Object.keys(SUMMARY_STATUS_LABELS)))
   })
 
-  it('does not contain stream-only statuses', () => {
-    expect(VALID_RUN_SUMMARY_STATUSES.has('waiting_for_approval')).toBe(false)
+  it('does not contain the stream-only blocked status', () => {
     expect(VALID_RUN_SUMMARY_STATUSES.has('blocked')).toBe(false)
+  })
+})
+
+describe('buildRunSafeView — status labels', () => {
+  it.each(Object.entries(SUMMARY_STATUS_LABELS))('labels %s as "%s", never the raw wire string', (status, label) => {
+    const view = buildRunSafeView(makeValidSummary({status}))
+    expect(view.statusLabel).toBe(label)
+    expect(view.statusLabel).not.toBe(status)
+  })
+
+  it('every accepted status has a label (no allowlist entry without a label)', () => {
+    for (const status of VALID_RUN_SUMMARY_STATUSES) {
+      expect(buildRunSafeView(makeValidSummary({status})).statusLabel, status).toBe(SUMMARY_STATUS_LABELS[status])
+    }
   })
 })
 
@@ -724,10 +749,26 @@ describe('parser parity — JS parser mirrors vendored TS parser behavior', () =
   })
 
   it('invalid status: JS parser rejects same invalid statuses as TS parser', () => {
-    const invalidStatuses = ['waiting_for_approval', 'blocked', 'unknown', 'RUNNING', '']
+    const invalidStatuses = ['blocked', 'unknown', 'RUNNING', 'waiting-for-question', '']
     for (const status of invalidStatuses) {
       const result = parseRunSummaryItem(makeValidSummary({status}))
       expect(result.success, `status "${status}" should be rejected`).toBe(false)
+    }
+  })
+
+  it('the stream summaryStatus allowlist equals the index allowlist (read from source: it is not exported)', async () => {
+    const fs = await import('node:fs/promises')
+    const src = await fs.readFile('public/operator-stream.js', 'utf8')
+    const literal = src.match(/const SUMMARY_STATUSES = new Set\(\[([^\]]*)\]\)/)?.[1] ?? ''
+    const streamStatuses = new Set([...literal.matchAll(/'([a-z_]+)'/g)].map(match => match[1]))
+    expect(streamStatuses.size).toBeGreaterThan(0)
+    expect(streamStatuses).toEqual(VALID_RUN_SUMMARY_STATUSES)
+  })
+
+  it('status agreement: the JS and TS parsers agree on all seven statuses and on unknowns', () => {
+    for (const status of [...Object.keys(SUMMARY_STATUS_LABELS), 'blocked', 'unknown', 'RUNNING', '']) {
+      const input = makeValidSummary({status})
+      expect(parseRunSummaryItem(input).success, `status "${status}"`).toBe(parseServerRunSummary(input).success)
     }
   })
 
@@ -787,7 +828,7 @@ describe('initOperatorRunIndex — onSelectRun callback wired to card clicks', (
     }))
     // No DOM — function bails early when document is undefined
     const onSelectRun = vi.fn()
-    await expect(initOperatorRunIndex({endpointBase: '/operator', onSelectRun})).resolves.toBeUndefined()
+    await expect(initOperatorRunIndex({endpointBase: '/operator', onSelectRun})).resolves.toBe('unavailable')
     expect(onSelectRun).not.toHaveBeenCalled()
   })
 
@@ -1031,6 +1072,14 @@ describe('markRunStreamAttached — sets data-stream-attached on matching card',
 // Keyboard activation on run cards
 // ---------------------------------------------------------------------------
 
+/**
+ * Focus bookkeeping shared by the element stubs. Like a browser, focus() makes the element the
+ * document's activeElement; a stub document without the property just ignores it.
+ */
+function markFocused(el) {
+  if (typeof document !== 'undefined' && document !== null) document.activeElement = el
+}
+
 /** Minimal element stub with event dispatch. */
 function makeElStub() {
   return {
@@ -1038,6 +1087,13 @@ function makeElStub() {
     _parentList: null,
     className: '', tabIndex: 0, dataset: {}, textContent: '',
     setAttribute() {}, append() {},
+    focusCalls: [],
+    scrollIntoViewCalls: 0,
+    focus(options) {
+      this.focusCalls.push(options)
+      markFocused(this)
+    },
+    scrollIntoView() { this.scrollIntoViewCalls++ },
     remove() {
       if (this._parentList !== null) {
         const idx = this._parentList.children.indexOf(this)
@@ -1083,8 +1139,13 @@ function makeMockListUsing(children) {
       el._parentList = list
       children.push(el)
     },
+    contains(el) {
+      return children.some(child => child === el || child.contains?.(el) === true)
+    },
     insertBefore(el, ref) {
       el._parentList = list
+      // A real browser blurs a focused node that is moved within the DOM.
+      if (typeof document !== 'undefined' && document !== null && document.activeElement === el) document.activeElement = null
       const existingIdx = children.indexOf(el)
       if (existingIdx !== -1) children.splice(existingIdx, 1)
       const idx = ref === null || ref === undefined ? children.length : children.indexOf(ref)
@@ -1290,6 +1351,43 @@ describe('fetchRunIndex — passes AbortSignal to fetch', () => {
     expect(result.kind).toBe('unavailable')
   })
 
+  it('a stalled response body is aborted by the timeout and collapses to unavailable', async () => {
+    vi.useFakeTimers()
+    let bodySignal
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((_url, opts) => {
+      bodySignal = opts.signal
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        // Headers arrived; the body never settles unless the request is aborted.
+        json: () => new Promise((_resolve, reject) => {
+          opts.signal.addEventListener('abort', () => {
+            reject(new DOMException('The operation was aborted.', 'AbortError'))
+          })
+        }),
+      })
+    }))
+
+    const fetchPromise = fetchRunIndex({endpointBase: '/operator'})
+    await vi.advanceTimersByTimeAsync(FETCH_TIMEOUT_MS + 1)
+    const result = await fetchPromise
+    expect(result.kind).toBe('unavailable')
+    expect(bodySignal.aborted).toBe(true)
+  })
+
+  it('a body that never settles even on abort still resolves unavailable at the timeout', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => new Promise(() => {}),
+    }))
+
+    const fetchPromise = fetchRunIndex({endpointBase: '/operator'})
+    await vi.advanceTimersByTimeAsync(FETCH_TIMEOUT_MS + 1)
+    await expect(fetchPromise).resolves.toEqual({kind: 'unavailable'})
+  })
+
   it('does not log on timeout/AbortError', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -1410,6 +1508,76 @@ describe('initOperatorRunIndex — section data-state transitions', () => {
   })
 })
 
+describe('initOperatorRunIndex — resolves with its outcome', () => {
+  afterEach(() => {
+    resetRunIndexState()
+    vi.restoreAllMocks()
+  })
+
+  const stubRuns = runs => vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ok: true, status: 200, json: async () => ({runs})}))
+
+  it("resolves 'loaded' when the list has runs", async () => {
+    stubRuns([makeValidSummary()])
+    const {section} = stubDOMWithSection()
+    await expect(initOperatorRunIndex({endpointBase: '/operator'})).resolves.toBe('loaded')
+    expect(section.dataset.state).toBe('loaded')
+  })
+
+  it("resolves 'empty' when the list is empty", async () => {
+    stubRuns([])
+    const {section} = stubDOMWithSection()
+    await expect(initOperatorRunIndex({endpointBase: '/operator'})).resolves.toBe('empty')
+    expect(section.dataset.state).toBe('empty')
+  })
+
+  it("resolves 'unavailable' on a non-auth failure", async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ok: false, status: 500, json: async () => ({})}))
+    const {section} = stubDOMWithSection()
+    await expect(initOperatorRunIndex({endpointBase: '/operator'})).resolves.toBe('unavailable')
+    expect(section.dataset.state).toBe('unavailable')
+  })
+
+  it("resolves 'auth-required' on 401/403, after calling onAuthRequired", async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ok: false, status: 401, json: async () => ({})}))
+    stubDOMWithSection()
+    const onAuthRequired = vi.fn()
+    await expect(initOperatorRunIndex({endpointBase: '/operator', onAuthRequired})).resolves.toBe('auth-required')
+    expect(onAuthRequired).toHaveBeenCalledTimes(1)
+  })
+
+  it("resolves 'stale' when a reset replaces the init while it fetches", async () => {
+    let resolveJson
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => new Promise(res => {
+        resolveJson = res
+      }),
+    }))
+    stubDOMWithSection()
+    const pending = initOperatorRunIndex({endpointBase: '/operator'})
+    await new Promise(resolve => setTimeout(resolve, 0))
+    resetRunIndexState()
+    resolveJson({runs: [makeValidSummary()]})
+    await expect(pending).resolves.toBe('stale')
+  })
+
+  it("resolves 'stale' when a newer init replaces it while it fetches", async () => {
+    const resolvers = []
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(resolve => {
+      resolvers.push(resolve)
+    })))
+    stubDOMWithSection()
+    const first = initOperatorRunIndex({endpointBase: '/operator'})
+    const second = initOperatorRunIndex({endpointBase: '/operator'})
+    const ok = {ok: true, status: 200, json: async () => ({runs: [makeValidSummary()]})}
+    resolvers[0](ok)
+    resolvers[1](ok)
+    await expect(first).resolves.toBe('stale')
+    await expect(second).resolves.toBe('loaded')
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Unified card substructure (run-output, run-output-coalesced,
 // run-approvals, approval-badge) + single data-testid="run-card"
@@ -1428,6 +1596,13 @@ function makeSubstructureElStub() {
     hidden: false,
     attributes: {},
     setAttribute(name, value) { this.attributes[name] = value },
+    focusCalls: [],
+    scrollIntoViewCalls: 0,
+    focus(options) {
+      this.focusCalls.push(options)
+      markFocused(this)
+    },
+    scrollIntoView() { this.scrollIntoViewCalls++ },
     _parentEl: null,
     append(...els) {
       for (const el of els) el._parentEl = this
@@ -2225,21 +2400,243 @@ function renderRunCardForTest(cards, summaryLike) {
   return card
 }
 
+function statusElOf(card) {
+  return card.querySelector('[data-role="run-status"]')
+}
+
+describe('status class token map — summary status ↔ hyphenated class token', () => {
+  afterEach(() => {
+    resetRunIndexState()
+    vi.restoreAllMocks()
+  })
+
+  const STATUSES = Array.from(VALID_RUN_SUMMARY_STATUSES)
+
+  it('maps all seven summary statuses to their hyphenated token, and nothing else', () => {
+    expect(STATUSES).toHaveLength(7)
+    expect(Object.keys(RUN_STATUS_CLASS_TOKENS).toSorted()).toEqual([...STATUSES].toSorted())
+    for (const status of STATUSES) {
+      expect(RUN_STATUS_CLASS_TOKENS[status], status).toBe(`status-${status.replaceAll('_', '-')}`)
+    }
+    expect(RUN_STATUS_CLASS_TOKENS.waiting_for_question).toBe('status-waiting-for-question')
+    expect(RUN_STATUS_CLASS_TOKENS.waiting_for_approval).toBe('status-waiting-for-approval')
+  })
+
+  it('every terminal status token on a card reads back as terminal (sticky against a non-terminal view)', async () => {
+    for (const shown of ['succeeded', 'failed', 'cancelled']) {
+      const runId = `run-tok-readback-${shown}`
+      const cards = []
+      stubDOMWithSubstructureCards(cards)
+      const optimisticCard = makeStatusOnlyOptimisticCard(cards, runId)
+      const statusEl = statusElOf(optimisticCard)
+      statusEl.className = `run-status ${RUN_STATUS_CLASS_TOKENS[shown]}`
+      statusEl.textContent = 'Shown'
+
+      stubFetchRuns([makeValidSummary({runId, status: 'running'})])
+      await initOperatorRunIndex({endpointBase: '/operator'})
+
+      expect(statusEl.className, shown).toBe(`run-status ${RUN_STATUS_CLASS_TOKENS[shown]}`)
+      expect(statusEl.textContent, shown).toBe('Shown')
+    }
+  })
+
+  it('underscore, unknown, stream-only and prototype-key class tokens do not read back as terminal', async () => {
+    const tokens = [
+      'status-succeeded_x',
+      'status-waiting_for_question',
+      'succeeded',
+      'status-unavailable',
+      'status-evil',
+      'status-',
+      'status-constructor',
+      '__proto__',
+    ]
+    for (const [index, token] of tokens.entries()) {
+      const runId = `run-tok-noreadback-${index}`
+      const cards = []
+      stubDOMWithSubstructureCards(cards)
+      const optimisticCard = makeStatusOnlyOptimisticCard(cards, runId)
+      const statusEl = statusElOf(optimisticCard)
+      statusEl.className = `run-status ${token}`
+      statusEl.textContent = 'Shown'
+
+      stubFetchRuns([makeValidSummary({runId, status: 'running'})])
+      await initOperatorRunIndex({endpointBase: '/operator'})
+
+      expect(statusEl.className, token).toBe('run-status status-running')
+    }
+  })
+
+  it('a collapsed card renders every status with its hyphenated class and its label', async () => {
+    const labels = {
+      queued: 'Queued',
+      running: 'Running',
+      waiting_for_approval: 'Waiting for approval',
+      waiting_for_question: 'Waiting for answer',
+      succeeded: 'Succeeded',
+      failed: 'Failed',
+      cancelled: 'Cancelled',
+    }
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    stubFetchRuns(STATUSES.map(status => makeValidSummary({runId: `run-tok-${status}`, status})))
+
+    await initOperatorRunIndex({endpointBase: '/operator'})
+
+    expect(cards).toHaveLength(7)
+    for (const status of STATUSES) {
+      const card = cards.find(c => c.dataset.runId === `run-tok-${status}`)
+      const statusEl = statusElOf(card)
+      expect(statusEl.className, status).toBe(`run-status ${RUN_STATUS_CLASS_TOKENS[status]}`)
+      expect(statusEl.className, status).not.toContain('_')
+      expect(statusEl.textContent, status).toBe(labels[status])
+      expect(card.attributes['aria-label'], status).toContain(`status: ${labels[status]}`)
+    }
+  })
+
+  it('an in-place update to a waiting status writes the hyphenated class and label', async () => {
+    const runId = 'run-tok-update-001'
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    stubFetchRuns([makeValidSummary({runId, status: 'running'})])
+    await initOperatorRunIndex({endpointBase: '/operator'})
+    const statusEl = statusElOf(cards[0])
+    expect(statusEl.className).toBe('run-status status-running')
+
+    stubFetchRuns([makeValidSummary({runId, status: 'waiting_for_question'})])
+    await initOperatorRunIndex({endpointBase: '/operator'})
+    expect(statusEl.className).toBe('run-status status-waiting-for-question')
+    expect(statusEl.textContent).toBe('Waiting for answer')
+
+    stubFetchRuns([makeValidSummary({runId, status: 'waiting_for_approval'})])
+    await initOperatorRunIndex({endpointBase: '/operator'})
+    expect(statusEl.className).toBe('run-status status-waiting-for-approval')
+    expect(statusEl.textContent).toBe('Waiting for approval')
+  })
+
+  it('terminal is sticky: a card showing succeeded keeps it when a waiting or running view arrives', async () => {
+    const runId = 'run-tok-sticky-001'
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    stubFetchRuns([makeValidSummary({runId, status: 'succeeded'})])
+    await initOperatorRunIndex({endpointBase: '/operator'})
+    const card = cards[0]
+    const statusEl = statusElOf(card)
+    const ariaBefore = card.attributes['aria-label']
+    expect(statusEl.className).toBe('run-status status-succeeded')
+
+    for (const status of ['waiting_for_question', 'waiting_for_approval', 'running', 'queued']) {
+      stubFetchRuns([makeValidSummary({runId, status})])
+      await initOperatorRunIndex({endpointBase: '/operator'})
+      expect(cards[0], status).toBe(card)
+      expect(statusEl.className, status).toBe('run-status status-succeeded')
+      expect(statusEl.textContent, status).toBe('Succeeded')
+      expect(card.attributes['aria-label'], status).toBe(ariaBefore)
+    }
+  })
+
+  it.each(['succeeded', 'failed', 'cancelled'])('terminal is sticky for %s as the shown status', async shown => {
+    const runId = `run-tok-sticky-${shown}`
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    stubFetchRuns([makeValidSummary({runId, status: shown})])
+    await initOperatorRunIndex({endpointBase: '/operator'})
+    const statusEl = statusElOf(cards[0])
+
+    stubFetchRuns([makeValidSummary({runId, status: 'waiting_for_question'})])
+    await initOperatorRunIndex({endpointBase: '/operator'})
+
+    expect(statusEl.className).toBe(`run-status ${RUN_STATUS_CLASS_TOKENS[shown]}`)
+  })
+
+  it('stickiness keeps a failed card’s reason label when a non-terminal view arrives', async () => {
+    const runId = 'run-tok-sticky-reason-001'
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    stubFetchRuns([makeValidSummary({runId, status: 'failed', failureKind: 'inactivity-timeout'})])
+    await initOperatorRunIndex({endpointBase: '/operator'})
+    const reasonEl = cards[0].querySelector('[data-role="run-reason"]')
+    const reasonBefore = reasonEl.textContent
+    expect(reasonBefore).not.toBe('')
+
+    stubFetchRuns([makeValidSummary({runId, status: 'running'})])
+    await initOperatorRunIndex({endpointBase: '/operator'})
+
+    expect(reasonEl.textContent).toBe(reasonBefore)
+  })
+
+  it('stickiness does not block non-terminal moves or terminal-to-terminal corrections', async () => {
+    const runId = 'run-tok-move-001'
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    const statusClassAfter = async status => {
+      stubFetchRuns([makeValidSummary({runId, status})])
+      await initOperatorRunIndex({endpointBase: '/operator'})
+      return statusElOf(cards[0]).className
+    }
+
+    expect(await statusClassAfter('queued')).toBe('run-status status-queued')
+    expect(await statusClassAfter('running')).toBe('run-status status-running')
+    expect(await statusClassAfter('waiting_for_question')).toBe('run-status status-waiting-for-question')
+    expect(await statusClassAfter('running')).toBe('run-status status-running')
+    expect(await statusClassAfter('succeeded')).toBe('run-status status-succeeded')
+    expect(await statusClassAfter('failed')).toBe('run-status status-failed')
+  })
+
+  it('a stream-written terminal class (hyphenated, from updateDOM) on an adopted card is also sticky', async () => {
+    const runId = 'run-tok-adopt-001'
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    const optimisticCard = makeStatusOnlyOptimisticCard(cards, runId)
+    const statusEl = statusElOf(optimisticCard)
+    statusEl.className = 'run-status status-failed'
+    statusEl.textContent = 'Failed'
+
+    stubFetchRuns([makeValidSummary({runId, status: 'running'})])
+    await initOperatorRunIndex({endpointBase: '/operator'})
+
+    expect(cards).toHaveLength(1)
+    expect(statusEl.className).toBe('run-status status-failed')
+    expect(statusEl.textContent).toBe('Failed')
+  })
+})
+
+/** Parse `#rrggbb` into [r, g, b]. */
+function hexToRgb(hex) {
+  const m = hex.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i)
+  if (m === null) throw new Error(`not a hex color: ${hex}`)
+  return [Number.parseInt(m[1], 16), Number.parseInt(m[2], 16), Number.parseInt(m[3], 16)]
+}
+
+function relativeLuminance([r, g, b]) {
+  const lin = c => {
+    const v = c / 255
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4
+  }
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+}
+
+function contrastRatio(a, b) {
+  const [hi, lo] = [relativeLuminance(a), relativeLuminance(b)].toSorted((x, y) => y - x)
+  return (hi + 0.05) / (lo + 0.05)
+}
+
 describe('CSS selector ↔ status emitter agreement', () => {
-  it('has a .status-<value> selector in web/src/index.css for every valid status', async () => {
+  it('has a .status-<token> selector in web/src/index.css, in both themes, for every token the emitter can write', async () => {
     const fs = await import('node:fs/promises')
     const cssPath = new URL('../web/src/index.css', import.meta.url).pathname
     const cssContent = await fs.readFile(cssPath, 'utf8')
 
-    // All core index statuses plus the optimistic pending state
-    const coreStatuses = Array.from(VALID_RUN_SUMMARY_STATUSES)
-    const requiredStatuses = [...coreStatuses, 'pending', 'blocked', 'waiting_for_approval', 'waiting_for_question']
+    // Every token the run index can emit (the map covers all seven summary statuses, both waiting
+    // ones included) plus the optimistic pending state and the stream-only blocked status.
+    const tokens = [...Object.values(RUN_STATUS_CLASS_TOKENS), 'status-pending', 'status-blocked']
+    expect(tokens).toContain('status-waiting-for-approval')
+    expect(tokens).toContain('status-waiting-for-question')
 
-    // The stream emitter hyphenates every status class (`waiting_for_approval` → `status-waiting-for-approval`).
-    for (const status of requiredStatuses) {
-      const expectedSelector = `.run-status.status-${status.replaceAll('_', '-')}`
-      expect(cssContent).toContain(expectedSelector)
-      expect(cssContent).toContain(`[data-theme="light"] ${expectedSelector}`)
+    for (const token of tokens) {
+      const expectedSelector = `.run-status.${token}`
+      expect(cssContent, token).toContain(expectedSelector)
+      expect(cssContent, token).toContain(`[data-theme="light"] ${expectedSelector}`)
     }
 
     // The emitter never produces an underscore status class, so such a selector could never match.
@@ -2260,6 +2657,32 @@ describe('CSS selector ↔ status emitter agreement', () => {
     expect(cssContent).toContain('.run-status-group')
     expect(cssContent).toContain('.run-reason')
     expect(cssContent).toContain('.run-reason:empty')
+  })
+
+  it.each(['status-waiting-for-approval', 'status-waiting-for-question'])('light theme: %s badge text meets 4.5:1 on a collapsed card', async token => {
+    const fs = await import('node:fs/promises')
+    const css = await fs.readFile(new URL('../web/src/index.css', import.meta.url).pathname, 'utf8')
+    const tokensCss = await fs.readFile(new URL('../web/src/styles/tokens.css', import.meta.url).pathname, 'utf8')
+
+    const lightTokens = tokensCss.match(/\[data-theme="light"\] \{([^}]*)\}/)?.[1] ?? ''
+    const lightColor = name => hexToRgb(lightTokens.match(new RegExp(`--${name}: (#[0-9a-fA-F]{6})`))?.[1] ?? '')
+    const [warning, text, bg] = [lightColor('color-warning'), lightColor('color-text'), lightColor('color-bg')]
+
+    const rule = css.match(new RegExp(String.raw`\[data-theme="light"\] \.run-status\.${token}\s*\{([^}]*)\}`))?.[1] ?? ''
+    expect(rule, `light rule for ${token}`).not.toBe('')
+    const tint = rule.match(/background:\s*rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)/)
+    expect(tint, 'light background tint').not.toBeNull()
+    const alpha = Number(tint[4])
+    const badgeBg = [1, 2, 3].map((i, channel) => Number(tint[i]) * alpha + bg[channel] * (1 - alpha))
+
+    // Text colour: the light rule's own override when it declares one; otherwise the dark-theme
+    // rule's var(--color-warning) still applies.
+    const mix = rule.match(/color:\s*color-mix\(in srgb,\s*var\(--color-warning\)\s+(\d+)%,\s*var\(--color-text\)\s+(\d+)%\)/)
+    const fg = mix === null
+      ? warning
+      : warning.map((v, channel) => (v * Number(mix[1]) + text[channel] * Number(mix[2])) / 100)
+
+    expect(contrastRatio(fg, badgeBg)).toBeGreaterThanOrEqual(4.5)
   })
 })
 
@@ -3237,12 +3660,13 @@ describe('question region — fetched cards (renderRunCard)', () => {
     expect(list).toContain('QUESTIONS_ROLE')
   })
 
-  it('regression: the run-summary parser still rejects waiting statuses', () => {
-    for (const status of ['waiting_for_question', 'waiting_for_approval', 'blocked']) {
-      const parsed = parseRunSummaryItem(makeValidSummary({runId: 'run-q-reject-001', status}))
-      expect(parsed.success).toBe(false)
+  it('the run-summary parser accepts the waiting statuses and still rejects blocked', () => {
+    for (const status of ['waiting_for_question', 'waiting_for_approval']) {
+      const parsed = parseRunSummaryItem(makeValidSummary({runId: 'run-q-accept-001', status}))
+      expect(parsed.success, status).toBe(true)
+      expect(VALID_RUN_SUMMARY_STATUSES.has(status), status).toBe(true)
     }
-    expect(VALID_RUN_SUMMARY_STATUSES.has('waiting_for_question')).toBe(false)
+    expect(parseRunSummaryItem(makeValidSummary({runId: 'run-q-reject-001', status: 'blocked'})).success).toBe(false)
   })
 })
 
@@ -3309,5 +3733,544 @@ describe('question region — adopted optimistic cards (ensureRunCardAnatomy)', 
     const hiddenRoles = card => childRoles(card).filter(role => role !== undefined && !['run-status-group', 'run-repo', 'run-updated-at'].includes(role))
     expect(hiddenRoles(optimistic)).toEqual(hiddenRoles(fetched))
     expect(hiddenRoles(fetched)).toContain(QUESTIONS_ROLE)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Single-flight in-place refresh (refreshOperatorRunIndex)
+// ---------------------------------------------------------------------------
+
+/** Full run-index DOM stub: section state log, loading/empty/unavailable toggles, a focusable list. */
+function stubDOMForRefresh() {
+  const stateLog = []
+  let currentState
+  const section = {dataset: {}}
+  Object.defineProperty(section.dataset, 'state', {
+    enumerable: true,
+    configurable: true,
+    get: () => currentState,
+    set: value => {
+      currentState = value
+      stateLog.push(value)
+    },
+  })
+  const loading = {hidden: false}
+  const empty = {hidden: true}
+  const unavailable = {hidden: true}
+  const cards = []
+  const list = makeMockListUsing(cards)
+  const doc = {
+    activeElement: null,
+    querySelector(sel) {
+      if (sel === '[data-role="run-index"]') return section
+      if (sel === '[data-role="run-index-loading"]') return loading
+      if (sel === '[data-role="run-index-list"]') return list
+      if (sel === '[data-role="run-index-empty"]') return empty
+      if (sel === '[data-role="run-index-unavailable"]') return unavailable
+      const runIdMatch = sel.match(/^\[data-run-id="([^"]+)"\]$/)
+      if (runIdMatch) return cards.find(c => c.dataset?.runId === runIdMatch[1]) ?? null
+      return null
+    },
+    createElement() { return makeSubstructureElStub() },
+  }
+  vi.stubGlobal('CSS', {escape: s => s})
+  vi.stubGlobal('document', doc)
+  return {section, stateLog, loading, list, empty, unavailable, cards, doc}
+}
+
+/** A fetch whose responses the test releases by hand, so a refresh can be held in flight. */
+function stubControlledFetch() {
+  const resolvers = []
+  const fn = vi.fn(() => new Promise((resolve, reject) => {
+    resolvers.push({resolve, reject})
+  }))
+  vi.stubGlobal('fetch', fn)
+  return {
+    fn,
+    respond(index, runs) {
+      resolvers[index].resolve({ok: true, status: 200, json: async () => ({runs})})
+    },
+    respondRaw(index, response) {
+      resolvers[index].resolve(response)
+    },
+    respondStatus(index, status) {
+      resolvers[index].resolve({ok: false, status, json: async () => ({})})
+    },
+    fail(index) {
+      resolvers[index].reject(new Error('network error'))
+    },
+  }
+}
+
+/** Let fetch + json parsing + the diff settle. */
+const flush = () => new Promise(resolve => setTimeout(resolve, 0))
+
+/** A card's observable state as one comparable value (the "byte-identical" check). */
+function snapshotCard(card) {
+  return JSON.stringify({
+    className: card.className,
+    textContent: card.textContent,
+    hidden: card.hidden,
+    dataset: card.dataset,
+    attributes: card.attributes,
+    children: (card._children ?? []).map(snapshotCard),
+  })
+}
+
+describe('refreshOperatorRunIndex — single-flight in-place refresh', () => {
+  afterEach(() => {
+    resetRunIndexState()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('exports a refresh that resolves as a no-op before init has loaded (no fetch)', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    stubDOMForRefresh()
+
+    await expect(refreshOperatorRunIndex()).resolves.toBe(false)
+
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('a stalled response body settles the refresh false after the timeout, and a later refresh fetches again', async () => {
+    const net = stubControlledFetch()
+    stubDOMForRefresh()
+    const init = initOperatorRunIndex({endpointBase: '/operator'})
+    net.respond(0, [makeValidSummary({runId: 'run-rf-stall-001'})])
+    await init
+
+    vi.useFakeTimers()
+    try {
+      // Headers arrive, but the body never settles.
+      const stalled = refreshOperatorRunIndex()
+      expect(net.fn).toHaveBeenCalledTimes(2)
+      net.respondRaw(1, {ok: true, status: 200, json: () => new Promise(() => {})})
+      let settled
+      stalled.then(value => {
+        settled = value
+      })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(settled).toBeUndefined()
+
+      await vi.advanceTimersByTimeAsync(FETCH_TIMEOUT_MS + 1)
+      expect(settled).toBe(false)
+
+      // The single-flight latch cleared: the next refresh starts a new fetch instead of joining.
+      const next = refreshOperatorRunIndex()
+      expect(net.fn).toHaveBeenCalledTimes(3)
+      net.respond(2, [makeValidSummary({runId: 'run-rf-stall-001', status: 'succeeded'})])
+      await expect(next).resolves.toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a refresh requested while init is still in flight is a no-op and does not kill the init', async () => {
+    const net = stubControlledFetch()
+    const {section, cards} = stubDOMForRefresh()
+
+    const initPromise = initOperatorRunIndex({endpointBase: '/operator'})
+    await expect(refreshOperatorRunIndex()).resolves.toBe(false)
+    expect(net.fn).toHaveBeenCalledTimes(1)
+
+    net.respond(0, [makeValidSummary({runId: 'run-rf-init-001'})])
+    await initPromise
+
+    expect(section.dataset.state).toBe('loaded')
+    expect(cards).toHaveLength(1)
+  })
+
+  it('adds a run started elsewhere and moves a collapsed card running → waiting_for_question → succeeded, keeping node identity', async () => {
+    const runId = 'run-rf-progress-001'
+    const net = stubControlledFetch()
+    const {cards} = stubDOMForRefresh()
+    const init = initOperatorRunIndex({endpointBase: '/operator'})
+    net.respond(0, [makeValidSummary({runId, status: 'running'})])
+    await init
+    const card = cards[0]
+    const statusEl = card.querySelector('[data-role="run-status"]')
+    expect(statusEl.className).toBe('run-status status-running')
+
+    // A run started elsewhere appears, and the existing run now waits for an answer.
+    const refresh1 = refreshOperatorRunIndex()
+    net.respond(1, [
+      makeValidSummary({runId: 'run-rf-new-001', status: 'queued'}),
+      makeValidSummary({runId, status: 'waiting_for_question'}),
+    ])
+    await expect(refresh1).resolves.toBe(true)
+    expect(cards.map(c => c.dataset.runId)).toEqual(['run-rf-new-001', runId])
+    expect(cards.find(c => c.dataset.runId === runId)).toBe(card)
+    expect(statusEl.className).toBe('run-status status-waiting-for-question')
+    expect(statusEl.textContent).toBe('Waiting for answer')
+
+    // Later it finishes.
+    const refresh2 = refreshOperatorRunIndex()
+    net.respond(2, [
+      makeValidSummary({runId: 'run-rf-new-001', status: 'running'}),
+      makeValidSummary({runId, status: 'succeeded'}),
+    ])
+    await refresh2
+    expect(statusEl.className).toBe('run-status status-succeeded')
+    expect(statusEl.textContent).toBe('Succeeded')
+  })
+
+  it('does not toggle the loading state: no loading flash, no data-state="loading" on a refresh', async () => {
+    const net = stubControlledFetch()
+    const {stateLog, loading, list} = stubDOMForRefresh()
+    const init = initOperatorRunIndex({endpointBase: '/operator'})
+    net.respond(0, [makeValidSummary({runId: 'run-rf-noload-001'})])
+    await init
+    const statesAfterInit = [...stateLog]
+    expect(loading.hidden).toBe(true)
+
+    const pending = refreshOperatorRunIndex()
+    // While the refresh fetch is in flight the list stays visible and loading stays hidden.
+    expect(loading.hidden).toBe(true)
+    expect(list.hidden).toBe(false)
+    net.respond(1, [makeValidSummary({runId: 'run-rf-noload-001', status: 'succeeded'})])
+    await pending
+
+    expect(stateLog.slice(statesAfterInit.length)).not.toContain('loading')
+    expect(loading.hidden).toBe(true)
+  })
+
+  it('the stream-attached card is byte-identical after a refresh that reports it differently', async () => {
+    const runId = 'run-rf-attached-001'
+    const net = stubControlledFetch()
+    const {cards} = stubDOMForRefresh()
+    const init = initOperatorRunIndex({endpointBase: '/operator'})
+    net.respond(0, [makeValidSummary({runId, status: 'running', repo: 'fro-bot/agent'})])
+    await init
+    const card = cards[0]
+    markRunStreamAttached(runId)
+    // updateDOM's live writes.
+    card.querySelector('[data-role="run-output"]').textContent = 'live streamed output'
+    card.querySelector('[data-role="run-output"]').hidden = false
+    card.querySelector('[data-role="run-status"]').textContent = 'Running'
+    const before = snapshotCard(card)
+
+    const pending = refreshOperatorRunIndex()
+    net.respond(1, [makeValidSummary({runId, status: 'succeeded', repo: 'fro-bot/other', updatedAt: '2026-06-26T13:00:00.000Z'})])
+    await pending
+
+    expect(cards[0]).toBe(card)
+    expect(snapshotCard(card)).toBe(before)
+  })
+
+  it('three requests during one in-flight fetch produce exactly one more fetch, and share its promise', async () => {
+    const runId = 'run-rf-single-001'
+    const net = stubControlledFetch()
+    const {cards} = stubDOMForRefresh()
+    const init = initOperatorRunIndex({endpointBase: '/operator'})
+    net.respond(0, [makeValidSummary({runId, status: 'running'})])
+    await init
+    expect(net.fn).toHaveBeenCalledTimes(1)
+
+    const first = refreshOperatorRunIndex()
+    expect(net.fn).toHaveBeenCalledTimes(2)
+    const second = refreshOperatorRunIndex()
+    const third = refreshOperatorRunIndex()
+    const fourth = refreshOperatorRunIndex()
+    expect(net.fn).toHaveBeenCalledTimes(2)
+    expect(third).toBe(second)
+    expect(fourth).toBe(second)
+
+    let joinedSettled = false
+    second.then(() => {
+      joinedSettled = true
+    })
+
+    // The in-flight fetch finishes: the trailing refresh starts, and only now.
+    net.respond(1, [makeValidSummary({runId, status: 'waiting_for_approval'})])
+    await first
+    await flush()
+    expect(net.fn).toHaveBeenCalledTimes(3)
+    // A joined request must not settle on the stale in-flight data.
+    expect(joinedSettled).toBe(false)
+
+    net.respond(2, [makeValidSummary({runId, status: 'succeeded'})])
+    await second
+    await flush()
+    // Exactly one trailing fetch — nothing further was queued.
+    expect(net.fn).toHaveBeenCalledTimes(3)
+    expect(cards[0].querySelector('[data-role="run-status"]').className).toBe('run-status status-succeeded')
+
+    // Once idle, a new request starts a new fetch.
+    const later = refreshOperatorRunIndex()
+    expect(net.fn).toHaveBeenCalledTimes(4)
+    net.respond(3, [makeValidSummary({runId, status: 'succeeded'})])
+    await later
+  })
+
+  it('responses apply in order: a stale in-flight response is applied before the trailing one', async () => {
+    const runId = 'run-rf-order-001'
+    const net = stubControlledFetch()
+    const {cards} = stubDOMForRefresh()
+    const init = initOperatorRunIndex({endpointBase: '/operator'})
+    net.respond(0, [makeValidSummary({runId, status: 'queued'})])
+    await init
+
+    const first = refreshOperatorRunIndex()
+    const second = refreshOperatorRunIndex()
+    net.respond(1, [makeValidSummary({runId, status: 'running'})])
+    await first
+    expect(cards[0].querySelector('[data-role="run-status"]').className).toBe('run-status status-running')
+    await flush()
+    net.respond(2, [makeValidSummary({runId, status: 'waiting_for_approval'})])
+    await second
+
+    expect(cards[0].querySelector('[data-role="run-status"]').className).toBe('run-status status-waiting-for-approval')
+  })
+
+  it('a list that mounted unavailable becomes a populated list on a successful refresh', async () => {
+    const net = stubControlledFetch()
+    const {section, list, unavailable, empty, cards} = stubDOMForRefresh()
+    const init = initOperatorRunIndex({endpointBase: '/operator'})
+    net.respondStatus(0, 500)
+    await init
+    expect(section.dataset.state).toBe('unavailable')
+    expect(unavailable.hidden).toBe(false)
+
+    const pending = refreshOperatorRunIndex()
+    net.respond(1, [makeValidSummary({runId: 'run-rf-recover-001'})])
+    await expect(pending).resolves.toBe(true)
+
+    expect(section.dataset.state).toBe('loaded')
+    expect(unavailable.hidden).toBe(true)
+    expect(empty.hidden).toBe(true)
+    expect(list.hidden).toBe(false)
+    expect(cards).toHaveLength(1)
+  })
+
+  it('a refresh that returns no runs shows the empty state', async () => {
+    const net = stubControlledFetch()
+    const {section, list, unavailable, empty, cards} = stubDOMForRefresh()
+    const init = initOperatorRunIndex({endpointBase: '/operator'})
+    net.respond(0, [makeValidSummary({runId: 'run-rf-empty-001'})])
+    await init
+    expect(section.dataset.state).toBe('loaded')
+
+    const pending = refreshOperatorRunIndex()
+    net.respond(1, [])
+    await pending
+
+    expect(cards).toHaveLength(0)
+    expect(section.dataset.state).toBe('empty')
+    expect(empty.hidden).toBe(false)
+    expect(list.hidden).toBe(true)
+    expect(unavailable.hidden).toBe(true)
+  })
+
+  it('an empty list that later gains a run leaves the empty state', async () => {
+    const net = stubControlledFetch()
+    const {section, list, empty} = stubDOMForRefresh()
+    const init = initOperatorRunIndex({endpointBase: '/operator'})
+    net.respond(0, [])
+    await init
+    expect(section.dataset.state).toBe('empty')
+
+    const pending = refreshOperatorRunIndex()
+    net.respond(1, [makeValidSummary({runId: 'run-rf-gain-001'})])
+    await pending
+
+    expect(section.dataset.state).toBe('loaded')
+    expect(empty.hidden).toBe(true)
+    expect(list.hidden).toBe(false)
+  })
+
+  it('a focused collapsed card that moves during a refresh keeps focus, and nothing scrolls', async () => {
+    const net = stubControlledFetch()
+    const {cards, doc} = stubDOMForRefresh()
+    const init = initOperatorRunIndex({endpointBase: '/operator'})
+    net.respond(0, [
+      makeValidSummary({runId: 'run-rf-focus-a', status: 'running'}),
+      makeValidSummary({runId: 'run-rf-focus-b', status: 'running'}),
+      makeValidSummary({runId: 'run-rf-focus-c', status: 'running'}),
+    ])
+    await init
+    const [cardA, cardB, cardC] = cards
+    cardB.focus()
+    expect(doc.activeElement).toBe(cardB)
+    cardB.focusCalls.length = 0
+
+    // B jumps to the top of the list: the DOM move blurs it, so the refresh must put focus back.
+    const pending = refreshOperatorRunIndex()
+    net.respond(1, [
+      makeValidSummary({runId: 'run-rf-focus-b', status: 'waiting_for_question'}),
+      makeValidSummary({runId: 'run-rf-focus-a', status: 'running'}),
+      makeValidSummary({runId: 'run-rf-focus-c', status: 'running'}),
+    ])
+    await pending
+
+    expect(cards).toEqual([cardB, cardA, cardC])
+    expect(doc.activeElement).toBe(cardB)
+    expect(cardB.focusCalls).toEqual([{preventScroll: true}])
+    for (const card of cards) expect(card.scrollIntoViewCalls).toBe(0)
+    expect(cardA.focusCalls).toHaveLength(0)
+    expect(cardC.focusCalls).toHaveLength(0)
+  })
+
+  it('a refresh with nothing focused in the list focuses nothing; a focused card that is removed does not throw', async () => {
+    const net = stubControlledFetch()
+    const {cards, doc} = stubDOMForRefresh()
+    const init = initOperatorRunIndex({endpointBase: '/operator'})
+    net.respond(0, [
+      makeValidSummary({runId: 'run-rf-nofocus-a'}),
+      makeValidSummary({runId: 'run-rf-nofocus-b'}),
+    ])
+    await init
+    const [cardA, cardB] = cards
+
+    const first = refreshOperatorRunIndex()
+    net.respond(1, [makeValidSummary({runId: 'run-rf-nofocus-b'}), makeValidSummary({runId: 'run-rf-nofocus-a'})])
+    await first
+    expect(cardA.focusCalls).toHaveLength(0)
+    expect(cardB.focusCalls).toHaveLength(0)
+
+    cardA.focus()
+    cardA.focusCalls.length = 0
+    const second = refreshOperatorRunIndex()
+    net.respond(2, [makeValidSummary({runId: 'run-rf-nofocus-b'})])
+    await expect(second).resolves.toBe(true)
+    expect(cards).toEqual([cardB])
+    expect(cardA.focusCalls).toHaveLength(0)
+    expect(doc.activeElement).toBe(cardA)
+  })
+
+  it('a 401 reports auth-required once, leaves the list alone, and stops further refreshes', async () => {
+    const runId = 'run-rf-401-001'
+    const onAuthRequired = vi.fn()
+    const net = stubControlledFetch()
+    const {cards, section} = stubDOMForRefresh()
+    const init = initOperatorRunIndex({endpointBase: '/operator', onAuthRequired})
+    net.respond(0, [makeValidSummary({runId})])
+    await init
+    const card = cards[0]
+
+    const pending = refreshOperatorRunIndex()
+    net.respondStatus(1, 401)
+    await expect(pending).resolves.toBe(false)
+
+    expect(onAuthRequired).toHaveBeenCalledTimes(1)
+    expect(cards).toEqual([card])
+    expect(section.dataset.state).toBe('loaded')
+
+    // The session is gone: another refresh must not keep hitting the gateway.
+    await expect(refreshOperatorRunIndex()).resolves.toBe(false)
+    expect(net.fn).toHaveBeenCalledTimes(2)
+    expect(onAuthRequired).toHaveBeenCalledTimes(1)
+  })
+
+  it('a 429 leaves the list as it was and the next refresh tries again', async () => {
+    const runId = 'run-rf-429-001'
+    const onAuthRequired = vi.fn()
+    const net = stubControlledFetch()
+    const {cards, section, unavailable} = stubDOMForRefresh()
+    const init = initOperatorRunIndex({endpointBase: '/operator', onAuthRequired})
+    net.respond(0, [makeValidSummary({runId, status: 'running'})])
+    await init
+    const card = cards[0]
+
+    const limited = refreshOperatorRunIndex()
+    net.respondStatus(1, 429)
+    await expect(limited).resolves.toBe(false)
+    expect(cards).toEqual([card])
+    expect(section.dataset.state).toBe('loaded')
+    expect(unavailable.hidden).toBe(true)
+    expect(onAuthRequired).not.toHaveBeenCalled()
+    expect(card.querySelector('[data-role="run-status"]').className).toBe('run-status status-running')
+
+    const retry = refreshOperatorRunIndex()
+    expect(net.fn).toHaveBeenCalledTimes(3)
+    net.respond(2, [makeValidSummary({runId, status: 'succeeded'})])
+    await expect(retry).resolves.toBe(true)
+    expect(card.querySelector('[data-role="run-status"]').className).toBe('run-status status-succeeded')
+  })
+
+  it('a network failure leaves the list as it was and the next refresh tries again', async () => {
+    const runId = 'run-rf-net-001'
+    const net = stubControlledFetch()
+    const {cards, section, unavailable} = stubDOMForRefresh()
+    const init = initOperatorRunIndex({endpointBase: '/operator'})
+    net.respond(0, [makeValidSummary({runId, status: 'running'})])
+    await init
+    const card = cards[0]
+
+    const failed = refreshOperatorRunIndex()
+    net.fail(1)
+    await expect(failed).resolves.toBe(false)
+    expect(cards).toEqual([card])
+    expect(section.dataset.state).toBe('loaded')
+    expect(unavailable.hidden).toBe(true)
+
+    const retry = refreshOperatorRunIndex()
+    net.respond(2, [makeValidSummary({runId, status: 'succeeded'})])
+    await expect(retry).resolves.toBe(true)
+  })
+
+  it('a failed refresh on an unavailable list keeps the unavailable state', async () => {
+    const net = stubControlledFetch()
+    const {section, unavailable} = stubDOMForRefresh()
+    const init = initOperatorRunIndex({endpointBase: '/operator'})
+    net.respondStatus(0, 500)
+    await init
+
+    const failed = refreshOperatorRunIndex()
+    net.respondStatus(1, 429)
+    await failed
+
+    expect(section.dataset.state).toBe('unavailable')
+    expect(unavailable.hidden).toBe(false)
+  })
+
+  it('cards added by a refresh are wired to the selection handler from init', async () => {
+    const net = stubControlledFetch()
+    const {cards} = stubDOMForRefresh()
+    const onSelectRun = vi.fn()
+    const init = initOperatorRunIndex({endpointBase: '/operator', onSelectRun})
+    net.respond(0, [makeValidSummary({runId: 'run-rf-wire-old'})])
+    await init
+
+    const pending = refreshOperatorRunIndex()
+    net.respond(1, [makeValidSummary({runId: 'run-rf-wire-new'}), makeValidSummary({runId: 'run-rf-wire-old'})])
+    await pending
+
+    cards.find(c => c.dataset.runId === 'run-rf-wire-new').dispatchEvent({type: 'click'})
+    expect(onSelectRun).toHaveBeenCalledWith('run-rf-wire-new')
+  })
+
+  it('a reset while a refresh is in flight discards its response and settles every waiter', async () => {
+    const net = stubControlledFetch()
+    const {cards} = stubDOMForRefresh()
+    const init = initOperatorRunIndex({endpointBase: '/operator'})
+    net.respond(0, [makeValidSummary({runId: 'run-rf-reset-001', status: 'running'})])
+    await init
+    const card = cards[0]
+
+    const inFlight = refreshOperatorRunIndex()
+    const joined = refreshOperatorRunIndex()
+    resetRunIndexState()
+    net.respond(1, [makeValidSummary({runId: 'run-rf-reset-001', status: 'succeeded'})])
+
+    await expect(inFlight).resolves.toBe(false)
+    await expect(joined).resolves.toBe(false)
+    await flush()
+    expect(card.querySelector('[data-role="run-status"]').className).toBe('run-status status-running')
+    expect(net.fn).toHaveBeenCalledTimes(2)
+    // Nothing is loaded after a reset, so a later refresh stays a no-op.
+    await expect(refreshOperatorRunIndex()).resolves.toBe(false)
+    expect(net.fn).toHaveBeenCalledTimes(2)
+  })
+
+  it('source: the refresh never bumps the generation counter and never reuses initOperatorRunIndex', async () => {
+    const fs = await import('node:fs/promises')
+    const src = await fs.readFile('public/operator-run-index.js', 'utf8')
+    const body = src.match(/export function refreshOperatorRunIndex[\s\S]*?\n\}\n/)?.[0] ?? ''
+    expect(body).not.toBe('')
+    const refreshSource = src.slice(src.indexOf('async function applyRefresh'), src.indexOf('export function refreshOperatorRunIndex')) + body
+    expect(refreshSource).not.toContain('_runIndexGeneration++')
+    expect(refreshSource).not.toContain('initOperatorRunIndex(')
   })
 })
