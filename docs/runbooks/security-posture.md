@@ -59,6 +59,21 @@ Scorecard's Maintained check wants commit activity across a ~90-day window;
 the fork was created 2026-08-10, so the check cannot pass yet. Expected to
 self-resolve around 2026-11-08. No action.
 
+## Container CVE watch
+
+Image-level code-scanning alerts are triaged by the census convention in
+`docs/solutions/best-practices/container-cve-census-2026-09-25-no-fixed-versions.md`
+(post-trixie re-derive 2026-10-09: 43 container-level alerts, every family
+unfixed in trixie, base digest current). The weekly base-drift digest
+comparison is the automated digest-watch on this tree; whenever the base
+digest moves (or the base-drift gate reports drift), re-run the census
+re-check before planning any in-image patch layer. (Correction 2026-10-14,
+integrate c37a8576: the 2026-10-09 re-derive named the weekly CVE tripwire
+workflow as the digest-watch, but that workflow was retired by the 2026.10.17
+upstream adoption and current main carries no scheduled tripwire — its
+resurrection, if ever deliberately chosen, is owned by ROADMAP rm-779/rm-856
+as an ARG-derived re-landing, not a maintenance default.)
+
 ## Maintenance of this document
 
 Re-verify this table whenever the weekly Scorecard run refreshes (badge data
