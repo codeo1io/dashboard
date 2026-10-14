@@ -33,6 +33,26 @@ request for `/operator/auth/*` ever reaches the dashboard itself (proxy misroute
 Without the infra checkout you cannot read gateway logs. That is the honest boundary: debugging an
 operator-auth or push problem from this repository alone is not possible past the proxy.
 
+### Gateway version discriminator — sign-in resilience (rm-266)
+
+When triaging operator sign-in failures under load, first pin the deployed gateway version
+(`apps/gateway/upstream.json` `ref` in the infra checkout, or `bunx @marcusrbrown/infra gateway
+status`):
+
+- **Below `v0.120.0`** (e.g. the long-lived `v0.119.2` pin): rate-limit and OAuth store pressure
+  can make operator sign-in unreachable — that is an upstream defect fixed by upstream #1784
+  ("keep operator sign-in reachable when the rate-limit and OAuth stores fill", released in
+  `v0.120.0`). Triage as expected-upstream; the fix is the next infra gateway bump, not a fork
+  change.
+- **At or above `v0.120.0`**: store-pressure sign-in failures are fixed upstream — triage as a
+  fork/proxy regression (trusted-proxy config, session cookie, or the same-origin proxy).
+
+The same bump also crosses the operator-contract 1.10.0/1.11.0 ladder (waiting summaries, session
+push health, question deep links): this dashboard accepts `1.9.0`–`1.11.0` and fails closed into
+absorbing drift on anything else (`ACCEPTED_CONTRACT_VERSIONS` in `src/gateway/operator-contract/version.ts`
+and `public/operator-stream.js`). If a gateway bump lands and the operator stream shows drift,
+check the ladder pin before anything else.
+
 ---
 
 ## Prefer the CLI

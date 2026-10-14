@@ -24,16 +24,30 @@ import type {
   OperatorCsrfToken,
   OperatorError,
   OperatorOk,
+  OperatorPushHealth,
   OperatorSessionInfo,
 } from './responses.ts'
 
 import {err, ok} from '../../result.ts'
+import {OPERATOR_PUSH_HEALTH_STATUSES} from './responses.ts'
 
 // ---------------------------------------------------------------------------
 // OperatorSessionInfo
 // ---------------------------------------------------------------------------
 
-function hasValidOperatorSessionInfoShape(value: unknown): value is OperatorSessionInfo {
+function hasValidOperatorPushHealthShape(value: unknown): value is OperatorPushHealth {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
+  }
+
+  const candidate = value as Record<string, unknown>
+  return (
+    typeof candidate.status === 'string' &&
+    (OPERATOR_PUSH_HEALTH_STATUSES as readonly string[]).includes(candidate.status)
+  )
+}
+
+function hasValidOperatorSessionInfoShape(value: unknown): boolean {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return false
   }
@@ -51,16 +65,34 @@ function hasValidOperatorSessionInfoShape(value: unknown): value is OperatorSess
 /**
  * Parse an unknown value as OperatorSessionInfo.
  *
- * Returns ok(value) when the input has the required shape.
- * Returns err(Error) with a FIXED reason string when validation fails —
+ * Returns ok(rebuilt session) when the input has the required floor base shape
+ * (three fields, rebuilt explicitly — extra fields never ride through).
+ * Returns err(Error) with a FIXED reason string when base validation fails —
  * the error message never echoes any part of the input.
+ *
+ * The push-health `push` block is optional display-only metadata: present-and-
+ * valid it is copied onto the rebuild; absent it stays absent; present-but-
+ * malformed it is stripped rather than failing the session — the floor base
+ * remains authoritative, and absence must render as 'unknown', never a
+ * fabricated state.
  */
 export function parseOperatorSessionInfo(input: unknown): Result<OperatorSessionInfo, Error> {
   if (hasValidOperatorSessionInfoShape(input) === false) {
     return err(new Error('invalid operator session info shape'))
   }
 
-  return ok(input)
+  const candidate = input as Record<string, unknown>
+  const session: OperatorSessionInfo = {
+    operatorId: candidate.operatorId as number,
+    login: candidate.login as string,
+    expiresAt: candidate.expiresAt as number,
+  }
+
+  if (candidate.push !== undefined && hasValidOperatorPushHealthShape(candidate.push)) {
+    session.push = {status: candidate.push.status}
+  }
+
+  return ok(session)
 }
 
 // ---------------------------------------------------------------------------

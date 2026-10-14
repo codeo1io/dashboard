@@ -16,10 +16,17 @@ export const FETCH_TIMEOUT_MS = 10_000
 const MAX_ID_LENGTH = 512
 const MAX_DATE_LENGTH = 128
 
-/** 'blocked' and 'waiting_for_approval' are stream-only — never produced by the run-summary projector. */
+/**
+ * 'blocked' remains stream-only — never produced by the run-summary projector.
+ * waiting_for_approval/waiting_for_question are 1.11.0 registry overlays the
+ * gateway emits on the summary of a 'running' base while an approval/question
+ * is open (approval before question when both apply).
+ */
 export const VALID_RUN_SUMMARY_STATUSES = new Set([
   'queued',
   'running',
+  'waiting_for_approval',
+  'waiting_for_question',
   'succeeded',
   'failed',
   'cancelled',
@@ -29,6 +36,8 @@ export const VALID_RUN_SUMMARY_STATUSES = new Set([
 const STATUS_LABELS = {
   queued: 'Queued',
   running: 'Running',
+  waiting_for_approval: 'Waiting for approval',
+  waiting_for_question: 'Waiting for question',
   succeeded: 'Succeeded',
   failed: 'Failed',
   cancelled: 'Cancelled',

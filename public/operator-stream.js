@@ -29,8 +29,18 @@
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Contract version this client expects on the ready frame. */
+/** Floor contract version this client targets (1.9.0 baseline). */
 export const PINNED_CONTRACT_VERSION = '1.9.0'
+
+/**
+ * Contract versions whose ready frames this client accepts, ascending (the
+ * 1.10.0/1.11.0 ladder). 1.10.0 adds the session push-health block and exported
+ * push trigger kinds; 1.11.0 adds waiting_for_* run-summary overlays and question
+ * push deep links. A ready frame outside this list still fails closed into
+ * absorbing drift. Twin of src/gateway/operator-contract/version.ts
+ * ACCEPTED_CONTRACT_VERSIONS — test/static-assets.test.ts guards the pair.
+ */
+export const ACCEPTED_CONTRACT_VERSIONS = ['1.9.0', '1.10.0', '1.11.0']
 
 /** Base delay in milliseconds for exponential backoff. */
 export const RETRY_BASE_MS = 1000
@@ -1019,7 +1029,7 @@ export function nextStreamState(current, event) {
       if (current.connection === 'drift') {
         return current
       }
-      if (event.data.contractVersion !== PINNED_CONTRACT_VERSION) {
+      if (!ACCEPTED_CONTRACT_VERSIONS.includes(event.data.contractVersion)) {
         // Contract version mismatch — fail closed, clear all run state
         return {
           connection: 'drift',

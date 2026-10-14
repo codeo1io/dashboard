@@ -201,13 +201,20 @@ describe('parseRunSummaryList — cap and dedupe', () => {
 })
 
 describe('VALID_RUN_SUMMARY_STATUSES — exact index-only set', () => {
-  it('contains exactly the five index-only statuses', () => {
-    const expected = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled'])
+  it('contains exactly the seven index-only statuses (floor base plus the waiting overlays)', () => {
+    const expected = new Set([
+      'queued',
+      'running',
+      'waiting_for_approval',
+      'waiting_for_question',
+      'succeeded',
+      'failed',
+      'cancelled',
+    ])
     expect(VALID_RUN_SUMMARY_STATUSES).toEqual(expected)
   })
 
   it('does not contain stream-only statuses', () => {
-    expect(VALID_RUN_SUMMARY_STATUSES.has('waiting_for_approval')).toBe(false)
     expect(VALID_RUN_SUMMARY_STATUSES.has('blocked')).toBe(false)
   })
 })

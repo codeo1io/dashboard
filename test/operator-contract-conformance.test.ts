@@ -54,6 +54,7 @@ import {
   MAX_OPTIONS_PER_QUESTION,
   MAX_QUESTIONS_PER_REQUEST,
   OBSTRUCTION_KINDS,
+  ACCEPTED_CONTRACT_VERSIONS,
   OPERATOR_CONTRACT_VERSION,
   parseOperatorCancelResponse,
   parseOperatorCheckoutPreparation,
@@ -259,10 +260,35 @@ describe('OPERATOR_CONTRACT_VERSION', () => {
     }
   })
 
-  it('version.ts holds OPERATOR_CONTRACT_VERSION as the only literal outside comments', () => {
+  it('version.ts holds the accepted-version ladder as the only literals outside comments', () => {
     const text = readFileSync(join(CONTRACT_DIR, 'version.ts'), 'utf8')
     const code = blankRanges(text, commentRanges(text))
-    expect(findVersionLiterals(code)).toEqual([OPERATOR_CONTRACT_VERSION])
+    expect(findVersionLiterals(code)).toEqual([...ACCEPTED_CONTRACT_VERSIONS])
+  })
+
+  it('ACCEPTED_CONTRACT_VERSIONS is floor-first, deduplicated, strictly ascending', () => {
+    expect(ACCEPTED_CONTRACT_VERSIONS[0]).toBe(OPERATOR_CONTRACT_VERSION)
+    expect(new Set(ACCEPTED_CONTRACT_VERSIONS).size).toBe(ACCEPTED_CONTRACT_VERSIONS.length)
+    const ranks = ACCEPTED_CONTRACT_VERSIONS.map((version) => version.split('.').map((part) => Number(part)))
+    const compare = (a: number[], b: number[]): number => {
+      if (a[0] !== b[0]) return a[0] - b[0]
+      if (a[1] !== b[1]) return a[1] - b[1]
+      return a[2] - b[2]
+    }
+    const strictlyAscending = ranks.every((rank, index) => index === 0 || compare(ranks[index - 1] ?? rank, rank) < 0)
+    expect(strictlyAscending).toBe(true)
+  })
+
+  it('public/operator-stream.js twin carries the identical ladder and floor pin', () => {
+    const text = readFileSync(join('public', 'operator-stream.js'), 'utf8')
+    const ladderMatch = /export const ACCEPTED_CONTRACT_VERSIONS = \[([^\]]*)\]/.exec(text)
+    expect(ladderMatch).not.toBeNull()
+    const twinLadder = (ladderMatch?.[1] ?? '')
+      .match(/'[^']+'/g)
+      ?.map((literal) => literal.slice(1, -1))
+    expect(twinLadder).toEqual([...ACCEPTED_CONTRACT_VERSIONS])
+    const pinMatch = /export const PINNED_CONTRACT_VERSION = '([^']+)'/.exec(text)
+    expect(pinMatch?.[1]).toBe(OPERATOR_CONTRACT_VERSION)
   })
 })
 
@@ -822,6 +848,38 @@ describe('parseOperatorSessionInfo', () => {
     const input = {operatorId: 1, login: 'x', expiresAt: Infinity}
     const result = parseOperatorSessionInfo(input)
     expect(result.success).toBe(false)
+  })
+
+  it('copies a valid optional push-health block onto the rebuilt session', () => {
+    const result = parseOperatorSessionInfo({operatorId: 1, login: 'octocat', expiresAt: 1000, push: {status: 'ready'}})
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data).toStrictEqual({operatorId: 1, login: 'octocat', expiresAt: 1000, push: {status: 'ready'}})
+    }
+  })
+
+  it('omits the push-health block when absent', () => {
+    const result = parseOperatorSessionInfo({operatorId: 1, login: 'octocat', expiresAt: 1000})
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data).toStrictEqual({operatorId: 1, login: 'octocat', expiresAt: 1000})
+    }
+  })
+
+  it('strips a present-but-malformed push block instead of failing the session', () => {
+    const result = parseOperatorSessionInfo({operatorId: 1, login: 'octocat', expiresAt: 1000, push: {status: 'exploded'}})
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data).toStrictEqual({operatorId: 1, login: 'octocat', expiresAt: 1000})
+    }
+  })
+
+  it('treats a null push block as absent', () => {
+    const result = parseOperatorSessionInfo({operatorId: 1, login: 'octocat', expiresAt: 1000, push: null})
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data).toStrictEqual({operatorId: 1, login: 'octocat', expiresAt: 1000})
+    }
   })
 })
 

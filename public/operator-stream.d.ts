@@ -17,6 +17,7 @@
  */
 export declare function validateDynamicId(id: string): boolean
 
+export declare const ACCEPTED_CONTRACT_VERSIONS: readonly string[]
 export declare const PINNED_CONTRACT_VERSION: string
 export declare const RETRY_BASE_MS: number
 export declare const RETRY_FACTOR: number
