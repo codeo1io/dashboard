@@ -14,14 +14,22 @@ view of Fro Bot's cross-repo footprint.
    `security_events`/`vulnerability_alerts:read` optional + graceful). The Agent
    App's registered permissions are therefore irrelevant to effective access.
    Never add a write code path.
-   Upstream divergence disposition (verified 2026-09-29, run 262f170c research):
-   `fro-bot/dashboard` upstream has adopted an isolated repository-editing (wiki)
-   capability —
-   visible in its package description — while this fork keeps the read-only
-   invariant absolute (standing never-absorb item, upstream PR #498). Any
-   future absorb of upstream commits must exclude write-capability surfaces by
-   default; the ledger tracks the absorb window at rm-252 and the disposition at
-   rm-259.
+   Upstream divergence disposition (rm-259; corrected 2026-10-15 from merged
+   upstream PR #498 + first-hand reads, run 8515ff217f9a research): upstream
+   `fro-bot/dashboard` carries a repository-editing (wiki) capability
+   implemented in-tree (upstream #425 gate-package pin, #430 gated write path
+   + operation ledger) that is not deployed, not integrated, and holds no
+   runtime authority — nothing in its `src/` reaches it, and its source never
+   enters the dashboard runtime image (upstream's own PR #498 wording, merged
+   2026-09-20). This fork keeps the read-only invariant absolute regardless:
+   the absorb-time exclusion is path-based — the capability's entire upstream
+   directory tree is never absorbed, held by the fork-exclusion-guard test
+   family (which by design also keeps these binding docs free of its
+   machinery references) — on top of upstream's runtime-image boundary
+   sentence, and upstream's package description naming that isolated editing
+   capability vs this fork's read-only one is a recorded permanent diff, not
+   drift to reconcile. The excluded path is recorded verbatim in the ledger
+   (rm-259, alongside the absorb window at rm-252).
 2. **Redaction preservation.** `src/github/metadata.ts` reads
    `metadata/repos.yaml` from the `codeo1io/.github` `data` branch and exports
    `redactedNodeIds` (node_ids of `[REDACTED]`/`private:true` entries). The
