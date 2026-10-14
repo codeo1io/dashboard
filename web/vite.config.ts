@@ -16,8 +16,11 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       // injectManifest ships our hand-written SW (web/src/sw.ts) — a
-      // kill-switch that purges caches and unregisters itself. It performs no
-      // fetch routing and no caching; the emitted precache manifest is inert.
+      // minimal push-only worker. It registers no fetch handler, no precache,
+      // and no navigation route (the navigation interception that hid the
+      // auth redirect was severed deliberately in dfa3f80); it renders push
+      // notifications and focuses the dashboard on click. The subscribe flow
+      // registers it on explicit operator opt-in.
       strategies: 'injectManifest',
       srcDir: 'src',
       filename: 'sw.ts',
@@ -41,9 +44,8 @@ export default defineConfig({
         // Rewrite the precache manifest entry for index.html → '/' so the
         // generated workbox manifest stays consistent with the server's '/'
         // route (GET /index.html has no route and 404s). The deployed SW is a
-        // kill-switch (web/src/sw.ts) that purges caches, unregisters itself,
-        // and never precaches or serves — this transform only shapes the
-        // manifest the build emits.
+        // minimal push-only worker (web/src/sw.ts) that never precaches or
+        // serves — this transform only shapes the manifest the build emits.
         manifestTransforms: [
           (entries) => {
             const manifest = entries.map((entry) =>

@@ -31,7 +31,7 @@
         <section>
           <h2 class="mb-4 text-2xl font-semibold tracking-tight text-text sm:text-3xl">Push is optional</h2>
           <p class="text-pretty">Notifications are off until you turn them on, and turning them on requires explicit permission from your browser.</p>
-          <p class="mt-6 text-pretty">They cover three events: a run is waiting for your approval, a run is waiting for your answer, and a run failed. Nothing else produces a notification. You can turn them off at any time from the dashboard.</p>
+          <p class="mt-6 text-pretty">They cover three events: a run is waiting for your approval, a run is waiting for your answer, and a run failed. Nothing else produces a notification. Clicking a notification opens or focuses the dashboard. You can turn them off at any time from the dashboard.</p>
         </section>
 
         <section>
@@ -47,7 +47,7 @@
 
         <section>
           <h2 class="mb-4 text-2xl font-semibold tracking-tight text-text sm:text-3xl">What notifications contain</h2>
-          <p class="text-pretty">Notification payloads use fixed, neutral copy plus a small set of allowlisted failure labels. They never include repository names, prompts, run identifiers, run output, endpoints, signing keys, tokens, cookies, or session data.</p>
+          <p class="text-pretty">Notification payloads use fixed, dashboard-owned copy plus a small set of allowlisted failure labels, each mapped to fixed reason text. The gateway’s own title and body text are never rendered, for known and unrecognized event kinds alike, and every other payload field is always discarded. They never include repository names, prompts, run identifiers, run output, endpoints, signing keys, tokens, cookies, or session data.</p>
         </section>
 
         <section>
@@ -84,7 +84,7 @@
       </div>
 
       <footer class="mt-16 border-t border-border-muted pt-6 text-sm text-text-subtle sm:mt-24">
-        Last updated 13 October 2026.
+        Last updated 15 October 2026.
       </footer>
     </main>
   </body>
