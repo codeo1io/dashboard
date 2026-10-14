@@ -101,19 +101,37 @@ describe('parseRunSummaryItem — error paths', () => {
     expect(result.success).toBe(false)
   })
 
-  it('rejects unknown status', () => {
+  it('keeps an unrecognized status, flagged — never drops the run (rm-1408 forward tolerance)', () => {
     const result = parseRunSummaryItem(makeValidSummary({status: 'unknown-status'}))
-    expect(result.success).toBe(false)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.status).toBe('unknown-status')
+      expect(result.data.statusFlagged).toBe(true)
+    }
   })
 
-  it('rejects stream-only status: waiting_for_approval', () => {
+  it('parses 1.11.0 summary status waiting_for_approval as a first-class status', () => {
     const result = parseRunSummaryItem(makeValidSummary({status: 'waiting_for_approval'}))
-    expect(result.success).toBe(false)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.status).toBe('waiting_for_approval')
+      expect(result.data.statusFlagged).toBeUndefined()
+    }
   })
 
-  it('rejects stream-only status: blocked', () => {
+  it('keeps stream-only status blocked as a flagged summary rather than dropping it', () => {
     const result = parseRunSummaryItem(makeValidSummary({status: 'blocked'}))
-    expect(result.success).toBe(false)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.status).toBe('blocked')
+      expect(result.data.statusFlagged).toBe(true)
+    }
+  })
+
+  it('still rejects a non-string or empty status', () => {
+    expect(parseRunSummaryItem(makeValidSummary({status: 7})).success).toBe(false)
+    expect(parseRunSummaryItem(makeValidSummary({status: ''})).success).toBe(false)
+    expect(parseRunSummaryItem(makeValidSummary({status: 'x'.repeat(513)})).success).toBe(false)
   })
 
   it('rejects missing createdAt', () => {
@@ -200,15 +218,27 @@ describe('parseRunSummaryList — cap and dedupe', () => {
   })
 })
 
-describe('VALID_RUN_SUMMARY_STATUSES — exact index-only set', () => {
-  it('contains exactly the five index-only statuses', () => {
-    const expected = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled'])
+describe('VALID_RUN_SUMMARY_STATUSES — exact set (1.11.0 forward tolerance)', () => {
+  it('contains exactly the seven recognized statuses', () => {
+    const expected = new Set([
+      'queued',
+      'running',
+      'succeeded',
+      'failed',
+      'cancelled',
+      'waiting_for_approval',
+      'waiting_for_question',
+    ])
     expect(VALID_RUN_SUMMARY_STATUSES).toEqual(expected)
   })
 
   it('does not contain stream-only statuses', () => {
-    expect(VALID_RUN_SUMMARY_STATUSES.has('waiting_for_approval')).toBe(false)
     expect(VALID_RUN_SUMMARY_STATUSES.has('blocked')).toBe(false)
+  })
+
+  it('is in lockstep with the vendored server contract set (three-way parity, rm-1408)', async () => {
+    const {VALID_RUN_SUMMARY_STATUSES: serverSet} = await import('../src/gateway/operator-contract/run-summary.ts')
+    expect([...serverSet].sort()).toEqual([...VALID_RUN_SUMMARY_STATUSES].sort())
   })
 })
 
@@ -225,8 +255,34 @@ describe('buildRunSafeView — closed safe-view boundary', () => {
     expect(keys).toContain('runId')
     expect(keys).toContain('repo')
     expect(keys).toContain('status')
+    expect(keys).toContain('statusClass')
+    expect(keys).toContain('statusFlagged')
     expect(keys).toContain('createdAt')
     expect(keys).toContain('statusLabel')
+  })
+
+  it('maps recognized statuses to kebab-case statusClass matching the stream CSS vocabulary', () => {
+    const approval = buildRunSafeView({runId: 'r1', repo: 'fro-bot/agent', status: 'waiting_for_approval', createdAt: '2026-06-26T12:00:00.000Z'})
+    expect(approval.statusClass).toBe('waiting-for-approval')
+    expect(approval.statusLabel).toBe('Waiting for approval')
+    expect(approval.statusFlagged).toBe(false)
+
+    const question = buildRunSafeView({runId: 'r1', repo: 'fro-bot/agent', status: 'waiting_for_question', createdAt: '2026-06-26T12:00:00.000Z'})
+    expect(question.statusClass).toBe('waiting-for-question')
+    expect(question.statusLabel).toBe('Waiting for question')
+  })
+
+  it('flags unrecognized statuses: statusClass unknown, raw string only in the text label', () => {
+    const view = buildRunSafeView({
+      runId: 'run-abc-001',
+      repo: 'fro-bot/agent',
+      status: 'some-future-status',
+      statusFlagged: true,
+      createdAt: '2026-06-26T12:00:00.000Z',
+    })
+    expect(view.statusFlagged).toBe(true)
+    expect(view.statusClass).toBe('unknown')
+    expect(view.statusLabel).toBe('some-future-status')
   })
 
   it('excludes unknown fields from the safe view', () => {
@@ -378,7 +434,7 @@ describe('buildRunSafeView — reasonLabel', () => {
       failureKind: 'session-error',
     }
     const view = buildRunSafeView(summary)
-    const allowedKeys = new Set(['runId', 'repo', 'status', 'statusLabel', 'createdAt', 'updatedAt', 'reasonLabel'])
+    const allowedKeys = new Set(['runId', 'repo', 'status', 'statusClass', 'statusFlagged', 'statusLabel', 'createdAt', 'updatedAt', 'reasonLabel'])
     for (const key of Object.keys(view)) {
       expect(allowedKeys.has(key)).toBe(true)
     }
@@ -723,11 +779,25 @@ describe('parser parity — JS parser mirrors vendored TS parser behavior', () =
     expect(result.success).toBe(true)
   })
 
-  it('invalid status: JS parser rejects same invalid statuses as TS parser', () => {
-    const invalidStatuses = ['waiting_for_approval', 'blocked', 'unknown', 'RUNNING', '']
-    for (const status of invalidStatuses) {
+  it('status handling: JS parser accepts every TS-recognized status and keeps unknown ones flagged (rm-1408)', async () => {
+    const {VALID_RUN_SUMMARY_STATUSES: serverSet} = await import('../src/gateway/operator-contract/run-summary.ts')
+    // Every status the vendored TS contract recognizes must parse clean in JS.
+    for (const status of serverSet) {
       const result = parseRunSummaryItem(makeValidSummary({status}))
-      expect(result.success, `status "${status}" should be rejected`).toBe(false)
+      expect(result.success, `status "${status}" should be accepted`).toBe(true)
+      if (result.success) expect(result.data.statusFlagged).toBeUndefined()
+    }
+    // Unknown statuses diverge BY DESIGN: the browser parser keeps them flagged
+    // (forward tolerance) while the vendored mirror rejects them — a newer
+    // gateway must never make a run vanish from the restored index.
+    for (const status of ['blocked', 'unknown', 'RUNNING', 'some-future-status']) {
+      const result = parseRunSummaryItem(makeValidSummary({status}))
+      expect(result.success, `status "${status}" should be kept flagged`).toBe(true)
+      if (result.success) expect(result.data.statusFlagged).toBe(true)
+    }
+    // Malformed statuses are still hard-rejected.
+    for (const status of ['', 7, null]) {
+      expect(parseRunSummaryItem(makeValidSummary({status})).success).toBe(false)
     }
   })
 
@@ -3237,12 +3307,15 @@ describe('question region — fetched cards (renderRunCard)', () => {
     expect(list).toContain('QUESTIONS_ROLE')
   })
 
-  it('regression: the run-summary parser still rejects waiting statuses', () => {
-    for (const status of ['waiting_for_question', 'waiting_for_approval', 'blocked']) {
+  it('regression: waiting statuses parse as first-class summaries and blocked stays flagged (rm-1408)', () => {
+    for (const status of ['waiting_for_question', 'waiting_for_approval']) {
       const parsed = parseRunSummaryItem(makeValidSummary({runId: 'run-q-reject-001', status}))
-      expect(parsed.success).toBe(false)
+      expect(parsed.success, `status "${status}" should be accepted`).toBe(true)
     }
-    expect(VALID_RUN_SUMMARY_STATUSES.has('waiting_for_question')).toBe(false)
+    const blocked = parseRunSummaryItem(makeValidSummary({runId: 'run-q-reject-001', status: 'blocked'}))
+    expect(blocked.success).toBe(true)
+    if (blocked.success) expect(blocked.data.statusFlagged).toBe(true)
+    expect(VALID_RUN_SUMMARY_STATUSES.has('waiting_for_question')).toBe(true)
   })
 })
 

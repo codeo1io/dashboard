@@ -16,13 +16,21 @@ export const FETCH_TIMEOUT_MS = 10_000
 const MAX_ID_LENGTH = 512
 const MAX_DATE_LENGTH = 128
 
-/** 'blocked' and 'waiting_for_approval' are stream-only — never produced by the run-summary projector. */
+/**
+ * Run-summary statuses the index parser recognizes. 'waiting_for_approval' and
+ * 'waiting_for_question' join the projector's output at gateway contract 1.11.0
+ * (fro-bot/agent v0.122.1+); this parser is forward-tolerant: a status string it
+ * does not recognize is KEPT and flagged, never dropped (rm-1408) — a newer
+ * gateway must never make a run silently vanish from the restored index.
+ */
 export const VALID_RUN_SUMMARY_STATUSES = new Set([
   'queued',
   'running',
   'succeeded',
   'failed',
   'cancelled',
+  'waiting_for_approval',
+  'waiting_for_question',
 ])
 
 /** Render labels from this map, never the raw wire string. */
@@ -32,6 +40,8 @@ const STATUS_LABELS = {
   succeeded: 'Succeeded',
   failed: 'Failed',
   cancelled: 'Cancelled',
+  waiting_for_approval: 'Waiting for approval',
+  waiting_for_question: 'Waiting for question',
 }
 
 /**
@@ -114,9 +124,14 @@ export function parseRunSummaryItem(input) {
     return {success: false, error: 'invalid run summary shape'}
   }
 
-  if (typeof candidate.status !== 'string' || !VALID_RUN_SUMMARY_STATUSES.has(candidate.status)) {
+  if (typeof candidate.status !== 'string' || candidate.status.length === 0 || candidate.status.length > MAX_ID_LENGTH) {
     return {success: false, error: 'invalid run summary shape'}
   }
+
+  // Forward tolerance (rm-1408): a status string this parser does not recognize
+  // is kept and flagged rather than rejected — dropping it would silently remove
+  // the run from the restored index exactly when a newer gateway is deployed.
+  const statusFlagged = !VALID_RUN_SUMMARY_STATUSES.has(candidate.status)
 
   if (typeof candidate.createdAt !== 'string' || candidate.createdAt.length > MAX_DATE_LENGTH) {
     return {success: false, error: 'invalid run summary shape'}
@@ -139,6 +154,7 @@ export function parseRunSummaryItem(input) {
     runId: candidate.runId,
     repo: candidate.repo,
     status: candidate.status,
+    ...(statusFlagged ? {statusFlagged} : {}),
     createdAt: candidate.createdAt,
     ...('updatedAt' in candidate ? {updatedAt: candidate.updatedAt} : {}),
     ...(failureKind === undefined ? {} : {failureKind}),
@@ -180,9 +196,16 @@ export function parseRunSummaryList(input) {
  * construction. reasonLabel is a pre-resolved dashboard display label — never the
  * raw failureKind — and is present only for a failed summary carrying a known
  * failureKind. Non-failed statuses ignore any failureKind.
+ *
+ * statusClass is the renderer-facing status token in the stream's kebab-case
+ * convention (operator-stream.js:3797) — 'unknown' for a flagged, unrecognized
+ * status; the raw string is echoed only in the safe text label, never into a
+ * className. statusFlagged marks exactly that case.
  */
 export function buildRunSafeView(summary) {
   const statusLabel = STATUS_LABELS[summary.status] ?? summary.status
+  const statusFlagged = summary.statusFlagged === true
+  const statusClass = statusFlagged ? 'unknown' : summary.status.replaceAll('_', '-')
   const reasonLabel =
     summary.status === 'failed' && summary.failureKind !== undefined
       ? FAILURE_REASON_LABELS[summary.failureKind]
@@ -192,6 +215,8 @@ export function buildRunSafeView(summary) {
     runId: summary.runId,
     repo: summary.repo,
     status: summary.status,
+    statusClass,
+    statusFlagged,
     statusLabel,
     createdAt: summary.createdAt,
     ...('updatedAt' in summary ? {updatedAt: summary.updatedAt} : {}),
@@ -614,7 +639,7 @@ function updateCardInPlace(card, view) {
   if (typeof card.querySelector === 'function') {
     const statusEl = card.querySelector('[data-role="run-status"]')
     if (statusEl !== null && statusEl !== undefined) {
-      statusEl.className = `run-status status-${view.status}`
+      statusEl.className = `run-status status-${view.statusClass}`
       statusEl.textContent = view.statusLabel
     }
 
@@ -667,7 +692,7 @@ function renderRunCard(view, onSelectRun) {
   statusGroup.dataset.role = 'run-status-group'
 
   const statusSpan = document.createElement('span')
-  statusSpan.className = `run-status status-${view.status}`
+  statusSpan.className = `run-status status-${view.statusClass}`
   statusSpan.dataset.role = 'run-status'
   statusSpan.textContent = view.statusLabel
   statusGroup.append(statusSpan)
