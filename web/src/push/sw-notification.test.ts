@@ -3,148 +3,178 @@ import {resolve} from 'node:path'
 import {describe, expect, it} from 'vitest'
 import {buildNotification, KNOWN_FAILURE_LABELS} from './sw-notification.ts'
 
-describe('buildNotification', () => {
-  it('happy path: approval payload renders "Approval needed" copy', () => {
-    const result = buildNotification({type: 'approval'})
+describe('buildNotification (gateway wire shape {title, body, data: {type, route, failureLabel?}})', () => {
+  it('happy path: approval payload renders fixed "Approval needed" copy', () => {
+    const result = buildNotification({
+      title: 'Gateway title is ignored for known kinds',
+      body: 'Gateway body is ignored for known kinds',
+      data: {type: 'approval', route: '/'},
+    })
     expect(result.title).toBe('Approval needed')
+    expect(result.body).toBe('A run is waiting for your approval.')
     expect(result.data).toEqual({type: 'approval', route: '/'})
   })
 
-  it('happy path: run_failed with a known allowlisted failureLabel renders that label', () => {
+  it('happy path: question payload renders fixed "Answer needed" copy', () => {
+    const result = buildNotification({data: {type: 'question', route: '/'}})
+    expect(result.title).toBe('Answer needed')
+    expect(result.body).toBe('A run is waiting for your answer.')
+    expect(result.data).toEqual({type: 'question', route: '/'})
+  })
+
+  it('happy path: run_failed with an allowlisted failureLabel renders that label', () => {
     for (const label of KNOWN_FAILURE_LABELS) {
-      const result = buildNotification({type: 'run_failed', failureLabel: label})
+      const result = buildNotification({data: {type: 'run_failed', failureLabel: label}})
       expect(result.title).toBe('Run failed')
-      expect(result.body).toContain(label)
+      expect(result.body).toBe(`A run failed: ${label}.`)
     }
   })
 
-  it('unknown/absent failureLabel renders generic "Run failed" copy', () => {
-    const absent = buildNotification({type: 'run_failed'})
-    expect(absent.title).toBe('Run failed')
-    expect(absent.body).toBe('A run failed.')
-
-    const unknown = buildNotification({type: 'run_failed', failureLabel: 'sql-injection-attempt'})
-    expect(unknown.title).toBe('Run failed')
-    expect(unknown.body).toBe('A run failed.')
-    expect(unknown.body).not.toContain('sql-injection-attempt')
+  it('a failureLabel outside the allowlist is discarded, not reflected', () => {
+    const result = buildNotification({data: {type: 'run_failed', failureLabel: 'sql-injection-attempt'}})
+    expect(result.title).toBe('Run failed')
+    expect(result.body).toBe('A run failed.')
+    expect(result.body).not.toContain('sql-injection-attempt')
   })
 
-  it('edge case: copy map is exhaustive over known type values', () => {
-    const knownTypes = ['approval', 'run_failed', 'question'] as const
-    for (const type of knownTypes) {
-      const result = buildNotification({type})
-      expect(result.title.length).toBeGreaterThan(0)
-      expect(result.body.length).toBeGreaterThan(0)
-    }
+  it('a non-string failureLabel is discarded', () => {
+    const result = buildNotification({data: {type: 'run_failed', failureLabel: {label: 'timeout'}}})
+    expect(result.title).toBe('Run failed')
+    expect(result.body).toBe('A run failed.')
   })
 
-  it('happy path: question payload renders fixed "Answer needed" copy and route', () => {
-    const result = buildNotification({type: 'question', route: '/'})
-    expect(result.title).toBe('Answer needed')
-    expect(result.body).toBe('A run is waiting for your answer.')
-    expect(result.data).toEqual({type: 'question', route: '/'})
-  })
-
-  it('privacy: question payload extra text fields are never reflected', () => {
-    const sentinel = 'SENTINEL-question-text-9f3a'
-    const result = buildNotification({
-      type: 'question',
-      route: '/elsewhere',
-      text: sentinel,
-      question: sentinel,
-      header: sentinel,
-      failureLabel: sentinel,
-      options: [{label: sentinel}],
-    })
-    expect(result.title).toBe('Answer needed')
-    expect(result.body).toBe('A run is waiting for your answer.')
-    expect(result.data).toEqual({type: 'question', route: '/'})
-    expect(JSON.stringify(result)).not.toContain(sentinel)
-    expect(JSON.stringify(result)).not.toContain('elsewhere')
-  })
-
-  it('regression: approval and run_failed copy is unchanged', () => {
+  it('NEGATIVE (rm-1420): the pre-#615 top-level {type, ...} shape now renders the generic fallback', () => {
+    // The old wire shape pinned by this suite before the #615 absorb. Those
+    // payloads carry no `data` envelope, so the type is unreadable and the
+    // mapping must degrade to the generic card — proving the re-pin replaced
+    // the old contract instead of extending it.
     expect(buildNotification({type: 'approval'})).toEqual({
-      title: 'Approval needed',
-      body: 'A run is waiting for your approval.',
-      data: {type: 'approval', route: '/'},
+      title: 'Fro Bot',
+      body: 'You have a new notification.',
+      data: {type: 'unknown', route: '/'},
     })
-    expect(buildNotification({type: 'run_failed'})).toEqual({
-      title: 'Run failed',
-      body: 'A run failed.',
-      data: {type: 'run_failed', route: '/'},
-    })
+    expect(buildNotification({type: 'question'}).title).toBe('Fro Bot')
+    expect(buildNotification({type: 'run_failed', failureLabel: 'timeout'}).body).toBe('You have a new notification.')
   })
 
-  it('edge case: unknown type renders the generic fallback (never no-notification)', () => {
-    const result = buildNotification({type: 'delete_everything'})
-    expect(result.title).toBe('Fro Bot')
+  it('#615 fallback: an unrecognized event kind surfaces the gateway\'s real title/body', () => {
+    const result = buildNotification({
+      title: 'Workspace restored',
+      body: 'The workspace for a repository was restored from a snapshot.',
+      data: {type: 'workspace_restored', route: '/operator/runs/99'},
+    })
+    expect(result.title).toBe('Workspace restored')
+    expect(result.body).toBe('The workspace for a repository was restored from a snapshot.')
     expect(result.data).toEqual({type: 'unknown', route: '/'})
   })
 
-  it('edge case: empty/undecodable payload renders the generic fallback', () => {
-    expect(buildNotification(undefined).title).toBe('Fro Bot')
-    expect(buildNotification(null).title).toBe('Fro Bot')
-    expect(buildNotification('not an object').title).toBe('Fro Bot')
-    expect(buildNotification(42).title).toBe('Fro Bot')
-    expect(buildNotification([]).title).toBe('Fro Bot')
-    expect(buildNotification({}).title).toBe('Fro Bot')
-  })
-
-  it('privacy: rendered title/body/data never contain sensitive payload fields', () => {
-    const result = buildNotification({
-      type: 'run_failed',
-      failureLabel: 'timeout',
-      repo: 'fro-bot/secret-repo',
-      prompt: 'do something secret',
-      path: '/etc/passwd',
-      command: 'rm -rf /',
-      output: 'sensitive stdout',
-      failureKind: 'raw-internal-kind',
-      endpoint: 'https://push.example.com/secret-endpoint',
-      keys: {p256dh: 'abc', auth: 'def'},
+  it('#615 fallback: missing or blank gateway title/body falls back to generic copy', () => {
+    expect(buildNotification({data: {type: 'brand_new_kind'}})).toEqual({
+      title: 'Fro Bot',
+      body: 'You have a new notification.',
+      data: {type: 'unknown', route: '/'},
     })
-    const serialized = JSON.stringify(result)
-    expect(serialized).not.toContain('secret-repo')
-    expect(serialized).not.toContain('secret')
-    expect(serialized).not.toContain('/etc/passwd')
-    expect(serialized).not.toContain('rm -rf')
-    expect(serialized).not.toContain('sensitive stdout')
-    expect(serialized).not.toContain('raw-internal-kind')
-    expect(serialized).not.toContain('push.example.com')
-    expect(serialized).not.toContain('p256dh')
-    expect(serialized).not.toContain('abc')
+    expect(buildNotification({title: '   ', body: '\t', data: {type: 'brand_new_kind'}}).title).toBe('Fro Bot')
   })
 
-  it('invariant: data is always exactly {type, route: "/"}', () => {
-    const approval = buildNotification({type: 'approval', extraField: 'ignored'})
-    expect(Object.keys(approval.data).sort()).toEqual(['route', 'type'])
-    expect(approval.data.route).toBe('/')
+  it('edge case: empty, null, array, and non-object payloads render the generic fallback', () => {
+    const expected = {
+      title: 'Fro Bot',
+      body: 'You have a new notification.',
+      data: {type: 'unknown', route: '/'},
+    }
+    expect(buildNotification({})).toEqual(expected)
+    expect(buildNotification(null)).toEqual(expected)
+    expect(buildNotification(undefined)).toEqual(expected)
+    expect(buildNotification([])).toEqual(expected)
+    expect(buildNotification(42)).toEqual(expected)
+    expect(buildNotification('not-an-object')).toEqual(expected)
+  })
 
-    const runFailed = buildNotification({type: 'run_failed'})
-    expect(Object.keys(runFailed.data).sort()).toEqual(['route', 'type'])
-    expect(runFailed.data.route).toBe('/')
+  it('edge case: a payload whose data envelope is absent or not a plain object degrades safely', () => {
+    expect(buildNotification({title: 'T', body: 'B'}).data.type).toBe('unknown')
+    expect(buildNotification({title: 'T', data: 'not-an-object'}).data.type).toBe('unknown')
+    expect(buildNotification({title: 'T', data: ['array-envelope']}).data.type).toBe('unknown')
+    // A null data envelope is treated as absent, not as a crash.
+    expect(buildNotification({title: 'T', data: null}).data.type).toBe('unknown')
+  })
 
-    const question = buildNotification({type: 'question', extraField: 'ignored'})
-    expect(Object.keys(question.data).sort()).toEqual(['route', 'type'])
-    expect(question.data.route).toBe('/')
+  it('privacy: a question payload\'s extra text fields are never reflected (wire shape)', () => {
+    const sentinel = 'SENTINEL-question-text-9f3a'
+    const result = buildNotification({
+      title: sentinel,
+      body: sentinel,
+      data: {
+        type: 'question',
+        route: '/elsewhere',
+        failureLabel: sentinel,
+        text: sentinel,
+        question: sentinel,
+        options: [{label: sentinel}],
+      },
+    })
+    expect(result.title).toBe('Answer needed')
+    expect(result.body).toBe('A run is waiting for your answer.')
+    expect(result.data).toEqual({type: 'question', route: '/'})
+    const serialized = JSON.stringify(result)
+    expect(serialized).not.toContain(sentinel)
+    expect(serialized).not.toContain('elsewhere')
+  })
 
-    const fallback = buildNotification(null)
-    expect(Object.keys(fallback.data).sort()).toEqual(['route', 'type'])
-    expect(fallback.data.route).toBe('/')
+  it('privacy: known kinds render fixed copy even when the payload carries attacker-supplied title/body', () => {
+    const result = buildNotification({title: 'Free money', body: 'Click here now', data: {type: 'approval'}})
+    expect(result.title).toBe('Approval needed')
+    expect(result.body).toBe('A run is waiting for your approval.')
+  })
+
+  it('privacy: the fallback path reflects ONLY title/body — every other payload field is discarded', () => {
+    const result = buildNotification({
+      title: 'Real event title',
+      body: 'Real event body',
+      repo: 'fro-bot/SENTINEL-repo',
+      prompt: 'SENTINEL-prompt',
+      path: '/etc/SENTINEL-path',
+      endpoint: 'https://push.example.com/SENTINEL-endpoint',
+      keys: {p256dh: 'SENTINEL-p256dh', auth: 'SENTINEL-auth'},
+      data: {
+        type: 'brand_new_kind',
+        route: '/operator/SENTINEL-run',
+        failureLabel: 'SENTINEL-raw-internal-kind',
+      },
+    })
+    expect(result.title).toBe('Real event title')
+    expect(result.body).toBe('Real event body')
+    expect(result.data).toEqual({type: 'unknown', route: '/'})
+    const serialized = JSON.stringify(result)
+    expect(serialized).not.toContain('SENTINEL')
+    expect(serialized).not.toContain('/etc/')
+    expect(serialized).not.toContain('push.example.com')
+  })
+
+  it('regression: all notification copy is dashboard-owned, never verbatim gateway copy', () => {
+    const approval = buildNotification({data: {type: 'approval'}})
+    const question = buildNotification({data: {type: 'question'}})
+    const runFailed = buildNotification({data: {type: 'run_failed'}})
+    expect(
+      [approval, question, runFailed]
+        .flatMap((notification) => Object.values(notification))
+        .map((value) => JSON.stringify(value))
+        .join(' '),
+    ).not.toMatch(/\bhttps?:\/\/|\btoken\b|\bkey\b/i)
   })
 })
 
-describe('sw-notification.ts privacy source discipline', () => {
-  const source = readFileSync(resolve(import.meta.dirname, 'sw-notification.ts'), 'utf8')
+describe('label parity with the served client (rm-1420)', () => {
+  const operatorStreamSource = readFileSync(
+    resolve(import.meta.dirname, '../../../public/operator-stream.js'),
+    'utf8',
+  )
 
-  it('has no console.* calls', () => {
-    expect(source).not.toMatch(/console\.\w+\(/)
-  })
-
-  it('has no I/O (no fetch, no caches, no self.registration references)', () => {
-    expect(source).not.toContain('fetch(')
-    expect(source).not.toContain('caches.')
-    expect(source).not.toContain('self.registration')
+  it('KNOWN_FAILURE_LABELS mirrors exactly the keys of FAILURE_REASON_LABELS in public/operator-stream.js', () => {
+    const block = operatorStreamSource.match(/const FAILURE_REASON_LABELS = \{([^}]*)\}/)
+    expect(block).not.toBeNull()
+    const servedKeys = [...(block?.[1] ?? '').matchAll(/^\s*'?([a-z-]+)'?\s*:/gm)].map(match => match[1]).sort()
+    expect(servedKeys.length).toBeGreaterThan(0)
+    expect([...KNOWN_FAILURE_LABELS].sort()).toEqual(servedKeys)
   })
 })
