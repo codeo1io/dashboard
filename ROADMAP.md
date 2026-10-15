@@ -181,7 +181,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### rm-779
-- id: `rm-779` | track: reliability | priority: 72.0 | status: in_progress
+- id: `rm-779` | track: reliability | priority: 72.0 | status: implemented (restored 2026-10-15 at the integrate of run a794d381b4f0, conflict case 32ae178ce778—cve-tripwire.yaml's ARG-derived pin cure (implement 45ecba5e, base 88e423a, adopted-by-content from sibling 533ad14f) was dropped as adoption collateral by the October upstream-adoption lineage; this merge restores the workflow whole — resolve step derives the pin from the Dockerfile ARG, fail-closed, runs-on ubuntu-24.04 folding rm-188 — with its companion zlib triage doc; first-fire evidence stays pending the account-level Actions re-enable; wider adoption collateral observed at this integrate and deliberately NOT restored here — out of this batch's stewardship scope, disposition recorded for a separate remediation batch: .github/workflows/lockfile-guard.yaml (wall-family lockfile gate), seven fork-only test files (both read-only-invariant guards, roadmap-integrity-guard, listener-store-degradation, operator-contract-window, robots-wellknown, server-entry-point), web/src/shell/ErrorBoundary.*, web/src/api/fetch-timeout.*, scripts/roadmap-census.ts, docs/runbooks/release.md — restoring the tests without their dropped subject ecosystem would red the suite, so the class is recorded rather than patched)
 - acceptance: 
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -356,7 +356,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Transitive dev-dep vulnerability detection has no automation path (no audit gate; version-updates are direct-only; floors beat enabled security updates)
-- id: `rm-278` | track: reliability | priority: 52.0 | status: in_progress
+- id: `rm-278` | track: reliability | priority: 52.0 | status: implemented (comment restored 2026-10-16 at the integrate of run a794d381b4f0 — audit.yaml's corrected dependabot-coverage header (dependabot DOES open transitive bumps; PR #345 closed-unmerged evidence, corrected 2026-10-06 by this item's rider) had been dropped as adoption collateral by the October upstream-adoption lineage; this merge restores it verbatim alongside the item's ledger truth)
 - acceptance: a scheduled `pnpm audit --recursive` gate exists (design respects the epoch constraint — no heavyweight CI rider: e.g. a weekly low-timeout job that files a visible signal on findings, not a new required check) OR a recorded decision declines it and names the manual cadence that replaces it; dependabot.yml's header comment states the floor limitation (security updates cannot re-resolve past a satisfying override) instead of presuming coverage; the dependabot_security_updates toggle state is recorded in the ledger with a dated probe so the next assess does not re-litigate the crossed-read history
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -486,7 +486,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Release-pipeline failure triage: promote-readback exhaustion and build-and-push
-- id: `rm-691` | track: reliability | priority: 45.0 | status: in_progress
+- id: `rm-691` | track: reliability | priority: 45.0 | status: implemented (restored 2026-10-16 at the integrate of run a794d381b4f0 — the landed END-pattern digest readbacks in release.yaml (run b2a3ae9bf75b implement, 2026-10-07: CalVer + promote-latest sites, four-red-run provenance) were dropped as adoption collateral by the October upstream-adoption lineage; this merge restores both readback sites with their provenance comments)
 - acceptance: root-cause each class with run-log citations (promote-readback: the GHCR propagation-latency hypothesis tested against the readback target + timing, not assumed; build-and-push: distinguish transient registry/daemon failure from systematic); if propagation latency is confirmed, the promote step gains graduated backoff or a manifest-registry-API digest assertion (never a blind re-push that could race the CalVer tag), behind the existing tag-race guards; a triage row (run ids + decision) lands in the release runbook or the batch doc; the next release run at main is green OR the residual class is documented with an infra/upstream reference; guard/smoke/Trivy layers untouched.
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -591,7 +591,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### codeql-action pin refresh to current v4.38.x — was the lone stale action pin
-- id: `rm-650` | track: reliability | priority: 40.0 | status: in_progress
+- id: `rm-650` | track: reliability | priority: 40.0 | status: implemented (digest 24c5418… pinned at v4.38.3 on all four sites — the digest landed via the upstream adoption, the precise-version comment unified at the integrate of run a794d381b4f0, 2026-10-15)
 - acceptance: 
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -736,7 +736,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### ubuntu-latest alias-flip guard for non-containerized jobs
-- id: `rm-188` | track: reliability | priority: 33.0 | status: in_progress
+- id: `rm-188` | track: reliability | priority: 33.0 | status: implemented (the fleet's last non-comment runs-on: ubuntu-latest site rode cve-tripwire.yaml's restoration at the integrate of run a794d381b4f0, 2026-10-15 — full .github/ audit now shows pinned ubuntu-24.04 only)
 - acceptance: 
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -1116,7 +1116,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Re-pin pnpm/action-setup v6.0.10 → v6.1.0 at its three workflow sites
-- id: `rm-761` | track: reliability | priority: 20.0 | status: in_progress
+- id: `rm-761` | track: reliability | priority: 20.0 | status: implemented (restored 2026-10-15 at the integrate of run a794d381b4f0 — pnpm/action-setup@ea17c68… # v6.1.0 re-unified at all three sites (visual.yaml, audit.yaml, .github/actions/setup/action.yaml); the October adoption fold had regressed the landed re-pin to 0977fd9… # v6)
 - acceptance: 
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
