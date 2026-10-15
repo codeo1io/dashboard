@@ -4,7 +4,14 @@
  */
 
 /** Index-only status set. Stream-only statuses (blocked, waiting_for_approval) are excluded. */
-export type RunSummaryStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+export type RunSummaryStatus =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'waiting_for_approval'
+  | 'waiting_for_question'
 
 /** Operator-safe failure-reason code. */
 export type FailureKind =
@@ -17,11 +24,17 @@ export type FailureKind =
   | 'workspace-unavailable'
   | 'unknown'
 
-/** Parsed run summary — closed DTO with only declared fields. */
+/**
+ * Parsed run summary — closed DTO with only declared fields.
+ * `status` is typed to the recognized statuses; a status string the parser
+ * does not recognize is still KEPT (rm-1408 forward tolerance) — `status`
+ * then carries the raw string and `statusFlagged` is true.
+ */
 export interface ParsedRunSummary {
   readonly runId: string
   readonly repo: string
-  readonly status: RunSummaryStatus
+  readonly status: RunSummaryStatus | (string & {})
+  readonly statusFlagged?: boolean
   readonly createdAt: string
   readonly updatedAt?: string
   readonly failureKind?: FailureKind
@@ -31,7 +44,11 @@ export interface ParsedRunSummary {
 export interface RunSafeView {
   readonly runId: string
   readonly repo: string
-  readonly status: RunSummaryStatus
+  readonly status: RunSummaryStatus | (string & {})
+  /** Kebab-case renderer token ('waiting-for-approval', 'unknown' when flagged). */
+  readonly statusClass: string
+  /** True exactly when the raw status string was not recognized. */
+  readonly statusFlagged: boolean
   readonly statusLabel: string
   readonly createdAt: string
   readonly updatedAt?: string

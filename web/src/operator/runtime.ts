@@ -75,7 +75,9 @@ export function discoverCardStreamTargets(runId: string): {
 
 /**
  * The run-list summary statuses the run index parser keeps (public/operator-run-index.js
- * VALID_RUN_SUMMARY_STATUSES). Stream-only statuses (blocked, waiting_for_*) are not summaries.
+ * VALID_RUN_SUMMARY_STATUSES). waiting_for_approval/waiting_for_question join at gateway
+ * contract 1.11.0 (agent v0.122.1+); 'blocked' alone remains stream-only. The parser keeps
+ * unrecognized statuses flagged rather than dropping them (rm-1408).
  */
 const SUMMARY_STATUSES: ReadonlySet<RunSummaryStatus> = new Set<RunSummaryStatus>([
   'queued',
@@ -83,6 +85,8 @@ const SUMMARY_STATUSES: ReadonlySet<RunSummaryStatus> = new Set<RunSummaryStatus
   'succeeded',
   'failed',
   'cancelled',
+  'waiting_for_approval',
+  'waiting_for_question',
 ])
 
 function isRunSummaryStatus(value: string): value is RunSummaryStatus {
