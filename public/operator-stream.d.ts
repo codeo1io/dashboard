@@ -17,6 +17,7 @@
  */
 export declare function validateDynamicId(id: string): boolean
 
+export declare const ACCEPTED_CONTRACT_VERSIONS: readonly string[]
 export declare const PINNED_CONTRACT_VERSION: string
 export declare const RETRY_BASE_MS: number
 export declare const RETRY_FACTOR: number
@@ -463,8 +464,19 @@ export interface CancelActionEvent {
   readonly data: {readonly runId: string}
 }
 
-/** Statuses a run-list summary can carry. */
-export type RunSummaryStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+/**
+ * Statuses a run-list summary can carry. The waiting_* overlays arrive with the
+ * contract ladder's later rungs (summary overlays on a running base; a live run
+ * can enter and leave them while the run continues).
+ */
+export type RunSummaryStatus =
+  | 'queued'
+  | 'running'
+  | 'waiting_for_approval'
+  | 'waiting_for_question'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
 
 export interface StreamState {
   readonly connection: ConnectionStatus

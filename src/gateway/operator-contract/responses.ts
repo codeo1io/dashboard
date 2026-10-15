@@ -13,17 +13,38 @@ import type {TerminalPhase} from './run-status.ts'
  */
 
 /**
+ * Push health the gateway reports for the operator's push subscription
+ * (push-health rung): 'ready' — subscription registered and being serviced;
+ * 'degraded' — registered but delivery failing (the gateway runs a reconcile
+ * sweep); 'unknown' — not determinable (includes push not configured).
+ * Mirrors OPERATOR_PUSH_HEALTH_STATUSES in fro-bot/agent
+ * packages/gateway/src/operator-contract/responses.ts.
+ */
+export const OPERATOR_PUSH_HEALTH_STATUSES = ['ready', 'degraded', 'unknown'] as const
+
+export type OperatorPushHealthStatus = (typeof OPERATOR_PUSH_HEALTH_STATUSES)[number]
+
+/** Push-health block on OperatorSessionInfo. Omitted when push is not configured. */
+export interface OperatorPushHealth {
+  readonly status: OperatorPushHealthStatus
+}
+
+/**
  * Canonical response shape for GET /operator/session.
  *
  * - `operatorId`: stable GitHub numeric user ID (from the GitHub API `id` field).
  *   Prefer this over `login` for any access-control or audit decision.
  * - `login`: GitHub display login (mutable, for display only).
  * - `expiresAt`: ms-since-epoch timestamp of the sooner of absolute or idle expiry.
+ * - `push` (push-health rung, optional): gateway push health. Absent against a
+ *   floor-version gateway or when push is not configured — consumers must render
+ *   absence as 'unknown', never fabricate a state.
  */
 export interface OperatorSessionInfo {
   readonly operatorId: number
   readonly login: string
   readonly expiresAt: number
+  readonly push?: OperatorPushHealth
 }
 
 /**
