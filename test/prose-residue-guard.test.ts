@@ -90,10 +90,23 @@ const ALLOWED_MENTIONS: Record<string, string[]> = {
 // Extended by the cycle-10 review fix (F5) from self[- ]hosted|wiki[-_]writ.
 const TERM_PATTERN = /self[- _]?hosted|wiki[- _]?writ/i
 
+// rm-100 (run 796f73cf de-flake): directory subtrees the old post-walk
+// segment checks excluded are now pruned DURING traversal — a cold tree's
+// node_modules/.git (~26.7K files) was enumerated only to be filtered away
+// per-file afterwards, which pushed this suite past the 30s vitest ceiling
+// under cold load (reproduced at 33.3s in the 2026-10-15 assess run).
+// Directory-name pruning is exactly equivalent for directories; one file
+// case remains below (a linked worktree's `.git` is a FILE, not a dir).
+const PRUNED_DIR_NAMES = new Set([...EXCLUDED_DIRS, ...EXCLUDED_DIR_SUFFIXES])
+
+// File-level exclusions only — excluded directory subtrees never reach this
+// filter because walk() prunes them during traversal. The basename check
+// preserves the old segments-any semantics for files NAMED like an excluded
+// directory: in a linked worktree `.git` is a 50-byte pointer file that walk
+// sees as a regular file, and the old code excluded it by name.
 function isExcluded(relPath: string): boolean {
-  const segments = relPath.split('/')
-  if (segments.some(s => EXCLUDED_DIRS.has(s))) return true
-  if (segments.slice(0, -1).some(s => EXCLUDED_DIR_SUFFIXES.includes(s))) return true
+  const base = relPath.slice(relPath.lastIndexOf('/') + 1)
+  if (EXCLUDED_DIRS.has(base)) return true
   if (EXCLUDED_FILES.has(relPath)) return true
   if (EXCLUDED_PREFIXES.some(p => relPath.startsWith(p))) return true
   return false
@@ -101,11 +114,11 @@ function isExcluded(relPath: string): boolean {
 
 function walk(dir: string, files: string[] = []): string[] {
   for (const entry of readdirSync(dir, {withFileTypes: true})) {
-    const full = join(dir, entry.name)
     if (entry.isDirectory()) {
-      walk(full, files)
+      if (PRUNED_DIR_NAMES.has(entry.name)) continue
+      walk(join(dir, entry.name), files)
     } else if (entry.isFile()) {
-      files.push(full)
+      files.push(join(dir, entry.name))
     }
   }
   return files
