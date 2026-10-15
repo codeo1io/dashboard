@@ -1,4 +1,5 @@
 import type {AggregatorSnapshot, DashboardRepo, FailingCheckDetail, RepoCiStatus} from '../github/aggregator.ts'
+import type {PlatformStatus} from '../github/platform-status.ts'
 import {Hono} from 'hono'
 import {COLD_START_SNAPSHOT} from '../github/aggregator.ts'
 
@@ -50,6 +51,13 @@ interface MonitoringDto {
   readonly refreshDurationMs: number | null
   /** True when the last refresh attempt exceeded the watchdog ceiling (rm-156 watchdog signal) */
   readonly refreshDegraded: boolean
+  /**
+   * rm-1447: platform-availability annotation (githubstatus feed) — overall
+   * indicator, Actions component status, fetchedAt. null when no fetch has
+   * succeeded (fail-open: absence never blocks or degrades the snapshot).
+   * Public third-party data; carries no fleet identity.
+   */
+  readonly platformStatus: PlatformStatus | null
 }
 
 function toMonitoringRepoDto(repo: DashboardRepo): MonitoringRepoDto {
@@ -77,6 +85,7 @@ function toMonitoringDto(snapshot: AggregatorSnapshot): MonitoringDto {
     refreshedAt: snapshot.refreshedAt,
     refreshDurationMs: snapshot.refreshDurationMs,
     refreshDegraded: snapshot.refreshDegraded,
+    platformStatus: snapshot.platformStatus ?? null,
   }
 }
 

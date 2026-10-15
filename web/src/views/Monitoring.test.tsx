@@ -39,6 +39,7 @@ function makeData(overrides: Partial<MonitoringData> = {}): MonitoringData {
     driftCount: 0,
     enumerationIncomplete: null,
     refreshedAt: 1742000000000,
+    platformStatus: null,
     ...overrides
   }
 }
@@ -163,6 +164,114 @@ describe('Monitoring (rm-192 red-repo drill-down)', () => {
     })
 
     expect(screen.getByTestId('monitoring-stale-banner')).toHaveTextContent('Data is stale')
+  })
+
+  // rm-1447: the platform banner makes an Actions outage VISIBLE on the fleet
+  // view — "cannot register" and "passing" look identical in the rollups, so
+  // the platform's own verdict rides the DTO as an annotation.
+  describe('rm-1447 platform banner', () => {
+    it('renders when the Actions component is degraded, with the operator-facing consequence', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({platformStatus: {
+          overall: 'minor',
+          overallDescription: 'Investigating Actions run creation delays',
+          actions: 'major_outage',
+          fetchedAt: 1742000000000,
+        }})
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      const banner = screen.getByTestId('monitoring-platform-banner')
+      expect(banner).toBeInTheDocument()
+      expect(banner).toHaveTextContent('major outage')
+      expect(banner).toHaveTextContent('failing to register')
+      expect(banner).toHaveTextContent('Investigating Actions run creation delays')
+      expect(banner).toHaveAttribute('role', 'status')
+      // Distinct from the stale-data banner (annotation, not degradation).
+      expect(screen.queryByTestId('monitoring-stale-banner')).not.toBeInTheDocument()
+    })
+
+    it('falls back to the overall incident when the Actions component itself is unreadable', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({platformStatus: {
+          overall: 'critical',
+          overallDescription: '',
+          actions: null,
+          fetchedAt: 1742000000000,
+        }})
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      expect(screen.getByTestId('monitoring-platform-banner')).toHaveTextContent('critical platform incident')
+    })
+
+    it('does not render when the platform reports Actions operational', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({platformStatus: {
+          overall: 'none',
+          overallDescription: 'All Systems Operational',
+          actions: 'operational',
+          fetchedAt: 1742000000000,
+        }})
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      expect(screen.queryByTestId('monitoring-platform-banner')).not.toBeInTheDocument()
+      expect(screen.getByTestId('monitoring-board')).toBeInTheDocument()
+    })
+
+    it('does not render when the annotation is absent (fail-open absence is silence, not an error)', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData()
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      expect(screen.queryByTestId('monitoring-platform-banner')).not.toBeInTheDocument()
+      expect(screen.getByTestId('monitoring-board')).toBeInTheDocument()
+    })
+
+    it('coexists with the stale banner when both conditions hold', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({
+          staleBanner: true,
+          platformStatus: {
+            overall: 'minor',
+            overallDescription: '',
+            actions: 'partial_outage',
+            fetchedAt: 1742000000000,
+          },
+        })
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      expect(screen.getByTestId('monitoring-platform-banner')).toBeInTheDocument()
+      expect(screen.getByTestId('monitoring-stale-banner')).toBeInTheDocument()
+    })
   })
 
   it('renders the error state on contract drift', async () => {
