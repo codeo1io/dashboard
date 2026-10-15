@@ -701,6 +701,7 @@ describe('Notifications Component', () => {
         body: 'operator.approval_needed.body',
         data: {type: 'approval', route: '/'},
       },
+<<<<<<< ours
     })
   })
 
@@ -770,6 +771,8 @@ describe('Notifications Component', () => {
 
       const secondDeps = vi.mocked(runReconcileSweep).mock.calls[1]?.[0]
       expect(secondDeps?.getCurrentKeyVersion?.()).toBeUndefined()
+=======
+>>>>>>> theirs
     })
   })
 })

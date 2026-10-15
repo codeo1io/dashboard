@@ -28,7 +28,7 @@ import type {OperatorRuntimeHandle} from '../operator/runtime.ts'
 import {isActionDisabled} from '../operator/state.ts'
 import type {OperatorState} from '../operator/state.ts'
 
-// Question and expired-snapshot fixture scenarios. Gated on DEV (replaced at build time) so their
+// Question, expired-snapshot and waiting fixture scenarios. Gated on DEV (replaced at build time) so their
 // names never reach the production bundle; the fixture build and tests keep them.
 const QUESTION_FIXTURE_SCENARIOS: readonly {readonly value: string; readonly label: string}[] = import.meta.env.DEV
   ? [
@@ -45,6 +45,8 @@ const QUESTION_FIXTURE_SCENARIOS: readonly {readonly value: string; readonly lab
       {value: 'expired_completed_terminal_frame', label: 'Expired run: terminal frame after reset'},
       {value: 'expired_completed_silent', label: 'Expired run: silent after reset'},
       {value: 'running_after_no_snapshot', label: 'Running run after reset'},
+      {value: 'waiting_no_output', label: 'Waiting: running, no output yet'},
+      {value: 'waiting_queued', label: 'Waiting: queued'},
     ]
   : []
 
@@ -294,6 +296,28 @@ export function Operator({state = 'loading', onRuntimeStateChange, fixtureMode, 
               Recent Runs
             </h2>
 
+            {/* A jump can leave the run open in the background while this fixed-copy notice stays visible. */}
+            <div
+              data-role="run-jump-notice"
+              hidden
+              className="operator-warning-panel operator-run-jump-notice"
+            >
+              <div
+                data-role="run-jump-miss"
+                role="status"
+                aria-live="polite"
+                hidden
+              />
+              <button
+                type="button"
+                data-role="run-jump-dismiss"
+                className="operator-run-jump-dismiss"
+                aria-label="Dismiss notice"
+              >
+                <span aria-hidden="true">×</span>
+              </button>
+            </div>
+
             <div
               data-role="run-index-loading"
               aria-live="polite"
@@ -345,6 +369,15 @@ export function Operator({state = 'loading', onRuntimeStateChange, fixtureMode, 
               aria-live="polite"
               hidden
               className="operator-stream-status"
+            />
+
+            {/* Separate from stream-status, which the stream rewrites on every frame. */}
+            <div
+              data-role="run-jump-announcer"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              className="sr-only"
             />
           </section>
 

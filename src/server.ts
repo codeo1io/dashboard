@@ -20,8 +20,7 @@ import type {AggregatorSnapshot, SnapshotStore} from './github/aggregator.ts'
 import type {MetadataReader} from './github/metadata.ts'
 import type {ListenerStore} from './listener/store.ts'
 import {Buffer} from 'node:buffer'
-import {createHash} from 'node:crypto'
-import {existsSync, readFileSync, statSync} from 'node:fs'
+import {existsSync, readFileSync} from 'node:fs'
 import {readFile} from 'node:fs/promises'
 import {join} from 'node:path'
 import process from 'node:process'
@@ -64,6 +63,7 @@ import {buildListenerRouter} from './routes/listener.ts'
 import {readOptionalMultilineSecret, readOptionalSecret} from './secrets.ts'
 import {loadCookieKey, SessionManager} from './session.ts'
 import {installShutdownHandlers} from './shutdown.ts'
+import {createPublicStatic} from './static-files.ts'
 
 /**
  * rm-172: cache TTL for the injected SPA shell served at '/'. The shell is read
@@ -873,6 +873,7 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     path === '/static/operator-stream.js' ||
     path === '/static/operator-launch.js' ||
     path === '/static/operator-run-index.js' ||
+    path === '/static/operator-time.js' ||
     (operatorUiEnabled && path.startsWith('/static/')) ||
     // Fixture harness routes — public ONLY when the full fixture gate is active
     // (non-production + loopback bind + flag enabled). Otherwise not in public list.
@@ -1160,57 +1161,19 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   app.get('/operator', c => c.redirect('/', 302))
   app.get('/operator/', c => c.redirect('/', 302))
 
+  // /static files are un-hashed and not precached, so without this a browser can heuristically reuse a
+  // stale module next to a fresh bundle after a deploy. Registered before every /static mount below.
+  const publicStatic = createPublicStatic('./public')
+  app.use('/static/*', publicStatic.revalidate)
+
   // ── Operator runtime JS assets — always served (flag-independent) ────────────
   // Root / owns the operator shell and always depends on these modules.
   // Mounted unconditionally so they are available regardless of operatorUiEnabled.
   // isPublicPath already allows these paths so auth middleware passes them through.
-  //
-  // rm-478: explicit revalidation policy for these three unversioned assets —
-  // their URLs are load-bearing import strings in the operator shell (unhashable
-  // without a loader change) and the service worker is a self-purging kill-switch,
-  // so without an explicit policy there is NO client caching layer at all: every
-  // operator launch refetched ~150KB on heuristic caching alone. no-cache + a
-  // content-hash ETag (recomputed only when mtime moves) lets browsers revalidate
-  // cheaply; a matching If-None-Match short-circuits the transfer with a 304.
-  const operatorRuntimeAssetCache = new Map<string, {etag: string; mtimeMs: number}>()
-  const operatorRuntimeCaching = async (c: Context, next: () => Promise<void>): Promise<void | Response> => {
-    await next()
-    if (c.res.status !== 200) return
-    let etag: string | undefined
-    try {
-      const absolutePath = join('./public', c.req.path.replace(/^\/static\//, ''))
-      const stats = statSync(absolutePath)
-      const cached = operatorRuntimeAssetCache.get(absolutePath)
-      if (cached !== undefined && cached.mtimeMs === stats.mtimeMs) {
-        etag = cached.etag
-      } else {
-        etag = `"${createHash('sha256').update(readFileSync(absolutePath)).digest('hex').slice(0, 32)}"`
-        operatorRuntimeAssetCache.set(absolutePath, {etag, mtimeMs: stats.mtimeMs})
-      }
-    } catch {
-      return // unreadable file — serveStatic's own not-found path already ran
-    }
-    c.res.headers.set('Cache-Control', 'no-cache')
-    c.res.headers.set('ETag', etag)
-    if (c.req.header('If-None-Match') === etag) {
-      c.res = new Response(null, {status: 304, headers: c.res.headers})
-    }
-  }
-  app.use(
-    '/static/operator-stream.js',
-    operatorRuntimeCaching,
-    serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}),
-  )
-  app.use(
-    '/static/operator-launch.js',
-    operatorRuntimeCaching,
-    serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}),
-  )
-  app.use(
-    '/static/operator-run-index.js',
-    operatorRuntimeCaching,
-    serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}),
-  )
+  app.use('/static/operator-stream.js', publicStatic.serve)
+  app.use('/static/operator-launch.js', publicStatic.serve)
+  app.use('/static/operator-run-index.js', publicStatic.serve)
+  app.use('/static/operator-time.js', publicStatic.serve)
 
   // ── Operator UI skeleton route ────────────────────────────────────────────────
   // Only mounted when operatorUiEnabled is true (default: false).
@@ -1223,7 +1186,7 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     // /static/ is in isPublicPath so unauthenticated browsers can load assets.
     // Note: operator-stream.js and operator-launch.js are already mounted above;
     // this catch-all additionally serves operator.css and any other static assets.
-    app.use('/static/*', serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}))
+    app.use('/static/*', publicStatic.serve)
   }
 
   // ── Fixture harness routes (DEV-ONLY) ─────────────────────────────────────

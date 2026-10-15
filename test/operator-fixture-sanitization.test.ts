@@ -13,6 +13,7 @@ import process from 'node:process'
 import {describe, expect, it} from 'vitest'
 import {OPERATOR_FAILURE_KINDS} from '../src/gateway/operator-contract/run-status.ts'
 import {
+  FIXTURE_APPROVAL_SCENARIO_ROWS,
   FIXTURE_QUESTION_SCENARIO_ROWS,
   FIXTURE_SCENARIO_NAMES,
   fixtureQuestionScript,
@@ -402,7 +403,7 @@ describe('fixture no-leak guard — question scenarios', () => {
   }
 
   it('every question request ID is req-fixture- prefixed, and every frame carries the bound run ID', () => {
-    expect(QUESTION_KEYS.length).toBe(13)
+    expect(QUESTION_KEYS.length).toBe(15)
     for (const key of QUESTION_KEYS) {
       const runId = `run-fixture-index-${key.replaceAll('_', '-')}`
       for (const record of questionRecords(serializeScenarioToSse(key, runId))) {
@@ -437,6 +438,64 @@ describe('fixture no-leak guard — question scenarios', () => {
         .flatMap(record => freeText(record))
         .some(value => value !== value.replaceAll(STRIPPED, ''))
       expect(hasUnsafe, key).toBe(key === 'question_text_sentinels')
+    }
+  })
+})
+
+describe('fixture no-leak guard — waiting summary rows', () => {
+  const WAITING = new Set(['waiting_for_approval', 'waiting_for_question'])
+  const rows = [...FIXTURE_APPROVAL_SCENARIO_ROWS, ...FIXTURE_QUESTION_SCENARIO_ROWS].filter(row => WAITING.has(row.summaryStatus))
+
+  it('rows exist for both waiting statuses, each on a scenario that can stream it', () => {
+    expect(rows.map(row => row.summaryStatus).filter(status => status === 'waiting_for_approval')).toHaveLength(1)
+    const questionRows = rows.filter(row => row.summaryStatus === 'waiting_for_question')
+    expect(questionRows.map(row => row.scenario)).toEqual(
+      FIXTURE_QUESTION_SCENARIO_ROWS.filter(row => row.summaryStatus === 'waiting_for_question').map(row => row.scenario),
+    )
+    expect(questionRows.map(row => row.scenario)).toContain('question_no_approval')
+    for (const row of rows) {
+      expect(row.scenario, row.scenario).not.toBe(FIXTURE_SCENARIO_NAMES.success)
+      const sse = serializeScenarioToSse(row.scenario, `run-fixture-index-${row.scenario.replaceAll('_', '-')}`)
+      expect(sse, row.scenario).toContain(row.summaryStatus === 'waiting_for_approval' ? 'event: approval' : 'event: question')
+    }
+  })
+
+  it('no stream frame carries a waiting status (the overlay is a list status only)', () => {
+    for (const row of rows) {
+      const sse = serializeScenarioToSse(row.scenario, 'run-fixture-leak-001')
+      expect(sse, row.scenario).not.toContain('waiting_for_')
+    }
+  })
+
+  it('the fixture sources say waiting summaries are modeled', () => {
+    for (const filePath of FIXTURE_FILES) {
+      const source = readFileSync(resolve(process.cwd(), filePath), 'utf8')
+      expect(source, filePath).not.toMatch(/do(es)? not model|not modeled/i)
+    }
+  })
+})
+
+describe('fixture no-leak guard — waiting scenarios', () => {
+  const FIXTURE_WAITING_SCENARIO_ROWS = FIXTURE_QUESTION_SCENARIO_ROWS.filter(row => row.scenario.startsWith('waiting_'))
+  const runIdFor = (scenario: string): string => `run-fixture-index-${scenario.replaceAll('_', '-')}`
+
+  it('carry only the bound run ID and synthetic status fields, and no free-form text or request IDs', () => {
+    expect(FIXTURE_WAITING_SCENARIO_ROWS).toHaveLength(2)
+    for (const row of FIXTURE_WAITING_SCENARIO_ROWS) {
+      const sse = serializeScenarioToSse(row.scenario, runIdFor(row.scenario))
+      const records = sse.split('\n\n').filter(record => record.trim() !== '')
+      expect(records, row.scenario).toHaveLength(2)
+      const status = JSON.parse(records[1]?.split('data: ')[1] ?? '{}') as Record<string, unknown>
+      expect(Object.keys(status).toSorted(), row.scenario).toEqual(['entityRef', 'phase', 'runId', 'stale', 'startedAt', 'status', 'surface'])
+      expect(status.runId).toBe(runIdFor(row.scenario))
+      expect(String(status.entityRef)).toMatch(/^fixture-/)
+      expect(sse, row.scenario).not.toMatch(/req-/)
+    }
+  })
+
+  it('their run IDs derive to the fixture-prefixed waiting row IDs', () => {
+    for (const row of FIXTURE_WAITING_SCENARIO_ROWS) {
+      expect(runIdFor(row.scenario)).toMatch(/^run-fixture-index-waiting-/)
     }
   })
 })
