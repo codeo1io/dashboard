@@ -181,7 +181,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### rm-779
-- id: `rm-779` | track: reliability | priority: 72.0 | status: in_progress
+- id: `rm-779` | track: reliability | priority: 72.0 | status: implemented (restored 2026-10-15 at the integrate of run a794d381b4f0, conflict case 32ae178ce778—cve-tripwire.yaml's ARG-derived pin cure (implement 45ecba5e, base 88e423a, adopted-by-content from sibling 533ad14f) was dropped as adoption collateral by the October upstream-adoption lineage; this merge restores the workflow whole — resolve step derives the pin from the Dockerfile ARG, fail-closed, runs-on ubuntu-24.04 folding rm-188 — with its companion zlib triage doc; first-fire evidence stays pending the account-level Actions re-enable)
 - acceptance: 
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -591,7 +591,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### codeql-action pin refresh to current v4.38.x — was the lone stale action pin
-- id: `rm-650` | track: reliability | priority: 40.0 | status: in_progress
+- id: `rm-650` | track: reliability | priority: 40.0 | status: implemented (digest 24c5418… pinned at v4.38.3 on all four sites — the digest landed via the upstream adoption, the precise-version comment unified at the integrate of run a794d381b4f0, 2026-10-15)
 - acceptance: 
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -736,7 +736,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### ubuntu-latest alias-flip guard for non-containerized jobs
-- id: `rm-188` | track: reliability | priority: 33.0 | status: in_progress
+- id: `rm-188` | track: reliability | priority: 33.0 | status: implemented (the fleet's last non-comment runs-on: ubuntu-latest site rode cve-tripwire.yaml's restoration at the integrate of run a794d381b4f0, 2026-10-15 — full .github/ audit now shows pinned ubuntu-24.04 only)
 - acceptance: 
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -1116,7 +1116,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Re-pin pnpm/action-setup v6.0.10 → v6.1.0 at its three workflow sites
-- id: `rm-761` | track: reliability | priority: 20.0 | status: in_progress
+- id: `rm-761` | track: reliability | priority: 20.0 | status: implemented (restored 2026-10-15 at the integrate of run a794d381b4f0 — pnpm/action-setup@ea17c68… # v6.1.0 re-unified at all three sites (visual.yaml, audit.yaml, .github/actions/setup/action.yaml); the October adoption fold had regressed the landed re-pin to 0977fd9… # v6)
 - acceptance: 
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
