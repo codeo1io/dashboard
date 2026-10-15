@@ -57,7 +57,7 @@ importers:
         specifier: 1.18.35
         version: 1.18.35
       '@playwright/test':
-        specifier: ^1.63.0
+        specifier: 1.64.0
         version: 1.64.0
       '@tailwindcss/vite':
         specifier: 4.3.3

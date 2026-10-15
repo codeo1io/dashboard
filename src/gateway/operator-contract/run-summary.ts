@@ -19,10 +19,22 @@ import {err, ok} from '../../result.ts'
 import {isOperatorFailureKind} from './run-status.ts'
 
 /**
- * Index-only status set. 'blocked' and 'waiting_for_approval' are stream-only
- * overlays — never produced by the run-summary projector.
+ * Index status set: the five lifecycle values plus the two waiting overlays
+ * — `waiting_for_approval` and `waiting_for_question` — which the gateway
+ * applies only on a running run (rm-874, the upstream waiting-overlay
+ * extension). Before
+ * rm-874 these overlays were stream-only, so a gateway already emitting them
+ * had every such summary dropped at this parse seam. `'blocked'` remains a
+ * stream-only overlay — never carried by a summary.
  */
-export type RunSummaryStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+export type RunSummaryStatus =
+  | 'queued'
+  | 'running'
+  | 'waiting_for_approval'
+  | 'waiting_for_question'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
 
 /**
  * Operator-safe projection of a run's summary.
@@ -49,6 +61,8 @@ const MAX_DATE_LENGTH = 128
 const VALID_RUN_SUMMARY_STATUSES: ReadonlySet<string> = new Set([
   'queued',
   'running',
+  'waiting_for_approval',
+  'waiting_for_question',
   'succeeded',
   'failed',
   'cancelled',

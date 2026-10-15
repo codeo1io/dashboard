@@ -3009,20 +3009,108 @@ describe('getPushSubscriptionMetadata', () => {
     updatedAt: '2026-07-01T10:00:00Z',
   }
 
-  it('returns only safe fields on success', async () => {
+  it('returns only safe fields on success (pre-#631 flat wire exercises the fallback)', async () => {
     const client = createOperatorClient({
       fetch: makeOkFetch(FIXTURE_METADATA),
       createEventStream: makeEventStream([]),
     })
     const result = await client.getPushSubscriptionMetadata()
     expect(result.success).toBe(true)
-    if (result.success && !result.data.pushDisabled) {
+    if (result.success && !result.data.pushDisabled && result.data.metadata) {
       expect(result.data.metadata.endpointHash).toBe(FIXTURE_METADATA.endpointHash)
       expect(result.data.metadata.keyVersion).toBe('v1')
       expect(result.data.metadata.active).toBe(true)
       expect(result.data.metadata).not.toHaveProperty('endpoint')
       expect(result.data.metadata).not.toHaveProperty('p256dh')
       expect(result.data.metadata).not.toHaveProperty('auth')
+    }
+  })
+
+  it('rm-873: reduces the #631 list wire to the ACTIVE entry, dates normalized to ISO', async () => {
+    const client = createOperatorClient({
+      fetch: makeOkFetch({
+        subscriptions: [
+          {
+            endpointHash: 'b'.repeat(64),
+            keyVersion: 'v1',
+            active: false,
+            createdAt: 1_780_000_000_000,
+            updatedAt: 1_780_000_050_000,
+            inactiveReason: 'dead',
+          },
+          {
+            endpointHash: 'a'.repeat(64),
+            keyVersion: 'v1',
+            active: true,
+            createdAt: 1_780_000_000_000,
+            updatedAt: 1_780_000_060_000,
+          },
+        ],
+      }),
+      createEventStream: makeEventStream([]),
+    })
+    const result = await client.getPushSubscriptionMetadata()
+    expect(result.success).toBe(true)
+    if (result.success && !result.data.pushDisabled && result.data.metadata) {
+      expect(result.data.metadata.endpointHash).toBe('a'.repeat(64))
+      expect(result.data.metadata.active).toBe(true)
+      expect(result.data.metadata.createdAt).toBe(new Date(1_780_000_000_000).toISOString())
+      expect(result.data.metadata.updatedAt).toBe(new Date(1_780_000_060_000).toISOString())
+    }
+  })
+
+  it('rm-873: keeps a surviving INACTIVE entry (carries the inactive reason) when none is active', async () => {
+    const client = createOperatorClient({
+      fetch: makeOkFetch({
+        subscriptions: [
+          {endpointHash: 'c'.repeat(64), keyVersion: 'v1', active: false, createdAt: 1, updatedAt: 2, inactiveReason: 'revoked'},
+        ],
+      }),
+      createEventStream: makeEventStream([]),
+    })
+    const result = await client.getPushSubscriptionMetadata()
+    expect(result.success).toBe(true)
+    if (result.success && !result.data.pushDisabled && result.data.metadata) {
+      expect(result.data.metadata.active).toBe(false)
+      expect(result.data.metadata.inactiveReason).toBe('revoked')
+    }
+  })
+
+  it('rm-873: an EMPTY list yields metadata undefined — push enabled, no subscription', async () => {
+    const client = createOperatorClient({
+      fetch: makeOkFetch({subscriptions: []}),
+      createEventStream: makeEventStream([]),
+    })
+    const result = await client.getPushSubscriptionMetadata()
+    expect(result.success).toBe(true)
+    if (result.success && !result.data.pushDisabled) {
+      expect(result.data.metadata).toBeUndefined()
+    }
+  })
+
+  it('rm-873: a fully invalid list yields metadata undefined, not an error (per-entry drop)', async () => {
+    const client = createOperatorClient({
+      fetch: makeOkFetch({subscriptions: [{endpointHash: 'short', keyVersion: 'v1', active: true, createdAt: 1, updatedAt: 2}]}),
+      createEventStream: makeEventStream([]),
+    })
+    const result = await client.getPushSubscriptionMetadata()
+    expect(result.success).toBe(true)
+    if (result.success && !result.data.pushDisabled) {
+      expect(result.data.metadata).toBeUndefined()
+    }
+  })
+
+  it('rm-873: a body that is neither list nor flat record is a protocol error', async () => {
+    const {logger} = makeCapturingLogger()
+    const client = createOperatorClient({
+      fetch: makeOkFetch({unrecognized: true}),
+      createEventStream: makeEventStream([]),
+      logger,
+    })
+    const result = await client.getPushSubscriptionMetadata()
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.kind).toBe('protocol')
     }
   })
 
