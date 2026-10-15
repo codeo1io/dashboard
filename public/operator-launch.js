@@ -29,6 +29,31 @@
 // its own singleton state rather than sharing the runtime seam's instance.
 const LAUNCH_RUN_INDEX_CAP = 100
 
+/**
+ * rm-1441 (upstream fro-bot/dashboard#585): mirror of operator-run-index.js's
+ * exported formatRelativeTime, for the same separate-module-instance reason as
+ * LAUNCH_RUN_INDEX_CAP above (a static import would mint a second singleton
+ * run-index instance with its own fetch loop). A parity test pins the mirrors.
+ * Returns '' for unparseable input, exactly like the run-index original.
+ */
+export function formatRelativeTime(isoString, nowMs = Date.now()) {
+  if (!isoString) return ''
+  const date = new Date(isoString)
+  if (Number.isNaN(date.getTime())) return ''
+
+  const diff = Math.max(0, nowMs - date.getTime())
+  if (diff < 60_000) return 'just now'
+
+  const mins = Math.floor(diff / 60_000)
+  if (mins < 60) return `${mins} minute${mins === 1 ? '' : 's'} ago`
+
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`
+
+  const days = Math.floor(hours / 24)
+  return `${days} day${days === 1 ? '' : 's'} ago`
+}
+
 // ---------------------------------------------------------------------------
 // Pure: repo item validation
 // ---------------------------------------------------------------------------
@@ -677,6 +702,19 @@ export async function initOperatorLaunch(opts) {
           }
           card.append(repoSpan)
 
+          // rm-1441 (upstream #585): the timestamp is anchored at CREATION, not first
+          // fetch — a just-launched run reads "just now", never as its position in an
+          // hours-old index. Same element shape/slot a fetched card gets
+          // (operator-run-index.js renderRunCard); the stream's status transitions and
+          // the index diff's adoption update it in place afterwards (monotonic).
+          const launchedAtIso = new Date().toISOString()
+          const timeEl = document.createElement('time')
+          timeEl.className = 'run-updated-at'
+          timeEl.dataset.role = 'run-updated-at'
+          timeEl.setAttribute('datetime', launchedAtIso)
+          timeEl.textContent = formatRelativeTime(launchedAtIso)
+          card.append(timeEl)
+
           // Hidden per-card substructure for the stream renderer.
 
           // Checkout-detail region — same slot as a fetched card: the first hidden region,
@@ -762,8 +800,23 @@ export async function initOperatorLaunch(opts) {
             onRunLaunched(runId, card)
           } else {
             // Legacy path: no runtime callback — attach stream directly and store handle.
+            // Element discovery mirrors the runtime seam (web/src/operator/runtime.ts)
+            // and bootstrapOperatorStreams: the launch-created card carries the full
+            // substructure, so the stream renders output (rm-1440 allowlist Markdown),
+            // the compact waiting state and transition timestamps (rm-1441), approvals
+            // and badge on this path too — not just status.
             const statusEl = card.querySelector('[data-role="run-status"]')
-            const streamHandle = initOperatorStream({runId, statusEl, noticeEl: sharedNoticeEl, endpointBase: opts?.endpointBase, fixtureSessionId: opts?.fixtureSessionId})
+            const updatedEl = card.querySelector('[data-role="run-updated-at"]')
+            const outputEl = card.querySelector('[data-role="run-output"]')
+            const coalescedEl = card.querySelector('[data-role="run-output-coalesced"]')
+            const gapEl = card.querySelector('[data-role="run-output-gap"]')
+            const approvalsEl = card.querySelector('[data-role="run-approvals"]')
+            const badgeEl = card.querySelector('[data-role="approval-badge"]')
+            const reasonEl = card.querySelector('[data-role="run-reason"]')
+            const cancelEl = card.querySelector('[data-role="run-cancel"]')
+            const checkoutEl = card.querySelector('[data-role="run-checkout-detail"]')
+            const questionsEl = card.querySelector('[data-role="run-questions"]')
+            const streamHandle = initOperatorStream({runId, statusEl, noticeEl: sharedNoticeEl, outputEl, coalescedEl, gapEl, approvalsEl, badgeEl, reasonEl, cancelEl, checkoutEl, questionsEl, updatedEl, endpointBase: opts?.endpointBase, fixtureSessionId: opts?.fixtureSessionId})
             setLaunchStreamHandle(streamHandle)
           }
         }

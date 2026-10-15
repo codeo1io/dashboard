@@ -86,6 +86,14 @@ export declare function submitLaunch(
  */
 export declare function buildPendingCardHooks(runId: string): PendingCardHooks
 
+/**
+ * rm-1441 (upstream fro-bot/dashboard#585): mirror of operator-run-index.js's
+ * formatRelativeTime — a static cross-import would mint a second singleton index
+ * instance (see the JS-side comment). Pinned to the original by a parity test.
+ * Used to paint the optimistic launch card's creation timestamp.
+ */
+export declare function formatRelativeTime(isoString: string, nowMs?: number): string
+
 // ---------------------------------------------------------------------------
 // DOM shell (browser-only — never called at module top-level)
 // ---------------------------------------------------------------------------

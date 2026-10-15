@@ -78,8 +78,14 @@ describe('optimistic launch card', () => {
 
     const roles = Array.from(card.children).map(child => (child as HTMLElement).dataset.role)
     const at = roles.indexOf('run-checkout-detail')
-    expect(roles[at - 1]).toBe('run-repo')
+    // rm-1441 (upstream #585): the creation <time> sits between the header row and
+    // the hidden substructure, exactly as on a fetched card.
+    expect(roles[at - 1]).toBe('run-updated-at')
     expect(roles[at + 1]).toBe('run-output')
+    const timeEl = card.querySelector<HTMLElement>('[data-role="run-updated-at"]')
+    expect(timeEl?.tagName).toBe('TIME')
+    expect(Number.isFinite(Date.parse(timeEl?.getAttribute('datetime') ?? ''))).toBe(true)
+    expect(timeEl?.textContent).toBe('just now')
   })
 
   it('the optimistic card contains exactly one hidden, empty run-questions region directly after run-approvals', async () => {
