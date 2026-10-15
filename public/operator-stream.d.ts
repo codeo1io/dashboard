@@ -824,6 +824,16 @@ export interface InitOptions {
   readonly fixtureSessionId?: string
   /** Secondary status metadata element (data-role="run-reason"). */
   readonly reasonEl?: Element | null
+  /**
+   * Time element (data-role="run-updated-at") of a launch-seeded card. While attached, the stream
+   * writes the run's start time into it (`datetime` and relative text), and never blanks it.
+   */
+  readonly timeEl?: Element | null
+  /**
+   * Waiting-line element (data-role="run-waiting"). The stream shows it, with fixed copy, only while
+   * it is live, the run is not terminal, and nothing else on the card is showing.
+   */
+  readonly waitingEl?: (HTMLElement & {hidden: boolean}) | null
   /** Cancel control container element (data-role="run-cancel"). */
   readonly cancelEl?: (HTMLElement & {hidden: boolean}) | null
   /**

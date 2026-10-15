@@ -8,13 +8,17 @@
  * - credentials:'include', redirect:'error' on all fetch calls.
  */
 
+import {formatRelativeTime, LAUNCH_TIME_SOURCE, MAX_TIMESTAMP_LENGTH} from './operator-time.js'
+
+// Re-exported so existing importers of the run index keep working.
+export {formatRelativeTime}
+
 export const RUN_INDEX_CAP = 100
 
 /** Timeout for the /runs fetch — matches server-side Gateway fetch timeout precedent. */
 export const FETCH_TIMEOUT_MS = 10_000
 
 const MAX_ID_LENGTH = 512
-const MAX_DATE_LENGTH = 128
 
 /** 'blocked' is stream-only — a run summary never carries it. The waiting statuses are gateway overlays on a running run. */
 export const VALID_RUN_SUMMARY_STATUSES = new Set([
@@ -69,6 +73,7 @@ function summaryStatusFromClassToken(token) {
  * only: this module creates and shows/hides the region; operator-stream.js renders into it.
  */
 const CHECKOUT_DETAIL_ROLE = 'run-checkout-detail'
+const WAITING_ROLE = 'run-waiting'
 
 /**
  * data-role of the hidden question region. This module only creates it and shows/hides it with
@@ -83,6 +88,7 @@ const QUESTIONS_ROLE = 'run-questions'
  */
 const SUBSTRUCTURE_ROLES = [
   CHECKOUT_DETAIL_ROLE,
+  WAITING_ROLE,
   'run-output',
   'run-output-coalesced',
   'run-approvals',
@@ -147,14 +153,14 @@ export function parseRunSummaryItem(input) {
     return {success: false, error: 'invalid run summary shape'}
   }
 
-  if (typeof candidate.createdAt !== 'string' || candidate.createdAt.length > MAX_DATE_LENGTH) {
+  if (typeof candidate.createdAt !== 'string' || candidate.createdAt.length > MAX_TIMESTAMP_LENGTH) {
     return {success: false, error: 'invalid run summary shape'}
   }
 
   // updatedAt is optional — if present must be a length-capped string
   if (
     'updatedAt' in candidate &&
-    (typeof candidate.updatedAt !== 'string' || candidate.updatedAt.length > MAX_DATE_LENGTH)
+    (typeof candidate.updatedAt !== 'string' || candidate.updatedAt.length > MAX_TIMESTAMP_LENGTH)
   ) {
     return {success: false, error: 'invalid run summary shape'}
   }
@@ -226,28 +232,6 @@ export function buildRunSafeView(summary) {
     ...('updatedAt' in summary ? {updatedAt: summary.updatedAt} : {}),
     ...(reasonLabel === undefined ? {} : {reasonLabel}),
   }
-}
-
-/**
- * Format an ISO timestamp as a coarse relative time string.
- * Returns 'just now', 'N minute(s) ago', 'N hour(s) ago', or 'N day(s) ago'.
- */
-export function formatRelativeTime(isoString, nowMs = Date.now()) {
-  if (!isoString) return ''
-  const date = new Date(isoString)
-  if (Number.isNaN(date.getTime())) return ''
-
-  const diff = Math.max(0, nowMs - date.getTime())
-  if (diff < 60_000) return 'just now'
-
-  const mins = Math.floor(diff / 60_000)
-  if (mins < 60) return `${mins} minute${mins === 1 ? '' : 's'} ago`
-
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`
-
-  const days = Math.floor(hours / 24)
-  return `${days} day${days === 1 ? '' : 's'} ago`
 }
 
 /**
@@ -670,8 +654,9 @@ const TERMINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'cancelled'])
  * set: data-run-id (immutable, set once at create), datetime (on <time>, from the
  * length-capped updatedAt already validated by parseRunSummaryItem), className
  * (allowlist-gated `.status-*` only), and textContent on the safe-view text children
- * (run-status label, run-repo text, run-updated-at text). No data-repo/data-status or
- * other run-metadata attribute is ever created.
+ * (run-status label, run-repo text, run-updated-at text). Adoption of a launch-seeded <time>
+ * also removes that <time>, or its data-time-source marker, as the list's updatedAt takes over.
+ * No data-repo/data-status or other run-metadata attribute is ever created.
  */
 function diffRunIndexList(list, views, opts) {
   const onSelectRun = opts?.onSelectRun
@@ -796,8 +781,27 @@ function cardShowsTerminalStatus(card) {
 }
 
 /**
+ * Hand a launch-seeded <time> (data-time-source="launch") to the list: write the view's updatedAt
+ * and drop the marker, or remove the <time> when the view has none (renderRunCard omits it too).
+ */
+function adoptLaunchSeededTime(card, view) {
+  if (typeof card.querySelector !== 'function') return
+  const timeEl = card.querySelector('[data-role="run-updated-at"]')
+  if (timeEl === null || timeEl === undefined || timeEl.dataset?.timeSource !== LAUNCH_TIME_SOURCE) return
+
+  if ('updatedAt' in view && view.updatedAt !== undefined) {
+    timeEl.setAttribute('datetime', view.updatedAt)
+    timeEl.textContent = formatRelativeTime(view.updatedAt)
+    delete timeEl.dataset.timeSource
+  } else {
+    timeEl.remove()
+  }
+}
+
+/**
  * Update a card's safe-view-derived fields in place. Closed attribute-mutation set:
- * className (status-* only), textContent (safe-view text children), datetime (on <time>).
+ * className (status-* only), textContent (safe-view text children), datetime (on <time>),
+ * plus removing a launch-seeded <time> and its data-time-source marker on adoption.
  * Never touches data-run-id or data-expanded on the card itself. The one structural
  * addition is a missing <time> (see below), built with the same safe-DOM shape as renderRunCard.
  * Never called for the active-stream card (the diff write-protects it).
@@ -810,6 +814,8 @@ function cardShowsTerminalStatus(card) {
  * non-terminal → anything still update.
  */
 function updateCardInPlace(card, view) {
+  // Before the sticky return: a stale view must not leave the card on its launch-seeded time.
+  adoptLaunchSeededTime(card, view)
   if (!TERMINAL_RUN_STATUSES.has(view.status) && cardShowsTerminalStatus(card)) return
 
   card.setAttribute(
@@ -909,7 +915,7 @@ function renderRunCard(view, onSelectRun) {
   }
 
   // Hidden per-card substructure — targets for operator-stream.js's updateDOM().
-  // Revealed on expansion. Safe-DOM only: createElement + textContent/
+  // Shown only by the stream's paint, never by expand. Safe-DOM only: createElement + textContent/
   // hidden/dataset, never innerHTML. No run field beyond the closed safe-view
   // reaches these elements at creation time.
 
@@ -922,6 +928,12 @@ function renderRunCard(view, onSelectRun) {
   checkoutEl.dataset.role = CHECKOUT_DETAIL_ROLE
   checkoutEl.hidden = true
   card.append(checkoutEl)
+
+  // Waiting line — the stream shows it while nothing else is showing. SLOT: right below checkout.
+  const waitingEl = document.createElement('div')
+  waitingEl.dataset.role = WAITING_ROLE
+  waitingEl.hidden = true
+  card.append(waitingEl)
 
   const outputEl = document.createElement('div')
   outputEl.dataset.role = 'run-output'
@@ -1048,6 +1060,15 @@ function ensureRunCardAnatomy(card, view, onSelectRun) {
     insertBeforeFirstRole(card, checkoutEl, SUBSTRUCTURE_ROLES)
   }
 
+  // Waiting line: same slot renderRunCard gives it (below checkout, ahead of the output regions).
+  // The role list leaves out checkout so the line always lands after it.
+  if (card.querySelector(`[data-role="${WAITING_ROLE}"]`) === null) {
+    const waitingEl = document.createElement('div')
+    waitingEl.dataset.role = WAITING_ROLE
+    waitingEl.hidden = true
+    insertBeforeFirstRole(card, waitingEl, SUBSTRUCTURE_ROLES.filter(role => role !== CHECKOUT_DETAIL_ROLE && role !== WAITING_ROLE))
+  }
+
   // Question region: same slot renderRunCard gives it (after run-approvals, ahead of the badge
   // and cancel regions). Only created when missing — exactly one per card.
   if (card.querySelector(`[data-role="${QUESTIONS_ROLE}"]`) === null) {
@@ -1068,14 +1089,14 @@ function ensureRunCardAnatomy(card, view, onSelectRun) {
 }
 
 /**
- * Toggle a card's expanded state and reveal/hide its per-card substructure.
+ * Toggle a card's expanded state, hiding its per-card substructure on collapse.
  *
  * Single-open accordion: expanding a card first collapses whichever other card
  * is currently expanded (hides its substructure, clears its data-expanded)
  * before expanding the clicked one. Selecting an already-expanded card
  * collapses it instead. In both cases onSelectRun(runId) is called — the
  * runtime seam owns the actual stream attach/close; this DOM shell only owns
- * data-expanded and per-card substructure visibility.
+ * data-expanded and collapsing the substructure; the stream reveals regions.
  *
  * Safe-DOM only: toggles `hidden` and `dataset.expanded`, never innerHTML.
  */
@@ -1086,12 +1107,13 @@ function toggleCardExpansion(card, runId, onSelectRun) {
     const prevCard = document.querySelector(`[data-run-id="${CSS.escape(_expandedRunId)}"]`)
     if (prevCard !== null && prevCard !== undefined) {
       prevCard.dataset.expanded = 'false'
-      setSubstructureHidden(prevCard, true)
+      hideSubstructure(prevCard)
     }
   }
 
   card.dataset.expanded = isExpanded ? 'false' : 'true'
-  setSubstructureHidden(card, isExpanded)
+  // Collapse hides; expand shows nothing, since the stream's paint is the only thing that reveals a region.
+  if (isExpanded) hideSubstructure(card)
   _expandedRunId = isExpanded ? null : runId
 
   onSelectRun(runId)
@@ -1107,7 +1129,7 @@ function toggleCardExpansion(card, runId, onSelectRun) {
  * already live, and the operator's first click on it would be misread by
  * onSelectRun as "collapse the active stream" instead of "expand." Calling this
  * right after the stream attaches keeps the DOM shell's _expandedRunId bookkeeping
- * and the card's revealed substructure consistent with the runtime seam's active
+ * and the card's expansion state consistent with the runtime seam's active
  * stream state, so the first real click correctly collapses instead of the stream
  * silently closing on attach.
  *
@@ -1133,12 +1155,11 @@ export function markCardExpandedForLaunch(runId) {
     const prevCard = document.querySelector(`[data-run-id="${CSS.escape(_expandedRunId)}"]`)
     if (prevCard !== null && prevCard !== undefined) {
       prevCard.dataset.expanded = 'false'
-      setSubstructureHidden(prevCard, true)
+      hideSubstructure(prevCard)
     }
   }
 
   card.dataset.expanded = 'true'
-  setSubstructureHidden(card, false)
   _expandedRunId = runId
 }
 
@@ -1167,23 +1188,22 @@ function expandCardForRestore(runId, onExpand) {
     const prevCard = document.querySelector(`[data-run-id="${CSS.escape(_expandedRunId)}"]`)
     if (prevCard !== null && prevCard !== undefined) {
       prevCard.dataset.expanded = 'false'
-      setSubstructureHidden(prevCard, true)
+      hideSubstructure(prevCard)
     }
   }
 
   card.dataset.expanded = 'true'
-  setSubstructureHidden(card, false)
   _expandedRunId = runId
 
   onExpand(runId, card)
 }
 
-/** Show/hide a card's per-card substructure regions in one place. */
-function setSubstructureHidden(card, hidden) {
+/** Hide a card's per-card substructure regions. Only the stream shows one. */
+function hideSubstructure(card) {
   if (typeof card.querySelector !== 'function') return
   for (const role of SUBSTRUCTURE_ROLES) {
     const el = card.querySelector(`[data-role="${role}"]`)
-    if (el !== null && el !== undefined) el.hidden = hidden
+    if (el !== null && el !== undefined) el.hidden = true
   }
 }
 

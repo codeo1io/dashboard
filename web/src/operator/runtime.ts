@@ -65,6 +65,9 @@ export function discoverCardStreamTargets(runId: string): {
   cancelEl: StreamTargetEl | null
   checkoutEl: StreamTargetEl | null
   questionsEl: StreamTargetEl | null
+  /** The card's <time>, only while it is launch-seeded: the list takes it over on adoption. */
+  timeEl: HTMLElement | null
+  waitingEl: StreamTargetEl | null
 } {
   const card = typeof document !== 'undefined'
     ? document.querySelector(`[data-run-id="${CSS.escape(runId)}"]`)
@@ -78,6 +81,8 @@ export function discoverCardStreamTargets(runId: string): {
     cancelEl: card?.querySelector<StreamTargetEl>('[data-role="run-cancel"]') ?? null,
     checkoutEl: card?.querySelector<StreamTargetEl>('[data-role="run-checkout-detail"]') ?? null,
     questionsEl: card?.querySelector<StreamTargetEl>('[data-role="run-questions"]') ?? null,
+    timeEl: card?.querySelector<HTMLElement>('[data-role="run-updated-at"][data-time-source="launch"]') ?? null,
+    waitingEl: card?.querySelector<StreamTargetEl>('[data-role="run-waiting"]') ?? null,
   }
 }
 
@@ -446,13 +451,9 @@ async function defaultRuntimeLoader(opts?: {
   // check-types instead of surfacing as a silently skipped call. Only the members listed are read.
   const streamMod = await import(/* @vite-ignore */ _streamSpecifier) as Pick<
     typeof StreamModule,
-    'bootstrapOperatorStreams' | 'resetBootstrapState' | 'initOperatorStream'
+    'initOperatorStream'
   >
-  streamMod.resetBootstrapState()
-  const streamOpts = opts?.endpointBase !== undefined || opts?.fixtureSessionId !== undefined
-    ? {endpointBase: opts.endpointBase, fixtureSessionId: opts.fixtureSessionId}
-    : undefined
-  streamMod.bootstrapOperatorStreams(streamOpts)
+  // Streams attach on expand, launch, restore and jump only; the stream module's own bootstrap is not run here.
 
   const runIndexMod = await import(/* @vite-ignore */ _runIndexSpecifier) as Pick<
     typeof RunIndexModule,
@@ -471,7 +472,7 @@ async function defaultRuntimeLoader(opts?: {
 
     // Discover the per-card render targets so live output, coalescing hints,
     // approval prompts, and the approval badge all render — not just status.
-    const {outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, cancelEl, checkoutEl, questionsEl} = discoverCardStreamTargets(runId)
+    const {outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, cancelEl, checkoutEl, questionsEl, timeEl, waitingEl} = discoverCardStreamTargets(runId)
     const summaryStatus = discoverCardSummaryStatus(runId)
 
     // A re-expanded card must never keep question DOM from a previous attach: the stream and
@@ -488,6 +489,8 @@ async function defaultRuntimeLoader(opts?: {
         approvalsEl,
         badgeEl,
         reasonEl,
+        timeEl,
+        waitingEl,
         cancelEl,
         checkoutEl,
         questionsEl,
@@ -855,7 +858,6 @@ async function defaultRuntimeLoader(opts?: {
     _cancelPendingExpand()
     // Close the active stream handle on cleanup.
     _closeActiveStream()
-    streamMod.resetBootstrapState()
     launchMod.resetLaunchState()
     runIndexMod.resetRunIndexState()
   }

@@ -730,11 +730,12 @@ describe('defaultRuntimeLoader — production stream wiring', () => {
   it('selecting a card runs the real _attachStream, which hands the discovered checkoutEl to initOperatorStream', async () => {
     const handle = {close: vi.fn()}
     const initOperatorStream = vi.fn((_opts: {runId: string; checkoutEl?: Element | null}) => handle)
+    const bootstrapOperatorStreams = vi.fn()
     let onSelectRun: ((runId: string) => void | Promise<void>) | undefined
     // A vitest module mock throws on any export the factory omits, so every export the loader reads is listed.
     vi.doMock('/static/operator-stream.js?manual=1', () => ({
       initOperatorStream,
-      bootstrapOperatorStreams: vi.fn(),
+      bootstrapOperatorStreams,
       resetBootstrapState: vi.fn(),
     }))
     vi.doMock('/static/operator-run-index.js?manual=1', () => ({
@@ -764,9 +765,13 @@ describe('defaultRuntimeLoader — production stream wiring', () => {
     await vi.waitFor(() => expect(onSelectRun).toBeDefined())
     expect(onStateChange).not.toHaveBeenCalled()
 
+    expect(bootstrapOperatorStreams).not.toHaveBeenCalled()
+    expect(initOperatorStream).not.toHaveBeenCalled()
+
     await onSelectRun?.('run-wired-1')
 
     expect(region).not.toBeNull()
+    expect(bootstrapOperatorStreams).not.toHaveBeenCalled()
     expect(initOperatorStream).toHaveBeenCalledTimes(1)
     expect(initOperatorStream.mock.calls[0]?.[0].runId).toBe('run-wired-1')
     expect(initOperatorStream.mock.calls[0]?.[0].checkoutEl).toBe(region)
@@ -776,7 +781,7 @@ describe('defaultRuntimeLoader — production stream wiring', () => {
 })
 
 describe('defaultRuntimeLoader — question region and summary status wiring', () => {
-  type InitOpts = {runId: string; questionsEl?: Element | null; summaryStatus?: string}
+  type InitOpts = {runId: string; questionsEl?: Element | null; timeEl?: Element | null; waitingEl?: Element | null; summaryStatus?: string}
 
   afterEach(() => {
     document.body.innerHTML = ''
@@ -787,7 +792,7 @@ describe('defaultRuntimeLoader — question region and summary status wiring', (
   })
 
   /** Mount the real default loader with every public module mocked; returns the captured seams. */
-  async function mountLoader() {
+  async function mountLoader(mountOptions: {onRefresh?: () => void} = {}) {
     const handle = {close: vi.fn()}
     // Snapshot the region's children at the moment each init runs, before the stream could render into it.
     const initCalls: {opts: InitOpts; regionChildrenAtInit: number | undefined}[] = []
@@ -795,18 +800,25 @@ describe('defaultRuntimeLoader — question region and summary status wiring', (
       initCalls.push({opts, regionChildrenAtInit: opts.questionsEl?.childNodes.length})
       return handle
     })
+    const bootstrapOperatorStreams = vi.fn()
+    const resetBootstrapState = vi.fn()
     let onSelectRun: ((runId: string) => void | Promise<void>) | undefined
+    let onRestoreRun: ((runId: string, card: Element, status: string) => void) | undefined
     let onRunLaunched: ((runId: string, card: HTMLElement) => void) | undefined
     vi.doMock('/static/operator-stream.js?manual=1', () => ({
       initOperatorStream,
-      bootstrapOperatorStreams: vi.fn(),
-      resetBootstrapState: vi.fn(),
+      bootstrapOperatorStreams,
+      resetBootstrapState,
     }))
     vi.doMock('/static/operator-run-index.js?manual=1', () => ({
-      initOperatorRunIndex: async (opts: {onSelectRun: (runId: string) => void | Promise<void>}) => {
+      initOperatorRunIndex: async (opts: {onSelectRun: (runId: string) => void | Promise<void>; onRestoreRun: (runId: string, card: Element, status: string) => void}) => {
         onSelectRun = opts.onSelectRun
+        onRestoreRun = opts.onRestoreRun
       },
-      refreshOperatorRunIndex: vi.fn(async () => true),
+      refreshOperatorRunIndex: vi.fn(async () => {
+        mountOptions.onRefresh?.()
+        return true
+      }),
       resetRunIndexState: vi.fn(),
       markRunStreamAttached: vi.fn(),
       markCardExpandedForLaunch: vi.fn(),
@@ -825,6 +837,10 @@ describe('defaultRuntimeLoader — question region and summary status wiring', (
     return {
       runtime,
       initCalls,
+      handle,
+      bootstrapOperatorStreams,
+      resetBootstrapState,
+      restored: (runId: string, card: Element) => onRestoreRun?.(runId, card, 'running'),
       // Expanding waits for the run-list refresh, so a select settles once the stream is attached.
       select: async (runId: string) => { await onSelectRun?.(runId) },
       launched: (runId: string, card: HTMLElement) => onRunLaunched?.(runId, card),
@@ -838,6 +854,164 @@ describe('defaultRuntimeLoader — question region and summary status wiring', (
         <div data-role="run-questions" hidden></div>
       </div>`
   }
+
+  describe('streams attach only on expand', () => {
+    it('does not bootstrap streams on load: pre-rendered cards get none until one is expanded', async () => {
+      document.body.innerHTML = `${cardHtml('run-q-a', 'status-running')}${cardHtml('run-q-b', 'status-queued')}<div data-role="stream-status"></div>`
+      const {runtime, initCalls, bootstrapOperatorStreams, resetBootstrapState} = await mountLoader()
+
+      expect(bootstrapOperatorStreams).not.toHaveBeenCalled()
+      expect(resetBootstrapState).not.toHaveBeenCalled()
+      expect(initCalls).toHaveLength(0)
+      runtime.cleanup()
+    })
+
+    it('a remount that leaves cards in the list starts no stream, and none until a card is expanded', async () => {
+      document.body.innerHTML = `${cardHtml('run-q-a', 'status-running')}${cardHtml('run-q-b', 'status-succeeded')}<div data-role="stream-status"></div>`
+      const first = await mountLoader()
+      await first.select('run-q-a')
+      first.runtime.cleanup()
+      expect(first.handle.close).toHaveBeenCalledTimes(1)
+
+      const second = await mountLoader()
+
+      expect(second.bootstrapOperatorStreams).not.toHaveBeenCalled()
+      expect(second.initCalls).toHaveLength(0)
+      await second.select('run-q-b')
+      expect(second.initCalls.map(call => call.opts.runId)).toEqual(['run-q-b'])
+      second.runtime.cleanup()
+    })
+
+    it('expanding attaches exactly one stream and collapsing closes it', async () => {
+      document.body.innerHTML = `${cardHtml('run-q-a', 'status-running')}<div data-role="stream-status"></div>`
+      const {runtime, initCalls, handle, bootstrapOperatorStreams, select} = await mountLoader()
+
+      await select('run-q-a')
+      expect(initCalls).toHaveLength(1)
+      expect(handle.close).not.toHaveBeenCalled()
+
+      await select('run-q-a')
+      expect(handle.close).toHaveBeenCalledTimes(1)
+      expect(initCalls).toHaveLength(1)
+      expect(bootstrapOperatorStreams).not.toHaveBeenCalled()
+      runtime.cleanup()
+    })
+
+    it('a restored card and a launched card each attach one stream with no bootstrap involved', async () => {
+      document.body.innerHTML = `${cardHtml('run-q-restore', 'status-running')}${cardHtml('run-q-launch', 'status-queued', ' data-optimistic="true"')}<div data-role="stream-status"></div>`
+      const {runtime, initCalls, bootstrapOperatorStreams, restored, launched} = await mountLoader()
+      expect(initCalls).toHaveLength(0)
+
+      restored('run-q-restore', document.querySelector('[data-run-id="run-q-restore"]') as HTMLElement)
+      expect(initCalls.map(call => call.opts.runId)).toEqual(['run-q-restore'])
+
+      launched('run-q-launch', document.querySelector('[data-run-id="run-q-launch"]') as HTMLElement)
+      expect(initCalls.map(call => call.opts.runId)).toEqual(['run-q-restore', 'run-q-launch'])
+      expect(bootstrapOperatorStreams).not.toHaveBeenCalled()
+      runtime.cleanup()
+    })
+
+    it('never touches the stream bootstrap state, on load or on cleanup', async () => {
+      document.body.innerHTML = '<div data-role="stream-status"></div>'
+      const {runtime, resetBootstrapState, bootstrapOperatorStreams} = await mountLoader()
+
+      runtime.cleanup()
+
+      expect(resetBootstrapState).not.toHaveBeenCalled()
+      expect(bootstrapOperatorStreams).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('the card time is a stream target only while it is launch-seeded', () => {
+    const timeHtml = (marker: string) => `<time data-role="run-updated-at"${marker} datetime="2000-01-01T00:00:00.000Z"></time>`
+    const cardWithTime = (runId: string, marker: string, extra = '') => `
+      <div data-run-id="${runId}"${extra}>
+        <span data-role="run-status" class="run-status status-queued"></span>
+        ${timeHtml(marker)}
+        <div data-role="run-questions" hidden></div>
+      </div>`
+    const SEEDED = ' data-time-source="launch"'
+    const timeOf = (runId: string) => document.querySelector(`[data-run-id="${runId}"] [data-role="run-updated-at"]`)
+
+    it('hands a launch-seeded <time> to the stream on expand', async () => {
+      document.body.innerHTML = `${cardWithTime('run-t-a', SEEDED)}<div data-role="stream-status"></div>`
+      const {runtime, initCalls, select} = await mountLoader()
+
+      await select('run-t-a')
+
+      expect(initCalls).toHaveLength(1)
+      expect(initCalls[0]?.opts.timeEl).toBe(timeOf('run-t-a'))
+      expect(initCalls[0]?.opts.timeEl).not.toBeNull()
+      runtime.cleanup()
+    })
+
+    it('hands a launch-seeded <time> to the stream on the launch handoff', async () => {
+      document.body.innerHTML = `${cardWithTime('run-t-launch', SEEDED, ' data-optimistic="true"')}<div data-role="stream-status"></div>`
+      const {runtime, initCalls, launched} = await mountLoader()
+
+      launched('run-t-launch', document.querySelector('[data-run-id="run-t-launch"]') as HTMLElement)
+
+      expect(initCalls[0]?.opts.timeEl).toBe(timeOf('run-t-launch'))
+      runtime.cleanup()
+    })
+
+    it('after adoption (marker gone) the pre-expand refresh leaves the stream no time target: the list time wins', async () => {
+      document.body.innerHTML = `${cardWithTime('run-t-adopted', SEEDED)}<div data-role="stream-status"></div>`
+      const {runtime, initCalls, select} = await mountLoader({
+        onRefresh: () => {
+          timeOf('run-t-adopted')?.removeAttribute('data-time-source')
+        },
+      })
+
+      await select('run-t-adopted')
+
+      expect(initCalls).toHaveLength(1)
+      expect(initCalls[0]?.opts.timeEl ?? null).toBeNull()
+      runtime.cleanup()
+    })
+
+    it('when the refresh does not list the run, the marker stays and the stream keeps the start time', async () => {
+      document.body.innerHTML = `${cardWithTime('run-t-unlisted', SEEDED)}<div data-role="stream-status"></div>`
+      const {runtime, initCalls, select} = await mountLoader({onRefresh: () => {}})
+
+      await select('run-t-unlisted')
+
+      expect(initCalls[0]?.opts.timeEl).toBe(timeOf('run-t-unlisted'))
+      runtime.cleanup()
+    })
+
+    it.each([
+      ['an ordinary list card <time>', cardWithTime('run-t-list', '')],
+      ['a <time> with another source marker', cardWithTime('run-t-list', ' data-time-source="other"')],
+      ['a card with no <time> at all', cardHtml('run-t-list', 'status-running')],
+    ])('%s is not a stream target', async (_label, html) => {
+      document.body.innerHTML = `${html}<div data-role="stream-status"></div>`
+      const {runtime, initCalls, select} = await mountLoader()
+
+      await select('run-t-list')
+
+      expect(initCalls).toHaveLength(1)
+      expect(initCalls[0]?.opts.timeEl ?? null).toBeNull()
+      runtime.cleanup()
+    })
+  })
+
+  it('hands the discovered waiting-line region to initOperatorStream, and null when the card has none', async () => {
+    document.body.innerHTML = `
+      <div data-run-id="run-w-a"><span data-role="run-status" class="run-status status-running"></span><div data-role="run-waiting" hidden></div></div>
+      ${cardHtml('run-w-b', 'status-running')}
+      <div data-role="stream-status"></div>`
+    const waitingA = document.querySelector('[data-run-id="run-w-a"] [data-role="run-waiting"]')
+    const {runtime, initCalls, select} = await mountLoader()
+
+    await select('run-w-a')
+    await select('run-w-b')
+
+    expect(initCalls[0]?.opts.waitingEl).toBe(waitingA)
+    expect(initCalls[0]?.opts.waitingEl).not.toBeNull()
+    expect(initCalls[1]?.opts.waitingEl ?? null).toBeNull()
+    runtime.cleanup()
+  })
 
   it('hands the discovered questionsEl and the card summary status to initOperatorStream', async () => {
     document.body.innerHTML = `${cardHtml('run-q-a', 'status-succeeded')}${cardHtml('run-q-b', 'status-running')}<div data-role="stream-status"></div>`
@@ -1001,13 +1175,14 @@ describe('defaultRuntimeLoader — run-list refresh triggers', () => {
   async function mountLoader(refresh: () => Promise<boolean> = async () => true) {
     const handle = {close: vi.fn()}
     const initOperatorStream = vi.fn((_opts: InitOpts) => handle)
+    const bootstrapOperatorStreams = vi.fn()
     const refreshOperatorRunIndex = vi.fn(refresh)
     let onSelectRun: ((runId: string) => void | Promise<void>) | undefined
     let onAuthRequired: (() => void) | undefined
     let onRunLaunched: ((runId: string, card: HTMLElement) => void) | undefined
     vi.doMock('/static/operator-stream.js?manual=1', () => ({
       initOperatorStream,
-      bootstrapOperatorStreams: vi.fn(),
+      bootstrapOperatorStreams,
       resetBootstrapState: vi.fn(),
     }))
     vi.doMock('/static/operator-run-index.js?manual=1', () => ({
@@ -1041,6 +1216,7 @@ describe('defaultRuntimeLoader — run-list refresh triggers', () => {
       runtime,
       handle,
       initOperatorStream,
+      bootstrapOperatorStreams,
       refreshOperatorRunIndex,
       onStateChange,
       select: (runId: string) => onSelectRun?.(runId),
@@ -1485,6 +1661,46 @@ describe('discoverCardStreamTargets', () => {
     expect(discoverCardStreamTargets('no-such-run').questionsEl).toBeNull()
   })
 
+  it('returns the waiting-line region when present, and null when absent', () => {
+    const withRegion = document.createElement('div')
+    withRegion.dataset.runId = 'run-with-waiting'
+    const waitingEl = document.createElement('div')
+    waitingEl.dataset.role = 'run-waiting'
+    withRegion.append(waitingEl)
+    const without = document.createElement('div')
+    without.dataset.runId = 'run-no-waiting'
+    document.body.append(withRegion, without)
+
+    expect(discoverCardStreamTargets('run-with-waiting').waitingEl).toBe(waitingEl)
+    expect(discoverCardStreamTargets('run-no-waiting').waitingEl).toBeNull()
+    expect(discoverCardStreamTargets('no-such-run').waitingEl).toBeNull()
+  })
+
+  it('returns the card time only while it carries the launch marker', () => {
+    const card = (runId: string, marker?: string) => {
+      const el = document.createElement('div')
+      el.dataset.runId = runId
+      const time = document.createElement('time')
+      time.dataset.role = 'run-updated-at'
+      if (marker !== undefined) time.dataset.timeSource = marker
+      el.append(time)
+      document.body.append(el)
+      return time
+    }
+    const seeded = card('run-time-seeded', 'launch')
+    card('run-time-plain')
+    card('run-time-other', 'other')
+    const bare = document.createElement('div')
+    bare.dataset.runId = 'run-time-bare'
+    document.body.append(bare)
+
+    expect(discoverCardStreamTargets('run-time-seeded').timeEl).toBe(seeded)
+    expect(discoverCardStreamTargets('run-time-plain').timeEl).toBeNull()
+    expect(discoverCardStreamTargets('run-time-other').timeEl).toBeNull()
+    expect(discoverCardStreamTargets('run-time-bare').timeEl).toBeNull()
+    expect(discoverCardStreamTargets('no-such-run').timeEl).toBeNull()
+  })
+
   it('returns all four per-card render targets when the card and substructure exist', () => {
     const card = document.createElement('div')
     card.dataset.runId = 'run-full'
@@ -1598,6 +1814,8 @@ describe('initOperatorStream — close() teardown behavior', () => {
 
     const noticeEl = document.createElement('div')
     const handle = streamMod.initOperatorStream({runId: 'run-close', statusEl: null, noticeEl})
+    // The attach paint is the only write: the state never moves past 'connecting'.
+    expect(noticeEl.dataset.connectionState).toBe('connecting')
     expect(signals[0]?.aborted).toBe(false)
     expect(vi.getTimerCount()).toBeGreaterThan(0)
 
@@ -1609,7 +1827,8 @@ describe('initOperatorStream — close() teardown behavior', () => {
     await vi.advanceTimersByTimeAsync(120_000)
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(vi.getTimerCount()).toBe(0)
-    expect(noticeEl.dataset.connectionState).toBeUndefined()
+    expect(noticeEl.dataset.connectionState).toBe('connecting')
+    expect(noticeEl.textContent).toBe('Connecting to run stream\u2026')
   })
 
   it('close() clears a pending reconnect timer, so no further connection is opened', async () => {
@@ -2058,10 +2277,11 @@ describe('defaultRuntimeLoader — in-page run jump (requestRunJump)', () => {
       }
     })
     const initOperatorLaunch = vi.fn(async () => {})
+    const bootstrapOperatorStreams = vi.fn()
     let captured: InitOpts | undefined
     vi.doMock('/static/operator-stream.js?manual=1', () => ({
       initOperatorStream,
-      bootstrapOperatorStreams: vi.fn(),
+      bootstrapOperatorStreams,
       resetBootstrapState: vi.fn(),
     }))
     vi.doMock('/static/operator-run-index.js?manual=1', () => ({
@@ -2089,6 +2309,7 @@ describe('defaultRuntimeLoader — in-page run jump (requestRunJump)', () => {
       handles,
       questionChildrenAtAttach,
       initOperatorStream,
+      bootstrapOperatorStreams,
       refreshOperatorRunIndex,
       markCardExpandedForLaunch,
       onStateChange,
