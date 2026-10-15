@@ -404,7 +404,14 @@ async function defaultRuntimeLoader(opts?: {
       if (typeof runIndexMod.markRunStreamAttached === 'function') {
         runIndexMod.markRunStreamAttached(runId)
       }
-    } catch {
+    } catch (error) {
+      // rm-853 adjacent scope — structured, identifier-free: the operator
+      // console contract (runtime.test.ts console-security test) bars run IDs,
+      // tokens, and payloads from console output; the failed card itself
+      // shows the run identity next to the Unavailable badge.
+      console.error('[operator] run-stream attach failed', {
+        error: error instanceof Error ? error.message : String(error),
+      })
       if (statusEl !== null) {
         statusEl.textContent = 'Unavailable'
         statusEl.className = 'status-unavailable'

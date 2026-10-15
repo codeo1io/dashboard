@@ -11763,6 +11763,45 @@ describe('rm-853 — nextStreamState output seq-gap detection', () => {
     expect(run.outputGapMissing).toBe(0)
   })
 
+  it('rm-853 follow-up: a fully-credited skip does not latch a gap (the server coalesced those deltas)', () => {
+    let state = live()
+    state = applyOutput(state, {runId: 'run-credit', text: 'a', final: false, seq: 0})
+    state = applyOutput(state, {runId: 'run-credit', text: 'd', final: false, seq: 3, droppedCount: 2})
+    const run = runOf(state, 'run-credit')
+    expect(run.outputGapDetected).toBe(false)
+    expect(run.outputGapMissing).toBe(0)
+    expect(run.outputCoalesced).toBe(true)
+  })
+
+  it('rm-853 follow-up: a partially-credited skip latches only the un-credited remainder', () => {
+    let state = live()
+    state = applyOutput(state, {runId: 'run-partial', text: 'a', final: false, seq: 0})
+    state = applyOutput(state, {runId: 'run-partial', text: 'd', final: false, seq: 3, droppedCount: 1})
+    const run = runOf(state, 'run-partial')
+    expect(run.outputGapDetected).toBe(true)
+    expect(run.outputGapMissing).toBe(1)
+  })
+
+  it('rm-853 follow-up: credit exceeding the skip neither latches nor accumulates (excess drops are not negative missing)', () => {
+    let state = live()
+    state = applyOutput(state, {runId: 'run-excess', text: 'a', final: false, seq: 0})
+    state = applyOutput(state, {runId: 'run-excess', text: 'c', final: false, seq: 2, droppedCount: 4})
+    const run = runOf(state, 'run-excess')
+    expect(run.outputGapDetected).toBe(false)
+    expect(run.outputGapMissing).toBe(0)
+    expect(run.outputCoalesced).toBe(true)
+  })
+
+  it('rm-853 follow-up: credited and un-credited skips accumulate independently across a run', () => {
+    let state = live()
+    state = applyOutput(state, {runId: 'run-mixed', text: 'a', final: false, seq: 0})
+    state = applyOutput(state, {runId: 'run-mixed', text: 'c', final: false, seq: 2, droppedCount: 0})
+    state = applyOutput(state, {runId: 'run-mixed', text: 'f', final: false, seq: 5, droppedCount: 1})
+    const run = runOf(state, 'run-mixed')
+    expect(run.outputGapDetected).toBe(true)
+    expect(run.outputGapMissing).toBe(2)
+  })
+
   it('the gap latch survives a status frame and a final output frame (final replaces text but not the signal)', () => {
     let state = live()
     state = applyOutput(state, {runId: 'run-latch', text: 'a', final: false, seq: 0})
