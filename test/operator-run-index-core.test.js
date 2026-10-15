@@ -787,7 +787,7 @@ describe('initOperatorRunIndex — onSelectRun callback wired to card clicks', (
     }))
     // No DOM — function bails early when document is undefined
     const onSelectRun = vi.fn()
-    await expect(initOperatorRunIndex({endpointBase: '/operator', onSelectRun})).resolves.toBeUndefined()
+    await expect(initOperatorRunIndex({endpointBase: '/operator', onSelectRun})).resolves.toBe('unavailable')
     expect(onSelectRun).not.toHaveBeenCalled()
   })
 
@@ -3309,5 +3309,75 @@ describe('question region — adopted optimistic cards (ensureRunCardAnatomy)', 
     const hiddenRoles = card => childRoles(card).filter(role => role !== undefined && !['run-status-group', 'run-repo', 'run-updated-at'].includes(role))
     expect(hiddenRoles(optimistic)).toEqual(hiddenRoles(fetched))
     expect(hiddenRoles(fetched)).toContain(QUESTIONS_ROLE)
+  })
+})
+
+describe('initOperatorRunIndex — resolves with its outcome', () => {
+  afterEach(() => {
+    resetRunIndexState()
+    vi.restoreAllMocks()
+  })
+
+  const stubRuns = runs => vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ok: true, status: 200, json: async () => ({runs})}))
+
+  it("resolves 'loaded' when the list has runs", async () => {
+    stubRuns([makeValidSummary()])
+    const {section} = stubDOMWithSection()
+    await expect(initOperatorRunIndex({endpointBase: '/operator'})).resolves.toBe('loaded')
+    expect(section.dataset.state).toBe('loaded')
+  })
+
+  it("resolves 'empty' when the list is empty", async () => {
+    stubRuns([])
+    const {section} = stubDOMWithSection()
+    await expect(initOperatorRunIndex({endpointBase: '/operator'})).resolves.toBe('empty')
+    expect(section.dataset.state).toBe('empty')
+  })
+
+  it("resolves 'unavailable' on a non-auth failure", async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ok: false, status: 500, json: async () => ({})}))
+    const {section} = stubDOMWithSection()
+    await expect(initOperatorRunIndex({endpointBase: '/operator'})).resolves.toBe('unavailable')
+    expect(section.dataset.state).toBe('unavailable')
+  })
+
+  it("resolves 'auth-required' on 401/403, after calling onAuthRequired", async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ok: false, status: 401, json: async () => ({})}))
+    stubDOMWithSection()
+    const onAuthRequired = vi.fn()
+    await expect(initOperatorRunIndex({endpointBase: '/operator', onAuthRequired})).resolves.toBe('auth-required')
+    expect(onAuthRequired).toHaveBeenCalledTimes(1)
+  })
+
+  it("resolves 'stale' when a reset replaces the init while it fetches", async () => {
+    let resolveJson
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => new Promise(res => {
+        resolveJson = res
+      }),
+    }))
+    stubDOMWithSection()
+    const pending = initOperatorRunIndex({endpointBase: '/operator'})
+    await new Promise(resolve => setTimeout(resolve, 0))
+    resetRunIndexState()
+    resolveJson({runs: [makeValidSummary()]})
+    await expect(pending).resolves.toBe('stale')
+  })
+
+  it("resolves 'stale' when a newer init replaces it while it fetches", async () => {
+    const resolvers = []
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(resolve => {
+      resolvers.push(resolve)
+    })))
+    stubDOMWithSection()
+    const first = initOperatorRunIndex({endpointBase: '/operator'})
+    const second = initOperatorRunIndex({endpointBase: '/operator'})
+    const ok = {ok: true, status: 200, json: async () => ({runs: [makeValidSummary()]})}
+    resolvers[0](ok)
+    resolvers[1](ok)
+    await expect(first).resolves.toBe('stale')
+    await expect(second).resolves.toBe('loaded')
   })
 })

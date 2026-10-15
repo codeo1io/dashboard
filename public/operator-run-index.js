@@ -332,6 +332,17 @@ export function resetRunIndexState() {
   _onSelectRun = undefined
 }
 
+/**
+ * Load the run list once, diff it into cards, and handle a hash restore.
+ *
+ * Resolves with the init outcome — 'loaded' or 'empty' when the list rendered,
+ * 'auth-required' when the /operator/runs fetch re-classified the tab as signed
+ * out, 'unavailable' when it failed without an auth signal (network/HTTP/protocol)
+ * or when there is no DOM, and 'stale' when a reset or newer init superseded this
+ * one. The runtime seam uses the outcome for the once-per-tab gateway sign-in
+ * redirect: only 'auth-required' redirects, and only 'loaded'/'empty' clear that
+ * redirect guard (see web/src/operator/runtime.ts + sign-in-recovery.ts).
+ */
 export async function initOperatorRunIndex(opts) {
   const myGeneration = ++_runIndexGeneration
 
@@ -346,8 +357,8 @@ export async function initOperatorRunIndex(opts) {
   const onRestoreMiss = opts?.onRestoreMiss
   const onAuthRequired = opts?.onAuthRequired
 
-  if (isRunIndexInitStale(myGeneration)) return
-  if (typeof document === 'undefined') return
+  if (isRunIndexInitStale(myGeneration)) return 'stale'
+  if (typeof document === 'undefined') return 'unavailable'
 
   if (typeof onSelectRun === 'function') _onSelectRun = onSelectRun
 
@@ -366,7 +377,7 @@ export async function initOperatorRunIndex(opts) {
   const result = await fetchRunIndex({endpointBase, fixtureSessionId})
 
   // Guard: bail if reset/replaced while awaiting fetch.
-  if (isRunIndexInitStale(myGeneration)) return
+  if (isRunIndexInitStale(myGeneration)) return 'stale'
 
   if (runIndexLoading !== null) runIndexLoading.hidden = true
 
@@ -376,11 +387,11 @@ export async function initOperatorRunIndex(opts) {
     // skip any restore attempt entirely.
     if (result.authFailure === true && typeof onAuthRequired === 'function') {
       onAuthRequired()
-      return
+      return 'auth-required'
     }
     if (runIndexUnavailable !== null) runIndexUnavailable.hidden = false
     if (runIndexSection !== null) runIndexSection.dataset.state = 'unavailable'
-    return
+    return 'unavailable'
   }
 
   const {summaries} = result
@@ -403,7 +414,7 @@ export async function initOperatorRunIndex(opts) {
     if (restoreRunId !== undefined && restoreRunId !== null && typeof onRestoreMiss === 'function') {
       onRestoreMiss()
     }
-    return
+    return 'empty'
   }
 
   if (runIndexList !== null) {
@@ -441,6 +452,8 @@ export async function initOperatorRunIndex(opts) {
       }
     }
   }
+
+  return 'loaded'
 }
 
 /** Terminal run-summary statuses — a card in one of these will not progress further. */
