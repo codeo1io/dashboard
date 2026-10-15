@@ -799,10 +799,11 @@ describe('createActiveStreamOwner — instance-scoped stream ownership (rm-283)'
 
   interface HandleSpy {
     close: ReturnType<typeof vi.fn<() => void>>
+    getConnectionStatus: ReturnType<typeof vi.fn<() => 'active' | 'terminal' | 'inactive'>>
   }
 
   function makeHandle(): HandleSpy {
-    return {close: vi.fn<() => void>()}
+    return {close: vi.fn<() => void>(), getConnectionStatus: vi.fn<() => 'active' | 'terminal' | 'inactive'>(() => 'active')}
   }
 
   it('attach records the active run and close releases exactly that handle', () => {
