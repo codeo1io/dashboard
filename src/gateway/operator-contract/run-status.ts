@@ -66,6 +66,57 @@ export const PHASE_TO_WEB_STATUS: Readonly<Record<RunPhase, OperatorWebStatus>> 
 }
 
 // ---------------------------------------------------------------------------
+// Run-status vocabulary single-sourcing (rm-1463)
+// ---------------------------------------------------------------------------
+
+/**
+ * The single hand-written authority for the run-status vocabulary, in
+ * public/operator-stream.js wire order. Every other copy mirrors or derives
+ * from this list:
+ * - public/operator-stream.js VALID_STATUSES mirrors it (browser module; cannot
+ *   import server TS) and run-summary.ts derives the summary subset from it.
+ * - public/operator-run-index.js VALID_RUN_SUMMARY_STATUSES mirrors the derived
+ *   summary subset for the same reason.
+ * - web/src/operator/runtime.ts imports the run-index value at build time.
+ * test/run-status-allowlist-parity.test.ts binds every copy to this module, so
+ * drift anywhere fails the suite instead of failing an operator stream at
+ * runtime (the browser and the server previously disagreed on the vocabulary —
+ * the server rejected whole runs lists for statuses the stream parser accepts).
+ */
+export const STREAM_RUN_STATUSES: readonly OperatorWebStatus[] = [
+  'queued',
+  'blocked',
+  'running',
+  'waiting_for_approval',
+  'waiting_for_question',
+  'succeeded',
+  'failed',
+  'cancelled',
+]
+
+/**
+ * Stream-only overlay statuses: valid on the SSE operator stream, never valid
+ * as a run-summary status (see PHASE_TO_WEB_STATUS above — not derivable from
+ * RunPhase alone).
+ */
+export const STREAM_ONLY_RUN_STATUSES = [
+  'blocked',
+  'waiting_for_approval',
+  'waiting_for_question',
+] as const
+
+export type StreamOnlyRunStatus = (typeof STREAM_ONLY_RUN_STATUSES)[number]
+
+/** Run-summary status: exactly the stream vocabulary minus the overlay trio. */
+export type RunSummaryStatus = Exclude<OperatorWebStatus, StreamOnlyRunStatus>
+
+/** Derived, never hand-listed: test/run-status-allowlist-parity.test.ts asserts the derivation. */
+export const RUN_SUMMARY_STATUSES: readonly RunSummaryStatus[] = STREAM_RUN_STATUSES.filter(
+  (status): status is RunSummaryStatus =>
+    !(STREAM_ONLY_RUN_STATUSES as readonly OperatorWebStatus[]).includes(status),
+)
+
+// ---------------------------------------------------------------------------
 // OperatorRunStatus
 // ---------------------------------------------------------------------------
 
