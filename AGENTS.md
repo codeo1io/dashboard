@@ -130,3 +130,15 @@ Read-only dependency source repositories are available under
   body preserved, land, then re-enable enforcement in the same session — never
   delete the protection object (recreating it drops the check list; a
   body-less recreate produces exactly the current all-empty shell state).
+- A landing merge can silently DROP a lane file: integration commits are
+  assembled from the candidate delta, not a literal `git merge` of the lane,
+  so a file the lane added can be absent from the merge result with no
+  conflict to notice (observed 2026-10-11: landing `91774d8` dropped 60 lane
+  files present at lane tip `99925c1` — `scripts/roadmap-census.ts`, seven
+  tests including the roadmap-integrity guard, `web/src/api/fetch-timeout.ts`,
+  `web/src/shell/ErrorBoundary.tsx`, and ~40 docs; counter-example: `5530b5e`
+  dropped nothing). After every landing, run
+  `node scripts/lane-integrity.ts <merge-sha> <lane-tip-sha>`
+  — it exits 1 naming any lane-tip file missing from the merge result unless
+  the landing message records `retires: <path>`. The guard and a regression
+  pin on the historical incident live in `test/lane-integrity.test.ts` (rm-1421).
