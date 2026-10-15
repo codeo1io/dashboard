@@ -28,13 +28,27 @@ export default defineConfig({
 
       // registerType omitted → defaults to 'prompt' (never silently reload).
 
+      // rm-138 (2026-10-15): stop injecting SW registration. Production src has
+      // ZERO virtual:pwa-register importers (web/src/pwa/ReloadPrompt.tsx is a
+      // no-op; only test mocks import the virtual module), so injectRegister
+      // 'auto' emitted web/dist/registerSW.js + the
+      // <script id=vite-plugin-pwa:register-sw src=/registerSW.js> tag on every
+      // build — a per-visit registration of the kill-switch sw.ts, which
+      // skipWaiting-purges-unregisters itself each load, racing Notifications
+      // push subscriptions against a registration that dies milliseconds after
+      // load. false = no registerSW.js, no script tag; sw.ts stays emitted and
+      // served for previously-registered clients, and the server keeps a public
+      // legacy-404 route at /registerSW.js (src/server.ts) for cached shells.
+      injectRegister: false,
+
       injectManifest: {
         // Exclude the SW itself and the manifest from the precache list.
         // The default globPatterns cover hashed JS/CSS/assets in web/dist.
+        // ('**/registerSW.js' dropped with rm-138: injectRegister:false means
+        // the file is never emitted, so there is nothing to exclude.)
         globIgnores: [
           '**/sw.js',
           '**/manifest.webmanifest',
-          '**/registerSW.js',
           '**/privacy.html',
         ],
 
