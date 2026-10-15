@@ -93,8 +93,11 @@ export type {
   OperatorCsrfToken,
   OperatorError,
   OperatorOk,
+  OperatorPushHealth,
+  OperatorPushHealthStatus,
   OperatorSessionInfo,
 } from './responses.ts'
+export {OPERATOR_PUSH_HEALTH_STATUSES} from './responses.ts'
 export {
   parseLaunchRunResponse,
   parseRunApprovalDecisionResponse,
@@ -120,4 +123,5 @@ export type {
 export type {RunsListResponse, RunSummary, RunSummaryStatus} from './run-summary.ts'
 export {parseRunsListResponse, parseRunSummary, parseRunSummaryList, RUN_INDEX_CAP} from './run-summary.ts'
 export type {ReadyFrame, ResetFrameData, ResetReason, RunStreamFrame, StatusFrameData} from './sse-frames.ts'
-export {OPERATOR_CONTRACT_VERSION} from './version.ts'
+export type {AcceptedOperatorContractVersion} from './version.ts'
+export {ACCEPTED_CONTRACT_VERSIONS, OPERATOR_CONTRACT_VERSION} from './version.ts'
