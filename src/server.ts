@@ -1245,10 +1245,22 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   // (/icon-*, manifest.webmanifest) revalidate every load via an explicit
   // no-cache; sw.js and /registerSW.js already carry a stronger no-store
   // family (the pre-secureHeaders CSP-bypass middleware and the wrapper
-  // below). Adapter note for the next @hono/node-server bump: 2.1.3's
-  // serveStatic sets ONLY Last-Modified and has no ETag /
-  // If-Modified-Since handling (no 304s), so these headers are the entire
-  // caching story — re-derive.
+  // below). Adapter note, re-derived at @hono/node-server 2.1.5 (rm-1455,
+  // 2026-10-16; bump is lockfile-only — package.json keeps ^2.1.3, the
+  // lockfile resolves 2.1.5, whose peer range admits hono ^4 || ^5):
+  // (1) 2.1.5's serveStatic answers GET/HEAD ONLY (serve-static.mjs:76) —
+  // non-GET static requests fall through to the app's 404 and never reach a
+  // file read (at 2.1.3 a POST /sw.js streamed the full SW body with 200;
+  // OPTIONS no longer gets HEAD treatment either); pinned in
+  // test/static-assets.test.ts (rm-1455 describe). (2) The caching story is
+  // UNCHANGED: 2.1.5's serveStatic still sets ONLY Last-Modified
+  // (serve-static.mjs:117), with no ETag / If-Modified-Since handling (no
+  // 304s), so these headers remain the entire caching story. (3) Adapter
+  // level (node-server PR #404): an HTTP/2 stream reset now aborts the
+  // request signal — on outgoing close, an aborted Http2ServerRequest
+  // triggers req[abortRequest]('Client connection prematurely closed.')
+  // (index.mjs makeCloseHandler) — mid-transfer client resets surface as
+  // AbortErrors instead of dangling transfers.
   // Re-grafted 2026-10-11 (conductor integrate 08a0abac): the 2026-10-17
   // upstream adoption dropped this block and its tests; restored verbatim
   // from lineage 88e423a with this merge.
