@@ -85,6 +85,11 @@
 - acceptance: visual job runs inside the mcr Playwright image matching the repo pin (or the documented lighter form: runs-on ubuntu-24.04 plus a written baseline-regen procedure); no runtime browser-install step remains; all three dark baselines regenerated once inside that image with provenance recorded in the visual spec header
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
+### Absorb the upstream 2026.10.26-29 window: operator contract 1.11.0 (PR #619) + run-card time/waiting line (PR #623) — the deployed pair is drift-broken TODAY
+- id: `rm-857` | track: reliability | priority: 86.0 | status: in_progress
+- acceptance: OPERATOR_CONTRACT_VERSION pins '1.11.0' (src/gateway/operator-contract/version.ts) with the 1.10.0/1.11.0 vendor additions — push-health field on GET /operator/session, push trigger kinds, waiting run statuses accepted and labeled by every summary parser, question-push deep link carrying route '/operator#<runId>' plus runId — reconciled onto this fork's lineage from upstream PR #619's landed form (45 files incl. NEW src/static-files.ts, fixtures + conformance tests, web/src/sw.ts + NEW push/notification-click.ts + push/open-run-message.ts, web/privacy.html); the unlanded fcfde1ea ladder shape is superseded by #619 and closed as superseded-by-#619; then PR #623's run-card time + waiting line (22 files, NEW public/operator-time.js, web/src/operator/runtime.ts, Operator.tsx, index.css) and the #626/#627 docs corrections land in the same window; the read-only invariant is byte-preserved (no wiki-write surface — fork-exclusion-guard green, rm-259 disposition holds); the SW/push doctrine is decided with or before this absorb because #619's notification jumps live on the SW surface (rm-138 rider); post-absorb git diff upstream/main over the touched files shows a residual delta explained line-by-line (fork exclusions only); conformance + fixture suites green; the deploy note records the infra pairing — gateway already pins v0.122.1 (contract 1.11.0, fro-bot/agent#1825), so the drift-cure lands when this dashboard ships, both sides exact-match per fro-bot/.github#3512
+- evidence: research cycle 2, run d1fd991d77b8 2026-10-15 — gh pr view/diff #619 (merged 2026-10-14T21:46:18Z), gh pr view #623/#625/#626/#627, gh api marcusrbrown/infra apps/gateway/upstream.json ref v0.122.1; notes at conductor-delegate-spool/delegate/639ce0dcb7f843878dcaa468005cafcd-scratch/research-notes.md
+
 ### Port the rm-155 bounded-poll pattern to Monitoring.tsx (poll wedge fix)
 - id: `rm-251` | track: reliability | priority: 85.0 | status: in_progress
 - acceptance: the rm-155 pattern is extracted into a shared bounded-poll hook (useBoundedPoll or equivalent) consumed by BOTH Listener.tsx and Monitoring.tsx — fetch gains an internal deadline or the view races a ~15s abort, the latch releases in a finally on every path including rejection, and unmount aborts the in-flight controller; a web test pins that a never-settling fetch (deferred promise) cannot hold the latch past the bound and that unmount aborts
@@ -194,6 +199,11 @@
 - id: `rm-498` | track: reliability | priority: 70.0 | status: in_progress
 - acceptance: 
 - evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Actions-darkness watchdog — six dark days (last run 2026-10-09) hid the exact window upstream moved the operator contract
+- id: `rm-858` | track: reliability | priority: 70.0 | status: in_progress
+- acceptance: scripts/actions-darkness-watch.ts lands with exit 0 (not dark) / 1 (error) / 3 (dark) semantics where DARK iff a push- or schedule-triggered workflow has pushed_at newer than its last run-creation by more than 48h; env seams ACTIONS_DARKNESS_NOW, ACTIONS_DARKNESS_REPO, ACTIONS_DARKNESS_TOKEN keep it testable; docs/runbooks/actions-darkness-watch.md documents the semantics and the escalation path; the test suite covers the exit-0/exit-1/exit-3 branches plus a recorded LIVE proof (exit 3 against codeo1io/dashboard on 2026-10-15: last run 2026-10-09T01:59:31Z, all five weekly Monday crons and Wednesday CodeQL skipped Oct 12-14 — the exact window upstream moved the contract 1.9 to 1.11); the firing seam works while Actions itself is dark (external scheduler or estate-tripwire call-out, since an in-repo cron cannot fire during darkness) and a design note records which seam was chosen and why
+- evidence: research cycle 2, run d1fd991d77b8 2026-10-15 — gh run list codeo1io/dashboard (last 2026-10-09T01:59:31Z); crons at audit.yaml:35 / base-drift.yaml:34 / canary.yaml:15 / upstream-drift.yaml:24 / scorecard.yaml:8 / codeql.yaml:11; scripts/ has no watchdog today
 
 ### failingChecks drill-down: workflow title + attempt via additive GraphQL fields
 - id: `rm-192` | track: reliability | priority: 68.0 | status: in_progress
@@ -394,6 +404,11 @@
 - id: `rm-220` | track: reliability | priority: 50.0 | status: in_progress
 - acceptance: an idle-frame watchdog (missed-heartbeat or wall-clock) marks the stream stale visibly in the UI; an explicit decision recorded on resume — adopt Last-Event-ID end-to-end (gateway reader support required) or decline with a written rationale and a reconnect-gap bound; tests cover stall detection and the chosen reconnect behavior
 - evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Dependency currency window at the rm-139 gate (2026-10-28): typescript 7, vitest 5, impeccable 4, @hono/node-server 2.1.5, agent mirror v0.122.3
+- id: `rm-859` | track: reliability | priority: 55.0 | status: in_progress
+- acceptance: one coordinated window at the rm-139 Node-26/runner re-evaluation: typescript 6.0.3 to 7.x and vitest 4.1.11 to 5.x major migrations each land behind a green full suite (root + web) with the erasableSyntaxOnly strip-only constraints re-verified; @hono/node-server 2.1.3 to 2.1.5 with the rm-690 serveStatic caching re-derivation resolved (Last-Modified-only behavior re-measured, Cache-Control/ETag decision recorded); react 19.3.0 to 19.3.1 rides the lockfile refresh; impeccable evaluated at 4.5.2 — if adopted, the CI pin (main.yaml impeccable@3.2.1 step) and .impeccable/config.json ignoreValues bump together and the Design Check passes on intentional brand tokens; the fro-bot__agent clonedeps mirror refreshes past v0.78.0 to v0.122.3 (v0.122.3 carries security fixes: bounded indexed source-map processing, injected-URI-authority rejection, Sharp/librbsvg patch — fro-bot/agent#1828); the octokit stack is verified current (no action); every bump respects minimumReleaseAge 1440
+- evidence: research cycle 2, run d1fd991d77b8 2026-10-15 — npm view hono/@hono/node-server/vite/react/vitest/typescript/eslint/tailwindcss/@octokit-core/@octokit-auth-app/impeccable vs package.json pins; gh release view v0.122.3 --repo fro-bot/agent
 
 ### operator-sse-reader.ts: wire it or fold it (zero production callers, and 1.8.0 doubles the cost of a dead twin)
 - id: `rm-253` | track: reliability | priority: 50.0 | status: in_progress
@@ -777,12 +792,12 @@
 
 ### Render-landing channel governance — managed roadmap renders arrive as PRs, never direct pushes
 - id: `rm-680` | track: reliability | priority: 31.0 | status: in_progress
-- acceptance: managed ROADMAP renders open a PR and never push main directly; each render PR carries a pre/post id-census delta (defs added = mints with provenance, defs removed = explicit supersede references only), a provenance-comment delta or explicit supersede note, and lint-green plus rm-678 guard-green (the ledger-integrity guard, both halves) on the rendered tree; a direct main push of ROADMAP.md by the emitter is treated as a security-class regression in postmortem terms; with rm-116 filled and admin-enforced the channel becomes structurally blocked rather than conventionally avoided.
+- acceptance: managed ROADMAP renders open a PR and never push main directly; each render PR carries a pre/post id-census delta (defs added = mints with provenance, defs removed = explicit supersede references only), a provenance-comment delta or explicit supersede note, and lint-green plus rm-678 guard-green (the ledger-integrity guard, both halves) on the rendered tree; a direct main push of ROADMAP.md by the emitter is treated as a security-class regression in postmortem terms; with rm-116 filled and admin-enforced the channel becomes structurally blocked rather than conventionally avoided. rider 2026-10-15: the failure mode is live — roadmap-sync render 5d5f9be pushed main directly and left pnpm lint RED at the origin/main tip (ROADMAP.md 47 trailing-space lines plus a markdown/no-missing-label-refs error at line 19 from an unbackticked bracketed path list; blob f2588ea7), and repo-side whitespace fixes regress on the next render — the durable cure is renderer-side emission (no trailing whitespace, backticked bracket lists) plus render-guard census tests (def-line track-taxonomy preservation, zero dangling rm-refs) gating the render PR
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Resolve the PWA kill-switch vestige (decision: strip precache wiring or implement offline)
 - id: `rm-138` | track: reliability | priority: 30.0 | status: in_progress
-- acceptance: a recorded decision — strip: vite-plugin-pwa removed or reduced to the injectManifest kill-switch minimum with grep showing no precache configuration and web build output shrinking; or implement: a true offline shell with an explicit cache-policy note reconciled against the privacy claims; either way the decision and its privacy reasoning land in the cycle batch doc
+- acceptance: a recorded decision — strip: vite-plugin-pwa removed or reduced to the injectManifest kill-switch minimum with grep showing no precache configuration and web build output shrinking; or implement: a true offline shell with an explicit cache-policy note reconciled against the privacy claims; either way the decision and its privacy reasoning land in the cycle batch doc; rider 2026-10-15: the vestige now extends to push delivery — upstream #619 delivers its 1.11.0 notification jumps via web/src/sw.ts push/notificationclick handlers plus NEW push/notification-click.ts and push/open-run-message.ts, while this fork registers no SW at all (sw.ts installs only a kill-switch; no serviceWorker.register call exists in web/src outside tests), leaving the absorbed push surface (push/subscribe.ts, push/sw-notification.ts, the consent UI and its dev-only synthetic-push path) structurally inert — the strip-or-implement decision must cover push delivery and be taken with the rm-857 absorb
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Stop re-reading the kill-switch file per request
@@ -974,6 +989,11 @@
 - id: `rm-673` | track: reliability | priority: 26.0 | status: in_progress
 - acceptance: the existing security.txt test block gains a runway assertion — Expires must be at least 60 days in the future — with the bound chosen so one missed quarterly cycle fails CI well before the field can approach expiry; assertion red-first proven by temporarily pinning a soon-to-expire value (test red, restore, test green); no change to the served security.txt itself
 - evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Batch-disposition the 10 stale open PRs (conductor validation debris + landed-not-closed batches)
+- id: `rm-860` | track: reliability | priority: 25.0 | status: candidate
+- acceptance: all 10 stale open PRs on codeo1io/dashboard receive exactly one action each per the rm-246 supersession runbook — conductor validation debris #533/#521/#678/#680/#698/#699/#700/#701 closed-with-comment as ephemeral CI snapshots with no adoptable payload; maintenance batches #509/#518 closed-with-comment citing their landed equivalents (payload landed via direct push); zero merges, zero force-pushes, zero branch deletes before close; every closure recorded in the cycle batch doc under landing-queue hygiene
+- evidence: research cycle 2, run d1fd991d77b8 2026-10-15 — gh pr list --state open: #701/#700/#699/#698/#680/#678/#533/#521/#518/#509
 
 ### web/** client lint coverage (currently globally ignored)
 - id: `rm-257` | track: reliability | priority: 25.0 | status: in_progress
