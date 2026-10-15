@@ -181,7 +181,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### rm-779
-- id: `rm-779` | track: reliability | priority: 72.0 | status: in_progress
+- id: `rm-779` | track: reliability | priority: 72.0 | status: implemented (ARG-derived pin fix authored 2026-10-10 in run a794d381b4f0 cycle:2 batch 'CI gate truth + supply-chain currency' and stranded unlanded when the October upstream-adoption lineage dropped .github/workflows/cve-tripwire.yaml as adoption collateral; restored 2026-10-15 at this integrate (conflict case 93ab0f7b) with the rm-188 ubuntu-24.04 runner fold composed in — the resolve step derives the whole pinned image from the Dockerfile ARG NODE_IMAGE= line, fail-closed preserved, re-verified against the live Dockerfile ARG)
 - acceptance: 
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -226,7 +226,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Pre-Release CVE tripwire: weekly trivy scan of the pinned base digest (the layer no detector covers)
-- id: `rm-648` | track: reliability | priority: 65.0 | status: in_progress
+- id: `rm-648` | track: reliability | priority: 65.0 | status: implemented (workflow landed 2026-10-07 at 2a9dd25 born-broken — the literal NODE_IMAGE 'node:24-slim' could never match the trixie Dockerfile ARG, so every scheduled fire was guaranteed red; the rm-779 ARG-line derivation cure was authored 2026-10-10 in run a794d381b4f0 and stranded when the October upstream-adoption lineage dropped the workflow as collateral; restored 2026-10-15 at this integrate (conflict case 93ab0f7b) with the cure composed in — resolve derives the pin from the Dockerfile ARG, scans the pinned base digest weekly Mondays 06:53Z)
 - acceptance: 
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
