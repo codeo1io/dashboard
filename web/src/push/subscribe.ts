@@ -323,6 +323,38 @@ function getDefaultSwRegistration(): Promise<MinimalServiceWorkerRegistration | 
 }
 
 /**
+ * rm-1420: register the push-only service worker (/sw.js), then wait for it.
+ *
+ * The dashboard registers no worker at boot, so the bare `ready` wait the
+ * views previously injected could never settle while no prior registration
+ * existed — every subscribe attempt dead-ended 'sw-not-ready'. This default
+ * registers /sw.js only when it is not registered yet, then waits for the
+ * active worker exactly like the injected default did.
+ *
+ * With no service-worker container at all the promise never settles on
+ * purpose: the subscribe timeout plus classifySwReadiness then report the
+ * PERMANENT 'sw-unavailable' outcome instead of an error.
+ */
+export function ensurePushServiceWorker(): Promise<MinimalServiceWorkerRegistration> {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+    return new Promise<MinimalServiceWorkerRegistration>(() => {})
+  }
+  return (async () => {
+    try {
+      const registration = await navigator.serviceWorker.getRegistration('/sw.js')
+      if (registration === undefined) {
+        await navigator.serviceWorker.register('/sw.js')
+      }
+    } catch {
+      // A failed register is not fatal here: the ready wait below plus the
+      // classifySwReadiness probe still produce the operator-facing outcome.
+    }
+    // House boundary cast — same seam as getDefaultSwRegistration above.
+    return (await navigator.serviceWorker.ready) as unknown as MinimalServiceWorkerRegistration
+  })()
+}
+
+/**
  * rm-272: classify a timed-out `serviceWorker.ready` wait. With no registration
  * the wait can never settle — retrying cannot help — so the caller must surface
  * the PERMANENT 'sw-unavailable' outcome; a registration that merely has not

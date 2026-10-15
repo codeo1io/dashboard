@@ -2,6 +2,7 @@ import {readFileSync} from 'node:fs'
 import {resolve} from 'node:path'
 
 import {CLAIMS, REQUIRED_CLAIM_CATEGORIES} from './claims.ts'
+import {buildNotification} from '../push/sw-notification.ts'
 
 const pagePath = resolve(import.meta.dirname, '../../privacy.html')
 const page = readFileSync(pagePath, 'utf8')
@@ -57,14 +58,31 @@ describe('public privacy policy content', () => {
     expect(pageText).not.toMatch(/never record.{0,120}run detail/i)
   })
 
-  // UNGUARDED, deliberately: "They cover two events: a run is waiting for
-  // your approval, and a run failed." The dispatch trigger set
-  // ('approval' | 'run_failed') is Gateway-internal — not in the vendored
-  // contract (src/gateway/operator-contract/push.ts covers only the read
-  // surface: VAPID key, handoff state, subscription metadata). A test here
-  // could only assert the page says what the page says. Guardable once the
-  // trigger set is exposed in the operator contract, the way
-  // OPERATOR_CONTRACT_VERSION already is.
+  it('discloses exactly the event kinds the shipped notification mapping renders', () => {
+    // Guardable since rm-1420 (was deliberately UNGUARDED before it): the
+    // notification mapping in web/src/push/sw-notification.ts is this
+    // repo's contract for what a push renders, so the page's event list is
+    // now pinned against shipped copy — the page may not drift from it,
+    // and shipped copy may not grow a kind the page does not disclose.
+    for (const type of ['approval', 'question', 'run_failed'] as const) {
+      const rendered = buildNotification({data: {type}})
+      expect(rendered.title).not.toBe('Fro Bot')
+      const phrase = rendered.body.toLowerCase().replace(/\.$/, '')
+      expect(pageText.toLowerCase()).toContain(phrase)
+    }
+    expect(pageText).toMatch(/three events/i)
+    expect(pageText).not.toMatch(/two events/)
+  })
+
+  it('discloses the unrecognized-kind fallback copy and the field discipline', () => {
+    // #615 absorb: an unrecognized event kind surfaces the gateway's own
+    // title/body instead of the generic card. The page must say so, and
+    // must keep naming the never-reflected field classes.
+    expect(pageText).toMatch(/event kind the dashboard does not recognize/i)
+    expect(pageText).toMatch(/title and body text the gateway sent/i)
+    expect(pageText).toMatch(/every other payload field is always discarded/i)
+    expect(pageText).toMatch(/never include repository names, prompts/i)
+  })
 
   it('does not expose private or internal values', () => {
     const urls = pageText.match(/https:\/\/[^\s<)]+/g) ?? []
