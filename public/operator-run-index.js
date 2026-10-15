@@ -599,6 +599,24 @@ function cardShowsTerminalStatus(card) {
 }
 
 /**
+ * Read an element's datetime attribute across real and stub DOM shapes (the
+ * focused-core harness tracks attributes on a plain object with no
+ * getAttribute). '' when absent.
+ */
+function getElementDatetime(el) {
+  if (typeof el.getAttribute === 'function') {
+    const value = el.getAttribute('datetime')
+    return value === null ? '' : value
+  }
+  const attributes = el.attributes
+  if (attributes !== null && attributes !== undefined && typeof attributes === 'object') {
+    const value = attributes.datetime
+    return typeof value === 'string' ? value : ''
+  }
+  return ''
+}
+
+/**
  * Update a card's safe-view-derived fields in place. Closed attribute-mutation set:
  * className (status-* only), textContent (safe-view text children), datetime (on <time>).
  * Never touches data-run-id or data-expanded on the card itself. The one structural
@@ -633,8 +651,19 @@ function updateCardInPlace(card, view) {
         timeEl.dataset.role = 'run-updated-at'
         insertBeforeFirstRole(card, timeEl, SUBSTRUCTURE_ROLES)
       }
-      timeEl.setAttribute('datetime', view.updatedAt)
-      timeEl.textContent = formatRelativeTime(view.updatedAt)
+      // rm-1441 (upstream #585): monotonic guard — a fetched summary's updatedAt can
+      // lag the client-side time the stream painted on its last status transition of
+      // an adopted launch card. The card's timestamp only ever moves forward; an
+      // older view value leaves the painted value untouched.
+      const existingDatetime = getElementDatetime(timeEl)
+      const existingMs = existingDatetime === '' ? Number.NaN : Date.parse(existingDatetime)
+      const incomingMs = Date.parse(view.updatedAt)
+      const incomingIsOlder =
+        Number.isFinite(existingMs) && Number.isFinite(incomingMs) && incomingMs < existingMs
+      if (!incomingIsOlder) {
+        timeEl.setAttribute('datetime', view.updatedAt)
+        timeEl.textContent = formatRelativeTime(view.updatedAt)
+      }
     }
 
     const reasonEl = card.querySelector('[data-role="run-reason"]')

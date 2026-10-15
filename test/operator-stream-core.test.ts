@@ -10064,7 +10064,10 @@ describe('initOperatorStream — expired snapshot DOM', () => {
       record('output', {runId: RUN, text: 'working on it', final: false, seq: 0}),
     ], 'running')
     expect(statusEl.textContent).toBe('Running')
-    expect(outputEl.textContent).toBe('working on it')
+    // rm-1440: output now renders through the allowlist Markdown builder — a plain
+    // paragraph lands as a single <p> child carrying the text verbatim.
+    expect(outputEl.children).toHaveLength(1)
+    expect(outputEl.children[0]?.textContent).toBe('working on it')
     expect(outputEl.hidden).toBe(false)
     expect(noticeEl.textContent).toBe('')
     expect(noticeEl.dataset.connectionState).toBe('live')
@@ -11794,7 +11797,10 @@ describe('rm-853 — nextStreamState output seq-gap detection', () => {
     // Mirrors the late-frame render harness: drive updateDOM with a gapped stream.
     const noticeEl = {textContent: '', hidden: false, dataset: {connectionState: ''}}
     const statusEl = {textContent: 'Pending', className: '', classList: {add: () => {}}, dataset: {}, hidden: false}
-    const outputEl = {textContent: '', hidden: true}
+    // rm-1440: the output region now receives allowlist-Markdown DOM children from
+    // renderRunOutput, so the fake needs append-child tracking and a document stub.
+    const outputEl = makeFakeEl('pre')
+    outputEl.hidden = true
     const coalescedEl = {textContent: '', hidden: true}
     const gapEl = {textContent: '', hidden: true}
     const approvalsEl = {hidden: true, append: () => {}}
@@ -11808,6 +11814,7 @@ describe('rm-853 — nextStreamState output seq-gap detection', () => {
     const frameA = `event: output\ndata: ${JSON.stringify({runId: 'run-gap-render', text: 'a', final: false, seq: 0})}\n\n`
     const frameC = `event: output\ndata: ${JSON.stringify({runId: 'run-gap-render', text: 'c', final: false, seq: 2})}\n\n`
     let readCount = 0
+    vi.stubGlobal('document', {createElement: (tag: string) => makeFakeEl(tag)})
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -11839,7 +11846,10 @@ describe('rm-853 — nextStreamState output seq-gap detection', () => {
     handle.close()
     vi.unstubAllGlobals()
 
-    expect(outputEl.textContent).toBe('ac')
+    // rm-1440: the accumulated text ('ac' — seq 0 'a' + seq 2 'c' with a gap)
+    // renders as one allowlist-Markdown paragraph carrying it verbatim.
+    expect(outputEl.children).toHaveLength(1)
+    expect(outputEl.children[0]?.textContent).toBe('ac')
     expect(gapEl.hidden).toBe(false)
     expect(gapEl.textContent).not.toBe('')
     expect(coalescedEl.hidden).toBe(true)
