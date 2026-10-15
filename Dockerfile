@@ -32,6 +32,11 @@ RUN pnpm install --frozen-lockfile
 COPY web/ ./web/
 
 # Build the SPA — emits hashed assets to web/dist/
+# rm-882 (absorb of upstream #641): release.yaml passes the precomputed CalVer
+# tag as DASHBOARD_VERSION; Vite inlines it into the client for the footer
+# version chip. `dev` default keeps local + CI non-release builds honest.
+ARG DASHBOARD_VERSION=dev
+ENV VITE_DASHBOARD_VERSION=$DASHBOARD_VERSION
 RUN pnpm build:web
 
 # ── Production dependency stage ───────────────────────────────────────────────

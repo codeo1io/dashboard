@@ -44,6 +44,11 @@
 - acceptance: PR #9 merged (or its payload cherry-picked) with the four-file conflict set resolved; ROADMAP rm numbering reconciled in the merge (the landed rm-131/rm-132/rm-133 keep their landed meaning, stranded duplicates renumbered); base-drift.yaml on main passes the actionlint container gate and its first scheduled run logs pinned and live digests; `minimumReleaseAge: 1440` active alongside the existing Exclude list; README badges resolve against codeo1io/dashboard and the endpoints list names /privacy and the listener routes; full suite green at the merge sha (the rm-126 lock test takes the count 3115 to 3116)
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
+### Visual-gate parity cure: @playwright/test lockfile/container split-landing (grows rm-142)
+- id: `rm-881` | track: reliability | priority: 93.0 | status: in_progress
+- acceptance: visual.yaml container and the lockfile-resolved @playwright/test are made equal and GUARDED: the mcr.microsoft.com/playwright image tag in .github/workflows/visual.yaml equals the pnpm-lock-resolved version (bump both to 1.64.1 — image `v1.64.1-noble`, digest re-derived at implement time; 2026-10-16 reference digest sha256:7852dc5a7d72f5fe458a597d690f6c42fbc8e9e26ddfa95f8e6ef552558d9bbf); package.json pins `@playwright/test` EXACTLY (no caret) so the pair cannot drift silently again; @axe-core/playwright rides to 4.14.0 once it clears the 1440-minute minimumReleaseAge gate (published 2026-10-15T13:33Z, matures 2026-10-16T13:33Z; peer range >=1.0.0 keeps 4.13.0 fully compatible with playwright-core 1.64.1 in the interim, and the ^4.13.0 caret picks 4.14.0 up at the next lockfile touch — no rm-196-style exclude is warranted for a dev-only a11y scanner); a parity guard test parses visual.yaml's image tag and asserts it matches the lockfile resolution (same pattern as tests/visual-trigger-paths — survives future majors); proven by the guard failing pre-fix and passing post-fix, plus `pnpm lint`/`pnpm check-types`/full vitest suite green at the delta
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
 ### Upstream absorb batch 2026-09-20 (node 0e0ff40, hono 4.13.8, retire in-image patch)
 - id: `rm-111` | track: reliability | priority: 92.0 | status: in_progress
 - acceptance: recorded from dashboard ROADMAP.md by campaign ingest
@@ -84,6 +89,7 @@
 - id: `rm-142` | track: reliability | priority: 86.0 | status: in_progress
 - acceptance: visual job runs inside the mcr Playwright image matching the repo pin (or the documented lighter form: runs-on ubuntu-24.04 plus a written baseline-regen procedure); no runtime browser-install step remains; all three dark baselines regenerated once inside that image with provenance recorded in the visual spec header
 - evidence: campaign-recorded in dashboard ROADMAP.md
+- evidence: 2026-10-16 (research run 47f9aaefa379, attempt 00c7281e): acceptance VIOLATED at HEAD 5d5f9be — pnpm-lock.yaml resolves `@playwright/test@1.64.0` (landed lockfile-only in 6179cb7 2026-10-11 via the `^1.63.0` caret in package.json:36) while visual.yaml:71 pins `v1.63.0-noble@sha256:eff16c30...`; the :58 claim is now false; npm latest is 1.64.1 and `v1.64.1-noble` exists (image-index digest sha256:7852dc5a7d72f5fe458a597d690f6c42fbc8e9e26ddfa95f8e6ef552558d9bbf, re-derive at implement time); no parity guard exists in test/ (grep `mcr.microsoft|1.63.0|1.64.0` -> zero hits); cure minted as rm-881
 
 ### Port the rm-155 bounded-poll pattern to Monitoring.tsx (poll wedge fix)
 - id: `rm-251` | track: reliability | priority: 85.0 | status: in_progress
@@ -109,6 +115,7 @@
 - id: `rm-252` | track: reliability | priority: 80.0 | status: in_progress
 - acceptance: the operator contract version accepted extends additively to 1.8.0 (1.6.0/1.7.0/1.8.0); run-status renders checkout-advance provenance and distinguishes workspace-preparation failures from run failures and incomplete invocation (rm-157's acceptance rides here); 401 from a gateway at v0.116.0+ maps to an operator-actionable workspace-unavailable state rather than auth-required; BOTH parsers (src/gateway/operator-sse-reader.ts and public/operator-stream.js — see rm-253's wire-or-fold decision) grow the new fields exactly once; the workflow pin bumps to the absorbed agent version with the riders above
 - evidence: campaign-recorded in dashboard ROADMAP.md
+- evidence: 2026-10-16 window state (research run 47f9aaefa379): upstream fro-bot/dashboard tip = 3dd78ee (ls-remote + fetch), unabsorbed window = exactly 24 commits vs this fork's HEAD (git rev-list --count HEAD..FETCH_HEAD); all 24 dispositioned by in-flight batches (#631/#623/#619 lane, #636/#633+#637/#634/#629/pins lane, #639 lane, #640 rides the push-host decision) — do not re-dispatch; ONE new post-frontier absorbable = PR #641 (footer release-version, minted rm-882); gateway fro-bot/agent newest release v0.122.3 (2026-10-15)
 
 ### Transitive override floors sit below every patched line — fast-uri carries two live high alerts
 - id: `rm-276` | track: reliability | priority: 80.0 | status: in_progress
@@ -174,6 +181,7 @@
 - id: `rm-249` | track: reliability | priority: 72.0 | status: in_progress
 - acceptance: a minimal push-only service worker registered alongside the existing shell (no fetch handler, no precache manifest — compatible with either rm-138 outcome), wired through sw-notification.ts's orphaned helpers; subscribe.ts reaches a real subscription or a distinguishable failure state; the joint decision with rm-138 recorded in the cycle batch doc; rm-106's digest/push delivery rides it once the gateway-side send contract (rm-106's first dependency discovery) exists
 - evidence: campaign-recorded in dashboard ROADMAP.md
+- evidence: 2026-10-16 state (assess attempt 6f27a309 + research run 47f9aaefa379): orphan DEEPENED by the a385ca5 adoption (upstream push-notification code + tests landed into sw-notification.ts which still has zero production imports); built web/dist/sw.js is a 491-byte kill-switch with no push/notificationclick handler (absence pinned by web/src/sw.test.ts:91-99); web/dist/registerSW.js:1 still registers /sw.js unconditionally; the DEV `Simulate Push` control posts MOCK_SYNTHETIC_PUSH that no SW handler can receive — inert dev affordance; subscribe.ts mints fail-closed (:243-249); wire-or-remove decision still open
 
 ### rm-225 canary born-broken at module resolution — isolate the query registry so the canary needs no install
 - id: `rm-288` | track: reliability | priority: 72.0 | status: in_progress
@@ -183,6 +191,11 @@
 ### rm-779
 - id: `rm-779` | track: reliability | priority: 72.0 | status: in_progress
 - acceptance: 
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Absorb upstream PR #641: footer release-version chip with build-time stamping
+- id: `rm-882` | track: reliability | priority: 72.0 | status: in_progress
+- acceptance: upstream fro-bot/dashboard PR #641 (+89/-45, 5 files, mergeable-clean at 2026-10-16) absorbed with fork adaptations: release.yaml hoists tag computation (node scripts/compute-release-tag.ts) into the build job and DELETES the 5-attempt tag-race retry loop, passing the tag as a Docker build-arg; Dockerfile gains `ARG DASHBOARD_VERSION=dev` -> `ENV VITE_DASHBOARD_VERSION` before `pnpm build:web`; AppShell.tsx footer shows the version, linking release notes only for calver `^\d{4}\.\d{2}\.\d+$` values (plain-text dev fallback) with the URL pointed at CODEO1IO/dashboard releases (not upstream); build-output-no-tracking allowed-origins grows `https://github.com` as a documented navigation link; the fork's actions/setup-node pin stays at v7.0.0 (82076278) — upstream's v6 hunk is not taken; actionlint + AppShell tests (valid version links, dev/malformed render as plain text) green at the delta
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Reality canary for the GitHub data path (verify the real transport contract)
@@ -223,6 +236,11 @@
 ### detailsUrl https://-only contract at the failing-check boundary (assess F1)
 - id: `rm-709` | track: reliability | priority: 66.0 | status: in_progress
 - acceptance: aggregator fixtures with javascript:/data:/relative details_url extract as `''` (`test/aggregator.test.ts`, failing-check-details suite); the client parse drops a feed to contract-drift on a non-https non-empty detailsUrl and keeps `''` legal (`web/src/api/monitoring.test.ts`); both suites green on the delivered tree
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### In-range dependency refresh window: node-server 2.1.5, hono 4.13.13, react 19.3.1, plugin 1.19.1
+- id: `rm-883` | track: reliability | priority: 66.0 | status: in_progress
+- acceptance: one lockfile-only window lands the in-range refreshes verified 2026-10-16: @hono/node-server ^2.1.3 -> 2.1.5 and hono ^4.13.11 -> 4.13.13 (BEHAVIOR-BEARING per node-server #405 serveStatic GET/HEAD-only and #404 HTTP/2 stream-reset abort — re-derive the static-mount caching expectations at src/server.ts:1262-1285 per the in-repo note, negative-test HEAD behavior); react/react-dom 19.3.0 -> 19.3.1 (exact pin, patch); @opencode-ai/plugin 1.18.35 -> 1.19.1 (two minors; 1.19.0 already rider-tracked by in-flight pin batches — reconcile before landing); @types/node 24.13.3 -> 24.19.2 (24.x lane only; the 26.x major stays gated by rm-139); Octokit scoped family, vite, and tailwind are already at latest (no change); proven by `pnpm lint` + `pnpm check-types` + full suite green at the delta with the node-server test re-derivation shown in the batch doc
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Pre-Release CVE tripwire: weekly trivy scan of the pinned base digest (the layer no detector covers)
@@ -989,6 +1007,7 @@
 - id: `rm-139` | track: reliability | priority: 24.0 | status: in_progress
 - acceptance: when 26 promotes to LTS (~late 2026-10): a go/no-go recorded in rm-108's matrix covering engines >=24, the node:24-slim tag choice, the @types/node major, and runner tool-cache impact; adoption, if approved, lands as one reviewed change with all gates green
 - evidence: campaign-recorded in dashboard ROADMAP.md
+- evidence: 2026-10-16 schedule confirmation (research run 47f9aaefa379, endoflife.date/api/nodejs.json): Node 26 LTS = 2026-10-28 (12 days out; latest 26.12.0; @types/node 26.6.5 already on npm) — the gate date is firm; Node 24 latest 24.22.0 (EOL 2028-04-30, security-only phase); pre-LTS rider: @types/node 24.x latest is 24.19.2 vs fork pin 24.13.3; Dockerfile:16 NODE_IMAGE digest must be re-derived in the same reviewed change
 
 ### Origin validation-residue sweep: cycle-1 batch landing rider
 - id: `rm-217` | track: reliability | priority: 24.0 | status: in_progress
@@ -1109,6 +1128,7 @@
 - id: `rm-675` | track: reliability | priority: 20.0 | status: in_progress
 - acceptance: emitter obligations land in the external roadmap-sync renderer BEFORE any next managed render (no trailing spaces on empty acceptance lines, backticked bracket lists, HTML-comment and id-def preservation, byte-identical status round-trip); a diff-based ledger census guard (defs/comments/statuses) gates render commits; full pre-sync-ledger restoration vs compose-forward is decided and executed — deliberately deferred out of the 2026-10-06 cure landing as must_remain_separate.
 - evidence: campaign-recorded in dashboard ROADMAP.md
+- evidence: 2026-10-16 violation instance (assess attempt 6f27a309): the 5d5f9be managed render violated these very emitter obligations — 47 trailing-whitespace lines + one unbackticked bracket label ref at ROADMAP.md:19 = 48 eslint errors, so `pnpm lint` is RED at HEAD (log /tmp/lint-assess.log; 91774d8:ROADMAP.md had zero trailing-ws lines by comparison); the pre-render file (git show 91774d8:ROADMAP.md) is the byte-clean reference for the cure
 
 ### Re-pin pnpm/action-setup v6.0.10 → v6.1.0 at its three workflow sites
 - id: `rm-761` | track: reliability | priority: 20.0 | status: in_progress

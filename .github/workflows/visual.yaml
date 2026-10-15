@@ -54,13 +54,16 @@ jobs:
     # at the rm-139 Node-26 window (2026-10-28).
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    # Deterministic render environment (rm-142): the pinned Playwright image
-    # bundles the chromium build that matches the @playwright/test 1.63.0 pin,
-    # so baselines render identically across runner generations. The rolling
-    # ubuntu-latest + runtime `playwright install` mix already reddened this
-    # gate once (run 35678222963, cloud font stack vs workstation-captured
-    # baselines). No runtime browser-install step belongs below: browsers live
-    # at /ms-playwright inside the image (PLAYWRIGHT_BROWSERS_PATH preset).
+    # Deterministic render environment (rm-142/rm-881): the pinned Playwright
+    # image must carry the SAME version as the lockfile-resolved @playwright/test
+    # (the image bundles that version's chromium build under /ms-playwright;
+    # PLAYWRIGHT_BROWSERS_PATH is preset, so no runtime browser-install step
+    # belongs below). The rolling ubuntu-latest + runtime `playwright install`
+    # mix already reddened this gate once (run 35678222963, cloud font stack
+    # vs workstation-captured baselines); the 6179cb7 lockfile-only float to
+    # 1.64.0 against this v1.63.0 image split the pair a second time —
+    # test/visual-parity-guard.test.ts now reddens any future split (bump the
+    # tag+digest and the dependency together).
     # Digest-pinned (not just tag-pinned): a mutable tag can be re-pushed
     # under the same version, silently changing the render environment and
     # invalidating baselines — the digest makes the compare environment
@@ -68,7 +71,7 @@ jobs:
     # tag+digest pair together; on landing, regenerate all baselines in the
     # new image (see the provenance spec in the rm-142 acceptance).
     container:
-      image: mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27
+      image: mcr.microsoft.com/playwright:v1.64.1-noble@sha256:7852dc5a7d72f5fe458a597d690f6c42fbc8e9e26ddfa95f8e6ef552558d9bbf
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

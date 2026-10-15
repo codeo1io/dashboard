@@ -109,6 +109,22 @@ function applyTheme(theme: Theme): void {
   document.documentElement.setAttribute('data-theme', theme)
 }
 
+// rm-882 (absorb of upstream #641, fork-adapted): the release pipeline stamps
+// the image with the precomputed CalVer tag (release.yaml → DASHBOARD_VERSION
+// build-arg → VITE_DASHBOARD_VERSION). Calver values link to THIS fork's
+// release notes; dev/local and malformed values render as plain text.
+const DASHBOARD_VERSION_RE = /^\d{4}\.\d{2}\.\d+$/
+
+function getDashboardVersion(): string {
+  return import.meta.env.VITE_DASHBOARD_VERSION || 'dev'
+}
+
+function releaseNotesUrlFor(version: string): string | undefined {
+  return DASHBOARD_VERSION_RE.test(version)
+    ? `https://github.com/codeo1io/dashboard/releases/tag/${version}`
+    : undefined
+}
+
 interface AppShellProps {
   children: ReactNode
   /**
@@ -160,6 +176,9 @@ export function AppShell({
   const [notificationsRestoreNonce, setNotificationsRestoreNonce] = useState(0)
   const [installRestoreNonce, setInstallRestoreNonce] = useState(0)
   const logoutInFlight = useRef(false)
+  // rm-882: footer version chip (see getDashboardVersion above).
+  const dashboardVersion = getDashboardVersion()
+  const releaseNotesUrl = releaseNotesUrlFor(dashboardVersion)
 
   useEffect(() => {
     applyTheme(theme)
@@ -578,6 +597,24 @@ export function AppShell({
           >
             Restore notifications
           </button>
+          {/* rm-882 (absorb of upstream #641, fork-adapted): version chip.
+              Calver builds link to this fork's release notes for the exact
+              tag; dev/malformed values stay plain text so nothing links
+              anywhere without a real release behind it. */}
+          {releaseNotesUrl ? (
+            <a
+              href={releaseNotesUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex min-h-11 items-center text-label text-text-muted underline underline-offset-4 transition-colors duration-fast hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              Release notes for {dashboardVersion}
+            </a>
+          ) : (
+            <span className="inline-flex min-h-11 items-center text-label text-text-muted">
+              {dashboardVersion}
+            </span>
+          )}
         </div>
       </footer>
 
