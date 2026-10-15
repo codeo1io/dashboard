@@ -63,9 +63,10 @@ export declare function validateRepoItem(item: unknown): boolean
 
 /**
  * Mint a fresh unique idempotency key for a launch submission.
- * Uses crypto.randomUUID() with a fallback.
+ * Uses crypto.randomUUID(); returns null when the environment cannot mint a
+ * secure key (rm-482 fail-closed — callers must abort before side effects).
  */
-export declare function mintIdempotencyKey(): string
+export declare function mintIdempotencyKey(): string | null
 
 /**
  * Submit a launch request through the injected client.

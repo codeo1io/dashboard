@@ -61,8 +61,10 @@ export function validateRepoItem(item) {
 
 /**
  * Mint a fresh unique idempotency key for a launch submission.
- * Uses crypto.randomUUID() with a fallback for environments that lack it.
- * Browser-valid: crypto.randomUUID is available in all modern browsers.
+ * Uses crypto.randomUUID(); returns null when the environment cannot mint a
+ * secure key (rm-482 fail-closed doctrine — mirrors web/src/push/subscribe.ts:
+ * never fabricate a weak Date.now/Math.random key; callers must abort before
+ * side effects when this returns null).
  */
 export function mintIdempotencyKey() {
   if (
@@ -71,10 +73,7 @@ export function mintIdempotencyKey() {
   ) {
     return globalThis.crypto.randomUUID()
   }
-  // Fallback: timestamp + random hex (not cryptographically strong, but unique enough)
-  const ts = Date.now().toString(36)
-  const rand = Math.random().toString(36).slice(2)
-  return `${ts}-${rand}`
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -602,8 +601,19 @@ export async function initOperatorLaunch(opts) {
       const submitBtn = launchForm.querySelector('[type="submit"]')
       if (submitBtn !== null) submitBtn.disabled = true
 
-      // Mint a fresh idempotency key for this submission
+      // Mint a fresh idempotency key for this submission.
+      // rm-482: fail closed — if the environment cannot mint a secure key,
+      // abort BEFORE any side effect (no weak fabricated key, no request).
       const idempotencyKey = mintIdempotencyKey()
+      if (idempotencyKey === null) {
+        if (submitBtn !== null) submitBtn.disabled = false
+        if (launchError !== null) {
+          launchError.textContent =
+            'Launch blocked: this browser cannot generate a secure request id (crypto.randomUUID unavailable). Please use a current browser.'
+          launchError.hidden = false
+        }
+        return
+      }
 
       let outcome
       try {
