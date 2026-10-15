@@ -64,6 +64,7 @@ client changes). The test suite rebuilds the client automatically via `pretest`.
 - `GET /privacy` — public privacy policy for the push/listener surfaces.
 - `GET /auth/login` · `GET /auth/callback` · `POST /auth/logout` · `GET /auth/logout-csrf` — GitHub OAuth session flow; the last row mints the logout-form CSRF token.
 - `GET /.well-known/security.txt` — public RFC 9116 security contact.
+- `GET /robots.txt` — public RFC 9309 robots policy (whole-site `Disallow: /` — authenticated single-operator surface, rm-713).
 - `/manifest.webmanifest`, `/sw.js` — PWA manifest and service worker.
 
 Endpoint parity is guarded in both directions by `test/endpoint-parity-guard.test.ts` (rm-556):
