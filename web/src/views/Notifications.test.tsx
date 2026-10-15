@@ -1,6 +1,7 @@
-import {render, screen, fireEvent, act} from '@testing-library/react'
+import {render, screen, fireEvent, act, waitFor} from '@testing-library/react'
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {getNotificationPermission, getPushSupport} from '../push/capability.ts'
+import {endpointHash} from '../push/endpoint-hash.ts'
 import {
   buildPushClient,
   resubscribeStaleKey,
@@ -15,18 +16,21 @@ vi.mock('../push/capability.ts', () => ({
   getPushSupport: vi.fn(),
 }))
 
+// The suite-wide default push-client stub: the view calls getVapidKey() at
+// sweep cadence (rm-600), so every buildPushClient() double must carry it.
+// Hoisted so both the mock factory and per-test restores reference the SAME
+// object (a test that swaps the return value must restore this, not a bare
+// {} — a missing getVapidKey crashes every later test's sweep wiring).
+const defaultPushClientStub = vi.hoisted(() => ({
+  getVapidKey: vi.fn().mockResolvedValue({
+    success: true as const,
+    data: {pushDisabled: true as const, vapidKey: undefined},
+  }),
+}))
+
 vi.mock('../push/subscribe.ts', () => ({
   INITIAL_RECONCILE_SWEEP_CACHE: {},
-  // rm-600: the view now calls getVapidKey() at sweep cadence to keep the
-  // key-version cache fresh. Default stub is fail-open (push-disabled, no
-  // key) so existing tests are unaffected; the rm-600 wiring tests override
-  // it per-test with mockReturnValueOnce.
-  buildPushClient: vi.fn().mockReturnValue({
-    getVapidKey: vi.fn().mockResolvedValue({
-      success: true,
-      data: {pushDisabled: true, vapidKey: undefined},
-    }),
-  }),
+  buildPushClient: vi.fn().mockReturnValue(defaultPushClientStub),
   runReconcileSweep: vi.fn(),
   subscribeOptIn: vi.fn(),
   resubscribeStaleKey: vi.fn(),
@@ -240,6 +244,68 @@ describe('Notifications Component', () => {
 
     expect(screen.getByTestId('notifications-headline')).toHaveTextContent('Push Alerts')
     expect(screen.getByTestId('notifications-cta')).toHaveTextContent('Enable notifications')
+  })
+
+  it('shows Disable notifications when the gateway list holds this browser\'s active record', async () => {
+    addMetaTag()
+    const actual = await vi.importActual<typeof import('../push/subscribe.ts')>('../push/subscribe.ts')
+    const endpoint = 'https://push.example/this-browser'
+    const localHash = await endpointHash(endpoint)
+    const wireRecord = (endpointHashValue: string) => ({
+      endpointHash: endpointHashValue,
+      createdAt: 1_760_000_000_000,
+      updatedAt: 1_760_000_100_000,
+      keyVersion: 'v1',
+      active: true,
+    })
+    // A Response body can be consumed only once, and this view fires a second
+    // fetch (rm-600 VAPID-key refresh) alongside the sweep's subscriptions
+    // GET — so every fetch call must receive a FRESH Response.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(() =>
+        Promise.resolve(
+          new Response(JSON.stringify({subscriptions: [wireRecord('b'.repeat(64)), wireRecord(localHash)]}), {
+            status: 200,
+            headers: {'content-type': 'application/json'},
+          }),
+        ),
+      ),
+    )
+    vi.mocked(getNotificationPermission).mockReturnValue('granted')
+    vi.mocked(buildPushClient).mockReturnValue(actual.buildPushClient())
+    vi.mocked(runReconcileSweep).mockImplementation(actual.runReconcileSweep)
+
+    const originalSw = Object.getOwnPropertyDescriptor(globalThis.navigator, 'serviceWorker')
+    Object.defineProperty(globalThis.navigator, 'serviceWorker', {
+      value: {
+        ready: Promise.resolve({pushManager: {getSubscription: async () => ({endpoint})}}),
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      },
+      configurable: true,
+    })
+
+    try {
+      await act(async () => {
+        render(<Notifications />)
+      })
+
+      await waitFor(() => {
+        expect(screen.getByTestId('notifications-cta')).toHaveTextContent('Disable notifications')
+      })
+      expect(screen.getByTestId('notifications-cta')).not.toHaveTextContent('Enable notifications')
+    } finally {
+      vi.unstubAllGlobals()
+      vi.mocked(buildPushClient).mockReturnValue(
+        defaultPushClientStub as unknown as ReturnType<typeof buildPushClient>,
+      )
+      if (originalSw) {
+        Object.defineProperty(globalThis.navigator, 'serviceWorker', originalSw)
+      } else {
+        Reflect.deleteProperty(globalThis.navigator, 'serviceWorker')
+      }
+    }
   })
 
   it('renders the privacy policy link before the consent CTA without requesting permission', async () => {

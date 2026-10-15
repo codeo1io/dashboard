@@ -10,8 +10,8 @@ function metadata(overrides: Partial<PushSubscriptionMetadata> = {}): PushSubscr
     endpointHash: HASH_A,
     keyVersion: 'v1',
     active: true,
-    createdAt: '2026-07-08T00:00:00.000Z',
-    updatedAt: '2026-07-08T00:00:00.000Z',
+    createdAt: 1_760_000_000_000,
+    updatedAt: 1_760_000_000_000,
     ...overrides,
   }
 }
@@ -97,31 +97,14 @@ describe('reconcile — drift matrix', () => {
     expect(reconcile('granted', true, 'inactive')).toEqual({uiState: 'not-requested', action: 'cleanup'})
   })
 
-  it('granted + present + not_subscribed, CONFIRMED divergence -> cleanup', () => {
-    // notSubscribedConfirmed: true documents a genuine, correlated mismatch
-    // (metadata read + local hash both succeeded and disagreed) — the only
-    // case allowed to tear down a live local subscription.
-    expect(reconcile('granted', true, 'not_subscribed', {notSubscribedConfirmed: true})).toEqual({
-      uiState: 'not-requested',
-      action: 'cleanup',
-    })
-  })
-
-  it('granted + present + not_subscribed, UNCONFIRMED (no options passed) -> no destructive action, preserve UI', () => {
+  it('granted + present + not_subscribed -> no destructive action, preserve UI', () => {
     // Regression guard: this is the root cause of the focus-cycle incident.
-    // A caller that omits confirmation (e.g. because the metadata read was
-    // inconclusive) must never trigger cleanup — that's what orphaned a
+    // An absent or non-matching record (e.g. a metadata read that raced
+    // the subscribe POST) must never trigger cleanup — that's what orphaned a
     // Gateway record and caused a fresh subscription to be minted on the
     // next focus. uiState: undefined tells the caller to preserve whatever
     // it's currently showing rather than resetting to not-requested.
     expect(reconcile('granted', true, 'not_subscribed')).toEqual({uiState: undefined, action: 'none'})
-  })
-
-  it('granted + present + not_subscribed, explicitly UNCONFIRMED -> no destructive action', () => {
-    expect(reconcile('granted', true, 'not_subscribed', {notSubscribedConfirmed: false})).toEqual({
-      uiState: undefined,
-      action: 'none',
-    })
   })
 
   it('denied + present -> cleanup-and-unsubscribe', () => {
