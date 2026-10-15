@@ -1,5 +1,5 @@
 import {readdirSync, readFileSync} from 'node:fs'
-import {join, relative} from 'node:path'
+import {join, relative, sep} from 'node:path'
 import process from 'node:process'
 import {describe, expect, it} from 'vitest'
 
@@ -99,10 +99,26 @@ function isExcluded(relPath: string): boolean {
   return false
 }
 
+/**
+ * Directory names never descended into — exactly the names the file-level
+ * isExcluded() checks would filter out, applied during recursion (rm-1409).
+ */
+function isExcludedDirName(name: string): boolean {
+  return EXCLUDED_DIRS.has(name) || EXCLUDED_DIR_SUFFIXES.includes(name)
+}
+
 function walk(dir: string, files: string[] = []): string[] {
+  // Prune during recursion (rm-1409): excluded directories are never descended
+  // into. Previously EVERY directory — node_modules included, ~26k files — was
+  // traversed and filtered only afterwards, which blew this test's timeout
+  // under parallel transform load. Because recursion only descends through
+  // non-excluded names, every walked file satisfies the dir-segment halves of
+  // isExcluded() by construction; the walked-with-children meta test below
+  // pins that pruning cannot silently regress.
   for (const entry of readdirSync(dir, {withFileTypes: true})) {
     const full = join(dir, entry.name)
     if (entry.isDirectory()) {
+      if (isExcludedDirName(entry.name)) continue
       walk(full, files)
     } else if (entry.isFile()) {
       files.push(full)
@@ -150,5 +166,25 @@ describe('prose-residue guard (rm-164)', () => {
       }
     }
     expect(stale, 'Stale allowlist entries — remove them with their mentions.').toEqual([])
+  })
+
+  it('walk() prunes excluded directories during recursion (rm-1409)', () => {
+    const walked = walk(repoRoot)
+    // (a) No walked file may live under an excluded directory — pruning must
+    // cover every parent segment the file-level isExcluded() checks would
+    // filter. (A worktree's `.git` is itself a pointer FILE at the root; it is
+    // excluded by the file-level guard, not by directory pruning.)
+    const leaky = walked.filter(file => {
+      const segments = relative(repoRoot, file).split(sep).slice(0, -1)
+      return segments.some(s => EXCLUDED_DIRS.has(s) || EXCLUDED_DIR_SUFFIXES.includes(s))
+    })
+    expect(leaky, 'walk() descended into an excluded directory').toEqual([])
+
+    // (b) The walked set stays bounded to the real tree. A pruning regression
+    // revisits the full install (~26k files under node_modules alone), so a
+    // generous-but-meaningful ceiling catches it without pinning exact counts.
+    expect(walked.length,
+      `walk() visited ${walked.length} files — excluded-directory pruning has regressed`,
+    ).toBeLessThan(2000)
   })
 })

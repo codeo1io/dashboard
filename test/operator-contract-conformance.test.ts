@@ -1357,13 +1357,19 @@ describe('parseRunSummary', () => {
     }
   })
 
-  it('rejects stream-only status: waiting_for_approval', () => {
+  it('accepts summary status waiting_for_approval (newer projector output, rm-1408)', () => {
     const input = {runId: 'run-1', repo: 'fro-bot/agent', status: 'waiting_for_approval', createdAt: '2026-06-01T00:00:00.000Z'}
     const result = parseRunSummary(input)
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.message).toBe('invalid run summary shape')
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.status).toBe('waiting_for_approval')
     }
+  })
+
+  it('accepts summary status waiting_for_question (newer projector output, rm-1408)', () => {
+    const input = {runId: 'run-1', repo: 'fro-bot/agent', status: 'waiting_for_question', createdAt: '2026-06-01T00:00:00.000Z'}
+    const result = parseRunSummary(input)
+    expect(result.success).toBe(true)
   })
 
   it('rejects stream-only status: blocked', () => {
@@ -1640,12 +1646,25 @@ describe('parseRunSummaryList', () => {
   it('returns empty array when all items are invalid', () => {
     const input = [
       {runId: 'run-1', repo: 'fro-bot/agent', status: 'blocked', createdAt: '2026-06-01T00:00:00.000Z'},
-      {runId: 'run-2', repo: 'fro-bot/agent', status: 'waiting_for_approval', createdAt: '2026-06-01T00:00:00.000Z'},
+      {runId: 'run-2', repo: 'fro-bot/agent', status: 'some-unknown-status', createdAt: '2026-06-01T00:00:00.000Z'},
     ]
     const result = parseRunSummaryList(input)
     expect(result.success).toBe(true)
     if (result.success) {
       expect(result.data).toHaveLength(0)
+    }
+  })
+
+  it('keeps newer-contract waiting statuses in parsed lists (rm-1408)', () => {
+    const input = [
+      {runId: 'run-1', repo: 'fro-bot/agent', status: 'waiting_for_approval', createdAt: '2026-06-01T00:00:00.000Z'},
+      {runId: 'run-2', repo: 'fro-bot/agent', status: 'running', createdAt: '2026-06-01T00:00:00.000Z'},
+    ]
+    const result = parseRunSummaryList(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data).toHaveLength(2)
+      expect(result.data[0]?.status).toBe('waiting_for_approval')
     }
   })
 
