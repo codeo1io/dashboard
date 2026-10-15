@@ -530,6 +530,72 @@ async function defaultRuntimeLoader(opts?: {
   const findCard = (runId: string): HTMLElement | null =>
     typeof document === 'undefined' ? null : document.querySelector<HTMLElement>(`[data-run-id="${CSS.escape(runId)}"]`)
 
+  let cancelPendingCardReveal = () => {}
+
+  const scrollRunCardIntoView = (card: HTMLElement): void => {
+    cancelPendingCardReveal()
+
+    const reduceMotion = typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const behavior: ScrollBehavior = reduceMotion ? 'auto' : 'smooth'
+    const scrollToStart = () => {
+      if (typeof card.scrollIntoView === 'function') card.scrollIntoView({block: 'start', behavior})
+    }
+    scrollToStart()
+
+    let cancelled = false
+    let firstFrame: number | undefined
+    let secondFrame: number | undefined
+    let revealTimeout: number | undefined
+    const observer = new MutationObserver(checkForRevealedContent)
+
+    const cleanup = () => {
+      cancelled = true
+      observer.disconnect()
+      if (firstFrame !== undefined) window.cancelAnimationFrame?.(firstFrame)
+      if (secondFrame !== undefined) window.cancelAnimationFrame?.(secondFrame)
+      if (revealTimeout !== undefined) window.clearTimeout(revealTimeout)
+      window.removeEventListener('wheel', onUserScroll)
+      window.removeEventListener('touchmove', onUserScroll)
+      window.removeEventListener('pointerdown', onUserScroll)
+      window.removeEventListener('keydown', onScrollKey)
+      if (cancelPendingCardReveal === cleanup) cancelPendingCardReveal = () => {}
+    }
+    const onUserScroll = () => cleanup()
+    const onScrollKey = (event: KeyboardEvent) => {
+      if (event.target instanceof Element
+        && event.target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])') !== null) return
+      if (['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp', ' '].includes(event.key)) cleanup()
+    }
+
+    const hasRevealedContent = () =>
+      Array.from(card.querySelectorAll<HTMLElement>('[data-role="run-questions"], [data-role="run-approvals"]'))
+        .some(region => !region.hidden && region.childNodes.length > 0)
+
+    function checkForRevealedContent() {
+      if (cancelled || card.dataset.expanded !== 'true' || !hasRevealedContent()) return
+      observer.disconnect()
+      firstFrame = window.requestAnimationFrame(() => {
+        firstFrame = undefined
+        secondFrame = window.requestAnimationFrame(() => {
+          secondFrame = undefined
+          if (cancelled || card.dataset.expanded !== 'true') return cleanup()
+          scrollToStart()
+          cleanup()
+        })
+      })
+    }
+
+    cancelPendingCardReveal = cleanup
+    window.addEventListener('wheel', onUserScroll, {passive: true})
+    window.addEventListener('touchmove', onUserScroll, {passive: true})
+    window.addEventListener('pointerdown', onUserScroll)
+    window.addEventListener('keydown', onScrollKey)
+    revealTimeout = window.setTimeout(cleanup, 10_000)
+    observer.observe(card, {attributes: true, childList: true, subtree: true, attributeFilter: ['hidden', 'data-expanded']})
+    checkForRevealedContent()
+  }
+
   // What the jump notice currently says, held in memory only so a refresh can tell when it is stale.
   // A miss keeps the run it could not find; it is never rendered, logged or written to an attribute,
   // and both notices are fixed copy.
@@ -591,6 +657,7 @@ async function defaultRuntimeLoader(opts?: {
   // status it already shows, and the expand proceeds. The whole wait is cancelable: a collapse
   // never waits, and supersedes an expand that is still waiting.
   const onSelectRun = (runId: string): Promise<void> | void => {
+    cancelPendingCardReveal()
     if (_activeStreamRunId === runId) {
       _cancelPendingExpand()
       _closeActiveStream()
@@ -660,6 +727,7 @@ async function defaultRuntimeLoader(opts?: {
     const noticeEl = typeof document !== 'undefined'
       ? document.querySelector('[data-role="stream-status"]')
       : null
+    if (card instanceof HTMLElement) scrollRunCardIntoView(card)
     _attachStream(runId, statusEl, noticeEl)
   }
 
@@ -762,6 +830,7 @@ async function defaultRuntimeLoader(opts?: {
     const statusEl = card.querySelector('[data-role="run-status"]') ?? null
     const noticeEl = document.querySelector('[data-role="stream-status"]')
     const wasExpanded = card.dataset.expanded === 'true'
+    scrollRunCardIntoView(card)
 
     if (!wasExpanded) {
       // The shared non-toggling expand, used for launches and jumps alike.
@@ -772,7 +841,6 @@ async function defaultRuntimeLoader(opts?: {
       _attachStream(runId, statusEl, noticeEl)
     }
 
-    if (typeof card.scrollIntoView === 'function') card.scrollIntoView({block: 'nearest'})
     if (typeof card.focus === 'function') card.focus({preventScroll: true})
 
     // Every successful jump announces, whether it expanded the card, only revealed an open one, or
@@ -854,6 +922,7 @@ async function defaultRuntimeLoader(opts?: {
 
   return () => {
     disposed = true
+    cancelPendingCardReveal()
     jumpsRecoverable = false
     _setJumpSlot(epoch, {mode: 'queue', pending: null})
     stopRefreshTimer()
