@@ -106,11 +106,8 @@ describe('parseRunSummaryItem — error paths', () => {
     expect(result.success).toBe(false)
   })
 
-  it('rejects stream-only status: waiting_for_approval', () => {
-    const result = parseRunSummaryItem(makeValidSummary({status: 'waiting_for_approval'}))
-    expect(result.success).toBe(false)
-  })
-
+  // rm-1016: waiting_for_* became index statuses with gateway contract 1.11.0
+  // (agent #1825) — no longer rejected; see the waiting-status suite below.
   it('rejects stream-only status: blocked', () => {
     const result = parseRunSummaryItem(makeValidSummary({status: 'blocked'}))
     expect(result.success).toBe(false)
@@ -200,14 +197,23 @@ describe('parseRunSummaryList — cap and dedupe', () => {
   })
 })
 
-describe('VALID_RUN_SUMMARY_STATUSES — exact index-only set', () => {
-  it('contains exactly the five index-only statuses', () => {
-    const expected = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled'])
+describe('VALID_RUN_SUMMARY_STATUSES — exact index set', () => {
+  // rm-1016: the two waiting members joined the index set with gateway contract
+  // 1.11.0 (agent #1825) — a waiting run appears in the recent-runs index.
+  it('contains exactly the five original statuses plus the two waiting members', () => {
+    const expected = new Set([
+      'queued',
+      'running',
+      'succeeded',
+      'failed',
+      'cancelled',
+      'waiting_for_approval',
+      'waiting_for_question',
+    ])
     expect(VALID_RUN_SUMMARY_STATUSES).toEqual(expected)
   })
 
-  it('does not contain stream-only statuses', () => {
-    expect(VALID_RUN_SUMMARY_STATUSES.has('waiting_for_approval')).toBe(false)
+  it('does not contain the remaining stream-only statuses', () => {
     expect(VALID_RUN_SUMMARY_STATUSES.has('blocked')).toBe(false)
   })
 })
@@ -724,7 +730,8 @@ describe('parser parity — JS parser mirrors vendored TS parser behavior', () =
   })
 
   it('invalid status: JS parser rejects same invalid statuses as TS parser', () => {
-    const invalidStatuses = ['waiting_for_approval', 'blocked', 'unknown', 'RUNNING', '']
+    // waiting_for_* are VALID since gateway contract 1.11.0 (rm-1016) — removed here.
+    const invalidStatuses = ['blocked', 'unknown', 'RUNNING', '']
     for (const status of invalidStatuses) {
       const result = parseRunSummaryItem(makeValidSummary({status}))
       expect(result.success, `status "${status}" should be rejected`).toBe(false)
@@ -3237,12 +3244,13 @@ describe('question region — fetched cards (renderRunCard)', () => {
     expect(list).toContain('QUESTIONS_ROLE')
   })
 
-  it('regression: the run-summary parser still rejects waiting statuses', () => {
-    for (const status of ['waiting_for_question', 'waiting_for_approval', 'blocked']) {
+  it('regression: the run-summary parser still rejects non-summary statuses (waiting members are valid since 1.11.0, rm-1016)', () => {
+    for (const status of ['blocked', 'waiting']) {
       const parsed = parseRunSummaryItem(makeValidSummary({runId: 'run-q-reject-001', status}))
       expect(parsed.success).toBe(false)
     }
-    expect(VALID_RUN_SUMMARY_STATUSES.has('waiting_for_question')).toBe(false)
+    expect(VALID_RUN_SUMMARY_STATUSES.has('blocked')).toBe(false)
+    expect(VALID_RUN_SUMMARY_STATUSES.has('waiting_for_question')).toBe(true)
   })
 })
 
@@ -3309,5 +3317,37 @@ describe('question region — adopted optimistic cards (ensureRunCardAnatomy)', 
     const hiddenRoles = card => childRoles(card).filter(role => role !== undefined && !['run-status-group', 'run-repo', 'run-updated-at'].includes(role))
     expect(hiddenRoles(optimistic)).toEqual(hiddenRoles(fetched))
     expect(hiddenRoles(fetched)).toContain(QUESTIONS_ROLE)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-1016: waiting-state run summaries (operator contract 1.11.0, agent #1825).
+// waiting_for_approval / waiting_for_question became run-summary statuses; the
+// index parser set and its display labels grow with them.
+// ---------------------------------------------------------------------------
+
+describe('run summaries — waiting statuses (rm-1016)', () => {
+  it('VALID_RUN_SUMMARY_STATUSES carries the two waiting members plus the five originals', () => {
+    expect([...VALID_RUN_SUMMARY_STATUSES].sort()).toEqual(
+      ['cancelled', 'failed', 'queued', 'running', 'succeeded', 'waiting_for_approval', 'waiting_for_question'].sort(),
+    )
+  })
+
+  it.each([
+    ['waiting_for_question', 'Waiting for answer'],
+    ['waiting_for_approval', 'Waiting for approval'],
+  ])('parses a %s summary and renders its display label', (status, label) => {
+    const result = parseRunSummaryItem(makeValidSummary({status}))
+    expect(result.success).toBe(true)
+    const safe = buildRunSafeView(result.success ? result.data : null)
+    expect(safe.status).toBe(status)
+    expect(safe.statusLabel).toBe(label)
+  })
+
+  it('waiting labels match the stream module labels for the same statuses', async () => {
+    const streamMod = await import('../public/operator-stream.js')
+    // The stream STATUS_LABELS map is module-private; parity is observable via
+    // SUMMARY_STATUSES membership + the public labels below through toSafeRunView.
+    expect([...streamMod.SUMMARY_STATUSES].sort()).toEqual([...VALID_RUN_SUMMARY_STATUSES].sort())
   })
 })

@@ -19,10 +19,20 @@ import {err, ok} from '../../result.ts'
 import {isOperatorFailureKind} from './run-status.ts'
 
 /**
- * Index-only status set. 'blocked' and 'waiting_for_approval' are stream-only
- * overlays — never produced by the run-summary projector.
+ * Index-only status set. 'blocked' remains a stream-only overlay — never
+ * produced by the run-summary projector. Since the waiting-statuses gateway minor
+ * (fro-bot/agent #1825) the waiting overlays are ALSO run-summary statuses:
+ * a waiting run now surfaces in the recent-runs index, on reconnect, and in
+ * summaries — the dashboard renders them from whichever source speaks first.
  */
-export type RunSummaryStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+export type RunSummaryStatus =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'waiting_for_approval'
+  | 'waiting_for_question'
 
 /**
  * Operator-safe projection of a run's summary.
@@ -52,6 +62,9 @@ const VALID_RUN_SUMMARY_STATUSES: ReadonlySet<string> = new Set([
   'succeeded',
   'failed',
   'cancelled',
+  // Waiting-statuses gateway minor (agent #1825): waiting overlays are now index statuses too.
+  'waiting_for_approval',
+  'waiting_for_question',
 ])
 
 function hasValidRunSummaryShape(value: unknown): value is RunSummary {

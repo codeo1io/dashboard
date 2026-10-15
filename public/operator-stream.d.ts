@@ -18,6 +18,10 @@
 export declare function validateDynamicId(id: string): boolean
 
 export declare const PINNED_CONTRACT_VERSION: string
+/** Forward-support ladder for the ready frame's contractVersion (floor PINNED_CONTRACT_VERSION, gateway 1.10.0/1.11.0). */
+export declare const ACCEPTED_CONTRACT_VERSIONS: readonly string[]
+/** Run-list summary statuses, including the 1.11.0 waiting members. */
+export declare const SUMMARY_STATUSES: ReadonlySet<string>
 export declare const RETRY_BASE_MS: number
 export declare const RETRY_FACTOR: number
 export declare const RETRY_MAX_COUNT: number
@@ -61,6 +65,8 @@ export declare const QUESTION_INVALID_REASONS: readonly [
 export declare const QUESTION_CLAIM_RECHECK_DELAYS_MS: readonly number[]
 /** Bound, in milliseconds, on each fetch of the question client (list, CSRF and decision POST). */
 export declare const QUESTION_FETCH_TIMEOUT_MS: number
+/** Bound, in milliseconds, on each fetch of the approval client (list and decision POST). */
+export declare const APPROVAL_FETCH_TIMEOUT_MS: number
 
 /** Operator-safe failure-reason code. */
 export type FailureKind =
@@ -463,8 +469,15 @@ export interface CancelActionEvent {
   readonly data: {readonly runId: string}
 }
 
-/** Statuses a run-list summary can carry. */
-export type RunSummaryStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+/** Statuses a run-list summary can carry, including the 1.11.0 waiting members (agent #1825). */
+export type RunSummaryStatus =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'waiting_for_approval'
+  | 'waiting_for_question'
 
 export interface StreamState {
   readonly connection: ConnectionStatus

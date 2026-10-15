@@ -16,13 +16,13 @@
  * - /operator redirects to /; production /operator/* data routes remain absent.
  * - Fixture routes are public (no auth required) when flag is on.
  */
-import type {StreamFrame} from '../public/operator-stream.js'
+import type {StreamFrame, StreamState} from '../public/operator-stream.js'
 import type {GitHubOAuthClient} from '../src/auth/oauth.ts'
 import {Buffer} from 'node:buffer'
 import process from 'node:process'
 import {afterEach, beforeEach, describe, expect, it} from 'vitest'
 import {parseSseFrame as browserParseSseFrame, nextStreamState, PINNED_CONTRACT_VERSION} from '../public/operator-stream.js'
-import {CHECKOUT_REFUSAL_REASONS, OBSTRUCTION_KINDS, OPERATOR_CONTRACT_VERSION, QUESTION_DECISION_STATES} from '../src/gateway/operator-contract/index.ts'
+import {ACCEPTED_CONTRACT_VERSIONS, CHECKOUT_REFUSAL_REASONS, OBSTRUCTION_KINDS, OPERATOR_CONTRACT_VERSION, QUESTION_DECISION_STATES} from '../src/gateway/operator-contract/index.ts'
 import {isOperatorFailureKind} from '../src/gateway/operator-contract/run-status.ts'
 import {FIXTURE_OPERATOR_PREFIX} from '../src/gateway/operator-fixture-routes.ts'
 import {
@@ -1104,8 +1104,18 @@ describe('fixture runs index — GET /runs', () => {
     }
   })
 
-  it('statuses use only the five index summary values', async () => {
-    const ALLOWED_INDEX_STATUSES = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled'])
+  it('statuses use only the seven index summary values (five originals + the waiting members)', async () => {
+    // rm-1016: waiting_for_approval / waiting_for_question became index statuses
+    // with gateway contract 1.11.0 (agent #1825).
+    const ALLOWED_INDEX_STATUSES = new Set([
+      'queued',
+      'running',
+      'succeeded',
+      'failed',
+      'cancelled',
+      'waiting_for_approval',
+      'waiting_for_question',
+    ])
     const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
     const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs`)
     const {runs: body} = await res.json() as {runs: Record<string, unknown>[]}
@@ -1114,8 +1124,8 @@ describe('fixture runs index — GET /runs', () => {
     }
   })
 
-  it('statuses do NOT include stream-only values (blocked, waiting_for_approval)', async () => {
-    const STREAM_ONLY_STATUSES = new Set(['blocked', 'waiting_for_approval'])
+  it('statuses do NOT include stream-only values (blocked)', async () => {
+    const STREAM_ONLY_STATUSES = new Set(['blocked'])
     const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
     const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs`)
     const {runs: body} = await res.json() as {runs: Record<string, unknown>[]}
@@ -2686,13 +2696,15 @@ const EXPECTED_FRAME_TYPES: Readonly<Record<string, readonly string[]>> = {
   expired_completed_terminal_frame: ['ready', 'reset', 'status'],
   expired_completed_silent: ['ready', 'reset'],
   running_after_no_snapshot: ['ready', 'reset', 'status', 'output'],
+  waiting_for_question_summary: ['ready', 'status', 'output'],
+  waiting_for_approval_summary: ['ready', 'status', 'approval', 'output'],
 }
 
 // eslint-disable-next-line no-control-regex
 const QUESTION_UNSAFE_CHARS = /[\u0000-\u0008\v\f\u000E-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/
 
 describe('question fixture scenarios — registry and manifest', () => {
-  it('lists the twelve scenarios in the manifest, each with a row', async () => {
+  it('lists the fourteen scenarios in the manifest, each with a row', async () => {
     expect(QUESTION_SCENARIO_KEYS).toEqual(Object.keys(EXPECTED_FRAME_TYPES))
     const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
     const body = await (await app.request(`${FIXTURE_OPERATOR_PREFIX}`)).json() as {scenarios: string[]}
@@ -2710,6 +2722,8 @@ describe('question fixture scenarios — registry and manifest', () => {
       'run-fixture-index-expired-completed-terminal-frame',
       'run-fixture-index-expired-completed-silent',
       'run-fixture-index-running-after-no-snapshot',
+      'run-fixture-index-waiting-for-question-summary',
+      'run-fixture-index-waiting-for-approval-summary',
     ])
   })
 
@@ -2732,7 +2746,13 @@ describe('question fixture scenarios — frames parse under both readers', () =>
 
       expect(server.map(frame => frame.type)).toEqual(EXPECTED_FRAME_TYPES[key])
       expect(browser).toEqual(server)
-      expect(server[0]?.data.contractVersion).toBe(OPERATOR_CONTRACT_VERSION)
+      // rm-1016: fixtures speak the pinned version, except the two waiting-overlay
+      // scenarios which deliberately speak the accepted-ladder top (1.11.0) so the
+      // forward rungs of the version ladder are proven alongside the floor.
+      const isWaitingScenario = key === 'waiting_for_question_summary' || key === 'waiting_for_approval_summary'
+      expect(server[0]?.data.contractVersion).toBe(
+        isWaitingScenario ? [...ACCEPTED_CONTRACT_VERSIONS].at(-1) : OPERATOR_CONTRACT_VERSION,
+      )
       expect(PINNED_CONTRACT_VERSION).toBe(OPERATOR_CONTRACT_VERSION)
 
       // Every run-scoped frame carries the active run ID.
@@ -2740,11 +2760,19 @@ describe('question fixture scenarios — frames parse under both readers', () =>
     })
   }
 
-  it('status frames stay on the producer\'s wire vocabulary: never waiting_for_question, running while a question is pending', () => {
+  it('status frames stay on the producer\'s wire vocabulary: waiting overlays only via the summary status scenarios (rm-1016)', () => {
+    // rm-1016 (gateway contract 1.11.0, agent #1825): waiting_for_* statuses are
+    // legitimate wire statuses now, but ONLY the two waiting-summary scenarios
+    // emit them; every other scenario still speaks the five base statuses, and a
+    // question-bearing scenario is still `running` on the status before it.
+    const WAITING_SCENARIO_KEYS = new Set(['waiting_for_question_summary', 'waiting_for_approval_summary'])
     for (const key of QUESTION_SCENARIO_KEYS) {
       const frames = serverFrames(serializeScenarioToSse(key, questionRunId(key)))
       const statuses = frames.filter(frame => frame.type === 'status').map(frame => frame.data.status)
-      for (const status of statuses) expect(['running', 'succeeded', 'failed']).toContain(status)
+      const allowed = WAITING_SCENARIO_KEYS.has(key) && key === 'waiting_for_question_summary'
+        ? ['waiting_for_question']
+        : ['running', 'succeeded', 'failed']
+      for (const status of statuses) expect(allowed).toContain(status)
       const firstQuestion = frames.findIndex(frame => frame.type === 'question')
       if (firstQuestion !== -1) {
         const statusBefore = frames.slice(0, firstQuestion).findLast(frame => frame.type === 'status')
@@ -2945,7 +2973,11 @@ function rawOpenRequests(sse: string): {requestID: string; questions: unknown}[]
 describe('question fixture routes — recent-runs rows and streams', () => {
   it('every scenario has a fixture-prefixed row with its summary status, and its stream serves the scenario bytes', async () => {
     const {runs, openStream} = await questionHarness()
-    const expectedSummary: Record<string, string> = {expired_completed_silent: 'succeeded'}
+    const expectedSummary: Record<string, string> = {
+      expired_completed_silent: 'succeeded',
+      waiting_for_question_summary: 'waiting_for_question',
+      waiting_for_approval_summary: 'waiting_for_approval',
+    }
     for (const key of QUESTION_SCENARIO_KEYS) {
       const row = runs.find(candidate => candidate.runId === questionRunId(key))
       expect(row, `${key} row`).toBeDefined()
@@ -3165,4 +3197,66 @@ describe('question fixture routes — gating and ownership', () => {
     expect(decision.status).toBe(400)
     expect((await app.request(`${base}?fixtureSessionId=${owner}`)).status).toBe(200)
   })
+})
+
+// ---------------------------------------------------------------------------
+// rm-1016: waiting-state fixture scenarios (contract 1.11.0, agent #1825).
+// Each waiting scenario is bound to a recent-runs row whose summaryStatus is
+// the waiting member, and its stream parses identically under both parsers.
+// ---------------------------------------------------------------------------
+
+describe('waiting-state fixture scenarios — bound rows and twin-parser parity (rm-1016)', () => {
+  const WAITING_ROWS = FIXTURE_QUESTION_SCENARIO_ROWS.filter(row =>
+    row.summaryStatus === 'waiting_for_approval' || row.summaryStatus === 'waiting_for_question',
+  )
+
+  it('fixture rows exist for both waiting statuses', () => {
+    expect(WAITING_ROWS.map(row => row.summaryStatus).sort()).toEqual(['waiting_for_approval', 'waiting_for_question'])
+    for (const row of WAITING_ROWS) {
+      // Run IDs are derived from the scenario name by the harness route.
+      expect(`run-fixture-index-${row.scenario.replaceAll('_', '-')}`).toMatch(/^run-fixture-index-/)
+    }
+  })
+
+  for (const row of WAITING_ROWS) {
+    it(`${row.scenario}: stream carries the matching waiting status and both parsers agree`, async () => {
+      const mod = await import('../public/operator-stream.js')
+      const sse = serializeScenarioToSse(row.scenario, 'run-fixture-waiting-001')
+
+      const server = serverStatusViews(sse)
+      const browser = browserStatusViews(sse)
+      expect(browser).toEqual(server.map(view => ({...view})))
+
+      // The question scenario speaks the waiting status on the wire directly; the
+      // approval scenario stays `running` on the wire and carries an OPEN approval
+      // frame — the fold to waiting_for_approval happens at the effective-status seam.
+      const statuses = server.map(view => view.status)
+      if (row.summaryStatus === 'waiting_for_question') {
+        expect(statuses).toContain('waiting_for_question')
+      } else {
+        expect(statuses).toContain('running')
+        expect(sse).toContain('event: approval')
+        expect(sse).not.toContain('"settled":true')
+      }
+
+      // The waiting frame must ride the accepted contract: ready pins 1.11.0.
+      const ready = serverParseSseChunk(sse)[0]
+      const version = ready?.success && ready.frame.type === 'ready' ? ready.frame.data.contractVersion : undefined
+      expect(version).toBe('1.11.0')
+
+      // Browser twin: the same stream stays live (held open) with the waiting entry.
+      let state: StreamState = nextStreamState(
+        {connection: 'connecting', runs: {}, retryCount: 0, shouldReconnect: false},
+        {type: 'ready', data: {contractVersion: '1.11.0'}},
+      )
+      for (const record of sse.split('\n\n')) {
+        if (record.trim() === '') continue
+        const parsed = browserParseSseFrame(record)
+        if (parsed !== null && parsed.success) state = nextStreamState(state, parsed.frame)
+      }
+      expect(state.connection).toBe('live')
+      const entry = state.runs['run-fixture-waiting-001']
+      expect(mod.getEffectiveStatus(entry)).toBe(row.summaryStatus)
+    })
+  }
 })

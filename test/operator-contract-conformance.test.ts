@@ -48,6 +48,7 @@ import {join} from 'node:path'
 import ts from 'typescript'
 import {describe, expect, it} from 'vitest'
 import {
+  ACCEPTED_CONTRACT_VERSIONS,
   CHECKOUT_OPERATIONS,
   CHECKOUT_REFUSAL_REASONS,
   LAYOUT_REFUSAL_REASONS,
@@ -259,10 +260,10 @@ describe('OPERATOR_CONTRACT_VERSION', () => {
     }
   })
 
-  it('version.ts holds OPERATOR_CONTRACT_VERSION as the only literal outside comments', () => {
+  it('version.ts holds exactly the pin plus the accepted-ladder literals outside comments (rm-1016)', () => {
     const text = readFileSync(join(CONTRACT_DIR, 'version.ts'), 'utf8')
     const code = blankRanges(text, commentRanges(text))
-    expect(findVersionLiterals(code)).toEqual([OPERATOR_CONTRACT_VERSION])
+    expect(findVersionLiterals(code)).toEqual([OPERATOR_CONTRACT_VERSION, ...ACCEPTED_CONTRACT_VERSIONS])
   })
 })
 
@@ -1357,13 +1358,12 @@ describe('parseRunSummary', () => {
     }
   })
 
-  it('rejects stream-only status: waiting_for_approval', () => {
+  // rm-1016: waiting_for_approval became a run-summary status with gateway
+  // contract 1.11.0 (agent #1825) — the old stream-only rejection premise is gone.
+  it('accepts waiting_for_approval (a summary status since 1.11.0)', () => {
     const input = {runId: 'run-1', repo: 'fro-bot/agent', status: 'waiting_for_approval', createdAt: '2026-06-01T00:00:00.000Z'}
     const result = parseRunSummary(input)
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.message).toBe('invalid run summary shape')
-    }
+    expect(result.success).toBe(true)
   })
 
   it('rejects stream-only status: blocked', () => {
@@ -1640,7 +1640,7 @@ describe('parseRunSummaryList', () => {
   it('returns empty array when all items are invalid', () => {
     const input = [
       {runId: 'run-1', repo: 'fro-bot/agent', status: 'blocked', createdAt: '2026-06-01T00:00:00.000Z'},
-      {runId: 'run-2', repo: 'fro-bot/agent', status: 'waiting_for_approval', createdAt: '2026-06-01T00:00:00.000Z'},
+      {runId: 'run-2', repo: 'fro-bot/agent', status: 'unknown', createdAt: '2026-06-01T00:00:00.000Z'},
     ]
     const result = parseRunSummaryList(input)
     expect(result.success).toBe(true)
@@ -1792,6 +1792,74 @@ describe('TerminalPhase and PHASE_TO_WEB_STATUS', () => {
     expect(Object.keys(PHASE_TO_WEB_STATUS)).toHaveLength(6)
     for (const phase of allPhases) {
       expect(PHASE_TO_WEB_STATUS[phase]).toBeDefined()
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-1016: contract 1.10.0/1.11.0 additive vocabulary — session push health
+// (agent #1788), push trigger kinds (agent #1787), the accepted version ladder,
+// and waiting-for summary statuses (#1825).
+// ---------------------------------------------------------------------------
+
+describe('contract 1.10.0/1.11.0 additive vocabulary (rm-1016)', () => {
+  it('OPERATOR_PUSH_TRIGGER_KINDS is the gateway push trigger trio in gateway order', async () => {
+    const mod = await import('../src/gateway/operator-contract/index.ts')
+    expect([...mod.OPERATOR_PUSH_TRIGGER_KINDS]).toEqual(['approval', 'question', 'run_failed'])
+  })
+
+  it('OPERATOR_PUSH_HEALTH_STATUSES is the gateway health trio in gateway order', async () => {
+    const mod = await import('../src/gateway/operator-contract/index.ts')
+    expect([...mod.OPERATOR_PUSH_HEALTH_STATUSES]).toEqual(['ready', 'degraded', 'unknown'])
+  })
+
+  it('parseOperatorSessionInfo keeps a well-formed push health object', () => {
+    const input = {operatorId: 7, login: 'octocat', expiresAt: 1000, push: {status: 'degraded'}}
+    const result = parseOperatorSessionInfo(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.push).toEqual({status: 'degraded'})
+    }
+  })
+
+  it('parseOperatorSessionInfo drops a malformed push health object (display supplement normalizes to absent)', () => {
+    for (const push of [{}, {status: 'on-fire'}, {status: 1}, 'ready', null, {status: 'ready', extra: true}]) {
+      const result = parseOperatorSessionInfo({operatorId: 7, login: 'octocat', expiresAt: 1000, push})
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.push).toBeUndefined()
+      }
+    }
+  })
+
+  it('the vendored contract ladder accepts the deployed floor plus the two forward majors and nothing else', async () => {
+    const mod = await import('../src/gateway/operator-contract/version.ts')
+    expect(mod.OPERATOR_CONTRACT_VERSION).toBe('1.9.0')
+    expect([...mod.ACCEPTED_CONTRACT_VERSIONS]).toEqual(['1.9.0', '1.10.0', '1.11.0'])
+    expect(mod.isAcceptedContractVersion('1.10.0')).toBe(true)
+    expect(mod.isAcceptedContractVersion('1.12.0')).toBe(false)
+  })
+
+  it('RunSummaryStatus grew the two waiting members and lost none of the five originals', () => {
+    const statuses: RunSummaryType['status'][] = [
+      'queued', 'running', 'succeeded', 'failed', 'cancelled',
+      'waiting_for_approval', 'waiting_for_question',
+    ]
+    // Type-level: every literal must type-check as a summary status.
+    expect(statuses).toHaveLength(7)
+    const invalid = 'waiting_for_both' as RunSummaryType['status']
+    expect(typeof invalid).toBe('string')
+  })
+
+  it('parseRunSummaryList accepts waiting statuses as run summaries (gateway 1.11.0)', () => {
+    const input = [
+      {runId: 'run-waiting-approval', repo: 'fro-bot/agent', status: 'waiting_for_approval', createdAt: '2026-10-14T00:00:00Z'},
+      {runId: 'run-waiting-question', repo: 'fro-bot/agent', status: 'waiting_for_question', createdAt: '2026-10-14T00:00:00Z'},
+    ]
+    const result = parseRunSummaryList(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.map(run => run.status)).toEqual(['waiting_for_approval', 'waiting_for_question'])
     }
   })
 })

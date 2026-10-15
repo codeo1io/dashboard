@@ -16,7 +16,7 @@ import type {RunStreamFrame} from '../src/gateway/operator-contract/sse-frames.t
 import type {Logger} from '../src/logger.ts'
 import fc from 'fast-check'
 import {describe, expect, it, vi} from 'vitest'
-import {OPERATOR_CONTRACT_VERSION} from '../src/gateway/operator-contract/version.ts'
+import {ACCEPTED_CONTRACT_VERSIONS, OPERATOR_CONTRACT_VERSION} from '../src/gateway/operator-contract/version.ts'
 import {FIXTURE_RUN_ID_FOR_TESTS, FIXTURE_SCENARIO_NAMES, serializeScenarioToSse} from '../src/gateway/operator-fixture-sse.ts'
 import {createOperatorSseReader, MAX_SSE_BUFFER_BYTES, parseSseChunk} from '../src/gateway/operator-sse-reader.ts'
 
@@ -2793,10 +2793,9 @@ async function runReader(
   return {events, errors}
 }
 
-describe('createOperatorSseReader — adjacent contract versions are rejected', () => {
+describe('createOperatorSseReader — contract versions outside the accepted ladder are rejected', () => {
   const [major, minor, patch] = OPERATOR_CONTRACT_VERSION.split('.').map(Number) as [number, number, number]
   const previousMinor = `${major}.${minor - 1}.${patch}`
-  const nextMinor = `${major}.${minor + 1}.${patch}`
 
   it('accepts a ready frame at the pinned version', async () => {
     const {events, errors} = await runReader(readyText() + sseQuestion(questionPayload()))
@@ -2806,12 +2805,22 @@ describe('createOperatorSseReader — adjacent contract versions are rejected', 
 
   it.each([
     ['the previous minor', previousMinor],
-    ['the next minor', nextMinor],
+    ['the minor after the ladder top', `${major}.${minor + 3}.${patch}`],
+    ['the next major', `${major + 1}.0.0`],
   ])('fails closed on %s and dispatches no question frame', async (_name, version) => {
     const {events, errors} = await runReader(readyText(version) + sseQuestion(questionPayload()))
     expect(errors).toHaveLength(1)
     expect(errors[0]?.message).toContain('contract-drift')
     expect(events).toHaveLength(0)
+  })
+
+  // rm-1016 forward-support rider: forward minors inside the accepted ladder
+  // (1.10.0, 1.11.0) now ride through — the old blanket "next minor rejected"
+  // premise is what this acceptance replaces.
+  it.each([...ACCEPTED_CONTRACT_VERSIONS])('accepts a ready frame at ladder version %s', async version => {
+    const {events, errors} = await runReader(readyText(version) + sseQuestion(questionPayload()))
+    expect(errors).toHaveLength(0)
+    expect(events.map(e => e.type)).toEqual(['ready', 'question'])
   })
 })
 
@@ -2949,5 +2958,68 @@ describe('createOperatorSseReader — question frames', () => {
     expect(errors).toHaveLength(0)
     const status = events.find(e => e.type === 'status')
     expect(status?.type === 'status' ? status.data.status : undefined).toBe('waiting_for_question')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-1016: additive contract-version ladder (1.9.0 floor → 1.11.0 ceiling).
+// The pinned floor moves only when the deployed gateway moves; forward minors
+// within the accepted set ride through, everything else still fails closed.
+// ---------------------------------------------------------------------------
+
+describe('createOperatorSseReader — additive contract ladder (rm-1016)', () => {
+  const statusPayload = {
+    runId: 'run-001',
+    entityRef: 'fro-bot/agent',
+    surface: 'github',
+    phase: 'EXECUTING',
+    status: 'running',
+    startedAt: '2026-06-18T20:00:00Z',
+    stale: false,
+  }
+
+  it.each(['1.9.0', '1.10.0', '1.11.0'])('accepts ready contractVersion %s and dispatches frames', async version => {
+    const sseText = `event: ready\ndata: {"contractVersion":"${version}"}\n\nevent: status\ndata: ${JSON.stringify(statusPayload)}\n\n`
+    const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
+    const reader = createOperatorSseReader({fetchImpl})
+
+    const events: RunStreamFrame[] = []
+    const errors: Error[] = []
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: frame => events.push(frame),
+      onError: err => errors.push(err),
+      onClose: () => {},
+    })
+
+    expect(errors).toHaveLength(0)
+    expect(events).toHaveLength(2)
+    expect(events[1]?.type).toBe('status')
+  })
+
+  it.each(['1.8.0', '1.12.0', '2.0.0', '1.10', '1.11.0-rc1', 'garbage'])(
+    'fails closed on ready contractVersion %s outside the accepted ladder',
+    async version => {
+      const sseText = `event: ready\ndata: ${JSON.stringify({contractVersion: version})}\n\nevent: status\ndata: ${JSON.stringify(statusPayload)}\n\n`
+      const {fetchImpl} = makeFakeFetch(makeResponse(200, [sseText]))
+      const reader = createOperatorSseReader({fetchImpl})
+
+      const events: RunStreamFrame[] = []
+      const errors: Error[] = []
+      await reader.open('/operator/runs/run-001/stream', {
+        onEvent: frame => events.push(frame),
+        onError: err => errors.push(err),
+        onClose: () => {},
+      })
+
+      expect(errors).toHaveLength(1)
+      expect(errors[0]?.message).toContain('contract-drift')
+      expect(events).toHaveLength(0)
+    },
+  )
+
+  it('accepted ladder equals the exported constant set and still contains the deployed floor', async () => {
+    const {ACCEPTED_CONTRACT_VERSIONS} = await import('../src/gateway/operator-contract/version.ts')
+    expect([...ACCEPTED_CONTRACT_VERSIONS]).toEqual(['1.9.0', '1.10.0', '1.11.0'])
+    expect(ACCEPTED_CONTRACT_VERSIONS).toContain(OPERATOR_CONTRACT_VERSION)
   })
 })
