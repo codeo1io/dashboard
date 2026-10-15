@@ -95,7 +95,16 @@ export type OperatorCheckoutProvenance =
 // ---------------------------------------------------------------------------
 
 export const CHECKOUT_OPERATIONS = new Set<string>(['none', 'merge', 'rebase', 'am', 'cherry-pick', 'revert', 'bisect'])
-const SHA_RE = /^[0-9a-f]{40}$/
+
+/**
+ * Git object ids as they appear on the provenance wire: SHA-1 (40 hex) or
+ * SHA-256 (64 hex) — a repository initialized `--object-format=sha256`
+ * carries 64-hex shas on every field this module validates. Before rm-1449
+ * the 40-hex-only match silently degraded a SHA-256 checkout's provenance
+ * to `undefined` (fail-safe downstream, but the operator surface lost the
+ * whole field); both lengths now validate identically.
+ */
+const SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/
 
 function isCheckoutOperation(value: unknown): value is OperatorCheckoutOperation {
   return typeof value === 'string' && CHECKOUT_OPERATIONS.has(value)

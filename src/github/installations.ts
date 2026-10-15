@@ -384,6 +384,66 @@ export async function enumerateRepos(
 // Real client factory (uses DashboardAppClient)
 // ---------------------------------------------------------------------------
 
+/**
+ * rm-1448: hard page ceiling for the two `while (true)` GitHub pagination
+ * walks below. Termination otherwise depends entirely on the API returning a
+ * short/empty final page — a hostile, buggy, or pagination-shape-changed
+ * upstream that keeps returning full pages would loop the server forever.
+ * 100 pages × 100 entries/page = 10 000 records; the largest observed census
+ * for this single-App dashboard fits in single-digit pages (installation and
+ * repository walks alike, recorded 2026-10-15), so 100 is ample headroom
+ * while keeping the worst case a bounded, visible truncation.
+ */
+export const MAX_PAGINATION_PAGES = 100
+
+/** One page of `GET /installation/repositories`, already narrowed off the wire. */
+export interface InstallationRepositoriesPage {
+  readonly total_count: number
+  readonly repositories: readonly {
+    id: number
+    node_id: string
+    owner: {login: string}
+    name: string
+    full_name: string
+  }[]
+}
+
+/**
+ * rm-1448: page-walk of the installation repositories census with the
+ * MAX_PAGINATION_PAGES ceiling. Hitting the ceiling logs a visible truncation
+ * warning (fail-visible: the partial set is served, never silently looped or
+ * silently dropped). Extracted from `listInstallationReposWithToken` so the
+ * walk is unit-testable without a network Octokit.
+ */
+export async function collectInstallationRepoPages(
+  fetchRepositoriesPage: (page: number) => Promise<InstallationRepositoriesPage>,
+): Promise<readonly Omit<RepoRecord, 'installation_id'>[]> {
+  const repos: Omit<RepoRecord, 'installation_id'>[] = []
+  let page = 1
+  while (true) {
+    const data = await fetchRepositoriesPage(page)
+    for (const repo of data.repositories) {
+      repos.push({
+        node_id: repo.node_id,
+        database_id: repo.id,
+        owner: repo.owner.login,
+        name: repo.name,
+        full_name: repo.full_name,
+      })
+    }
+    if (repos.length >= data.total_count || data.repositories.length < 100) break
+    if (page >= MAX_PAGINATION_PAGES) {
+      logger.warning(
+        'Installation repositories pagination hit the page ceiling; returning a partial set',
+        {ceiling: MAX_PAGINATION_PAGES, pages: page, repos: repos.length, totalCount: data.total_count},
+      )
+      break
+    }
+    page++
+  }
+  return repos
+}
+
 async function listInstallationReposWithToken(token: string): Promise<readonly Omit<RepoRecord, 'installation_id'>[]> {
   const installOctokit = new Octokit({
     auth: token,
@@ -396,36 +456,13 @@ async function listInstallationReposWithToken(token: string): Promise<readonly O
     },
   })
 
-  const repos: Omit<RepoRecord, 'installation_id'>[] = []
-  let page = 1
-  while (true) {
+  return collectInstallationRepoPages(async page => {
     const response = await installOctokit.request('GET /installation/repositories', {
       per_page: 100,
       page,
     })
-    const data = response.data as unknown as {
-      total_count: number
-      repositories: {
-        id: number
-        node_id: string
-        owner: {login: string}
-        name: string
-        full_name: string
-      }[]
-    }
-    for (const repo of data.repositories) {
-      repos.push({
-        node_id: repo.node_id,
-        database_id: repo.id,
-        owner: repo.owner.login,
-        name: repo.name,
-        full_name: repo.full_name,
-      })
-    }
-    if (repos.length >= data.total_count || data.repositories.length < 100) break
-    page++
-  }
-  return repos
+    return response.data as unknown as InstallationRepositoriesPage
+  })
 }
 
 /**
@@ -449,6 +486,14 @@ export function buildInstallationsClient(appClient: DashboardAppClient): Install
         })
       }
       if (data.length < 100) break
+      if (page >= MAX_PAGINATION_PAGES) {
+        // rm-1448: bounded, visible truncation — see MAX_PAGINATION_PAGES.
+        logger.warning(
+          'App installations pagination hit the page ceiling; returning a partial set',
+          {ceiling: MAX_PAGINATION_PAGES, pages: page, installations: installations.length},
+        )
+        break
+      }
       page++
     }
     return installations
