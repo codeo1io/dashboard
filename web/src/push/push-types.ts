@@ -47,3 +47,29 @@ export const VALID_HANDOFF_STATES: ReadonlySet<string> = new Set([
   'stale_key',
   'inactive',
 ])
+
+// ---------------------------------------------------------------------------
+// Operator contract 1.10.0 (fro-bot/agent #1787 + #1788, v0.120.0) — web-local
+// mirror of the gateway's push vocabulary. Same duplication rule as the header:
+// never import from `src/`; the vendored contract (operator-contract/push.ts +
+// responses.ts) holds the server twin, and the conformance test holds both to
+// the gateway's exact order and spelling.
+// ---------------------------------------------------------------------------
+
+/**
+ * The trigger kinds the gateway stamps into a push payload's `data.type`
+ * (gateway export: OPERATOR_PUSH_TRIGGER_KINDS).
+ */
+export type OperatorPushTriggerKind = 'approval' | 'question' | 'run_failed'
+
+export const OPERATOR_PUSH_TRIGGER_KINDS: readonly OperatorPushTriggerKind[] = ['approval', 'question', 'run_failed']
+
+/**
+ * Push health on the authenticated operator session (gateway export:
+ * OperatorPushHealth) — 'ready' (subscription live), 'degraded' (subscription
+ * present but failing), 'unknown' (push not configured). Absent entirely when
+ * the gateway has no push surface.
+ */
+export type OperatorPushHealthStatus = 'ready' | 'degraded' | 'unknown'
+
+export const OPERATOR_PUSH_HEALTH_STATUSES: readonly OperatorPushHealthStatus[] = ['ready', 'degraded', 'unknown']

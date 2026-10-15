@@ -1375,3 +1375,36 @@ describe('URL-hash restore — expand sets hash, remount restores', () => {
     expect(window.location.hash).toBe('')
   })
 })
+
+// ---------------------------------------------------------------------------
+// rm-1016: waiting-state summaries reach the runtime seam (contract 1.11.0).
+// The runtime's summary-status allowlist must accept the two waiting members so
+// an index card painted 'Waiting for answer' can drive the stream overlay
+// (summaryStatus) instead of being silently dropped.
+// ---------------------------------------------------------------------------
+
+describe('createOperatorRuntime — waiting summary statuses (rm-1016)', () => {
+  it('runtime.ts SUMMARY_STATUSES covers the two waiting members plus the five originals', async () => {
+    const fs = await import('node:fs/promises')
+    const path = await import('node:path')
+    const url = await import('node:url')
+    const __dirname = path.dirname(url.fileURLToPath(import.meta.url))
+    const src = await fs.readFile(path.join(__dirname, 'runtime.ts'), 'utf8')
+    const block = src.match(/const SUMMARY_STATUSES[\s\S]*?\]\)/s)
+    expect(block).not.toBeNull()
+    const members = [...block![0].matchAll(/'([a-z_]+)'/g)].map(m => m[1])
+    expect(members.sort()).toEqual(
+      ['cancelled', 'failed', 'queued', 'running', 'succeeded', 'waiting_for_approval', 'waiting_for_question'].sort(),
+    )
+  })
+
+  it('runtime.ts no longer documents waiting_for_* as stream-only (comment updated with the 1.11.0 fold)', async () => {
+    const fs = await import('node:fs/promises')
+    const path = await import('node:path')
+    const url = await import('node:url')
+    const __dirname = path.dirname(url.fileURLToPath(import.meta.url))
+    const src = await fs.readFile(path.join(__dirname, 'runtime.ts'), 'utf8')
+    const around = src.slice(src.indexOf('SUMMARY_STATUSES') - 400, src.indexOf('SUMMARY_STATUSES') + 100)
+    expect(around).not.toMatch(/waiting_for_\*\s+are not summaries/)
+  })
+})
