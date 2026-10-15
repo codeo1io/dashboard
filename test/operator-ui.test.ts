@@ -118,6 +118,7 @@ interface TestAppOpts {
   operatorClient?: OperatorClient
   pushNotificationsEnabled?: boolean
   webDistRoot?: string
+  servedPushHandlerPresent?: boolean
 }
 
 async function buildTestApp(opts: TestAppOpts | boolean) {
@@ -137,6 +138,7 @@ async function buildTestApp(opts: TestAppOpts | boolean) {
     operatorClient: resolved.operatorClient,
     pushNotificationsEnabled: resolved.pushNotificationsEnabled,
     webDistRoot: resolved.webDistRoot,
+    servedPushHandlerPresent: resolved.servedPushHandlerPresent,
   })
 }
 
@@ -924,7 +926,11 @@ describe('push routes — no-dashboard-proxy 404 invariant', () => {
 
 describe('push-enabled meta injection — served SPA shell integrity', () => {
   it('serves a COMPLETE index.html (root mount target present) with the injected meta when push is enabled', async () => {
-    const app = await buildTestApp({operatorUiEnabled: true, pushNotificationsEnabled: true})
+    // Push-capability premise (rm-249 deploy-guard): the meta requires the flag
+    // AND a push-capable served sw.js. The real ./web/dist ships the kill-switch
+    // SW (no push handler) — derivation would correctly refuse — so this test
+    // injects capability explicitly to exercise the injected-shell branch.
+    const app = await buildTestApp({operatorUiEnabled: true, pushNotificationsEnabled: true, servedPushHandlerPresent: true})
     const res = await authedGet(app, '/')
     expect(res.status).toBe(200)
     const body = await res.text()
@@ -971,7 +977,10 @@ describe('push-enabled meta injection — served SPA shell integrity', () => {
     }
     try {
       writeShell('MARKER-V1')
-      const app = await buildTestApp({operatorUiEnabled: true, pushNotificationsEnabled: true, webDistRoot: dir})
+      // rm-249 deploy-guard: fixture dir has no sw.js, so derive would fail
+      // closed; inject capability to keep exercising the INJECTED-shell
+      // caching branch this test was written for.
+      const app = await buildTestApp({operatorUiEnabled: true, pushNotificationsEnabled: true, webDistRoot: dir, servedPushHandlerPresent: true})
 
       // (1) first request loads + injects
       const first = await authedGet(app, '/')
@@ -1009,7 +1018,9 @@ describe('push-enabled meta injection — served SPA shell integrity', () => {
   it('rm-172: missing shell still falls back to 404, not a 500', async () => {
     const dir = mkdtempSync(`${tmpdir()}/spa-shell-missing-`)
     try {
-      const app = await buildTestApp({operatorUiEnabled: true, pushNotificationsEnabled: true, webDistRoot: dir})
+      // servedPushHandlerPresent injected: keep the INJECTED branch's
+      // notFound fallback under test (the dir lacks both index.html and sw.js).
+      const app = await buildTestApp({operatorUiEnabled: true, pushNotificationsEnabled: true, webDistRoot: dir, servedPushHandlerPresent: true})
       const res = await authedGet(app, '/')
       expect(res.status).toBe(404)
     } finally {
