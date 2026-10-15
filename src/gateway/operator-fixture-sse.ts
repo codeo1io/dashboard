@@ -40,6 +40,10 @@ export const FIXTURE_SCENARIO_NAMES = {
   non_failed_with_reason: 'non_failed_with_reason',
   /** Unsupported contract version: ready with mismatched version → absorbing drift. */
   contract_drift: 'contract_drift',
+  /** Ladder acceptance, lower rung: ready speaks contract 1.10.0 → stream must go live. */
+  contract_v1_10: 'contract_v1_10',
+  /** Ladder acceptance, upper rung: ready speaks contract 1.11.0 → stream must go live. */
+  contract_v1_11: 'contract_v1_11',
   /** Malformed/unavailable stream: contains a malformed SSE record that fails closed. */
   malformed_unavailable: 'malformed_unavailable',
   /** No-output run: ready → running → empty terminal output → terminal succeeded. */
@@ -333,6 +337,24 @@ function buildContractDriftScenario(activeRunId: string): string {
     // These frames follow the drift-triggering ready and must be absorbed:
     statusFrame(activeRunId, 'running', 'EXECUTING', startedAt) +
     outputFrame(activeRunId, '[Fixture output — must be absorbed after drift]', true, 0) +
+    statusFrame(activeRunId, 'succeeded', 'COMPLETED', startedAt)
+  )
+}
+
+/**
+ * Ladder-acceptance scenarios: the ready frame speaks a 1.10.0/1.11.0 gateway
+ * version (ACCEPTED_CONTRACT_VERSIONS rungs above the 1.9.0 floor). The stream
+ * must go live and process frames normally — the additive-fields parity those
+ * versions imply is exercised by the session/summary tests, not here.
+ */
+function buildContractLadderScenario(activeRunId: string, contractVersion: string): string {
+  const startedAt = '2026-06-28T10:02:10Z'
+
+  return (
+    readyFrame(contractVersion) +
+    statusFrame(activeRunId, 'running', 'EXECUTING', startedAt) +
+    outputFrame(activeRunId, '[Fixture output — contract-ladder acceptance probe]', false, 0) +
+    outputFrame(activeRunId, '[Fixture output — contract-ladder acceptance probe (final)]', true, 1) +
     statusFrame(activeRunId, 'succeeded', 'COMPLETED', startedAt)
   )
 }
@@ -1052,6 +1074,10 @@ const SCENARIO_BUILDERS: Readonly<Record<FixtureScenarioName, (activeRunId: stri
   [FIXTURE_SCENARIO_NAMES.terminal_failure_unknown_reason]: buildTerminalFailureUnknownReasonScenario,
   [FIXTURE_SCENARIO_NAMES.non_failed_with_reason]: buildNonFailedWithReasonScenario,
   [FIXTURE_SCENARIO_NAMES.contract_drift]: buildContractDriftScenario,
+  [FIXTURE_SCENARIO_NAMES.contract_v1_10]: (activeRunId: string): string =>
+    buildContractLadderScenario(activeRunId, '1.10.0'),
+  [FIXTURE_SCENARIO_NAMES.contract_v1_11]: (activeRunId: string): string =>
+    buildContractLadderScenario(activeRunId, '1.11.0'),
   [FIXTURE_SCENARIO_NAMES.malformed_unavailable]: buildMalformedUnavailableScenario,
   [FIXTURE_SCENARIO_NAMES.no_output]: buildNoOutputScenario,
   [FIXTURE_SCENARIO_NAMES.stream_reset]: buildStreamResetScenario,

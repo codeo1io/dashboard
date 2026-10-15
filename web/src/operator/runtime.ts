@@ -75,11 +75,15 @@ export function discoverCardStreamTargets(runId: string): {
 
 /**
  * The run-list summary statuses the run index parser keeps (public/operator-run-index.js
- * VALID_RUN_SUMMARY_STATUSES). Stream-only statuses (blocked, waiting_for_*) are not summaries.
+ * VALID_RUN_SUMMARY_STATUSES). 'blocked' remains stream-only. Since contract 1.11.0
+ * the summary of a 'running' base can carry the waiting_for_approval/waiting_for_question
+ * registry overlays while an approval/question is open.
  */
 const SUMMARY_STATUSES: ReadonlySet<RunSummaryStatus> = new Set<RunSummaryStatus>([
   'queued',
   'running',
+  'waiting_for_approval',
+  'waiting_for_question',
   'succeeded',
   'failed',
   'cancelled',

@@ -16,7 +16,7 @@ import type {RunStreamFrame} from '../src/gateway/operator-contract/sse-frames.t
 import type {Logger} from '../src/logger.ts'
 import fc from 'fast-check'
 import {describe, expect, it, vi} from 'vitest'
-import {OPERATOR_CONTRACT_VERSION} from '../src/gateway/operator-contract/version.ts'
+import {ACCEPTED_CONTRACT_VERSIONS, OPERATOR_CONTRACT_VERSION} from '../src/gateway/operator-contract/version.ts'
 import {FIXTURE_RUN_ID_FOR_TESTS, FIXTURE_SCENARIO_NAMES, serializeScenarioToSse} from '../src/gateway/operator-fixture-sse.ts'
 import {createOperatorSseReader, MAX_SSE_BUFFER_BYTES, parseSseChunk} from '../src/gateway/operator-sse-reader.ts'
 
@@ -2793,10 +2793,16 @@ async function runReader(
   return {events, errors}
 }
 
-describe('createOperatorSseReader — adjacent contract versions are rejected', () => {
+describe('createOperatorSseReader — contract versions outside the accepted ladder are rejected', () => {
   const [major, minor, patch] = OPERATOR_CONTRACT_VERSION.split('.').map(Number) as [number, number, number]
   const previousMinor = `${major}.${minor - 1}.${patch}`
-  const nextMinor = `${major}.${minor + 1}.${patch}`
+  // The accepted ladder is additive (1.9.0 → 1.10.0 → 1.11.0), so the first
+  // fail-closed rung is the first minor ABOVE every accepted version, not the
+  // pin's adjacent minor (1.10.0 is now an accepted rung).
+  const highestAcceptedMinor = Math.max(
+    ...ACCEPTED_CONTRACT_VERSIONS.map(v => Number(v.split('.')[1] ?? 0)),
+  )
+  const firstMinorAboveLadder = `${major}.${highestAcceptedMinor + 1}.${patch}`
 
   it('accepts a ready frame at the pinned version', async () => {
     const {events, errors} = await runReader(readyText() + sseQuestion(questionPayload()))
@@ -2806,7 +2812,7 @@ describe('createOperatorSseReader — adjacent contract versions are rejected', 
 
   it.each([
     ['the previous minor', previousMinor],
-    ['the next minor', nextMinor],
+    ['the first minor above the ladder', firstMinorAboveLadder],
   ])('fails closed on %s and dispatches no question frame', async (_name, version) => {
     const {events, errors} = await runReader(readyText(version) + sseQuestion(questionPayload()))
     expect(errors).toHaveLength(1)

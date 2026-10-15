@@ -16,7 +16,7 @@ import {join, resolve} from 'node:path'
 import process from 'node:process'
 import {afterEach, describe, expect, it} from 'vitest'
 import {PINNED_CONTRACT_VERSION} from '../public/operator-stream.js'
-import {OPERATOR_CONTRACT_VERSION} from '../src/gateway/operator-contract/version.ts'
+import {ACCEPTED_CONTRACT_VERSIONS, OPERATOR_CONTRACT_VERSION} from '../src/gateway/operator-contract/version.ts'
 import {FIXTURE_QUESTION_SCENARIO_ROWS} from '../src/gateway/operator-fixture-sse.ts'
 import {buildDashboardApp} from '../src/server.ts'
 import {SessionManager} from '../src/session.ts'
@@ -889,14 +889,16 @@ describe('security — raw failure reason codes security invariants', () => {
 })
 
 describe('security — operator-stream.js contract pin and checkout-field boundary', () => {
-  it('holds exactly one version literal (the pin), and imports no server code', async () => {
+  it('holds the floor pin plus the accepted ladder as its only version literals, and imports no server code', async () => {
     const fs = await import('node:fs/promises')
     const src = await fs.readFile('public/operator-stream.js', 'utf8')
     // Strip comments so prose that names a version cannot hide a second pin.
     const code = src.replaceAll(/\/\*[\s\S]*?\*\//g, '').replaceAll(/(^|[^:])\/\/.*$/gm, '$1')
     const literals = code.match(/['"`]\d+\.\d+\.\d+['"`]/g) ?? []
-    expect(literals).toHaveLength(1)
+    const expected = new Set([`'${OPERATOR_CONTRACT_VERSION}'`, ...ACCEPTED_CONTRACT_VERSIONS.map(v => `'${v}'`)])
+    expect(new Set(literals)).toEqual(expected)
     expect(code).toMatch(/export const PINNED_CONTRACT_VERSION = ['"]\d+\.\d+\.\d+['"]/)
+    expect(code).toMatch(/export const ACCEPTED_CONTRACT_VERSIONS = \[/)
     expect(code).not.toMatch(/from\s+['"][^'"]*(?:src\/|\.ts['"])/)
     expect(code).not.toMatch(/\bimport\s*\(/)
   })

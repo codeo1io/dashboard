@@ -19,10 +19,21 @@ import {err, ok} from '../../result.ts'
 import {isOperatorFailureKind} from './run-status.ts'
 
 /**
- * Index-only status set. 'blocked' and 'waiting_for_approval' are stream-only
- * overlays — never produced by the run-summary projector.
+ * Index-only status set. 'blocked' remains a stream-only overlay — never produced
+ * by the run-summary projector. Since the ladder's waiting overlay rung, waiting_for_approval and
+ * waiting_for_question ARE summary statuses: registry-derived overlays the
+ * gateway emits on the summary of a 'running' base while an approval/question is
+ * open (approval before question when both apply). Only the gateway derives
+ * them — the dashboard never fabricates a waiting state.
  */
-export type RunSummaryStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+export type RunSummaryStatus =
+  | 'queued'
+  | 'running'
+  | 'waiting_for_approval'
+  | 'waiting_for_question'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
 
 /**
  * Operator-safe projection of a run's summary.

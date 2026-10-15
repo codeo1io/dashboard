@@ -26,6 +26,7 @@ import type {
 import fc from 'fast-check'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {
+  ACCEPTED_CONTRACT_VERSIONS,
   appendStreamChunk,
   bootstrapOperatorStreams,
   buildApprovalClient,
@@ -5474,6 +5475,43 @@ describe('fixture SSE scenarios — browser reducer: reason-bearing scenarios', 
       expect(entry.status).not.toBe('failed')
       const view = toSafeRunView(entry)
       expect(view.reasonLabel).toBeUndefined()
+    }
+  })
+})
+
+describe('accepted contract ladder — ready-frame gating and forward scenarios', () => {
+  it('every rung of ACCEPTED_CONTRACT_VERSIONS goes live; an unknown newer version fails closed into drift', () => {
+    const INITIAL_STATE: StreamState = {connection: 'connecting', runs: {}, retryCount: 0, shouldReconnect: false}
+    for (const version of ACCEPTED_CONTRACT_VERSIONS) {
+      const state = nextStreamState(INITIAL_STATE, {type: 'ready', data: {contractVersion: version}})
+      expect(state.connection, `ready contractVersion ${version}`).toBe('live')
+    }
+    const drifted = nextStreamState(INITIAL_STATE, {type: 'ready', data: {contractVersion: '1.12.0'}})
+    expect(drifted.connection).toBe('drift')
+  })
+
+  it('contract_v1_10 and contract_v1_11 scenarios drive the browser reducer to a clean, completed run', () => {
+    const INITIAL_STATE: StreamState = {connection: 'connecting', runs: {}, retryCount: 0, shouldReconnect: false}
+    const scenarios = [FIXTURE_SCENARIO_NAMES.contract_v1_10, FIXTURE_SCENARIO_NAMES.contract_v1_11]
+    for (const scenario of scenarios) {
+      const sseBytes = serializeScenarioToSse(scenario, FIXTURE_RUN_ID_FOR_TESTS)
+      const records = sseBytes.split('\n\n').filter(r => r.trim() !== '')
+      let state = INITIAL_STATE
+      let sawLive = false
+      for (const record of records) {
+        const result = parseSseFrame(`${record}\n\n`)
+        if (result !== null && result.success) {
+          state = nextStreamState(state, result.frame)
+          if (state.connection === 'live') sawLive = true
+        }
+      }
+      expect(sawLive, `scenario ${scenario} went live on the ladder rung`).toBe(true)
+      expect(state.connection, `scenario ${scenario} ends cleanly, not in drift`).toBe('closed')
+      expect(state.shouldReconnect, `scenario ${scenario} closes without reconnect once the run completes`).toBe(false)
+      expect(Object.keys(state.runs)).toHaveLength(1)
+      const entry = state.runs[FIXTURE_RUN_ID_FOR_TESTS]
+      expect(entry?.status, `scenario ${scenario}`).toBe('succeeded')
+      expect(entry?.outputText, `scenario ${scenario}`).toContain('contract-ladder acceptance probe')
     }
   })
 })
