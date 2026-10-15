@@ -47,6 +47,13 @@ export declare const RUN_INDEX_CAP: 100
 export declare const VALID_RUN_SUMMARY_STATUSES: ReadonlySet<string>
 
 /**
+ * Relative-age formatter for card timestamps ("just now", "5 minutes ago", …).
+ * rm-1441: mirrored by operator-launch.js and operator-stream.js (parity-tested);
+ * declared here so the mirrors' parity test can import the original's type.
+ */
+export declare function formatRelativeTime(isoString: string, nowMs?: number): string
+
+/**
  * Dashboard-owned display labels for known failure reasons, keyed by FailureKind.
  * Must stay identical (keys and label values) to the map exported from
  * public/operator-stream.js — parity is enforced by tests.

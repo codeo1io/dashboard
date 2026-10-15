@@ -29,6 +29,13 @@
 // Constants
 // ---------------------------------------------------------------------------
 
+// rm-1440 (upstream fro-bot/dashboard#586): run-output rendering is delegated to the
+// allowlist Markdown DOM builder in ./operator-run-output.js (createElement +
+// textContent only, no innerHTML anywhere on the path — structural-guard tested).
+// That module is stateless, so the browser's dual module instances of this file
+// (plain and ?manual=1) share it without singleton-state hazard.
+import {renderRunOutput} from './operator-run-output.js'
+
 /** Contract version this client expects on the ready frame. */
 export const PINNED_CONTRACT_VERSION = '1.9.0'
 
@@ -167,6 +174,49 @@ const STATUS_LABELS = {
   succeeded: 'Succeeded',
   failed: 'Failed',
   cancelled: 'Cancelled',
+}
+
+/**
+ * rm-1441 (upstream #585): mirror of operator-run-index.js's exported
+ * formatRelativeTime. This module cannot import it — operator-run-index.js holds
+ * singleton page state and auto-starts on import, and this file is instantiated
+ * twice in the browser (plain + ?manual=1); a cross-import would mint a second
+ * index instance and a second fetch loop. A parity test pins the mirrors together.
+ * Returns '' for unparseable input, exactly like the run-index original.
+ */
+export function formatRelativeTime(isoString, nowMs = Date.now()) {
+  if (!isoString) return ''
+  const date = new Date(isoString)
+  if (Number.isNaN(date.getTime())) return ''
+
+  const diff = Math.max(0, nowMs - date.getTime())
+  if (diff < 60_000) return 'just now'
+
+  const mins = Math.floor(diff / 60_000)
+  if (mins < 60) return `${mins} minute${mins === 1 ? '' : 's'} ago`
+
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`
+
+  const days = Math.floor(hours / 24)
+  return `${days} day${days === 1 ? '' : 's'} ago`
+}
+
+/**
+ * rm-1441 (upstream #585): the compact in-card waiting state for an expanded card
+ * that has no output yet. A single <p> carrying the effective status's own class +
+ * label — the run card's status vocabulary (waiting_for_approval /
+ * waiting_for_question / blocked / queued / running), never free text. Built with
+ * createElement + textContent only.
+ */
+function renderRunWaitingState(outputRegion, effectiveStatus) {
+  outputRegion.textContent = ''
+  const waitingEl = document.createElement('p')
+  waitingEl.dataset.role = 'run-waiting'
+  waitingEl.className = `run-status status-${effectiveStatus.replaceAll('_', '-')}`
+  waitingEl.textContent = STATUS_LABELS[effectiveStatus] ?? 'Waiting\u2026'
+  outputRegion.append(waitingEl)
+  outputRegion.hidden = false
 }
 
 /**
@@ -3348,7 +3398,7 @@ function makeQuestionNoteCard(status) {
  * - Read-only: GET only for stream; approval decisions are operator-forwarded writes.
  */
 export function initOperatorStream(opts) {
-  const {runId, statusEl, noticeEl, outputEl, coalescedEl, gapEl, approvalsEl, badgeEl, reasonEl, checkoutEl, cancelEl, questionsEl, approvalClient: injectedApprovalClient, cancelClient: injectedCancelClient, questionClient: injectedQuestionClient, endpointBase, fixtureSessionId} = opts
+  const {runId, statusEl, noticeEl, outputEl, coalescedEl, gapEl, approvalsEl, badgeEl, reasonEl, checkoutEl, cancelEl, questionsEl, updatedEl, approvalClient: injectedApprovalClient, cancelClient: injectedCancelClient, questionClient: injectedQuestionClient, endpointBase, fixtureSessionId} = opts
 
   // The run-list summary status for this run, when the caller has one. Only a known summary status
   // is kept; it lets a no-snapshot reset close an expired terminal run without a status frame.
@@ -3713,6 +3763,18 @@ export function initOperatorStream(opts) {
   let announcedFailure = false
   let paintedPreparationHeadline = false // reasonEl currently shows a headline this stream wrote from checkoutPreparation
 
+  // rm-1441 (upstream #585): the card's <time data-role="run-updated-at"> tracks the
+  // last status TRANSITION this stream observed (client-side receive time — status
+  // frames carry startedAt only, no updated-at). Non-transition frames never move it,
+  // and the run-index diff's adoption step only ever moves it forward (monotonic guard
+  // there), so launch → stream → adoption stays monotonic non-null end to end.
+  let lastPaintedEffectiveStatus = null
+  let lastStatusChangeIso = null
+  // rm-1440: re-render the markdown output only when the accumulated text actually
+  // changed (a chunk boundary) — status/notice frames must not rebuild the output DOM.
+  let lastRenderedOutputText = null
+  let paintedOutputUnavailable = false
+
   function updateDOM() {
     // Late-frame guard: after close(), no write of any kind (notice, status,
     // output, coalesced hint, approvals, or badge) may reach the DOM. A late
@@ -3795,6 +3857,20 @@ export function initOperatorStream(opts) {
         // Update status class for styling — use allowlisted status value (no whitespace)
         statusEl.className = statusEl.className.replaceAll(/\bstatus-\S+/g, '')
         statusEl.classList.add(`status-${effectiveStatus.replaceAll('_', '-')}`)
+
+        // rm-1441: advance the card's timestamp only on an effective-status transition.
+        // The first observed status counts as a transition (the optimistic launch card
+        // was painted at creation time by operator-launch.js; a fetched card carries the
+        // summary's updatedAt and the diff keeps it current while this stream is not
+        // the writer).
+        if (effectiveStatus !== lastPaintedEffectiveStatus) {
+          lastPaintedEffectiveStatus = effectiveStatus
+          lastStatusChangeIso = new Date().toISOString()
+        }
+        if (updatedEl !== undefined && updatedEl !== null && lastStatusChangeIso !== null) {
+          updatedEl.setAttribute('datetime', lastStatusChangeIso)
+          updatedEl.textContent = formatRelativeTime(lastStatusChangeIso)
+        }
       } else if (!aborted) {
         const conn = state.connection
         const runIsTerminal = runEntry !== undefined && runEntry.terminal === true
@@ -3860,27 +3936,52 @@ export function initOperatorStream(opts) {
 
     if (checkoutEl) renderCheckoutDetail(checkoutEl, state.runs[runId], paintedPreparationHeadline || failureLabelStatesPreparation)
 
-    // Run output: render the accumulated answer via textContent only — `text` is
-    // free-form agent output and must NEVER be interpolated as HTML. droppedCount is
-    // never echoed; a fixed-label hint is toggled instead. Other output-frame fields
-    // are not rendered.
+    // Run output: render the accumulated answer through the allowlist Markdown
+    // builder (rm-1440, upstream #586) — `text` is free-form agent output and must
+    // NEVER be interpolated as HTML; the builder tokenizes a closed token set and
+    // writes DOM nodes via createElement/textContent only, with unknown tokens
+    // degrading to verbatim text. Re-render is change-guarded: the DOM rebuild
+    // happens only when the accumulated text advanced (a chunk boundary), never on
+    // status-only frames. droppedCount is never echoed; a fixed-label hint is
+    // toggled instead. Other output-frame fields are not rendered.
     if (outputEl) {
       const runEntry = state.runs[runId]
       const outputText = runEntry?.outputText
       if (runEntry?.outputUnavailable === true) {
         // Expired snapshot: fixed dashboard copy as a single text node, never wire text.
-        outputEl.textContent = OUTPUT_UNAVAILABLE_COPY
+        if (!paintedOutputUnavailable) {
+          outputEl.textContent = OUTPUT_UNAVAILABLE_COPY
+          paintedOutputUnavailable = true
+          lastRenderedOutputText = null
+        }
         outputEl.hidden = false
         outputEl.classList?.add('run-output-unavailable')
       } else if (typeof outputText === 'string' && outputText !== '') {
-        outputEl.textContent = outputText
+        paintedOutputUnavailable = false
+        if (outputText !== lastRenderedOutputText) {
+          renderRunOutput(outputEl, outputText)
+          lastRenderedOutputText = outputText
+        }
         outputEl.hidden = false
         outputEl.classList?.remove('run-output-unavailable')
       } else {
         outputEl.classList?.remove('run-output-unavailable')
-        // No output (or an authoritative empty final): clear any stale text and re-hide.
-        outputEl.textContent = ''
-        outputEl.hidden = true
+        paintedOutputUnavailable = false
+        // No output yet on a live, non-terminal run (rm-1441, upstream #585): show the
+        // compact in-card waiting state instead of a tall empty body — the effective
+        // status's own class + label (waiting_for_approval / waiting_for_question /
+        // blocked / queued / running). Any authoritative empty final or non-live
+        // connection keeps the old behavior: clear and re-hide.
+        const liveNonTerminal = runEntry !== undefined &&
+          runEntry.terminal !== true &&
+          state.connection === 'live'
+        if (liveNonTerminal) {
+          renderRunWaitingState(outputEl, getEffectiveStatus(runEntry))
+          lastRenderedOutputText = null
+        } else {
+          outputEl.textContent = ''
+          outputEl.hidden = true
+        }
       }
       if (coalescedEl) {
         // Show the fixed hint when output was coalesced or truncated — never an echoed count.

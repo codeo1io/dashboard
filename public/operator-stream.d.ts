@@ -17,6 +17,13 @@
  */
 export declare function validateDynamicId(id: string): boolean
 
+/**
+ * rm-1441 (upstream fro-bot/dashboard#585): mirror of operator-run-index.js's
+ * formatRelativeTime — a static cross-import would mint a second singleton index
+ * instance (see the JS-side comment). Pinned to the original by a parity test.
+ */
+export declare function formatRelativeTime(isoString: string, nowMs?: number): string
+
 export declare const PINNED_CONTRACT_VERSION: string
 export declare const RETRY_BASE_MS: number
 export declare const RETRY_FACTOR: number
@@ -856,6 +863,13 @@ export interface InitOptions {
    * without a status frame. Unknown values are ignored.
    */
   readonly summaryStatus?: RunSummaryStatus
+  /**
+   * rm-1441 (upstream fro-bot/dashboard#585): the card's <time data-role="run-updated-at">
+   * element. When present, the stream advances it on each effective-status transition
+   * (client-side receive time — status frames carry startedAt only). Optional and
+   * absent-tolerant like the other region elements.
+   */
+  readonly updatedEl?: Element | null
 }
 
 export declare function initOperatorStream(opts: InitOptions): StreamHandle

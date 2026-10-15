@@ -808,6 +808,83 @@
   display: none;
 }
 
+/*
+ * rm-1440 (upstream fro-bot/dashboard#586): the allowlist-Markdown run output.
+ * The renderer emits p / ul / ol / li / pre / strong / em / code — block rhythm
+ * and code chips are scoped to the run-output region so nothing outside the
+ * card inherits them. Plain runs keep their pre-wrap (agent output is
+ * line-oriented and must not reflow).
+ */
+[data-role="run-output"] p,
+[data-role="run-output"] ul,
+[data-role="run-output"] ol {
+  margin: 0 0 var(--space-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+[data-role="run-output"] ul,
+[data-role="run-output"] ol {
+  padding-left: var(--space-4);
+  list-style: revert;
+}
+[data-role="run-output"] li {
+  margin-bottom: var(--space-1);
+}
+[data-role="run-output"] li:last-child {
+  margin-bottom: 0;
+}
+[data-role="run-output"] pre {
+  margin: 0 0 var(--space-2);
+  padding: var(--space-2);
+  background: rgba(127, 127, 127, 0.12);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  white-space: pre;
+}
+[data-role="run-output"] pre[data-stream-partial="true"] {
+  opacity: 0.75;
+}
+[data-role="run-output"] code {
+  background: rgba(127, 127, 127, 0.12);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-1);
+}
+[data-role="run-output"] pre code {
+  background: none;
+  padding: 0;
+}
+[data-role="run-output"] [data-role="run-output-heading"] {
+  font-weight: 700;
+  color: var(--color-text);
+  margin-top: var(--space-2);
+}
+[data-role="run-output"] p:last-child,
+[data-role="run-output"] ul:last-child,
+[data-role="run-output"] ol:last-child,
+[data-role="run-output"] pre:last-child {
+  margin-bottom: 0;
+}
+
+/*
+ * rm-1441 (upstream fro-bot/dashboard#585): compact in-card waiting state — an
+ * expanded card with no output yet shows the effective status's own label
+ * (waiting_for_approval / waiting_for_question / blocked / queued / running)
+ * tinted with its status color, instead of a tall empty body. Scoped overrides
+ * of the .run-status pill shape: body font, no chrome, block line.
+ */
+[data-role="run-output"] > [data-role="run-waiting"] {
+  display: block;
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-transform: none;
+  letter-spacing: normal;
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: var(--text-body-sm);
+}
+
 /* Approval Microstates */
 .approval-prompt {
   background: var(--color-surface-raised);
