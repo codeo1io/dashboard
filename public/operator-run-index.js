@@ -16,13 +16,19 @@ export const FETCH_TIMEOUT_MS = 10_000
 const MAX_ID_LENGTH = 512
 const MAX_DATE_LENGTH = 128
 
-/** 'blocked' and 'waiting_for_approval' are stream-only — never produced by the run-summary projector. */
+/**
+ * 'blocked' remains stream-only. Since gateway contract 1.11.0 (fro-bot/agent
+ * #1825) the waiting overlays are ALSO run-summary statuses: a waiting run now
+ * appears in the recent-runs index, so the index parser keeps them too.
+ */
 export const VALID_RUN_SUMMARY_STATUSES = new Set([
   'queued',
   'running',
   'succeeded',
   'failed',
   'cancelled',
+  'waiting_for_approval',
+  'waiting_for_question',
 ])
 
 /** Render labels from this map, never the raw wire string. */
@@ -32,6 +38,8 @@ const STATUS_LABELS = {
   succeeded: 'Succeeded',
   failed: 'Failed',
   cancelled: 'Cancelled',
+  waiting_for_approval: 'Waiting for approval',
+  waiting_for_question: 'Waiting for answer',
 }
 
 /**

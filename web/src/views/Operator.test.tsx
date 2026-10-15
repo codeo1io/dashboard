@@ -324,6 +324,8 @@ describe('Operator — fixture scenario selector', () => {
         'expired_completed_terminal_frame',
         'expired_completed_silent',
         'running_after_no_snapshot',
+        'waiting_for_approval_summary',
+        'waiting_for_question_summary',
       ].sort(),
     )
   })
