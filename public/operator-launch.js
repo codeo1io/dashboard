@@ -60,9 +60,11 @@ export function validateRepoItem(item) {
 // ---------------------------------------------------------------------------
 
 /**
- * Mint a fresh unique idempotency key for a launch submission.
- * Uses crypto.randomUUID() with a fallback for environments that lack it.
- * Browser-valid: crypto.randomUUID is available in all modern browsers.
+ * Mint a fresh unique idempotency key for a launch submission (rm-482: fail
+ * closed). Uses crypto.randomUUID(); returns null when no secure generator
+ * exists — callers must refuse the submission rather than fall back to a
+ * predictable Date/Math-derived key.
+ * @returns {string | null}
  */
 export function mintIdempotencyKey() {
   if (
@@ -71,10 +73,7 @@ export function mintIdempotencyKey() {
   ) {
     return globalThis.crypto.randomUUID()
   }
-  // Fallback: timestamp + random hex (not cryptographically strong, but unique enough)
-  const ts = Date.now().toString(36)
-  const rand = Math.random().toString(36).slice(2)
-  return `${ts}-${rand}`
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -602,8 +601,23 @@ export async function initOperatorLaunch(opts) {
       const submitBtn = launchForm.querySelector('[type="submit"]')
       if (submitBtn !== null) submitBtn.disabled = true
 
-      // Mint a fresh idempotency key for this submission
+      // Mint a fresh idempotency key for this submission (rm-482: fail closed —
+      // without a securely minted key the launch is refused, never submitted
+      // with a predictable key).
       const idempotencyKey = mintIdempotencyKey()
+      if (idempotencyKey === null) {
+        if (launchError !== null) {
+          launchError.textContent =
+            'Launch unavailable: this browser cannot mint a secure idempotency key.'
+          launchError.hidden = false
+        }
+        if (submitBtn !== null) submitBtn.disabled = false
+        if (_launchingGeneration === myGeneration) {
+          _launching = false
+          _launchingGeneration = null
+        }
+        return
+      }
 
       let outcome
       try {

@@ -13,7 +13,10 @@
 # --platform flag and COPY cannot express deletions, so this is the minimal
 # target-executed step the design allows — see the rm-558 CI-time note in
 # .github/workflows/release.yaml).
-ARG NODE_IMAGE=node:24-trixie-slim@sha256:173f125896c3087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6
+# 2026-10-17 independent_review F3 fix: 173f1258… is 404-dead on the registry
+# (token-authed manifest HEAD); re-probed live tag digest for
+# node:24-trixie-slim, so the cve-tripwire resolve step scans a pullable pin.
+ARG NODE_IMAGE=node:24-trixie-slim@sha256:7f486cabe892bff8fef04c0f7da8dba84a560be3e4e2740b7a86afc57ebec315
 
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS builder
 

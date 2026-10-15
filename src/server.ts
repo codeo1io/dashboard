@@ -21,10 +21,11 @@ import type {MetadataReader} from './github/metadata.ts'
 import type {ListenerStore} from './listener/store.ts'
 import {Buffer} from 'node:buffer'
 import {createHash} from 'node:crypto'
-import {existsSync, readFileSync, statSync} from 'node:fs'
+import {existsSync, readFileSync, realpathSync, statSync} from 'node:fs'
 import {readFile} from 'node:fs/promises'
 import {join} from 'node:path'
 import process from 'node:process'
+import {pathToFileURL} from 'node:url'
 import {serve} from '@hono/node-server'
 import {getConnInfo} from '@hono/node-server/conninfo'
 import {serveStatic} from '@hono/node-server/serve-static'
@@ -119,6 +120,10 @@ const SECURITY_TXT = `Contact: https://github.com/codeo1io/dashboard/security/ad
 Contact: https://github.com/fro-bot/dashboard/issues
 Expires: 2026-12-24T00:00:00.000Z
 Preferred-Languages: en
+`
+
+const ROBOTS_TXT = `User-agent: *
+Disallow: /
 `
 
 /** Simple fixed-window in-memory rate limiter */
@@ -863,6 +868,11 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     // /.well-known/* sibling silently inherits public access.
     path === '/.well-known/security.txt' ||
     path === '/.well-known/security.txt/' ||
+    // RFC 9309 crawler contact (rm-713 restore, rm-857): the dashboard is an
+    // authenticated operator surface; the robots.txt response publishes a
+    // whole-site Disallow so crawlers do not index proxy-reachable paths.
+    path === '/robots.txt' ||
+    path === '/robots.txt/' ||
     // Listener machine-write path — public-before-session; HMAC-gated by the
     // route itself (see routes/listener.ts). The read/ack paths
     // (/api/listener/messages*, /api/listener/ack-all) are intentionally NOT
@@ -1314,6 +1324,17 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     c.text(SECURITY_TXT, 200, {'Content-Type': 'text/plain; charset=utf-8'}),
   )
 
+  // ── RFC 9309 crawler contact (rm-713 restore, rm-857) ───────────────────────
+  // Whole-site Disallow: this is an authenticated operator dashboard, not
+  // public content — mirrors the /privacy posture. Served inline like
+  // SECURITY_TXT so it carries no SPA-build dependency.
+  app.get('/robots.txt', c =>
+    c.text(ROBOTS_TXT, 200, {'Content-Type': 'text/plain; charset=utf-8'}),
+  )
+  app.get('/robots.txt/', c =>
+    c.text(ROBOTS_TXT, 200, {'Content-Type': 'text/plain; charset=utf-8'}),
+  )
+
   // Warn early if the SPA build artifact is missing (GET / will 404 silently).
   if (!existsSync(`${webDistRoot}/index.html`)) {
     logger.warning(
@@ -1659,8 +1680,45 @@ async function createDashboardServer(): Promise<ServerType> {
   return server
 }
 
-// Only start the server when this module is the entry point
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Only start the server when this module is the entry point.
+
+/**
+ * Entry-point detection for ESM (rm-702).
+ *
+ * Compares file URLs, not a literal `file://${process.argv[1]}` template: the
+ * template breaks whenever the entry path contains characters that URL-encode
+ * (a space, or anything outside the unreserved set) because `import.meta.url`
+ * percent-encodes while argv[1] does not — under such paths the template
+ * silently evaluated false and the server booted WITHOUT its listener.
+ */
+export function isMainEntryPoint(metaUrl: string, argv1: string | undefined): boolean {
+  if (argv1 === undefined || argv1 === '') return false
+  let rawMatch = false
+  try {
+    rawMatch = pathToFileURL(argv1).href === metaUrl
+  } catch {
+    // Unencodable argv (e.g. invalid path characters) — never autostart.
+    return false
+  }
+  if (rawMatch) return true
+  try {
+    // Node resolves the ESM main entry through realpath (unless
+    // --preserve-symlinks-main is passed) while argv[1] keeps the symlinked
+    // spelling, so a raw comparison goes false and the server booted without
+    // its listener — silent headless. Realpath argv[1] and compare again
+    // (symlinked-entry cure, implemented by content in run 788aa489c1d5;
+    // ledger id-mapping rider at ROADMAP rm-759, 2026-10-09). The raw
+    // comparison already ran, so --preserve-symlinks-main invocations still
+    // match; this branch only ever WIDENS autostart to genuine entries.
+    return pathToFileURL(realpathSync(argv1)).href === metaUrl
+  } catch {
+    // Nonexistent argv (realpath ENOENT) or unresolvable path — never
+    // autostart.
+    return false
+  }
+}
+
+if (isMainEntryPoint(import.meta.url, process.argv[1])) {
   createDashboardServer().catch((error: unknown) => {
     logger.error('Failed to start dashboard server', {
       error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),

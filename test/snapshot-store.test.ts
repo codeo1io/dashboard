@@ -15,7 +15,7 @@ import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import fc from 'fast-check'
 import {afterEach, describe, expect, it, vi} from 'vitest'
-import {createFileSnapshotStore} from '../src/github/snapshot-store.ts'
+import {createFileSnapshotStore, logPersistProblem} from '../src/github/snapshot-store.ts'
 import {logger} from '../src/logger.ts'
 
 // node:fs exports a frozen namespace, so rm-759's ordering proof mocks the
@@ -202,6 +202,41 @@ describe('createFileSnapshotStore — size bound measures UTF-8 bytes, not UTF-1
     } finally {
       warnSpy.mockRestore()
       readMock.mockReset()
+    }
+  })
+
+  it('rm-860: logPersistProblem reserves structural keys — a payload key named `path` is suffixed, never overwrites', () => {
+    const warnSpy = vi.spyOn(logger, 'warning')
+    try {
+      logPersistProblem('persist problem', '/resolved/snapshot.json', {path: 'injected', bytes: 42})
+      expect(warnSpy).toHaveBeenCalledTimes(1)
+      const record = warnSpy.mock.calls[0]?.[1]
+      expect(record?.path, 'structural path survives').toBe('/resolved/snapshot.json')
+      expect(record?.['path-payload'], 'colliding payload key is suffixed, not dropped').toBe('injected')
+      expect(record?.bytes).toBe(42)
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  it('rm-860 (review F6): a nested path/path-payload payload stays total and injective — the free sibling keeps its exact name', () => {
+    const warnSpy = vi.spyOn(logger, 'warning')
+    try {
+      logPersistProblem('persist problem', '/resolved/snapshot.json', {
+        path: 'injected',
+        'path-payload': 'sibling',
+      })
+      expect(warnSpy).toHaveBeenCalledTimes(1)
+      const record = warnSpy.mock.calls[0]?.[1]
+      expect(record?.path, 'structural path survives').toBe('/resolved/snapshot.json')
+      expect(record?.['path-payload'], 'the free sibling key keeps its own name').toBe('sibling')
+      expect(record?.['path-payload-payload'], 'the collider is renamed past every claimed name').toBe('injected')
+      expect(
+        Object.keys(record ?? {}).filter(key => key.startsWith('path')).sort(),
+        'nothing dropped, nothing overwritten',
+      ).toEqual(['path', 'path-payload', 'path-payload-payload'])
+    } finally {
+      warnSpy.mockRestore()
     }
   })
 
