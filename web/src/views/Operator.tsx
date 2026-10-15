@@ -97,6 +97,19 @@ export function Operator({state = 'loading', onRuntimeStateChange, fixtureMode, 
   const triggerBtnRef = useRef<HTMLButtonElement>(null)
   const drawerRef = useRef<HTMLDivElement>(null)
   const formRef = useRef<HTMLFormElement>(null)
+  // rm-856 batch F7 (2026-10-15): the post-launch focus timer is tracked so it
+  // can be cancelled — a timer left pending across unmount (route change
+  // inside the 50ms window) or a quickly re-opened drawer would still query
+  // the document and steal focus to a card the operator has navigated away
+  // from.
+  const postLaunchFocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const clearPostLaunchFocusTimer = () => {
+    if (postLaunchFocusTimerRef.current !== null) {
+      clearTimeout(postLaunchFocusTimerRef.current)
+      postLaunchFocusTimerRef.current = null
+    }
+  }
 
   // Single source of truth for closing the drawer and returning focus to the
   // trigger button — used by the close button, the backdrop, and Escape alike
@@ -121,6 +134,9 @@ export function Operator({state = 'loading', onRuntimeStateChange, fixtureMode, 
   // Focus the first interactive element or input inside drawer when opened
   useEffect(() => {
     if (isLaunchOpen) {
+      // A pending post-launch focus timer must not fire into the re-opened
+      // drawer and steal focus from the first-element focus below.
+      clearPostLaunchFocusTimer()
       const container = drawerRef.current
       if (container) {
         const first = container.querySelector<HTMLElement>(
@@ -172,7 +188,9 @@ export function Operator({state = 'loading', onRuntimeStateChange, fixtureMode, 
       const focusWasOnLaunchAffordance =
         document.activeElement === submitBtn || document.activeElement === triggerBtnRef.current
       setIsLaunchOpen(false)
-      setTimeout(() => {
+      clearPostLaunchFocusTimer()
+      postLaunchFocusTimerRef.current = setTimeout(() => {
+        postLaunchFocusTimerRef.current = null
         // Focus-steal guard: only move focus to the new card if the operator
         // hasn't already moved on to something else since submitting.
         if (!focusWasOnLaunchAffordance) return
@@ -185,7 +203,11 @@ export function Operator({state = 'loading', onRuntimeStateChange, fixtureMode, 
       }, 50)
     }
     form.addEventListener('launch-success', handleSuccess)
-    return () => form.removeEventListener('launch-success', handleSuccess)
+    return () => {
+      form.removeEventListener('launch-success', handleSuccess)
+      // rm-856 batch F7: cancel any still-pending timer on unmount/state change.
+      clearPostLaunchFocusTimer()
+    }
   }, [state])
 
   useEffect(() => {

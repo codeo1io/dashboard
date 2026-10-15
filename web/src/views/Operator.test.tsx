@@ -868,6 +868,83 @@ describe('Operator — post-launch focus-steal guard', () => {
     expect(document.activeElement).toBe(elsewhere)
     elsewhere.remove()
   })
+
+  it('cancels the pending post-launch focus timer when the view unmounts (rm-856 batch F7)', async () => {
+    const {act} = await import('react')
+    const {unmount} = render(<Operator state="ready" />)
+    const triggerBtn = screen.getByTestId('launch-trigger-btn')
+    await act(async () => { triggerBtn.click() })
+
+    const runIndexList = document.querySelector('[data-role="run-index-list"]') as HTMLElement
+    const card = document.createElement('div')
+    card.dataset.testid = 'run-card'
+    card.tabIndex = 0
+    runIndexList.append(card)
+
+    const form = document.querySelector('#launch-form') as HTMLFormElement
+    const submitBtn = form.querySelector('[type="submit"]') as HTMLButtonElement
+    submitBtn.focus()
+
+    await act(async () => {
+      form.dispatchEvent(new CustomEvent('launch-success', {bubbles: true, detail: {runId: 'run-1'}}))
+    })
+
+    // Route change inside the 50ms window: the view unmounts while the
+    // timer is pending, and a DIFFERENT view owns a run-index-list + card in
+    // the same document. A leaked timer would query the document (not the
+    // component) and focus that unrelated card.
+    unmount()
+    const foreignList = document.createElement('div')
+    foreignList.dataset.role = 'run-index-list'
+    const foreignCard = document.createElement('div')
+    foreignCard.dataset.testid = 'run-card'
+    foreignCard.tabIndex = 0
+    foreignList.append(foreignCard)
+    document.body.append(foreignList)
+
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 60))
+    })
+
+    expect(document.activeElement).not.toBe(foreignCard)
+    foreignList.remove()
+  })
+
+  it('cancels the pending post-launch focus timer when the drawer re-opens (rm-856 batch F7)', async () => {
+    const {act} = await import('react')
+    render(<Operator state="ready" />)
+    const triggerBtn = screen.getByTestId('launch-trigger-btn')
+    await act(async () => { triggerBtn.click() })
+
+    const runIndexList = document.querySelector('[data-role="run-index-list"]') as HTMLElement
+    const card = document.createElement('div')
+    card.dataset.testid = 'run-card'
+    card.tabIndex = 0
+    runIndexList.append(card)
+
+    const form = document.querySelector('#launch-form') as HTMLFormElement
+    const submitBtn = form.querySelector('[type="submit"]') as HTMLButtonElement
+    submitBtn.focus()
+
+    await act(async () => {
+      form.dispatchEvent(new CustomEvent('launch-success', {bubbles: true, detail: {runId: 'run-1'}}))
+    })
+    // Re-open the drawer immediately — inside the 50ms window.
+    await act(async () => { triggerBtn.click() })
+    const drawer = screen.getByTestId('launch-drawer')
+    const drawerFirst = drawer.querySelector(
+      'select, textarea, button:not([data-testid="close-drawer-btn"])'
+    ) as HTMLElement | null
+
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 60))
+    })
+
+    // Focus must still be inside the re-opened drawer — the pending card
+    // timer must not fire over it.
+    if (drawerFirst) expect(drawer.contains(document.activeElement)).toBe(true)
+    else expect(document.activeElement).not.toBe(card)
+  })
 })
 
 describe('Operator — failure state distinct treatments', () => {
