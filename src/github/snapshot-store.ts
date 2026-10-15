@@ -14,7 +14,9 @@
  *   (empty boot, exactly the pre-bridge contract).
  * - `persist()`: any error is logged and swallowed; refresh continues.
  * - Size-bounded: files above {@link MAX_SNAPSHOT_BYTES} are neither written
- *   nor loaded, so a runaway snapshot can't fill the disk.
+ *   nor loaded (stat-checked before the read, so an oversized file is never
+ *   buffered into memory — the in-memory byte bound stays as the second
+ *   guard), so a runaway snapshot can't fill the disk.
  *
  * Atomicity: persist writes to `<path>.tmp` then renames over the target, so
  * a crash mid-write can never leave a truncated file that the next boot
@@ -22,17 +24,38 @@
  */
 
 import type {AggregatorSnapshot, SnapshotStore} from './aggregator.ts'
-import {readFileSync, renameSync, writeFileSync} from 'node:fs'
+import {Buffer} from 'node:buffer'
+import {readFileSync, renameSync, statSync, writeFileSync} from 'node:fs'
 import {logger} from '../logger.ts'
 
 /** 1 MiB — snapshots are repo-count * row-size bounded well under this. */
 const MAX_SNAPSHOT_BYTES = 1_048_576
 
-function logPersistProblem(message: string, path: string, error: unknown): void {
-  logger.warning(message, {
-    path,
-    error: error instanceof Error ? error.message : String(error),
-  })
+/**
+ * Measures UTF-8 bytes, not UTF-16 code units (rm-701): `String.length`
+ * judges CJK/astral-heavy snapshots up to 2x lighter than the byte cap
+ * enforced here. Mirrors the listener contract's helper of the same name.
+ */
+function utf8ByteLength(value: string): number {
+  return Buffer.byteLength(value, 'utf8')
+}
+
+function logPersistProblem(message: string, path: string, detail: unknown): void {
+  // rm-802: log the detail faithfully. Error instances contribute their
+  // message (real I/O failures stay a scalar `error` field); plain-object
+  // payloads are spread as structured fields — the size-bound call sites pass
+  // `{bytes}`, and the byte count that tripped the bound must land as a
+  // field (the persist-side shape), never as `'[object Object]'`. Anything
+  // else stringifies (same as the pre-rm-802 scalar path).
+  const fields: Record<string, unknown> = {path}
+  if (detail instanceof Error) {
+    fields.error = detail.message
+  } else if (typeof detail === 'object' && detail !== null) {
+    Object.assign(fields, detail)
+  } else {
+    fields.error = String(detail)
+  }
+  logger.warning(message, fields)
 }
 
 /**
@@ -88,14 +111,25 @@ export function createFileSnapshotStore(path: string | undefined): SnapshotStore
     load(): AggregatorSnapshot | null {
       let raw: string
       try {
+        // Size-bound BEFORE the read (rm-759): a tampered/oversized file is
+        // rejected by stat and never buffered into memory. The in-memory
+        // byte bound below stays as the second guard against a writer that
+        // grows the file between stat and read.
+        const size = statSync(resolved).size
+        if (size > MAX_SNAPSHOT_BYTES) {
+          logPersistProblem('Snapshot cache exceeds size bound; ignoring (fail-open)', resolved, {
+            bytes: size,
+          })
+          return null
+        }
         raw = readFileSync(resolved, 'utf8')
       } catch {
         // Missing/unreadable — normal on first boot; stay quiet + fail open.
         return null
       }
-      if (raw.length > MAX_SNAPSHOT_BYTES) {
+      if (utf8ByteLength(raw) > MAX_SNAPSHOT_BYTES) {
         logPersistProblem('Snapshot cache exceeds size bound; ignoring (fail-open)', resolved, {
-          length: raw.length,
+          bytes: utf8ByteLength(raw),
         })
         return null
       }
@@ -119,8 +153,8 @@ export function createFileSnapshotStore(path: string | undefined): SnapshotStore
         logPersistProblem('Snapshot serialization failed; skipping persist', resolved, error)
         return
       }
-      if (serialized.length > MAX_SNAPSHOT_BYTES) {
-        logger.warning('Snapshot exceeds size bound; not persisted', {path: resolved, length: serialized.length})
+      if (utf8ByteLength(serialized) > MAX_SNAPSHOT_BYTES) {
+        logger.warning('Snapshot exceeds size bound; not persisted', {path: resolved, bytes: utf8ByteLength(serialized)})
         return
       }
       try {

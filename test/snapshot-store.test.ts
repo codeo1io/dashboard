@@ -9,11 +9,22 @@
 
 import type {AggregatorSnapshot, DashboardRepo, SnapshotStore} from '../src/github/aggregator.ts'
 
+import {Buffer} from 'node:buffer'
 import {mkdtempSync, readFileSync, rmSync, writeFileSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
-import {afterEach, describe, expect, it} from 'vitest'
+import fc from 'fast-check'
+import {afterEach, describe, expect, it, vi} from 'vitest'
 import {createFileSnapshotStore} from '../src/github/snapshot-store.ts'
+import {logger} from '../src/logger.ts'
+
+// node:fs exports a frozen namespace, so rm-759's ordering proof mocks the
+// module with a passthrough-wrapped readFileSync (every other export is the
+// real one; readFileSync behaves identically until a test overrides it).
+vi.mock('node:fs', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  return {...actual, readFileSync: vi.fn(actual.readFileSync)}
+})
 
 function makeRepoRow(): DashboardRepo {
   return {
@@ -121,5 +132,191 @@ describe('createFileSnapshotStore — load (fail-open)', () => {
     store.persist(makeSnapshot())
     expect(readFileSync(file, 'utf8')).toBe(JSON.stringify(makeSnapshot()))
     expect(() => readFileSync(`${file}.tmp`, 'utf8')).toThrow()
+  })
+})
+
+describe('createFileSnapshotStore — size bound measures UTF-8 bytes, not UTF-16 code units (rm-701)', () => {
+  const dirs: string[] = []
+  const CAP = 1_048_576 // mirrors MAX_SNAPSHOT_BYTES (bytes, not code units)
+
+  function makeStore(): {store: SnapshotStore; file: string} {
+    const dir = mkdtempSync(join(tmpdir(), 'snapshot-store-rm701-'))
+    dirs.push(dir)
+    const file = join(dir, 'snapshot.json')
+    return {store: createFileSnapshotStore(file) as SnapshotStore, file}
+  }
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, {recursive: true, force: true})
+  })
+
+  const bytes = (value: string): number => Buffer.byteLength(value, 'utf8')
+
+  it('a file exactly at the cap still loads (inclusive byte bound)', () => {
+    const {store, file} = makeStore()
+    const base = JSON.stringify(makeSnapshot())
+    expect(bytes(base)).toBeLessThan(CAP)
+    // JSON tolerates trailing whitespace, so spaces pad to an exact byte size.
+    writeFileSync(file, base + ' '.repeat(CAP - bytes(base)), 'utf8')
+    expect(store.load()).not.toBeNull()
+  })
+
+  it('a file one byte over the cap is rejected', () => {
+    const {store, file} = makeStore()
+    writeFileSync(file, JSON.stringify(makeSnapshot()) + ' '.repeat(CAP + 1 - bytes(JSON.stringify(makeSnapshot()))), 'utf8')
+    expect(store.load()).toBeNull()
+  })
+
+  it('load: CJK snapshot over the byte cap but under the code-unit cap is rejected (the rm-701 defect)', () => {
+    const {store, file} = makeStore()
+    // Pad INSIDE the JSON so the rejection can only come from the size check —
+    // padding outside would fail JSON.parse under both old and new code.
+    const padChars = Math.ceil((CAP + 32 - bytes(JSON.stringify(makeSnapshot()))) / 3)
+    const snapshot: AggregatorSnapshot = {
+      ...makeSnapshot(),
+      repos: [{...makeRepoRow(), name: '倉'.repeat(padChars)}],
+    }
+    const serialized = JSON.stringify(snapshot)
+    expect(bytes(serialized)).toBeGreaterThan(CAP)
+    expect(serialized.length).toBeLessThan(CAP) // String.length would have let this through
+    writeFileSync(file, serialized, 'utf8')
+    expect(store.load()).toBeNull()
+  })
+
+  it('rm-802: the post-read byte bound logs the numeric size (structured payload, not a flattened object)', () => {
+    const {store, file} = makeStore()
+    // The stat gate passes on a small on-disk file; readFileSync is mocked to
+    // return a payload that grew past the byte cap between stat and read —
+    // the only path that exercises the post-read bound (the TOCTOU guard).
+    writeFileSync(file, 'tiny', 'utf8')
+    const readMock = vi.mocked(readFileSync)
+    readMock.mockReturnValueOnce('x'.repeat(CAP + 1))
+    const warnSpy = vi.spyOn(logger, 'warning')
+    try {
+      expect(store.load()).toBeNull()
+      expect(warnSpy).toHaveBeenCalledTimes(1)
+      const record = warnSpy.mock.calls[0]?.[1]
+      expect(record).toBeDefined()
+      expect(record?.bytes, 'the byte count must land as a numeric field, not a flattened object').toBe(CAP + 1)
+      expect(record?.error).toBeUndefined()
+    } finally {
+      warnSpy.mockRestore()
+      readMock.mockReset()
+    }
+  })
+
+  it('persist: CJK snapshot over the byte cap but under the code-unit cap is not written', () => {
+    const {store, file} = makeStore()
+    const padChars = Math.ceil((CAP + 32 - bytes(JSON.stringify(makeSnapshot()))) / 3)
+    const snapshot: AggregatorSnapshot = {
+      ...makeSnapshot(),
+      repos: [{...makeRepoRow(), name: '倉'.repeat(padChars)}],
+    }
+    const serialized = JSON.stringify(snapshot)
+    expect(bytes(serialized)).toBeGreaterThan(CAP)
+    expect(serialized.length).toBeLessThan(CAP)
+    store.persist(snapshot)
+    expect(() => readFileSync(file, 'utf8')).toThrow()
+  })
+
+  it('property: astral/CJK payloads at the boundary load iff at or under the byte cap, and round-trip under it', () => {
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.oneof(fc.integer({min: 0x4E00, max: 0x9FFF}), fc.integer({min: 0x10000, max: 0x10FFFF})),
+          {maxLength: 60},
+        ).map(cps => String.fromCodePoint(...cps)),
+        fc.integer({min: CAP - 4, max: CAP + 4}),
+        (name, target) => {
+          const dir = mkdtempSync(join(tmpdir(), 'snapshot-store-rm701-prop-'))
+          try {
+            const file = join(dir, 'snapshot.json')
+            const snapshot: AggregatorSnapshot = {
+              ...makeSnapshot(),
+              repos: [{...makeRepoRow(), name}],
+            }
+            const base = JSON.stringify(snapshot)
+            const payload = target > bytes(base) ? base + ' '.repeat(target - bytes(base)) : base
+            writeFileSync(file, payload, 'utf8')
+            const store = createFileSnapshotStore(file) as SnapshotStore
+            const loaded = store.load()
+            if (bytes(payload) <= CAP) {
+              expect(loaded).not.toBeNull()
+              // Under the cap the store must still round-trip the payload.
+              const roundTripped = JSON.stringify(loaded)
+              expect(bytes(roundTripped)).toBeLessThanOrEqual(CAP)
+              expect((loaded as AggregatorSnapshot).repos[0]?.name).toBe(name)
+            } else {
+              expect(loaded).toBeNull()
+            }
+          } finally {
+            rmSync(dir, {recursive: true, force: true})
+          }
+        },
+      ),
+      {numRuns: 40},
+    )
+  })
+})
+
+describe('createFileSnapshotStore — size gate fires before the read (rm-759)', () => {
+  const dirs: string[] = []
+
+  function makeStore(): {store: SnapshotStore; file: string} {
+    const dir = mkdtempSync(join(tmpdir(), 'snapshot-store-rm759-'))
+    dirs.push(dir)
+    const file = join(dir, 'snapshot.json')
+    return {store: createFileSnapshotStore(file) as SnapshotStore, file}
+  }
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, {recursive: true, force: true})
+  })
+
+  it('an oversize file is rejected WITHOUT buffering it — readFileSync never runs', () => {
+    const {store, file} = makeStore()
+    // A tampered on-disk file above the cap: the pre-cure implementation
+    // read the WHOLE thing into memory before rejecting it at the byte bound.
+    writeFileSync(file, 'x'.repeat(1_048_577), 'utf8')
+    const readMock = vi.mocked(readFileSync)
+    readMock.mockImplementation(() => {
+      throw new Error('readFileSync must not run for an oversize cache')
+    })
+    try {
+      expect(store.load()).toBeNull()
+    } finally {
+      readMock.mockReset()
+    }
+  })
+
+  it('rm-802: the stat-side size gate logs the numeric size (structured payload, not a flattened object)', () => {
+    const {store, file} = makeStore()
+    writeFileSync(file, 'x'.repeat(1_048_577), 'utf8')
+    const warnSpy = vi.spyOn(logger, 'warning')
+    try {
+      expect(store.load()).toBeNull()
+      expect(warnSpy).toHaveBeenCalledTimes(1)
+      const record = warnSpy.mock.calls[0]?.[1]
+      expect(record).toBeDefined()
+      expect(record?.bytes, 'the byte count must land as a numeric field, not a flattened object').toBe(1_048_577)
+      expect(record?.error).toBeUndefined()
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  it('an at-cap file still reads — the stat gate is inclusive, and the read count is exactly one', () => {
+    const {store, file} = makeStore()
+    const base = JSON.stringify(makeSnapshot())
+    const CAP = 1_048_576
+    writeFileSync(file, base + ' '.repeat(CAP - Buffer.byteLength(base, 'utf8')), 'utf8')
+    const readMock = vi.mocked(readFileSync)
+    readMock.mockClear()
+    try {
+      expect(store.load()).not.toBeNull()
+      expect(readMock).toHaveBeenCalledTimes(1)
+    } finally {
+      readMock.mockReset()
+    }
   })
 })

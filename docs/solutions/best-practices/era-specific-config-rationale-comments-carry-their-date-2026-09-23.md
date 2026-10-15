@@ -11,6 +11,7 @@ applies_when:
   - An infrastructure migration changes the environment the rationale depends on (self-hosted → GitHub-hosted runners, single-node → distributed, persistent disk → ephemeral)
   - Sweeping a repo for stale references after a migration
   - Writing a comment that explains WHY instead of WHAT
+---
 
 ## Context
 

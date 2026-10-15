@@ -1,3 +1,17 @@
+---
+title: renovate.yaml reintroduced by an upstream sync — drop it in the merge commit, every time
+date: 2026-09-21
+category: workflow-issues
+module: dashboard
+problem_type: workflow_issue
+component: development_workflow
+severity: high
+applies_when:
+  - Merging autonomy-upstream/main into this fork
+  - A fleet audit flags .github/workflows/renovate.yaml as a NEW violation after a sync merge
+tags: [upstream-sync, renovate, merge-hygiene, fleet-audit]
+---
+
 # renovate.yaml reintroduced by upstream sync (2026-09-21)
 
 ## What happened

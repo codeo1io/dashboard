@@ -731,7 +731,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### snapshot-store byte bound counts UTF-16 code units
-- id: `rm-701` | track: reliability | priority: 34.0 | status: in_progress
+- id: `rm-701` | track: reliability | priority: 34.0 | status: implemented (restored 2026-10-15 at the integrate of run d8fdf8b79ad5, conflict case 70b938272a—utf8ByteLength + astral/CJK property coverage landed 2026-10-07/08 and were dropped as adoption collateral by the October upstream-adoption lineage; this merge restores the landed mechanics with rm-802 structured-payload logging composed on top)
 - acceptance: both cap comparisons measure bytes (Buffer.byteLength or an equivalent single-site helper); a round-trip property test with astral-plane and CJK payloads pins the bound at exactly 1_048_576 bytes; the constant's name and its comment agree with the measured unit
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -875,6 +875,11 @@
 - acceptance: 
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
+### snapshot-store logPersistProblem flattens structured payloads to '[object Object]'
+- id: `rm-802` | track: reliability | priority: 30.0 | status: implemented 2026-10-09, validated pre-review, landed at this integrate (run d8fdf8b79ad54a68883810c1fc29a2da cycle:3 implement 2852b2bf; targeted_tests 921/921 on the engine-named 12 surfaces + full_tests via the supervisor-approved six-job local mirror under the account-level Actions outage; batch doc docs/prioritization/2026-10-09-repository-maintenance-cycle-3-batch-run-d8fdf8b79ad5.md)
+- acceptance: the persistence-problem logger emits plain-object payloads as structured fields (the size-bound `{bytes}` value lands as a field, never a stringified '[object Object]'), keeps Error-instance message extraction for real errors, and the rm-701/rm-759 describes carry spy tests asserting a single warning record with the exact numeric byte value and no `error` field (red before, green after); load()'s fail-open return semantics unchanged
+- evidence: vitest run of test/snapshot-store.test.ts (17/17 = 15 pre-existing at the batch base + 2 new); RED pre-fix log in the run's spool scratch; composed on the rm-701/rm-759 mechanics this same integrate restored after their adoption-lineage drop
+
 ### rm-184
 - id: `rm-184` | track: reliability | priority: 29.0 | status: in_progress
 - acceptance: metadata validation treats every non-false, non-absent private value as private (fail-closed), routes such entries into redactedNodeIds BEFORE any GraphQL query, counts malformed private values in the existing skip counter, and tests cover string/number/null variants
@@ -936,7 +941,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Snapshot-store load buffers the full cache file before the byte-bound rejection
-- id: `rm-759` | track: reliability | priority: 27.0 | status: in_progress
+- id: `rm-759` | track: reliability | priority: 27.0 | status: implemented (restored 2026-10-15 at the integrate of run d8fdf8b79ad5, conflict case 70b938272a—the statSync pre-read size gate + spy-proven ordering tests landed 2026-10-08/09 and were dropped as adoption collateral by the October upstream-adoption lineage; restored here with rm-802 structured-payload logging composed on top)
 - acceptance: 
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -1154,6 +1159,11 @@
 - id: `rm-656` | track: reliability | priority: 14.0 | status: in_progress
 - acceptance: 
 - evidence: campaign-recorded in dashboard ROADMAP.md
+
+### docs/solutions frontmatter convention has no machine check; one shipped lesson already evades it
+- id: `rm-803` | track: docs | priority: 14.0 | status: implemented 2026-10-09, validated pre-review, landed at this integrate (run d8fdf8b79ad54a68883810c1fc29a2da cycle:3 implement 2852b2bf; same gate record as rm-802—targeted_tests 921/921 + full_tests via the supervisor-approved local mirror; batch doc docs/prioritization/2026-10-09-repository-maintenance-cycle-3-batch-run-d8fdf8b79ad5.md)
+- acceptance: every docs/solutions markdown file carries a frontmatter block (opens at line 1, closes, carries `module:` + `problem_type:`), enforced by test/docs-solutions-frontmatter-guard.test.ts which fails on any gap or never-closing drift file; lesson bodies unchanged beyond the header
+- evidence: the guard went red against the unfixed tree (surfacing the census gap file plus two never-close drift files beyond the assess census, all three cured: frontmatter added, missing closing fences inserted) and green after; rode the same targeted/full gate record as rm-802
 
 ### Route-level code splitting for the SPA bundle (recorded LOW with counters)
 - id: `rm-559` | track: reliability | priority: 12.0 | status: in_progress

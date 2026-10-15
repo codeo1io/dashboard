@@ -11,6 +11,7 @@ applies_when:
   - Deciding to close or re-scope a roadmap item because its acceptance appears satisfied in-tree
   - Grep-verifying a landed state from inside a conductor worktree that may carry local or stranded-branch payloads
   - Basing a batch selection on a premise you did not measure yourself this cycle
+---
 
 ## Context
 
