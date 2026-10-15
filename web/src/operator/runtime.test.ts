@@ -1115,8 +1115,40 @@ describe('initOperatorStream — close() teardown behavior', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Hash restore: pure sanitization — length cap before validation
+// rm-853 adjacent scope — attach-failure observability: the silent catch in
+// defaultRuntimeLoader._attachStream logs one structured, identifier-free
+// line before rendering the Unavailable badge.
 // ---------------------------------------------------------------------------
+
+describe('attach-failure observability (rm-853 adjacent scope)', () => {
+  it('runtime.ts logs a structured attach-failure line whose payload carries only the error', async () => {
+    const fs = await import('node:fs/promises')
+    const nodePath = await import('node:path')
+    const src = await fs.readFile(nodePath.join(__dirname, 'runtime.ts'), 'utf8')
+    const marker = "console.error('[operator] run-stream attach failed'"
+    const start = src.indexOf(marker)
+    expect(start).toBeGreaterThanOrEqual(0)
+    const logCall = src.slice(start, src.indexOf('}', start) + 1)
+    expect(logCall).toContain('error: error instanceof Error ? error.message : String(error)')
+    // Console contract (see 'security: no sensitive logging'): no run IDs in the log payload.
+    expect(logCall).not.toMatch(/runId/)
+  })
+
+  it('the failure class is real: an element write throwing during initOperatorStream surfaces the error the catch now logs', async () => {
+    const streamMod = await import('../../../public/operator-stream.js')
+    const statusEl = document.createElement('div')
+    const noticeEl = document.createElement('div')
+    const checkoutEl = document.createElement('div') as HTMLElement & {hidden: boolean}
+    Object.defineProperty(checkoutEl, 'hidden', {
+      set() {
+        throw new Error('simulated stream attach failure')
+      },
+    })
+    expect(() =>
+      streamMod.initOperatorStream({runId: 'run-attach-fail', statusEl, noticeEl, checkoutEl}),
+    ).toThrow('simulated stream attach failure')
+  })
+})
 
 describe('sanitizeRunIdFromHash — length cap before validation (security)', () => {
   it('rejects a hash value longer than 512 chars before any other check', () => {

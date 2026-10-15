@@ -1250,11 +1250,21 @@ export function nextStreamState(current, event) {
       // raise a false gap.
       const prevGapDetected = prev?.outputGapDetected ?? false
       const prevGapMissing = prev?.outputGapMissing ?? 0
+      // rm-853 follow-up: the frame that closes a gap carries the server's
+      // coalesced-drop count (a drained per-subscriber accumulator on the
+      // gateway SSE manager). Seq values the server already accounted for are
+      // credited against the skip: not latched as a detection, not counted as
+      // missing output. Only the un-credited remainder latches and accumulates.
       let gapDetected = prevGapDetected
       let gapMissing = prevGapMissing
       if (!final && prevSeq >= 0 && seq > prevSeq + 1) {
-        gapDetected = true
-        gapMissing += seq - (prevSeq + 1)
+        const gap = seq - (prevSeq + 1)
+        const credit = typeof droppedCount === 'number' ? Math.min(gap, droppedCount) : 0
+        const missing = gap - credit
+        if (missing > 0) {
+          gapDetected = true
+          gapMissing += missing
+        }
       }
 
       let nextText = prevText
