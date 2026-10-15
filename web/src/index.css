@@ -245,6 +245,13 @@
   background: rgba(0, 96, 100, 0.1);
 }
 
+.run-status.status-unknown {
+  background: transparent;
+  color: var(--color-warning);
+  border-color: var(--color-warning);
+  border-style: dashed;
+}
+
 .run-status.status-waiting-for-approval {
   background: rgba(255, 193, 7, 0.1);
   color: var(--color-warning);
