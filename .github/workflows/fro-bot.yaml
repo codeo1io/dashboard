@@ -266,9 +266,10 @@ jobs:
     # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
     # at the rm-139 Node-26 window (2026-10-28).
     runs-on: ubuntu-24.04
-    # rm-603 (2026-10-04): bounded so a wedged agent run can never hold a runner
-    # indefinitely. This workflow is disabled_manually (no FRO_BOT_PAT), so its
-    # own history cannot size the cap: last pre-disable runs (2026-09-16..18)
+    # rm-603 (2026-10-04; state re-verified 2026-10-15): bounded so a wedged
+    # agent run can never hold a runner indefinitely. Scheduled runs self-skip
+    # while FRO_BOT_PAT is absent (gate below), so this workflow's own history
+    # cannot size the cap: the last runs that reached the job (2026-09-16..18)
     # died in <=35s at input validation. Sized by role-analog instead — this is
     # an agent-driven job like main.yaml's Conductor jobs (self-kill at 20;
     # only the lint-validation job gets 35 for its poll window) — 20 minutes.
@@ -281,6 +282,9 @@ jobs:
     # the secrets nor env context is available there — actionlint rejects the
     # whole workflow file) to job-level env + per-step if, mirroring release.yaml's
     # HAS_RELEASE_APP contract.
+    # 2026-10-15: live state re-verified — the workflow is `active` (the
+    # 2026-09-19-era disabled_manually claim no longer holds) and the secret is
+    # still absent, so scheduled runs take the skip-with-warning path below.
     env:
       HAS_FRO_BOT_PAT: ${{ secrets.FRO_BOT_PAT != '' }}
     if: >-
@@ -316,8 +320,8 @@ jobs:
         if: github.event_name == 'schedule' && env.HAS_FRO_BOT_PAT != 'true'
         run: >-
           echo "::warning title=Fro Bot skipped::FRO_BOT_PAT is not configured in
-          this repository — skipping the scheduled run. Provision the secret (and
-          re-enable this workflow) to restore the daily cron."
+          this repository — skipping the scheduled run. Provision the secret to
+          restore the daily cron (the workflow itself is active)."
 
       - name: Checkout repository
         if: github.event_name != 'schedule' || env.HAS_FRO_BOT_PAT == 'true'

@@ -91,10 +91,14 @@ view of Fro Bot's cross-repo footprint.
   workflow now sets `branch-pr` for those triggers; verify delivery by confirming a
   fro-bot-authored PR exists, not by reading run status. See
   `docs/solutions/workflow-issues/workflow-output-mode-auto-discarded-agent-fixes-2026-08-31.md`.
-- The `Fro Bot` workflow on this fork is `disabled_manually` (verified 2026-09-19):
-  codeo1io/dashboard has no `FRO_BOT_PAT` secret, so the daily cron would fail on
-  every run. Re-enabling it without provisioning that secret resurrects the failing
-  cron — check `gh workflow list` state and secret presence before flipping it back on.
+- The `Fro Bot` workflow's scheduled runs self-skip while `FRO_BOT_PAT` is absent:
+  codeo1io/dashboard has no `FRO_BOT_PAT` secret (`gh secret list` empty,
+  re-verified 2026-10-15), so the job-level `HAS_FRO_BOT_PAT` gate turns each
+  scheduled run into a skip-with-warning instead of a token-validation failure.
+  The workflow itself is `active` (re-verified 2026-10-15 — an earlier note here
+  claimed `disabled_manually` as of 2026-09-19; that state no longer holds).
+  Provision the secret before expecting scheduled runs to do work, and check
+  `gh workflow list` state and secret presence before changing either.
 
 ## Cloned Dependency Source
 
