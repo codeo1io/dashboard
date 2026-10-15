@@ -30,7 +30,65 @@ describe('monitoring API', () => {
         expect(res.data.repos).toHaveLength(0)
         expect(res.data.staleBanner).toBe(false)
         expect(res.data.driftCount).toBe(0)
+        // rm-1447: the annotation is optional on the wire — absence parses to null.
+        expect(res.data.platformStatus).toBeNull()
       }
+    })
+
+    it('rm-1447: parses a present platform-status annotation', async () => {
+      const mockData = {
+        repos: [],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: 1742000000000,
+        platformStatus: {
+          overall: 'minor',
+          overallDescription: 'Investigating Actions run creation delays',
+          actions: 'major_outage',
+          fetchedAt: 1742000001000,
+        },
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+      const res = await fetchMonitoring()
+      expect(res.ok).toBe(true)
+      if (res.ok) {
+        expect(res.data.platformStatus).toEqual(mockData.platformStatus)
+      }
+    })
+
+    it('rm-1447: explicit null platformStatus parses to null (fail-open absence)', async () => {
+      const mockData = {
+        repos: [],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+        platformStatus: null,
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+      const res = await fetchMonitoring()
+      expect(res.ok).toBe(true)
+      if (res.ok) {
+        expect(res.data.platformStatus).toBeNull()
+      }
+    })
+
+    it('rm-1447: malformed platformStatus fails closed as contract-drift', async () => {
+      const mockData = {
+        repos: [],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+        platformStatus: {overall: 42, actions: 'mostly-fine'},
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+      const res = await fetchMonitoring()
+      expect(res).toEqual({ ok: false, reason: 'contract-drift' })
     })
 
     it('rm-273: 401 maps to unauthenticated, not network (session expiry is not a transport failure)', async () => {

@@ -3042,3 +3042,80 @@ describe('rm-151 — denylist secondary guard accepts bigint-widened database id
     expect(serialized).not.toContain('private-org')
   })
 })
+
+// ---------------------------------------------------------------------------
+// rm-1447: platform-status annotation (once-per-cycle, fail-open, serve-time)
+// ---------------------------------------------------------------------------
+
+describe('aggregator — rm-1447 platform status annotation', () => {
+  const FAKE_STATUS = {
+    overall: 'minor' as const,
+    overallDescription: 'Investigating Actions run creation delays',
+    actions: 'major_outage' as const,
+    fetchedAt: 1_700_000_123_456,
+  }
+
+  it('a successful fetch annotates the served snapshot, once per refresh cycle', async () => {
+    const platformStatusFetch = vi.fn().mockResolvedValue(FAKE_STATUS)
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, makeDeps({platformStatusFetch}))
+
+    // Before any cycle: no annotation key at all (hermetic default shape).
+    expect('platformStatus' in agg.getSnapshot()).toBe(false)
+
+    await agg.refresh()
+    expect(platformStatusFetch).toHaveBeenCalledTimes(1)
+    expect(agg.getSnapshot().platformStatus).toEqual(FAKE_STATUS)
+
+    await agg.refresh()
+    expect(platformStatusFetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('a null fetch clears the annotation (a stale platform verdict never outlives its feed)', async () => {
+    const platformStatusFetch = vi.fn()
+      .mockResolvedValueOnce(FAKE_STATUS)
+      .mockResolvedValueOnce(null)
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, makeDeps({platformStatusFetch}))
+
+    await agg.refresh()
+    expect(agg.getSnapshot().platformStatus).toEqual(FAKE_STATUS)
+
+    await agg.refresh()
+    expect('platformStatus' in agg.getSnapshot()).toBe(false)
+  })
+
+  it('a throwing fetch never breaks the cycle — annotation absent, snapshot still fresh', async () => {
+    const platformStatusFetch = vi.fn().mockRejectedValue(new Error('status feed exploded'))
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, makeDeps({platformStatusFetch}))
+
+    await expect(agg.refresh()).resolves.toBeUndefined()
+    expect(agg.getSnapshot().staleBanner).toBe(false)
+    expect('platformStatus' in agg.getSnapshot()).toBe(false)
+  })
+
+  it('absent dep → the aggregator never fetches platform status (hermetic default; server.ts wires production)', async () => {
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, makeDeps())
+
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+    // The key is ABSENT (not null-valued): existing snapshot-shape consumers
+    // (toEqual stubs, persisted snapshots) stay byte-identical.
+    expect('platformStatus' in snap).toBe(false)
+    expect(snap.repos).toEqual([])
+    expect(snap.staleBanner).toBe(false)
+  })
+
+  it('the annotation rides fail-closed cold-start serves too (walk failing does not hide platform truth)', async () => {
+    const platformStatusFetch = vi.fn().mockResolvedValue(FAKE_STATUS)
+    // Enumeration failure → fail-closed serve (stale banner, no repo data).
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, makeDeps({
+      platformStatusFetch,
+      enumerate: vi.fn().mockRejectedValue(new Error('github dark')),
+    }))
+
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+    expect(snap.staleBanner).toBe(true)
+    expect(snap.repos).toEqual([])
+    expect(snap.platformStatus).toEqual(FAKE_STATUS)
+  })
+})

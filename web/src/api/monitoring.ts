@@ -30,12 +30,33 @@ export interface MonitoringRepo {
   readonly status: MonitoringRepoStatus
 }
 
+/** Overall platform indicator from the githubstatus feed ('unknown' = unrecognized/absent). */
+export type PlatformIndicator = 'none' | 'minor' | 'major' | 'critical' | 'maintenance' | 'unknown'
+
+/** Actions component status from the githubstatus feed. */
+export type PlatformComponentStatus =
+  | 'operational'
+  | 'degraded_performance'
+  | 'partial_outage'
+  | 'major_outage'
+  | 'under_maintenance'
+
+/** rm-1447: platform-availability annotation riding the monitoring DTO. */
+export interface PlatformStatusSummary {
+  readonly overall: PlatformIndicator
+  readonly overallDescription: string
+  readonly actions: PlatformComponentStatus | null
+  readonly fetchedAt: number
+}
+
 export interface MonitoringData {
   readonly repos: readonly MonitoringRepo[]
   readonly staleBanner: boolean
   readonly driftCount: number
   readonly enumerationIncomplete: number | null
   readonly refreshedAt: number | null
+  /** rm-1447: null when the server could not fetch the feed (fail-open both directions). */
+  readonly platformStatus: PlatformStatusSummary | null
 }
 
 export type FetchMonitoringResult =
@@ -56,6 +77,36 @@ function parseFailingCheckDetail(item: unknown): FailingCheckDetail | null {
 }
 
 const ROLLUP_STATES: readonly string[] = ['green', 'red', 'pending', 'unknown']
+
+const PLATFORM_INDICATORS: readonly string[] = ['none', 'minor', 'major', 'critical', 'maintenance', 'unknown']
+
+const PLATFORM_COMPONENT_STATUSES: readonly string[] = [
+  'operational',
+  'degraded_performance',
+  'partial_outage',
+  'major_outage',
+  'under_maintenance',
+]
+
+/**
+ * rm-1447: strict parse of the optional platform annotation. The server
+ * CLAMPS the third-party vocabulary ('unknown'/null holes) before emitting,
+ * so a value outside these closed sets is genuine contract drift.
+ */
+function parsePlatformStatus(item: unknown): PlatformStatusSummary | null {
+  if (!isPlainObject(item)) return null
+  const {overall, overallDescription, actions, fetchedAt} = item
+  if (typeof overall !== 'string' || !PLATFORM_INDICATORS.includes(overall)) return null
+  if (typeof overallDescription !== 'string') return null
+  if (actions !== null && (typeof actions !== 'string' || !PLATFORM_COMPONENT_STATUSES.includes(actions))) return null
+  if (typeof fetchedAt !== 'number') return null
+  return {
+    overall: overall as PlatformIndicator,
+    overallDescription,
+    actions: actions as PlatformComponentStatus | null,
+    fetchedAt,
+  }
+}
 
 function parseRepo(item: unknown): MonitoringRepo | null {
   if (!isPlainObject(item)) return null
@@ -137,6 +188,14 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
     if (data.refreshedAt !== null && typeof data.refreshedAt !== 'number') {
       return {ok: false, reason: 'contract-drift'}
     }
+    // rm-1447: the platform annotation is OPTIONAL — absent/null is the
+    // fail-open shape; present-but-malformed is contract drift.
+    let platformStatus: PlatformStatusSummary | null = null
+    if (data.platformStatus !== null && data.platformStatus !== undefined) {
+      const parsed = parsePlatformStatus(data.platformStatus)
+      if (parsed === null) return {ok: false, reason: 'contract-drift'}
+      platformStatus = parsed
+    }
 
     const repos: MonitoringRepo[] = []
     for (const item of data.repos) {
@@ -153,6 +212,7 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
         driftCount: data.driftCount,
         enumerationIncomplete: data.enumerationIncomplete,
         refreshedAt: data.refreshedAt,
+        platformStatus,
       },
     }
   } catch (err) {
