@@ -473,9 +473,12 @@ export interface DashboardAppConfig {
   fixtureBindHost?: string | undefined
   /**
    * Root directory for SPA static assets (index.html, /assets/*, /icon-*,
-   * /manifest.webmanifest, /sw.js, /registerSW.js).
+   * /manifest.webmanifest, /sw.js).
    * If undefined, reads from DASHBOARD_WEB_DIST env, defaulting to './web/dist'.
    * Set to './web/dist-fixture' for local fixture verification.
+   * /registerSW.js is no longer emitted (rm-138: injectRegister:false in
+   * web/vite.config.ts) — its route below is a public legacy-404 for shells
+   * cached before that change.
    */
   webDistRoot?: string | undefined
   /**
@@ -850,6 +853,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     path === '/manifest.webmanifest' ||
     path.startsWith('/icon-') ||
     path === '/sw.js' ||
+    // rm-138 legacy route: registerSW.js is no longer emitted (injectRegister:
+    // false in web/vite.config.ts); a shell cached before that change may still
+    // fetch it, and it must stay public so the miss is a clean 404, never an
+    // auth redirect.
     path === '/registerSW.js' ||
     // Public privacy policy — a compliance document, unconditional in every
     // deployment posture (not gated behind operatorUiEnabled, the fixture
@@ -1279,9 +1286,19 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   })
   app.use('/manifest.webmanifest', serveStatic({root: webDistRoot}))
 
-  // ── PWA service worker + registration helper ──────────────────────────────
-  // /sw.js and /registerSW.js must be served at root scope so the SW covers the
-  // entire origin. CSP is removed from /sw.js by the pre-secureHeaders middleware.
+  // ── PWA service worker + (legacy) registration helper ─────────────────
+  // /sw.js must be served at root scope so the SW covers the entire origin;
+  // CSP is removed from it by the pre-secureHeaders middleware above. It stays
+  // reachable for previously-registered clients — the kill-switch SW
+  // (web/src/sw.ts) purges caches and unregisters itself on activate.
+  // rm-138 (2026-10-15): the build no longer emits registerSW.js (web/
+  // vite.config.ts injectRegister:false — production src has zero
+  // virtual:pwa-register importers, so the per-visit registration was a
+  // vestige that re-triggered kill-switch churn and raced Notifications push
+  // subscriptions against a registration that dies milliseconds after load).
+  // This route deliberately REMAINS as a public legacy-404: shells cached
+  // before the change may still request it, and the wrapper below keeps the
+  // 404 un-cached (no-store family) so the miss can never be pinned.
   app.use('/sw.js', serveStatic({root: webDistRoot}))
 
   app.use('/registerSW.js', async (c, next) => {

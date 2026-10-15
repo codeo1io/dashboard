@@ -5,7 +5,8 @@
  * - CSP header present on responses with script-src 'self' and no 'unsafe-inline'
  * - GET /static/operator.css → 200 with CSS body + correct content-type, no auth required
  * - When operatorUiEnabled=false: /static/operator.css is not served
- * - PWA SW assets: /sw.js + /registerSW.js served with correct MIME + no-cache, public pre-auth
+ * - PWA SW assets: /sw.js served with correct MIME + no-store, public pre-auth;
+ *   /registerSW.js is a public legacy-404 (no longer emitted — rm-138)
  * - PWA manifest: /manifest.webmanifest served as application/manifest+json, public pre-auth
  * - CSP on /sw.js: no page CSP applied (workers don't inherit page CSP)
  */
@@ -91,10 +92,13 @@ async function authedGet(app: Awaited<ReturnType<typeof buildTestApp>>, path: st
 // ---------------------------------------------------------------------------
 // PWA SW asset serving — /registerSW.js
 // ---------------------------------------------------------------------------
-// NOTE: vite-plugin-pwa only emits registerSW.js when using auto-register mode.
-// Since the app uses useRegisterSW() in a component (ReloadPrompt), the
-// registration code is bundled into the main JS chunk and registerSW.js is NOT
-// emitted. The route remains in isPublicPath for forward-compatibility.
+// rm-138 (2026-10-15): web/vite.config.ts sets injectRegister:false, so the
+// build emits NO registerSW.js and injects no register-sw <script> tag into
+// index.html (production src has zero virtual:pwa-register importers —
+// ReloadPrompt is a no-op; only test mocks import the virtual module). The
+// route remains a public legacy-404 (src/server.ts): shells cached before the
+// change may still fetch it, and the miss is 404 + no-store so it is never
+// pinned and never an auth redirect.
 
 // ---------------------------------------------------------------------------
 // PWA manifest serving — /manifest.webmanifest
@@ -127,7 +131,8 @@ async function authedGet(app: Awaited<ReturnType<typeof buildTestApp>>, path: st
 //
 // The server must read DASHBOARD_WEB_DIST (defaulting to ./web/dist) and use it
 // for all SPA static asset routes: /, /assets/*, /icon-*, /manifest.webmanifest,
-// /sw.js, /registerSW.js, and the missing-index warning.
+// /sw.js, and the missing-index warning (/registerSW.js is an rm-138
+// legacy-404 now — its route still honors DASHBOARD_WEB_DIST).
 //
 // Tests here verify:
 // 1. Default root is ./web/dist (production unchanged).
@@ -454,12 +459,29 @@ describe('PWA SW asset serving — /sw.js', () => {
   })
 })
 
-describe('PWA SW asset serving — /registerSW.js', () => {
-  it('GET /registerSW.js is in the public allowlist (no auth redirect)', async () => {
+describe('PWA SW asset serving — /registerSW.js (rm-138 legacy-404)', () => {
+  it('GET /registerSW.js returns 404 — the build no longer emits it (injectRegister:false)', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/registerSW.js')
+    expect(res.status).toBe(404)
+  })
+
+  it('GET /registerSW.js stays public (no auth redirect) for shells cached before rm-138', async () => {
     const app = await buildTestApp(false)
     const res = await app.request('/registerSW.js')
     expect(res.status).not.toBe(302)
     expect(res.status).not.toBe(401)
+  })
+
+  it('web/dist does not contain registerSW.js after pnpm build:web', async () => {
+    expect(existsSync(resolve(process.cwd(), 'web/dist/registerSW.js'))).toBe(false)
+  })
+
+  it('web/dist/index.html carries no vite-plugin-pwa register-sw script tag', async () => {
+    const fs = await import('node:fs/promises')
+    const html = await fs.readFile('web/dist/index.html', 'utf8')
+    expect(html).not.toContain('registerSW.js')
+    expect(html).not.toContain('vite-plugin-pwa:register-sw')
   })
 })
 
@@ -1155,13 +1177,15 @@ describe('rm-498 — % rejection compatibility (allowPercentInPath stays unset)'
 // Vite content-hashes everything under /assets/* (index-Dy_WXR3M.js style), so
 // a given URL's bytes can never change: RFC 8246 (HTTP Immutable Responses)
 // and the MDN Cache-Control `immutable` entry make a one-year public lifetime
-// sound. Unhashed surfaces (/icon-*, manifest.webmanifest, sw.js,
-// /registerSW.js) must revalidate on every load instead. sw.js and
-// /registerSW.js already carried a no-cache,no-store policy before rm-690
-// (src/server.ts pre-secureHeaders middleware and the registerSW wrapper)
-// — those cases pin the pre-existing behavior; the /assets/*, /icon-* and
+// sound. Unhashed surfaces (/icon-*, manifest.webmanifest, sw.js) must
+// revalidate on every load instead. sw.js and /registerSW.js already carried
+// a no-cache,no-store policy before rm-690 (src/server.ts pre-secureHeaders
+// middleware and the registerSW wrapper) — those cases pin the pre-existing
+// behavior; the /assets/*, /icon-* and
 // manifest cases were RED first (headers absent) and went green with the
-// rm-690 middleware.
+// rm-690 middleware. rm-138 note: registerSW.js is no longer emitted; its
+// wrapper now pins the no-store family on the legacy 404 so the miss is
+// never cached.
 
 /** First content-hashed file in web/dist/assets matching Vite's -<hash>.<ext>. */
 function firstHashedAsset(): string {
@@ -1209,10 +1233,10 @@ describe('rm-690 — Cache-Control policy for static surfaces', () => {
     expect(res.headers.get('cache-control')).toBe('no-cache, no-store, must-revalidate')
   })
 
-  it('GET /registerSW.js keeps its no-cache,no-store policy (pinned pre-rm-690 behavior)', async () => {
+  it('GET /registerSW.js legacy-404 keeps the no-cache,no-store policy (rm-138; a 404 must never be pinned)', async () => {
     const app = await buildTestApp(false)
     const res = await app.request('/registerSW.js')
-    expect(res.status).toBe(200)
+    expect(res.status).toBe(404)
     expect(res.headers.get('cache-control')).toBe('no-cache, no-store, must-revalidate')
   })
 })
