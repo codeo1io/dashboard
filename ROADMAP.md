@@ -181,7 +181,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### rm-779
-- id: `rm-779` | track: reliability | priority: 72.0 | status: in_progress
+- id: `rm-779` | track: reliability | priority: 72.0 | status: implemented (restored 2026-10-15 at the integrate of run a794d381b4f0, conflict case 41fdd6db8ec7—the cve-tripwire.yaml ARG-derived pin cure landed 2026-10-10 in candidate 43af4cf and was dropped as adoption collateral by the October upstream-adoption lineage; this merge restores the workflow whole: the resolve step derives the pin from Dockerfile's `ARG NODE_IMAGE=node:24-trixie-slim@sha256:173f1258…` line and fails closed on a missing digest pin, so the born-broken `node:24-slim` literal desync class is closed; the rm-188 runs-on fold rode the same restoration, leaving zero `ubuntu-latest` across .github)
 - acceptance: 
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -591,7 +591,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### codeql-action pin refresh to current v4.38.x — was the lone stale action pin
-- id: `rm-650` | track: reliability | priority: 40.0 | status: in_progress
+- id: `rm-650` | track: reliability | priority: 40.0 | status: implemented (codeql-action at 24c5418 = v4.38.3 on all four sites—digest landed via the October upstream adoption, precise-version comment unified at the 2026-10-15 integrate of run a794d381b4f0, conflict case 41fdd6db8ec7)
 - acceptance: 
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -736,7 +736,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### ubuntu-latest alias-flip guard for non-containerized jobs
-- id: `rm-188` | track: reliability | priority: 33.0 | status: in_progress
+- id: `rm-188` | track: reliability | priority: 33.0 | status: implemented (the last unpinned site—cve-tripwire.yaml's job—rode the 2026-10-15 restoration of the workflow at the integrate of run a794d381b4f0, conflict case 41fdd6db8ec7; `git grep 'runs-on:' .github` now shows ubuntu-24.04 only, zero ubuntu-latest, per the rm-779 fold comment carried in the restored file)
 - acceptance: 
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
