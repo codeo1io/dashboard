@@ -181,7 +181,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### rm-779
-- id: `rm-779` | track: reliability | priority: 72.0 | status: in_progress
+- id: `rm-779` | track: reliability | priority: 72.0 | status: implemented (restored 2026-10-15 at the integrate of run a794d381b4f0, conflict case bdbb315b50fe—run a794d381's fix (derive the pinned NODE_IMAGE from the Dockerfile's `ARG NODE_IMAGE=<image>@sha256:<64-hex>` via a single sed, fail-closed when no pin matches, never a hardcoded workflow literal) landed 2026-10-10, then the whole cve-tripwire.yaml was dropped as adoption collateral by the October upstream-adoption lineage; this merge restores the workflow with the ARG derivation intact, and the resolve re-sim picks up the current Dockerfile trixie digest (173f1258…) and fails closed on a pin-less Dockerfile)
 - acceptance: 
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -591,7 +591,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### codeql-action pin refresh to current v4.38.x — was the lone stale action pin
-- id: `rm-650` | track: reliability | priority: 40.0 | status: in_progress
+- id: `rm-650` | track: reliability | priority: 40.0 | status: implemented (convergent 2026-10-15 at the integrate of run a794d381b4f0—the run re-pinned to v4.38.3 and the 2026-10-23/25 upstream adoptions landed the same digest 24c5418 at all four sites; comment normalized to the fork's exact-version convention `# v4.38.3`; codeql-action is no longer the stale pin)
 - acceptance: 
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -736,7 +736,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### ubuntu-latest alias-flip guard for non-containerized jobs
-- id: `rm-188` | track: reliability | priority: 33.0 | status: in_progress
+- id: `rm-188` | track: reliability | priority: 33.0 | status: implemented (fold completed 2026-10-10 by rm-779 and restored 2026-10-15 at the integrate of run a794d381b4f0—cve-tripwire.yaml was the last ubuntu-latest site and now pins ubuntu-24.04 like the rest; the merged tree is 20/20 runs-on ubuntu-24.04 with zero alias-flip exposure; re-evaluation rides the rm-139 Node-26 window 2026-10-28)
 - acceptance: 
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -1116,7 +1116,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Re-pin pnpm/action-setup v6.0.10 → v6.1.0 at its three workflow sites
-- id: `rm-761` | track: reliability | priority: 20.0 | status: in_progress
+- id: `rm-761` | track: reliability | priority: 20.0 | status: implemented (restored 2026-10-15 at the integrate of run a794d381b4f0—the v6.1.0 re-pin (ea17c68) landed 2026-10-09 and was overwritten to v6.0.10 (0977fd9) as adoption collateral by the October upstream-adoption lineage; this merge restores v6.1.0 — verified still the newest tag — at all three sites: actions/setup/action.yaml, audit.yaml, visual.yaml)
 - acceptance: 
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
