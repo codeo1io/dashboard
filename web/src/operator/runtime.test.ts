@@ -24,7 +24,8 @@
  */
 
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
-import {PINNED_CONTRACT_VERSION} from '../../../public/operator-stream.js'
+import {PINNED_CONTRACT_VERSION, type RunSummaryStatus} from '../../../public/operator-stream.js'
+import {VALID_RUN_SUMMARY_STATUSES} from '../../../public/operator-run-index.js'
 import {
   createOperatorRuntime,
   discoverCardStreamTargets,
@@ -32,6 +33,7 @@ import {
   sanitizeRunIdFromHash,
   type OperatorRuntimeHandle,
   type OperatorRuntimeOptions,
+  STATUS_CLASS_TOKENS
 } from './runtime.ts'
 
 // ---------------------------------------------------------------------------
@@ -841,17 +843,30 @@ describe('defaultRuntimeLoader — question region and summary status wiring', (
     runtime.cleanup()
   })
 
-  it('a status class outside the run-summary allowlist is never passed as summaryStatus', async () => {
-    document.body.innerHTML = `${cardHtml('run-q-wait', 'status-waiting-for-approval')}${cardHtml('run-q-evil', 'status-evil')}${cardHtml('run-q-none', '')}<div data-role="stream-status"></div>`
+  it('a waiting status class passes through as summaryStatus, blocked and unknown tokens never do', async () => {
+    document.body.innerHTML = `${cardHtml('run-q-wait', 'status-waiting-for-approval')}${cardHtml('run-q-block', 'status-blocked')}${cardHtml('run-q-evil', 'status-evil')}${cardHtml('run-q-none', '')}<div data-role="stream-status"></div>`
     const {runtime, initCalls, select} = await mountLoader()
 
     select('run-q-wait')
+    select('run-q-block')
     select('run-q-evil')
     select('run-q-none')
 
-    expect(initCalls).toHaveLength(3)
-    for (const call of initCalls) expect('summaryStatus' in call.opts).toBe(false)
+    expect(initCalls).toHaveLength(4)
+    const [waitCall, blockCall, evilCall, noneCall] = initCalls
+    expect(waitCall?.opts.summaryStatus).toBe('waiting_for_approval')
+    for (const call of [blockCall, evilCall, noneCall]) expect(call && 'summaryStatus' in call.opts).toBe(false)
     runtime.cleanup()
+  })
+
+  it('the summary-status mirror equals the run-index allowlist exactly (rm-884 single-sourcing)', () => {
+    // STATUS_CLASS_TOKENS mirrors public/operator-run-index.js VALID_RUN_SUMMARY_STATUSES;
+    // the root guard (test/operator-contract-allowlist-guard.test.ts) locks the run index
+    // to the vendored contract's RUN_SUMMARY_STATUSES, so this is the web-side leg of the
+    // same three-way lock — no surface can move alone.
+    expect(Object.keys(STATUS_CLASS_TOKENS).toSorted()).toEqual([...VALID_RUN_SUMMARY_STATUSES].toSorted())
+    expect(Object.keys(STATUS_CLASS_TOKENS)).toHaveLength(VALID_RUN_SUMMARY_STATUSES.size)
+    expect(Object.values(STATUS_CLASS_TOKENS).includes('status-blocked')).toBe(false)
   })
 
   it('card switch A → B → A clears A’s stale question DOM on re-attach', async () => {
@@ -1029,6 +1044,8 @@ describe('initOperatorStream — close() teardown behavior', () => {
     expect(signals[0]?.aborted).toBe(false)
     expect(vi.getTimerCount()).toBeGreaterThan(0)
 
+    const stateAtClose = noticeEl.dataset.connectionState
+
     handle.close()
     expect(signals[0]?.aborted).toBe(true)
     expect(vi.getTimerCount()).toBe(0)
@@ -1037,7 +1054,9 @@ describe('initOperatorStream — close() teardown behavior', () => {
     await vi.advanceTimersByTimeAsync(120_000)
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(vi.getTimerCount()).toBe(0)
-    expect(noticeEl.dataset.connectionState).toBeUndefined()
+    // The 1.11 initial paint may legitimately set 'connecting' before close(); the guard
+    // is that the late abort rejection repaints nothing afterwards.
+    expect(noticeEl.dataset.connectionState).toBe(stateAtClose)
   })
 
   it('close() clears a pending reconnect timer, so no further connection is opened', async () => {

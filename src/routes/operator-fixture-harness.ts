@@ -19,6 +19,7 @@ import {createHash} from 'node:crypto'
 import {Hono} from 'hono'
 import {FIXTURE_OPERATOR_PREFIX} from '../gateway/operator-fixture-routes.ts'
 import {
+  FIXTURE_APPROVAL_SCENARIO_ROWS,
   FIXTURE_CHECKOUT_SCENARIO_ROWS,
   FIXTURE_QUESTION_SCENARIO_ROWS,
   FIXTURE_SCENARIO_NAMES,
@@ -131,6 +132,7 @@ interface FixtureScenarioRow {
 const FIXTURE_SCENARIO_ROWS: readonly FixtureScenarioRow[] = [
   ...FIXTURE_CHECKOUT_SCENARIO_ROWS,
   ...FIXTURE_QUESTION_SCENARIO_ROWS,
+  ...FIXTURE_APPROVAL_SCENARIO_ROWS,
 ]
 
 const FIXTURE_SCENARIO_RUN_SUMMARIES: readonly RunSummary[] = FIXTURE_SCENARIO_ROWS.map((row, index) => {
@@ -146,13 +148,59 @@ const FIXTURE_SCENARIO_RUN_SUMMARIES: readonly RunSummary[] = FIXTURE_SCENARIO_R
   }
 })
 
-const FIXTURE_RUN_SUMMARIES: readonly RunSummary[] = [...FIXTURE_BASE_RUN_SUMMARIES, ...FIXTURE_SCENARIO_RUN_SUMMARIES]
+// One row whose status moves as the fixture session ages, so a collapsed card's badge can be watched changing
+// across the dashboard's 30-second list refresh. The phase is read from the session's age on each `GET /runs`
+// (and only there), and the row's stream, questions and approvals follow the phase last reported, so what the
+// list said and what the stream replays agree: running, then a question open, then finished after the snapshot
+// expired. Sessions have separate clocks but share the run's stream binding, so the last list fetched wins.
+// The row below is the static first phase; `GET /runs` swaps in the current one.
+const FIXTURE_TRANSITION_RUN_ID = 'run-fixture-index-transition-question'
+interface FixtureTransitionPhase {
+  readonly fromMs: number
+  readonly status: RunSummary['status']
+  readonly scenario: string
+}
+
+const FIXTURE_TRANSITION_FIRST_PHASE: FixtureTransitionPhase = {
+  fromMs: 0,
+  status: 'running',
+  scenario: FIXTURE_SCENARIO_NAMES.running_after_no_snapshot,
+}
+const FIXTURE_TRANSITION_PHASES: readonly FixtureTransitionPhase[] = [
+  FIXTURE_TRANSITION_FIRST_PHASE,
+  {fromMs: 15_000, status: 'waiting_for_question', scenario: FIXTURE_SCENARIO_NAMES.question_single},
+  {fromMs: 45_000, status: 'succeeded', scenario: FIXTURE_SCENARIO_NAMES.expired_completed_terminal_frame},
+]
+
+const FIXTURE_TRANSITION_RUN_SUMMARY: RunSummary = {
+  runId: FIXTURE_TRANSITION_RUN_ID,
+  repo: 'fixture-org/fixture-repo-2',
+  status: 'running',
+  // Older than every scenario row, so it sits last in the list.
+  createdAt: new Date(Date.UTC(2026, 5, 28, 9, 59, 59 - FIXTURE_SCENARIO_ROWS.length * 30)).toISOString().replace('.000Z', 'Z'),
+  updatedAt: new Date(Date.UTC(2026, 5, 28, 9, 59, 59 - FIXTURE_SCENARIO_ROWS.length * 30 + 15)).toISOString().replace('.000Z', 'Z'),
+}
+
+// For the "That run isn't in your recent runs." notice by hand: `run-fixture-missing-001` is a well-formed
+// run ID (it matches the jump and notification pattern `^[A-Za-z0-9_-]{1,128}$`) that no list contains and
+// no stream serves. A test pins that. Nothing here may ever add a row or a scenario for it.
+
+const FIXTURE_RUN_SUMMARIES: readonly RunSummary[] = [
+  ...FIXTURE_BASE_RUN_SUMMARIES,
+  ...FIXTURE_SCENARIO_RUN_SUMMARIES,
+  FIXTURE_TRANSITION_RUN_SUMMARY,
+]
+
+function transitionPhaseFor(ageMs: number): FixtureTransitionPhase {
+  return FIXTURE_TRANSITION_PHASES.findLast(phase => ageMs >= phase.fromMs) ?? FIXTURE_TRANSITION_FIRST_PHASE
+}
 
 // Run IDs bound to a specific stream scenario, distinct from the generic terminal_failure /
 // success default chosen by summary status. Extends the failed→scenario binding below.
 const RUN_ID_TO_SCENARIO: ReadonlyMap<string, string> = new Map([
   ['run-fixture-index-failed-reason-006', FIXTURE_SCENARIO_NAMES.terminal_failure_known_reason],
   ['run-fixture-index-failed-unknown-reason-007', FIXTURE_SCENARIO_NAMES.terminal_failure_unknown_reason],
+  [FIXTURE_TRANSITION_RUN_ID, FIXTURE_TRANSITION_FIRST_PHASE.scenario],
   ...FIXTURE_SCENARIO_ROWS.map((row, index): [string, string] => [FIXTURE_SCENARIO_RUN_SUMMARIES[index]?.runId ?? '', row.scenario]),
 ])
 
@@ -161,6 +209,7 @@ const idempotencyMap = new Map<string, string>() // `${sessionId}:${idemKey}` �
 const runScenarioMap = new Map<string, string>() // runId → scenarioName
 const runSessionMap = new Map<string, string>() // runId → owning fixtureSessionId (launched runs only)
 const validFixtureSessionIds = new Set<string>() // all session IDs minted by GET /session
+const sessionStartedAtMs = new Map<string, number>() // fixtureSessionId → when GET /session minted it
 
 // Position in a scenario's question script, per run. Cleared when the run's stream is opened, so
 // reloading or re-expanding a card replays the scenario from the start.
@@ -239,9 +288,9 @@ interface FixturePushRecord {
   endpoint: string
   keyVersion: string
   active: boolean
-  createdAt: string
-  updatedAt: string
-  inactiveReason?: string
+  createdAt: number
+  updatedAt: number
+  inactiveReason?: 'unsubscribed'
 }
 
 // Idempotency scoping mirrors POST /runs: `${sessionId}:${idemKey}` → record.
@@ -250,7 +299,7 @@ const pushIdempotencyMap = new Map<string, FixturePushRecord>()
 // session's browser. Overwritten on subscribe, marked inactive on unsubscribe.
 const pushSessionRecordMap = new Map<string, FixturePushRecord>()
 
-// Synthetic, never a real sha256 — deterministic per-endpoint fixture hash.
+// Hex sha256 of the endpoint, matching the gateway's opaque `endpointHash`.
 function fixtureEndpointHash(endpoint: string): string {
   return createHash('sha256').update(endpoint).digest('hex')
 }
@@ -343,6 +392,7 @@ export function buildFixtureHarnessRouter(): Hono {
     logger.debug('fixture-harness: GET /session', {status: 200})
     const fixtureSessionId = generateFixtureSessionId()
     validFixtureSessionIds.add(fixtureSessionId)
+    sessionStartedAtMs.set(fixtureSessionId, Date.now())
     const res = c.json({...FIXTURE_SESSION, fixtureMode: true, fixtureSessionId})
     setNoStore(res.headers)
     return res
@@ -381,8 +431,20 @@ export function buildFixtureHarnessRouter(): Hono {
       }
     }
 
+    // The transition row reports the phase this session has reached; a request with no session sees the first.
+    let runs = FIXTURE_RUN_SUMMARIES
+    if (requestSessionId !== undefined) {
+      const startedAt = sessionStartedAtMs.get(requestSessionId) ?? Date.now()
+      sessionStartedAtMs.set(requestSessionId, startedAt)
+      const phase = transitionPhaseFor(Date.now() - startedAt)
+      runScenarioMap.set(FIXTURE_TRANSITION_RUN_ID, phase.scenario)
+      runs = FIXTURE_RUN_SUMMARIES.map(summary =>
+        summary.runId === FIXTURE_TRANSITION_RUN_ID ? {...summary, status: phase.status} : summary,
+      )
+    }
+
     logger.debug('fixture-harness: GET /runs', {status: 200})
-    const res = c.json({runs: FIXTURE_RUN_SUMMARIES})
+    const res = c.json({runs})
     setNoStore(res.headers)
     return res
   })
@@ -773,7 +835,7 @@ export function buildFixtureHarnessRouter(): Hono {
       return res
     }
 
-    const now = new Date().toISOString()
+    const now = Date.now()
     const record: FixturePushRecord = {
       endpoint: body.endpoint,
       keyVersion: FIXTURE_VAPID_KEY_VERSION,
@@ -834,7 +896,7 @@ export function buildFixtureHarnessRouter(): Hono {
     const record = pushSessionRecordMap.get(requestSessionId)
     if (record !== undefined) {
       record.active = false
-      record.updatedAt = new Date().toISOString()
+      record.updatedAt = Date.now()
       record.inactiveReason = 'unsubscribed'
     }
 
@@ -844,8 +906,9 @@ export function buildFixtureHarnessRouter(): Hono {
     return res
   })
 
-  // GET /push/subscriptions — safe metadata only for the current fixture
-  // session's active record. Never the raw endpoint/keys.
+  // GET /push/subscriptions — the gateway list shape, `{subscriptions: [...]}`,
+  // holding safe metadata for the current fixture session's record. Never the
+  // raw endpoint/keys.
   router.get('/push/subscriptions', c => {
     const requestSessionId = extractRequestSessionId(c)
     if (requestSessionId === undefined) {
@@ -858,19 +921,23 @@ export function buildFixtureHarnessRouter(): Hono {
     const record = pushSessionRecordMap.get(requestSessionId)
     if (record === undefined) {
       logger.debug('fixture-harness: GET /push/subscriptions', {status: 200, errorClass: 'not-subscribed'})
-      const res = c.json({})
+      const res = c.json({subscriptions: []})
       setNoStore(res.headers)
       return res
     }
 
     logger.debug('fixture-harness: GET /push/subscriptions', {status: 200})
     const res = c.json({
-      endpointHash: fixtureEndpointHash(record.endpoint),
-      keyVersion: record.keyVersion,
-      active: record.active,
-      createdAt: record.createdAt,
-      updatedAt: record.updatedAt,
-      ...(record.inactiveReason === undefined ? {} : {inactiveReason: record.inactiveReason}),
+      subscriptions: [
+        {
+          endpointHash: fixtureEndpointHash(record.endpoint),
+          keyVersion: record.keyVersion,
+          active: record.active,
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+          ...(record.inactiveReason === undefined ? {} : {inactiveReason: record.inactiveReason}),
+        },
+      ],
     })
     setNoStore(res.headers)
     return res
@@ -885,6 +952,7 @@ export function resetFixtureHarnessForTesting(): void {
   runScenarioMap.clear()
   runSessionMap.clear()
   validFixtureSessionIds.clear()
+  sessionStartedAtMs.clear()
   pushIdempotencyMap.clear()
   pushSessionRecordMap.clear()
   cancelIdempotencyMap.clear()

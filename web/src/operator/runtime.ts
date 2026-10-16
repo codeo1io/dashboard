@@ -56,6 +56,9 @@ export function discoverCardStreamTargets(runId: string): {
   cancelEl: Element | null
   checkoutEl: Element | null
   questionsEl: Element | null
+  // The card's <time>, only while it is launch-seeded: the list takes it over on adoption.
+  timeEl: HTMLElement | null
+  waitingEl: Element | null
 } {
   const card = typeof document !== 'undefined'
     ? document.querySelector(`[data-run-id="${CSS.escape(runId)}"]`)
@@ -70,33 +73,44 @@ export function discoverCardStreamTargets(runId: string): {
     cancelEl: card?.querySelector('[data-role="run-cancel"]') ?? null,
     checkoutEl: card?.querySelector('[data-role="run-checkout-detail"]') ?? null,
     questionsEl: card?.querySelector('[data-role="run-questions"]') ?? null,
+    timeEl: card?.querySelector<HTMLElement>('[data-role="run-updated-at"][data-time-source="launch"]') ?? null,
+    waitingEl: card?.querySelector('[data-role="run-waiting"]') ?? null,
   }
 }
 
 /**
- * The run-list summary statuses the run index parser keeps (public/operator-run-index.js
- * VALID_RUN_SUMMARY_STATUSES). Stream-only statuses (blocked, waiting_for_*) are not summaries.
+ * Run-list summary status → hyphenated class token: a mirror of the run index parser's
+ * class writes (public/operator-run-index.js). Mirrored, not imported: this file only takes
+ * types from public/ — the run index is loaded at runtime from /static and must not be bundled
+ * a second time into the client. web/src/operator/runtime.test.ts pins the map against
+ * VALID_RUN_SUMMARY_STATUSES, and test/operator-contract-allowlist-guard.test.ts pins the run
+ * index against the vendored contract's RUN_SUMMARY_STATUSES — the three cannot drift silently.
+ *
+ * Stream-only statuses (blocked) are not summaries; the waiting pair joined the summary
+ * allowlist with operator contract 1.11.0 (rm-884).
  */
-const SUMMARY_STATUSES: ReadonlySet<RunSummaryStatus> = new Set<RunSummaryStatus>([
-  'queued',
-  'running',
-  'succeeded',
-  'failed',
-  'cancelled',
-])
+export const STATUS_CLASS_TOKENS = {
+  queued: 'status-queued',
+  running: 'status-running',
+  waiting_for_approval: 'status-waiting-for-approval',
+  waiting_for_question: 'status-waiting-for-question',
+  succeeded: 'status-succeeded',
+  failed: 'status-failed',
+  cancelled: 'status-cancelled',
+} as const satisfies Record<RunSummaryStatus, string>
 
-function isRunSummaryStatus(value: string): value is RunSummaryStatus {
-  return (SUMMARY_STATUSES as ReadonlySet<string>).has(value)
-}
+const STATUS_BY_CLASS_TOKEN: ReadonlyMap<string, RunSummaryStatus> = new Map(
+  (Object.entries(STATUS_CLASS_TOKENS) as [RunSummaryStatus, string][]).map(([status, token]) => [token, status]),
+)
 
 /**
  * The expanded card's run-list summary status, or undefined when the card has none to offer.
  *
- * Source: the card's run-status element carries a `status-<value>` class that the run index
- * writes only from its parsed summary (an allowlist-validated value) — no free text is read.
- * The token is re-checked against the same allowlist here, so anything else (the optimistic
- * `status-pending`, stream-only statuses, an unknown token) yields undefined. An optimistic
- * launch card carries no run-list summary yet, so it never offers one.
+ * Source: the card's run-status element carries the hyphenated class token the run index writes
+ * only from its parsed summary (an allowlist-validated value) — no free text is read. The token
+ * is mapped back through STATUS_CLASS_TOKENS, so anything else (an underscore token, the
+ * optimistic `status-pending`, stream-only statuses, an unknown token) yields undefined. An
+ * optimistic launch card carries no run-list summary yet, so it never offers one.
  *
  * Exported so tests exercise the exact production lookup.
  */
@@ -108,9 +122,8 @@ export function discoverCardSummaryStatus(runId: string): RunSummaryStatus | und
   const statusEl = card.querySelector('[data-role="run-status"]')
   if (statusEl === null) return undefined
   for (const token of Array.from(statusEl.classList)) {
-    if (!token.startsWith('status-')) continue
-    const status = token.slice('status-'.length)
-    if (isRunSummaryStatus(status)) return status
+    const status = STATUS_BY_CLASS_TOKEN.get(token)
+    if (status !== undefined) return status
   }
   return undefined
 }
@@ -329,20 +342,14 @@ async function defaultRuntimeLoader(opts?: {
       cancelEl?: Element | null
       checkoutEl?: Element | null
       questionsEl?: Element | null
+      timeEl?: HTMLElement | null
+      waitingEl?: Element | null
       summaryStatus?: RunSummaryStatus
       endpointBase?: string
       fixtureSessionId?: string
     }) => {close(): void}
   }
-  if (typeof streamMod.resetBootstrapState === 'function') {
-    streamMod.resetBootstrapState()
-  }
-  if (typeof streamMod.bootstrapOperatorStreams === 'function') {
-    const streamOpts = opts?.endpointBase !== undefined || opts?.fixtureSessionId !== undefined
-      ? {endpointBase: opts.endpointBase, fixtureSessionId: opts.fixtureSessionId}
-      : undefined
-    streamMod.bootstrapOperatorStreams(streamOpts)
-  }
+  // Streams attach on expand, launch, restore and jump only; the stream module's own bootstrap is not run here.
 
   const runIndexMod = await import(/* @vite-ignore */ _runIndexSpecifier) as {
     initOperatorRunIndex?: (opts?: {
@@ -375,7 +382,7 @@ async function defaultRuntimeLoader(opts?: {
 
     // Discover the per-card render targets so live output, coalescing hints,
     // approval prompts, and the approval badge all render — not just status.
-    const {outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, cancelEl, checkoutEl, questionsEl, gapEl} = discoverCardStreamTargets(runId)
+    const {outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, cancelEl, checkoutEl, questionsEl, gapEl, timeEl, waitingEl} = discoverCardStreamTargets(runId)
     const summaryStatus = discoverCardSummaryStatus(runId)
 
     // A re-expanded card must never keep question DOM from a previous attach: the stream and
@@ -396,6 +403,8 @@ async function defaultRuntimeLoader(opts?: {
         cancelEl,
         checkoutEl,
         questionsEl,
+        timeEl,
+        waitingEl,
         ...(summaryStatus === undefined ? {} : {summaryStatus}),
         endpointBase: opts?.endpointBase,
         fixtureSessionId: opts?.fixtureSessionId,
@@ -529,9 +538,6 @@ async function defaultRuntimeLoader(opts?: {
   return () => {
     // Close the stream handle owned by THIS runtime instance on cleanup.
     streamOwner.close()
-    if (typeof streamMod.resetBootstrapState === 'function') {
-      streamMod.resetBootstrapState()
-    }
     if (typeof launchMod.resetLaunchState === 'function') {
       launchMod.resetLaunchState()
     }
