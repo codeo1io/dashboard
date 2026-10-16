@@ -53,8 +53,19 @@ export {
   parseOperatorCheckoutProvenance,
   UPDATE_FAILURE_REASONS,
 } from './provenance.ts'
-export type {PushHandoffState, PushSubscriptionMetadata, VapidKeyResponse} from './push.ts'
-export {parsePushHandoffState, parsePushSubscriptionMetadata, parseVapidKeyResponse} from './push.ts'
+export type {
+  PushHandoffState,
+  PushInactiveReason,
+  PushSubscriptionListResponse,
+  PushSubscriptionMetadata,
+  VapidKeyResponse,
+} from './push.ts'
+export {
+  parsePushHandoffState,
+  parsePushSubscriptionListResponse,
+  parsePushSubscriptionMetadata,
+  parseVapidKeyResponse,
+} from './push.ts'
 export type {
   PendingQuestionDTO,
   PendingQuestionsResponse,

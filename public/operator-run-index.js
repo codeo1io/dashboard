@@ -16,10 +16,17 @@ export const FETCH_TIMEOUT_MS = 10_000
 const MAX_ID_LENGTH = 512
 const MAX_DATE_LENGTH = 128
 
-/** 'blocked' and 'waiting_for_approval' are stream-only — never produced by the run-summary projector. */
+/**
+ * Summary status vocabulary — the five lifecycle values plus the two waiting
+ * overlays (rm-874, the upstream waiting-overlay extension): a summary CAN carry
+ * waiting_for_approval / waiting_for_question. 'blocked' stays stream-only —
+ * never produced by the run-summary projector.
+ */
 export const VALID_RUN_SUMMARY_STATUSES = new Set([
   'queued',
   'running',
+  'waiting_for_approval',
+  'waiting_for_question',
   'succeeded',
   'failed',
   'cancelled',
@@ -29,6 +36,8 @@ export const VALID_RUN_SUMMARY_STATUSES = new Set([
 const STATUS_LABELS = {
   queued: 'Queued',
   running: 'Running',
+  waiting_for_approval: 'Waiting for approval',
+  waiting_for_question: 'Waiting for answer',
   succeeded: 'Succeeded',
   failed: 'Failed',
   cancelled: 'Cancelled',
