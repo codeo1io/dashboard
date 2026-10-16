@@ -27,6 +27,7 @@ import type {AggregatorSnapshot, SnapshotStore} from './aggregator.ts'
 import {Buffer} from 'node:buffer'
 import {readFileSync, renameSync, statSync, writeFileSync} from 'node:fs'
 import {logger} from '../logger.ts'
+import {PLATFORM_COMPONENT_STATUSES} from './platform-status.ts'
 
 /** 1 MiB — snapshots are repo-count * row-size bounded well under this. */
 const MAX_SNAPSHOT_BYTES = 1_048_576
@@ -59,6 +60,30 @@ function logPersistProblem(message: string, path: string, detail: unknown): void
 }
 
 /**
+ * rm-1500: shape-check the optional rm-1447 platform annotation. The
+ * aggregator annotates at serve time (aggregator.ts) and `persist()` never
+ * writes the field, so a well-formed cache carries no `platformStatus` at
+ * all — but a future writer or hand-repaired cache may carry it, and a
+ * mangled value must fail closed instead of rendering garbage. `overall` is
+ * any non-empty string because platform-status.ts's own fallback emits
+ * `'unknown'`; `actions` must be `null` or a known component status (its
+ * parser only ever emits that vocabulary); `fetchedAt` must be finite.
+ */
+function isValidPlatformStatusShape(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false
+  const annotation = value as {overall?: unknown; overallDescription?: unknown; actions?: unknown; fetchedAt?: unknown}
+  return (
+    typeof annotation.overall === 'string' &&
+    annotation.overall !== '' &&
+    typeof annotation.overallDescription === 'string' &&
+    (annotation.actions === null ||
+      (typeof annotation.actions === 'string' && PLATFORM_COMPONENT_STATUSES.includes(annotation.actions))) &&
+      typeof annotation.fetchedAt === 'number' &&
+      Number.isFinite(annotation.fetchedAt)
+  )
+}
+
+/**
  * Shallow shape validation for untrusted on-disk data. Checks the
  * AggregatorSnapshot top level and the per-repo identity/status keys the
  * board renders — anything malformed fails open to `null` rather than
@@ -80,6 +105,14 @@ function isValidSnapshotShape(value: unknown): value is AggregatorSnapshot {
   // the next refresh re-persists with the fields).
   if (snapshot.refreshDurationMs !== null && typeof snapshot.refreshDurationMs !== 'number') return false
   if (typeof snapshot.refreshDegraded !== 'boolean') return false
+  // rm-1500: the platform annotation is optional in persisted state (persist
+  // never writes it — see isValidPlatformStatusShape); absence stays valid,
+  // presence is shape-checked. `null` is NOT accepted: the field's type is
+  // `PlatformStatus | undefined` (the API DTO coalesces to `null` itself),
+  // so an on-disk `null` is off-type and fails closed.
+  if (snapshot.platformStatus !== undefined && !isValidPlatformStatusShape(snapshot.platformStatus)) {
+    return false
+  }
   for (const repo of snapshot.repos) {
     if (typeof repo !== 'object' || repo === null) return false
     const row = repo as Record<string, unknown>
