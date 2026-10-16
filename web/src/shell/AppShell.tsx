@@ -161,6 +161,16 @@ export function AppShell({
   const [installRestoreNonce, setInstallRestoreNonce] = useState(0)
   const logoutInFlight = useRef(false)
 
+  // Release version shown in the footer, baked at build time (release.yaml's
+  // compute-release-tag step → Dockerfile ARG DASHBOARD_VERSION →
+  // VITE_DASHBOARD_VERSION). 'dev' in local builds; a calver-shaped version
+  // links to this fork's release notes. Build-time constant only — never a
+  // gateway or operator-contract read.
+  const dashboardVersion: string = import.meta.env.VITE_DASHBOARD_VERSION || 'dev'
+  const releaseNotesUrl = /^\d{4}\.\d{2}\.\d+$/.test(dashboardVersion)
+    ? `https://github.com/codeo1io/dashboard/releases/tag/${dashboardVersion}`
+    : undefined
+
   useEffect(() => {
     applyTheme(theme)
     window.localStorage.setItem('fro-bot-theme', theme)
@@ -578,6 +588,19 @@ export function AppShell({
           >
             Restore notifications
           </button>
+          {releaseNotesUrl === undefined ? (
+            <span className="text-label text-text-muted">{dashboardVersion}</span>
+          ) : (
+            <a
+              href={releaseNotesUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={`Release notes for ${dashboardVersion}`}
+              className="text-label text-text-muted underline underline-offset-4 transition-colors duration-fast hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              {dashboardVersion}
+            </a>
+          )}
         </div>
       </footer>
 

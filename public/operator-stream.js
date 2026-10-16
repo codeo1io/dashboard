@@ -2627,6 +2627,15 @@ export function renderApprovalPrompt(prompt, runId, approvalClient, _onSettle) {
   el.setAttribute('role', 'region')
   el.setAttribute('aria-label', 'Approval prompt')
 
+  // #636 port: click containment. The prompt's Once/Always/Confirm/Cancel/Reject
+  // handlers must not bubble to the card's expand/collapse listener — the card
+  // collapsed and the decision never took effect from the operator's point of
+  // view. A container-level listener contains every click inside the prompt,
+  // including plain-text clicks, without touching each child control.
+  el.addEventListener('click', event => {
+    event.stopPropagation()
+  })
+
   // Permission label
   const permEl = document.createElement('div')
   permEl.className = 'approval-prompt-permission'
@@ -2895,6 +2904,13 @@ export function renderCancelControl(runId, cancelClient, onCancelDispatch) {
   el.className = 'run-cancel-control'
   el.setAttribute('role', 'group')
   el.setAttribute('aria-label', 'Cancel run')
+
+  // #636 port: same click containment as the approval prompt — arming,
+  // dismissing, or clicking the cancel control's status area must never toggle
+  // the run card it lives in.
+  el.addEventListener('click', event => {
+    event.stopPropagation()
+  })
 
   const statusEl = document.createElement('div')
   statusEl.className = 'run-cancel-status'

@@ -31,6 +31,13 @@ RUN pnpm install --frozen-lockfile
 # Copy web workspace source
 COPY web/ ./web/
 
+# #641 port: bake the release version into the client bundle (footer link).
+# ARG must be declared AFTER the COPY cache layers it does not affect — only
+# the build step below consumes it. release.yaml passes --build-arg
+# DASHBOARD_VERSION=<computed calver tag>; 'dev' is the local-build fallback.
+ARG DASHBOARD_VERSION=dev
+ENV VITE_DASHBOARD_VERSION=$DASHBOARD_VERSION
+
 # Build the SPA — emits hashed assets to web/dist/
 RUN pnpm build:web
 

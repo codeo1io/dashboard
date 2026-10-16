@@ -1375,3 +1375,328 @@ describe('URL-hash restore — expand sets hash, remount restores', () => {
     expect(window.location.hash).toBe('')
   })
 })
+
+// ---------------------------------------------------------------------------
+// scrollRunCardIntoView (upstream #634 port): a hash-restored (jumped-to) run
+// card scrolls fully into view, stays in view when its question/approval
+// region is revealed later, and every operator interaction cancels a pending
+// late reveal. Ordinary click-expands and launches never scroll.
+// ---------------------------------------------------------------------------
+
+describe('defaultRuntimeLoader — scrollRunCardIntoView (#634 port)', () => {
+  let scrolled: string[]
+  let scrollOptions: (ScrollIntoViewOptions | undefined)[]
+  let reducedMotion: boolean
+  let animationFrames: FrameRequestCallback[]
+  // Captured before any test switches to fake timers.
+  const realSetTimeout = globalThis.setTimeout.bind(globalThis)
+  const tick = () => new Promise<void>(resolve => {
+    realSetTimeout(resolve, 0)
+  })
+
+  beforeEach(() => {
+    scrolled = []
+    scrollOptions = []
+    reducedMotion = false
+    animationFrames = []
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn(() => ({matches: reducedMotion})),
+    })
+    Object.defineProperty(window, 'requestAnimationFrame', {
+      configurable: true,
+      value: vi.fn((callback: FrameRequestCallback) => {
+        animationFrames.push(callback)
+        return animationFrames.length
+      }),
+    })
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      writable: true,
+      value(this: HTMLElement, options?: ScrollIntoViewOptions) {
+        scrolled.push(this.dataset.runId ?? '')
+        scrollOptions.push(options)
+      },
+    })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.doUnmock('/static/operator-stream.js?manual=1')
+    vi.doUnmock('/static/operator-run-index.js?manual=1')
+    vi.doUnmock('/static/operator-launch.js?manual=1')
+    vi.restoreAllMocks()
+    document.body.replaceChildren()
+    window.location.hash = ''
+    Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView')
+    Reflect.deleteProperty(window, 'matchMedia')
+    Reflect.deleteProperty(window, 'requestAnimationFrame')
+  })
+
+  function cardHtml(runId: string): string {
+    return `
+      <div data-run-id="${runId}" data-expanded="true">
+        <span data-role="run-status" class="run-status status-running"></span>
+        <div data-role="run-questions" hidden></div>
+      </div>`
+  }
+
+  function cardEl(runId: string): HTMLElement {
+    return document.querySelector(`[data-run-id="${runId}"]`) as HTMLElement
+  }
+
+  async function mountLoader() {
+    const handle = {close: vi.fn()}
+    const initOperatorStream = vi.fn(() => handle)
+    let onSelectRun: ((runId: string) => void) | undefined
+    let onRestoreRun: ((runId: string, card: Element, status: string) => void) | undefined
+    let onRunLaunched: ((runId: string, card: HTMLElement) => void) | undefined
+    vi.doMock('/static/operator-stream.js?manual=1', () => ({
+      initOperatorStream,
+      bootstrapOperatorStreams: vi.fn(),
+      resetBootstrapState: vi.fn(),
+    }))
+    vi.doMock('/static/operator-run-index.js?manual=1', () => ({
+      initOperatorRunIndex: async (opts: {
+        onSelectRun?: (runId: string) => void
+        onRestoreRun?: (runId: string, card: Element, status: string) => void
+      }) => {
+        onSelectRun = opts.onSelectRun
+        onRestoreRun = opts.onRestoreRun
+      },
+      resetRunIndexState: vi.fn(),
+      markRunStreamAttached: vi.fn(),
+      markCardExpandedForLaunch: vi.fn(),
+    }))
+    vi.doMock('/static/operator-launch.js?manual=1', () => ({
+      initOperatorLaunch: async (opts?: {onRunLaunched?: (runId: string, card: HTMLElement) => void}) => {
+        onRunLaunched = opts?.onRunLaunched
+      },
+      resetLaunchState: vi.fn(),
+    }))
+    const runtime = createOperatorRuntime({container: makeContainer(), onStateChange: vi.fn()})
+    await vi.waitFor(() => {
+      expect(onSelectRun).toBeDefined()
+      expect(onRestoreRun).toBeDefined()
+      expect(onRunLaunched).toBeDefined()
+    })
+    return {
+      runtime,
+      select: (runId: string) => {
+        if (onSelectRun === undefined) throw new Error('onSelectRun not wired')
+        onSelectRun(runId)
+      },
+      restore: (runId: string) => {
+        if (onRestoreRun === undefined) throw new Error('onRestoreRun not wired')
+        onRestoreRun(runId, cardEl(runId), 'running')
+      },
+      launched: (runId: string) => {
+        if (onRunLaunched === undefined) throw new Error('onRunLaunched not wired')
+        onRunLaunched(runId, cardEl(runId))
+      },
+    }
+  }
+
+  async function flushAnimationFrames() {
+    for (let frame = 0; frame < 4; frame += 1) {
+      const callbacks = animationFrames.splice(0)
+      if (callbacks.length === 0) break
+      callbacks.forEach(callback => callback(0))
+      await tick()
+    }
+  }
+
+  function revealQuestions(runId: string) {
+    const questions = cardEl(runId).querySelector('[data-role="run-questions"]') as HTMLElement
+    questions.hidden = false
+    questions.append(document.createElement('p'))
+  }
+
+  it('scrolls a hash-restored run card fully into view (block start, smooth)', async () => {
+    document.body.innerHTML = cardHtml('run-s-a')
+    const mounted = await mountLoader()
+    mounted.restore('run-s-a')
+    expect(scrolled).toEqual(['run-s-a'])
+    expect(scrollOptions).toEqual([{block: 'start', behavior: 'smooth'}])
+    mounted.runtime.cleanup()
+  })
+
+  it('uses automatic scrolling when reduced motion is preferred', async () => {
+    reducedMotion = true
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      value: vi.fn(() => ({matches: reducedMotion})),
+    })
+    document.body.innerHTML = cardHtml('run-s-r')
+    const mounted = await mountLoader()
+    mounted.restore('run-s-r')
+    expect(scrolled).toEqual(['run-s-r'])
+    expect(scrollOptions).toEqual([{block: 'start', behavior: 'auto'}])
+    mounted.runtime.cleanup()
+  })
+
+  it('does not scroll when a card is expanded by an ordinary click', async () => {
+    document.body.innerHTML = cardHtml('run-s-c')
+    const mounted = await mountLoader()
+    mounted.select('run-s-c')
+    await tick()
+    expect(scrolled).toEqual([])
+    mounted.runtime.cleanup()
+  })
+
+  it('does not scroll when a run is launched (launch is not a jump)', async () => {
+    document.body.innerHTML = cardHtml('run-s-l')
+    const mounted = await mountLoader()
+    mounted.launched('run-s-l')
+    await tick()
+    expect(scrolled).toEqual([])
+    mounted.runtime.cleanup()
+  })
+
+  it('scrolls once more after the question region is revealed', async () => {
+    document.body.innerHTML = cardHtml('run-s-q')
+    const mounted = await mountLoader()
+    mounted.restore('run-s-q')
+    await tick()
+    expect(scrolled).toEqual(['run-s-q'])
+
+    revealQuestions('run-s-q')
+    await tick()
+    await flushAnimationFrames()
+
+    expect(scrolled).toEqual(['run-s-q', 'run-s-q'])
+    expect(scrollOptions).toEqual([
+      {block: 'start', behavior: 'smooth'},
+      {block: 'start', behavior: 'smooth'},
+    ])
+    mounted.runtime.cleanup()
+  })
+
+  it('cancels the late scroll when the user starts scrolling (touchmove)', async () => {
+    document.body.innerHTML = cardHtml('run-s-t')
+    const mounted = await mountLoader()
+    mounted.restore('run-s-t')
+    await tick()
+
+    window.dispatchEvent(new Event('touchmove'))
+    revealQuestions('run-s-t')
+    await tick()
+    await flushAnimationFrames()
+
+    expect(scrolled).toEqual(['run-s-t'])
+    mounted.runtime.cleanup()
+  })
+
+  it('expires the late reveal window after ten seconds', async () => {
+    document.body.innerHTML = cardHtml('run-s-x')
+    const mounted = await mountLoader()
+    vi.useFakeTimers({toFake: ['setTimeout', 'clearTimeout']})
+
+    mounted.restore('run-s-x')
+    await tick()
+    expect(scrolled).toEqual(['run-s-x'])
+
+    await vi.advanceTimersByTimeAsync(10_001)
+    revealQuestions('run-s-x')
+    await tick()
+    await flushAnimationFrames()
+
+    expect(scrolled).toEqual(['run-s-x'])
+    mounted.runtime.cleanup()
+  })
+
+  it('cancels the late reveal on pointerdown', async () => {
+    document.body.innerHTML = cardHtml('run-s-p')
+    const mounted = await mountLoader()
+    mounted.restore('run-s-p')
+    await tick()
+
+    window.dispatchEvent(new Event('pointerdown'))
+    revealQuestions('run-s-p')
+    await tick()
+    await flushAnimationFrames()
+
+    expect(scrolled).toEqual(['run-s-p'])
+    mounted.runtime.cleanup()
+  })
+
+  it('cancels the late reveal when an ordinary click selects another card', async () => {
+    document.body.innerHTML = cardHtml('run-s-1') + cardHtml('run-s-2')
+    const mounted = await mountLoader()
+    mounted.restore('run-s-1')
+    await tick()
+
+    mounted.select('run-s-2')
+    revealQuestions('run-s-1')
+    await tick()
+    await flushAnimationFrames()
+
+    expect(scrolled).toEqual(['run-s-1'])
+    mounted.runtime.cleanup()
+  })
+
+  it('cancels the late reveal when the restored card is collapsed', async () => {
+    document.body.innerHTML = cardHtml('run-s-o')
+    const mounted = await mountLoader()
+    mounted.restore('run-s-o')
+    await tick()
+
+    // Re-selecting the active stream run is the collapse toggle.
+    mounted.select('run-s-o')
+    cardEl('run-s-o').dataset.expanded = 'false'
+    revealQuestions('run-s-o')
+    await tick()
+    await flushAnimationFrames()
+
+    expect(scrolled).toEqual(['run-s-o'])
+    mounted.runtime.cleanup()
+  })
+
+  it('does not late-scroll a card that is collapsed before the question paints', async () => {
+    document.body.innerHTML = cardHtml('run-s-n')
+    const mounted = await mountLoader()
+    mounted.restore('run-s-n')
+    await tick()
+
+    cardEl('run-s-n').dataset.expanded = 'false'
+    revealQuestions('run-s-n')
+    await tick()
+    await flushAnimationFrames()
+
+    expect(scrolled).toEqual(['run-s-n'])
+    mounted.runtime.cleanup()
+  })
+
+  it('does not cancel the late reveal for an arrow key inside an input', async () => {
+    document.body.innerHTML = cardHtml('run-s-i')
+    const mounted = await mountLoader()
+    mounted.restore('run-s-i')
+    await tick()
+
+    const input = document.createElement('input')
+    cardEl('run-s-i').append(input)
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', {key: 'ArrowDown', bubbles: true, cancelable: true}),
+    )
+    revealQuestions('run-s-i')
+    await tick()
+    await flushAnimationFrames()
+
+    expect(scrolled).toEqual(['run-s-i', 'run-s-i'])
+    mounted.runtime.cleanup()
+  })
+
+  it('runtime cleanup cancels a pending late reveal', async () => {
+    document.body.innerHTML = cardHtml('run-s-k')
+    const mounted = await mountLoader()
+    mounted.restore('run-s-k')
+    await tick()
+    revealQuestions('run-s-k')
+    await tick()
+
+    mounted.runtime.cleanup()
+    await flushAnimationFrames()
+
+    expect(scrolled).toEqual(['run-s-k'])
+  })
+})
