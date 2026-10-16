@@ -91,10 +91,23 @@ view of Fro Bot's cross-repo footprint.
   workflow now sets `branch-pr` for those triggers; verify delivery by confirming a
   fro-bot-authored PR exists, not by reading run status. See
   `docs/solutions/workflow-issues/workflow-output-mode-auto-discarded-agent-fixes-2026-08-31.md`.
-- The `Fro Bot` workflow on this fork is `disabled_manually` (verified 2026-09-19):
-  codeo1io/dashboard has no `FRO_BOT_PAT` secret, so the daily cron would fail on
-  every run. Re-enabling it without provisioning that secret resurrects the failing
-  cron — check `gh workflow list` state and secret presence before flipping it back on.
+- The `Fro Bot` workflow's enablement state is NOT stable truth — verify it live
+  (`gh workflow list`, `gh run list --workflow=fro-bot.yaml`, `gh secret list`)
+  before relying on any claim about it. Live snapshot 2026-10-16: workflow
+  `active`, repo secrets empty (still no `FRO_BOT_PAT`), last run objects
+  2026-09-17/18 (both `failure`), and no run objects at all since — the earlier
+  `disabled_manually` note (verified 2026-09-19) was true then, but the workflow
+  has since been re-enabled, and liveness cannot currently be read from run
+  history because repo-wide Actions run creation has been silent since
+  2026-10-09T01:59:31Z (external GitHub-side incident, escalated to GitHub
+  Support, tracked at ROADMAP rm-891; 57 commits landed unvalidated in the
+  window). Recorded decision, unchanged: do NOT provision `FRO_BOT_PAT` — the
+  fork keeps the schedule-triggered agent pass dormant; the schedule path is
+  guarded at the agent step (`HAS_FRO_BOT_PAT`), so a firing cron without the
+  secret skips the agent instead of acting, and the cron itself runs off-hour
+  (02:37 UTC, away from the base-drift 04:13 Mon and upstream-drift 05:17 Mon
+  maintenance windows). Re-check workflow state, last run, and secret presence
+  before re-enabling anything or provisioning that secret.
 
 ## Cloned Dependency Source
 
