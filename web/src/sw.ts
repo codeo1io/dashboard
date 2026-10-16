@@ -8,6 +8,16 @@
  * to remove the old one from every client: on activate it purges all caches,
  * unregisters itself, and reloads open windows.
  *
+ * Severance note (upstream #615, release 2026.10.24): upstream's post-fix sw.ts
+ * carries push/notificationclick/message handlers wired to a registered SW.
+ * This fork deliberately carries NO registration (rm-249 keeps push
+ * structurally inert; rm-272 owns any revival), so those handlers are not
+ * ported here — the #615 fix lands in the pure module web/src/push/sw-notification.ts
+ * (wire shape {title, body, data: {type, route, failureLabel?}} + the gateway's
+ * failure-label set), pinned by its parity tests. When registration is revived,
+ * port the handlers from upstream's post-#615 sw.ts WITHOUT precacheAndRoute/
+ * NavigationRoute (kill-switch lineage: never intercept navigations).
+ *
  * Typing note: this file executes in the ServiceWorkerGlobalScope, but
  * web/tsconfig.json compiles the app against DOM (where `self` is a Window)
  * because TypeScript cannot combine the DOM and WebWorker libs in one
