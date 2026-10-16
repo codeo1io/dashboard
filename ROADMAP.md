@@ -875,9 +875,9 @@
 - acceptance: 
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
-### snapshot-store logPersistProblem flattens structured payloads to '[object Object]'
+### snapshot-store logPersistProblem flattens structured payloads to `[object Object]`
 - id: `rm-802` | track: reliability | priority: 30.0 | status: implemented 2026-10-09, validated pre-review, landed at this integrate (run d8fdf8b79ad54a68883810c1fc29a2da cycle:3 implement 2852b2bf; targeted_tests 921/921 on the engine-named 12 surfaces + full_tests via the supervisor-approved six-job local mirror under the account-level Actions outage; batch doc docs/prioritization/2026-10-09-repository-maintenance-cycle-3-batch-run-d8fdf8b79ad5.md)
-- acceptance: the persistence-problem logger emits plain-object payloads as structured fields (the size-bound `{bytes}` value lands as a field, never a stringified '[object Object]'), keeps Error-instance message extraction for real errors, and the rm-701/rm-759 describes carry spy tests asserting a single warning record with the exact numeric byte value and no `error` field (red before, green after); load()'s fail-open return semantics unchanged
+- acceptance: the persistence-problem logger emits plain-object payloads as structured fields (the size-bound `{bytes}` value lands as a field, never a stringified `[object Object]`), keeps Error-instance message extraction for real errors, and the rm-701/rm-759 describes carry spy tests asserting a single warning record with the exact numeric byte value and no `error` field (red before, green after); load()'s fail-open return semantics unchanged
 - evidence: vitest run of test/snapshot-store.test.ts (17/17 = 15 pre-existing at the batch base + 2 new); RED pre-fix log in the run's spool scratch; composed on the rm-701/rm-759 mechanics this same integrate restored after their adoption-lineage drop
 
 ### rm-184
@@ -1199,6 +1199,49 @@
 - id: `rm-606` | track: reliability | priority: 6.0 | status: in_progress
 - acceptance: AbortSignal.timeout(bounded) added with the bound named in a comment; web test pins the abort path; cycle doc updates the family census (which members remain open)
 - evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Re-land the roadmap integrity guard and census script with a landing deliverable-presence check
+- id: `rm-857` | track: reliability | priority: 88.0 | status: implemented
+- acceptance: scripts/roadmap-census.ts and test/roadmap-integrity-guard.test.ts exist and pass on a clean main checkout (content restored from batch parent 06396b4, census updated to the live ledger); the guard asserts the def count, zero duplicate ids, and the max id; the landing pipeline gains a post-merge check that `git ls-tree` of the merge result contains every file the batch doc declares as a deliverable; green suite plus the recorded census on the landing PR
+- evidence: assess attempt bca15720 of run 3d6aa134904b (2026-10-15): merge-base 364272b has the guard, batch parent 06396b4 carried it MODIFIED, landing 3e3664c resolved modify-vs-delete as DELETE; live census 237 defs / 0 dups / max rm-856 vs the d8fdf8b79ad5 batch doc claim of 247 defs
+- evidence: implemented 2026-10-16 run 3d6aa134904b attempt 5cad71b9, pending landing: both halves re-landed (census CLI green at 245/0/864; vitest schema half 10/10 incl. the new deliverable-presence marker check) and the deliverable-presence marker established in docs/prioritization/2026-10-15-...run-3d6aa134904b.md; full six-job local Main-workflow mirror green (full_tests 4a0e25f5, Actions outage documented)
+
+### Absorb upstream window 1bcd98a..55d1001: operator contract 1.11.0, push fixes, agent v0.122.3 (extends rm-252)
+- id: `rm-858` | track: reliability | priority: 90.0 | status: candidate
+- acceptance: all 19 upstream commits absorbed with zero wiki/write-capability surfaces (window diff verified clean of them); src/gateway/operator-contract/version.ts pins 1.11.0 with both exact-match sides moved together; the fro-bot workflow pins fro-bot/agent v0.122.3; waiting runs render with a styled badge; the run list refreshes every 30s while visible plus on visibility return, card expand, and notification jump; a question notification focuses the run without reload; the signed-out state offers sign-in (upstream #633 path); full suite green on the landing tree
+- evidence: research attempt f66da44a of run 3d6aa134904b (2026-10-15): upstream/main 55d10013, merge-base 1bcd98a, rev-list count 19, no wiki/write files in the window; upstream plan docs/plans/2026-10-13-001-feat-operator-contract-1-11-0-plan.md; agent v0.122.3 release (2026-10-15T03:28Z) ships source-map bounds, URI-authority injection rejection, and a Sharp/librsvg patch (PR #1828)
+
+### Roll back stream bootstrap on partial operator-runtime init failure
+- id: `rm-859` | track: reliability | priority: 72.0 | status: candidate
+- acceptance: web/src/operator/runtime.ts failure path after a successful bootstrapOperatorStreams calls the exported resetBootstrapState and clears bootstrap-registered handles and listeners; a regression test with a loader rejecting between bootstrap and run-index init proves no orphaned pagehide listener or SSE handle; the fix is re-verified against the absorbed upstream runtime rework (rm-858 lands first) so it is not designed against a shape about to be replaced
+- evidence: assess attempt bca15720 (2026-10-15): bootstrap at web/src/operator/runtime.ts:344 runs before the await of initOperatorRunIndex at :516, and the catch at :611-613 only flips state to unavailable; public/operator-stream.js:4769 exports resetBootstrapState for exactly this rollback
+
+### Ecosystem major window: vitest 5, TypeScript 7 native, vite-plugin-pwa 2 (extends rm-271)
+- id: `rm-860` | track: reliability | priority: 60.0 | status: candidate
+- acceptance: each major lands as its own validated batch with the full suite green or a recorded decision not to move; TS 7 check-types wall time recorded before/after across the three tsconfigs (root, web, .opencode); vitest 5 breaking changes from the v5.0.x release notes addressed; vite-plugin-pwa 2 config migration applied; the in-range refreshes (hono 4.13.13, @hono/node-server 2.1.5, react 19.3.1) ride the normal dependabot lane; nothing carried back upstream (standing never-carry-back rider)
+- evidence: research attempt f66da44a (2026-10-15) npm registry: vitest 5.0.4 with GitHub latest v5.0.5, typescript 7.0.2 (the native port, typescript-go release plus the devblogs announcement), vite-plugin-pwa 2.0.0; upstream pins the same old majors (TS 6.0.3, vitest 4.1.11, vite-plugin-pwa 1.3.0) so this is a pure ecosystem window, not upstream pressure
+
+### Decide the push-display route: upstream sw handler map plus workbox vs dashboard-native
+- id: `rm-861` | track: reliability | priority: 58.0 | status: candidate
+- acceptance: the ledger records the chosen approach before the absorb batch lands so rm-858 does not silently carry the competing one; if the upstream approach is chosen, web gains workbox at 7.4.1 and sw.ts becomes an active handler surface with its own tests; if the dashboard-native approach is chosen, the absorb batch excludes the sw.ts handler hunks and the decision names why
+- evidence: research attempt f66da44a (2026-10-15): our tree carries zero workbox deps (kill-switch sw.ts only); the upstream window touches web/src/sw.ts with a handler-map approach plus 36 changed lines; npm workbox-build latest 7.4.1
+
+### Restore the ROADMAP lint census to 48: backtick-wrap the two new label-refs
+- id: `rm-862` | track: reliability | priority: 50.0 | status: implemented
+- acceptance: `npx eslint --no-cache ROADMAP.md` reports exactly 48 errors — the two markdown/no-missing-label-refs instances at ROADMAP.md:878 and :880 (literal `[object Object]` bracket groups) are backtick-wrapped or reworded, dropping label-refs from 3 to 1; no new errors introduced anywhere else; the renderer-side durable cure stays tracked by the render-hygiene items
+- evidence: assess attempt bca15720 (2026-10-15): eslint ROADMAP.md = 50 errors (47 no-trailing-spaces plus 3 label-refs at :19, :878:72, :880:167); `git log -S 'object Object' -- ROADMAP.md` attributes :878/:880 to landing 06396b4's rm-802 prose
+- evidence: implemented 2026-10-16 run 3d6aa134904b, pending landing: both tokens backticked, ROADMAP lint re-measured at exactly 48 (47 no-trailing-spaces + the renderer-owned label-ref at :19); full-repo lint 48 confined to ROADMAP.md (full_tests mirror log 02-lint.log)
+
+### Pin and doc alignment: upload-artifact unification, Dockerfile digest comment, clonedeps version text
+- id: `rm-863` | track: reliability | priority: 45.0 | status: implemented
+- acceptance: the visual.yaml upload-artifact steps at :101 and :109 pin the v7.0.2 digest matching release.yaml:350 and scorecard.yaml:44, or a comment records why v7.0.1 is held; Dockerfile:52-53 names the actually pinned digest sha256:173f1258 or drops digest-specific phrasing; the AGENTS.md clonedeps section states v0.122.3 (post rm-858) or a version-agnostic form that cannot go stale; pnpm lint plus actionlint green on the change
+- evidence: assess attempt bca15720 (2026-10-15): visual.yaml:101/:109 actions/upload-artifact@043fb46 v7.0.1 vs release.yaml:350 and scorecard.yaml:44 @cf430e0 v7.0.2; Dockerfile:16 pins sha256:173f1258 while :52-53 cites digest 0e0ff40; AGENTS.md says v0.78.0 while the canonical clone is 0.122.1 and the latest release is v0.122.3
+- evidence: implemented 2026-10-16 run 3d6aa134904b, pending landing: visual.yaml upload-artifact unified at the cf430e0 v7.0.2 digest, Dockerfile comment rewritten to separate the verified 0e0ff40 retirement claim from the pinned 173f1258 digest with a dpkg-query re-verify instruction, AGENTS.md clonedeps bullet made version-agnostic against the workflow pin
+
+### Render-guard census tests: taxonomy, dangling refs, empty acceptance, lint-clean render
+- id: `rm-864` | track: reliability | priority: 66.0 | status: candidate
+- acceptance: a `test/roadmap-render-guard.test.ts` asserts on the rendered ROADMAP.md at HEAD: more than one distinct track value across def lines (fails on taxonomy collapse), zero narrative rm-refs with no def or closed entry, zero empty `- acceptance:` def lines, zero trailing whitespace, and zero unwrapped bracket groups; ingest and landing updates keep it green, or a failing value documents the intentional exception inside the same test
+- evidence: assess plus census of attempt 78118ed7 (2026-10-15): 236 of 237 defs render `track: reliability`; 47 of 237 def lines carry an empty acceptance value (exactly the 47 no-trailing-spaces lint errors); the refined dangling census finds 3 (rm-13640, rm-553, rm-678) with rm-13640 never defined anywhere; renderer root causes per hermes-roadmap (two-value Track enum, open-only def emission)
 
 ## Closed items
 

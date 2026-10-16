@@ -101,7 +101,9 @@ view of Fro Bot's cross-repo footprint.
 Read-only dependency source repositories are available under
 `.slim/clonedeps/repos/` for inspection. Do not edit these clones.
 
-- `.slim/clonedeps/repos/fro-bot__agent/` — `fro-bot/agent` at `v0.78.0`; the
+- `.slim/clonedeps/repos/fro-bot__agent/` — `fro-bot/agent` at the version
+  pinned by the workflows (`.github/workflows/fro-bot.yaml` digest pin —
+  kept version-agnostic here since a hardcoded version drifts stale); the
   gateway's operator OAuth return path contract, GitHub App client, secret
   readers, Hono build/serve split, and runtime logger/Result primitives that
   this app mirrors.
@@ -130,3 +132,12 @@ Read-only dependency source repositories are available under
   body preserved, land, then re-enable enforcement in the same session — never
   delete the protection object (recreating it drops the check list; a
   body-less recreate produces exactly the current all-empty shell state).
+- Landing merges can silently drop a batch's deliverables: the 2026-10-09
+  landing (3e3664c) resolved modify-vs-delete as DELETE for its own batch's
+  `test/roadmap-integrity-guard.test.ts` while the batch doc still claimed it
+  (the ledger then sat unguarded at 237 defs). Since 2026-10-16, batch docs
+  declare deliverables in a `## Deliverables` section (backticked repo-relative
+  paths) and `test/roadmap-integrity-guard.test.ts` fails the suite if any
+  declared file is absent or the newest carrier's census claim diverges from
+  the live ledger — write batch docs with the marker, and after EVERY landing
+  merge run the guard plus `node scripts/roadmap-census.ts` on main.

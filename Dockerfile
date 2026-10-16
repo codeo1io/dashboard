@@ -49,9 +49,13 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --prod
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
-# 2026-09-20: in-image libpcre2-8-0 patch retired — the pinned base digest
-# (0e0ff40, upstream #492) ships libpcre2-8-0 10.42-1+deb12u1, so the fix is
-# absorbed at the base. History: docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md
+# 2026-09-20: in-image libpcre2-8-0 patch retired — the then-pinned base digest
+# (0e0ff40, upstream #492) shipped libpcre2-8-0 10.42-1+deb12u1, so the fix is
+# absorbed at the base. 2026-10-15 (rm-863): the base has since been re-pinned
+# to the sha256:173f1258 digest on the ARG line above; the retirement claim was
+# verified against 0e0ff40, so re-verify the new base's libpcre2-8-0 version
+# (dpkg-query) before relying on it if the digest moves again.
+# History: docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md
 
 FROM ${NODE_IMAGE}
 
