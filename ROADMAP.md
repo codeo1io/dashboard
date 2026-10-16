@@ -59,6 +59,16 @@
 - acceptance: extraction switched to the repo's proven convention (release.yaml's `docker buildx imagetools inspect` default pretty-dump `Digest:` line — the 2026-09-19 digest-parse solution doc family) OR a token-authed registry HEAD probe reading Docker-Content-Digest; empty extraction hard-fails as `extraction error`, never as drift; a manual dispatch goes green at parity (pin == live) before the 2026-09-28 cron; actionlint container-form gate passes
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
+### Approval/cancel clicks bubble to the run-card toggle — port upstream fix #636 (5581a49)
+- id: `rm-866` | track: reliability | priority: 91.5 | status: in_progress
+- acceptance: the approval-prompt root and the cancel-control root each stop click propagation (keyboard activation covered — it is a click too), ported byte-identical to upstream 5581a49 (release 2026.10.36) at public/operator-stream.js; an end-to-end jsdom test mounts the real runtime + run index + stream stack, proves the pre-fix card collapse and stream abort at base (RED), then Once/Always/Confirm always/Reject/cancel-arm/dismiss/status-text/prompt-text all keep the card expanded, exactly one decision POST each with the CSRF header, and a click on the card itself still collapses it and aborts the stream; fork adaptation limited to the run-list summary status ('running' — the fork parser rejects upstream's list-status spelling)
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Auth-expiry lands the operator page in a dead end — port the #633/#637 sign-in-recovery end state
+- id: `rm-869` | track: reliability | priority: 90.5 | status: in_progress
+- acceptance: sign-in-recovery.ts (once-per-tab redirect guard keyed in sessionStorage) + runtime wiring (initOperatorRunIndex returns 'auth-required'/'unavailable'/'empty'/'loaded'/'stale'; redirect only when the loader reports auth-required with no endpointBase override; guard cleared on loaded/empty) + Operator.tsx 'auth-required' state renders a Sign in button wired to the redirect helper, ported from upstream 32c9605 + bcdcb46 (releases 2026.10.33/.37); run-index outcome returns are additive (callers ignoring them unchanged); copy.ts auth-required text "You're signed out." with the sign-in hint; unit tests ported and green including the once-per-tab semantics, and the 60-test runtime suite stays green (vitest doMock harnesses list every accessor the loader touches)
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
 ### Refactor 20 high-complexity function(s)
 - id: `rm-021` | track: reliability | priority: 90.0 | status: candidate
 - signals: reliability.complexity_hot:web/dist-fixture/assets/index-Vbpk-JbK.js::L1, reliability.complexity_hot:web/dist-fixture/assets/index-Vbpk-JbK.js::L1, reliability.complexity_hot:web/dist-fixture/assets/index-Vbpk-JbK.js::L1, reliability.complexity_hot:web/dist-fixture/assets/index-Vbpk-JbK.js::L1, reliability.complexity_hot:web/dist-fixture/assets/index-Vbpk-JbK.js::L1 (+15 more)
@@ -78,6 +88,11 @@
 ### Repair the base-drift digest readback (broken sentinel) + digest-parse guard test
 - id: `rm-166` | track: reliability | priority: 88.0 | status: in_progress
 - acceptance: the live-digest readback switches to the proven form (`docker buildx imagetools inspect node:24-slim | awk '/^Digest:/{print $2; exit}'`) with an explicit empty-guard that fails with its own message distinguishing read-failure from drift; a re-dispatch run at the pushed sha logs BOTH digests and exits 0 at parity; rider (research C9): a workflow-statics guard test (pattern: test/release-trigger-paths.test.ts) fails any `manifest inspect` piped into a `/^Digest:/` awk across .github/workflows/ with a pointer to the buildx form — actionlint cannot catch this class
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Operator UX polish port: #634 restored-card scroll + #629 iOS install steps (sw.ts deferred)
+- id: `rm-870` | track: reliability | priority: 87.5 | status: in_progress
+- acceptance: restored hash run cards scroll into view on select/restore with block 'nearest' plus a .run-card scroll-margin-top so sticky headers cannot cover them (upstream de2ce7f, release 2026.10.34), pinned by a jsdom test that stubs scrollIntoView and proves both the restore path and a later click-selection scroll exactly once with nearest; iOS not-installed notifications copy gains the five-step install guidance + recovery hint (upstream c295181, release 2026.10.29) in notifications-copy.ts, Notifications.tsx and both test files; the sw SKIP_WAITING half of #634 is explicitly NOT ported (fork's 65-line kill-switch sw.ts has no waiting clients — re-derive at the next absorb)
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Deterministic visual gate: pinned Playwright container image
@@ -128,6 +143,11 @@
 ### Release pipeline unfreeze — early-exit-awk digest readback SIGPIPEs the producer under pipefail
 - id: `rm-708` | track: reliability | priority: 78.0 | status: in_progress
 - acceptance: TWO consecutive green `release.yaml` runs end-to-end past '🏷️ Promote latest image tag' with 'Dispatch infra deploy' firing — a single green run is the documented race (37463802355), not closure; the rm-166 guard extension green on main (repo-wide fence + END-block pin); actionlint clean on the repaired workflow
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Pin refresh rider: codeql v4.39.0, setup-node v7.1.0 (all sites), agent v0.122.3, node image digest, @types/node, plugin
+- id: `rm-871` | track: reliability | priority: 77.5 | status: in_progress
+- acceptance: every pin site carries a digest re-derived at apply time (annotated tags dereferenced through git/tags): codeql-action init/analyze/upload-sarif at 6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee (v4.39.0, all four sites), setup-node at 949feb2413d6458794dcd2491c4babbbce0c15c1 (v7.1.0, all five sites incl. audit/release/visual), fro-bot.yaml agent at 7d273ac643c8f9c0dc8615222677693dc337adef (v0.122.3), Dockerfile NODE_IMAGE digest refreshed against the Hub manifest index; @types/node and @opencode-ai/plugin bumped to the newest versions that clear pnpm-workspace minimumReleaseAge 1440 (1.19.1 published inside the 24h window is rejected by design) with pnpm-lock.yaml regenerated in the same change; actionlint (container form) green on every touched workflow; check-types green
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Port upstream security fix #481 — global redaction chokepoint
@@ -1165,6 +1185,16 @@
 - acceptance: every docs/solutions markdown file carries a frontmatter block (opens at line 1, closes, carries `module:` + `problem_type:`), enforced by test/docs-solutions-frontmatter-guard.test.ts which fails on any gap or never-closing drift file; lesson bodies unchanged beyond the header
 - evidence: the guard went red against the unfixed tree (surfacing the census gap file plus two never-close drift files beyond the assess census, all three cured: frontmatter added, missing closing fences inserted) and green after; rode the same targeted/full gate record as rm-802
 
+### Fro Bot workflow truth is stale in fro-bot.yaml and AGENTS.md (doc half; workflow half deferred)
+- id: `rm-872` | track: docs | priority: 75.5 | status: in_progress
+- acceptance: the disabled_manually claims (fro-bot.yaml rm-603 comment, AGENTS.md convention bullet) are corrected to the live truth verified first-hand: the workflow is ACTIVE, the FRO_BOT_PAT secret is still absent, and the repo's Actions have been suspended GitHub-side since 2026-10-09 (zero runs repo-wide, workflow_dispatch 422 while /actions/permissions reports enabled) — lifting it needs GitHub Support, and re-enabling scheduled runs still requires provisioning the secret; the cron off-hour + AGENTS restructure halves belong to the sibling operator-surface batch (first-landed wins) and are out of scope here
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Probe the shared dashboards surface before porting #632 (fork applicability unknown)
+- id: `rm-867` | track: reliability | priority: 13.0 | status: in_progress
+- acceptance: before any port of upstream 8470f86 (release 2026.10.32, dashboards view work), a probe establishes whether this fork carries the touched surface at all (git cat-file -e per file at the merge-base 1bcd98a) and records the disposition in this item; if the surface is fork-divergent (upstream builds repository-editing capability this fork's read-only invariant forbids absorbing — rm-252/rm-259), the item closes as never-absorb instead of porting
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
 ### Route-level code splitting for the SPA bundle (recorded LOW with counters)
 - id: `rm-559` | track: reliability | priority: 12.0 | status: in_progress
 - acceptance: only if still worth it after the rm-553-class compression/caching siblings land and a fresh cold-load measure says otherwise: per-view React.lazy + Suspense boundaries; initial route chunk measurably smaller (before/after first-load JS numbers recorded); no PWA/offline regression (sw precache list still complete); web suite green
@@ -1178,6 +1208,11 @@
 ### Ephemeral-validation refs accumulate stale conductor/ci-* heads on origin
 - id: `rm-778` | track: reliability | priority: 12.0 | status: in_progress
 - acceptance: 
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Deferred absorb probes: hermes-infra agent-env surface (#631 8470f86) needs a live gateway harness
+- id: `rm-868` | track: reliability | priority: 11.0 | status: in_progress
+- acceptance: the 8470f86 half (runtime auth recovery against the live gateway agent) is deferred until a locally-reachable gateway exists: docs/runbooks/gateway-access.md requires a marcusrbrown/infra checkout with a repo-root .env and /work/projects holds none; when the harness exists, port the runtime-auth-recovery gateway-half and pin it with a test that runs against the real agent surface, or record the never-port disposition here
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### healthz Cache-Control residual (micro)

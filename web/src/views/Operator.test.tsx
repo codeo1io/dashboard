@@ -1,7 +1,12 @@
-import {render, screen} from '@testing-library/react'
-import {describe, expect, it} from 'vitest'
+import {fireEvent, render, screen} from '@testing-library/react'
+import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {Operator} from './Operator.tsx'
 import type {OperatorState} from '../operator/state.ts'
+import {navigateToGatewaySignIn} from '../operator/sign-in-recovery.ts'
+
+vi.mock('../operator/sign-in-recovery.ts', () => ({
+  navigateToGatewaySignIn: vi.fn(),
+}))
 
 describe('Operator', () => {
   it('renders without throwing', () => {
@@ -81,6 +86,14 @@ describe('Operator', () => {
 })
 
 describe('Operator — state prop rendering', () => {
+  beforeEach(() => {
+    sessionStorage.clear()
+    vi.clearAllMocks()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
   it('renders loading state with connecting headline', () => {
     render(<Operator state="loading" />)
     expect(screen.getByRole('heading')).toBeInTheDocument()
@@ -91,6 +104,22 @@ describe('Operator — state prop rendering', () => {
   it('renders auth-required state with sign-in headline', () => {
     render(<Operator state="auth-required" />)
     expect(screen.getByText(/sign in required/i)).toBeInTheDocument()
+  })
+
+  it('renders a GitHub sign-in button that navigates in this window', () => {
+    render(<Operator state="auth-required" />)
+
+    fireEvent.click(screen.getByRole('button', {name: 'Sign in with GitHub'}))
+
+    expect(navigateToGatewaySignIn).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows the button without redirecting when the tab guard is already set', () => {
+    sessionStorage.setItem('fro-bot.operator-sign-in-redirect', String(Date.now()))
+
+    render(<Operator state="auth-required" />)
+
+    expect(screen.getByRole('button', {name: 'Sign in with GitHub'})).toBeInTheDocument()
   })
 
   it('renders rate-limited state with rate-limit headline', () => {
@@ -115,7 +144,7 @@ describe('Operator — state prop rendering', () => {
 })
 
 describe('Operator — disabled action reasons', () => {
-  const disabledStates: OperatorState[] = ['auth-required', 'rate-limited', 'offline', 'unavailable', 'loading']
+  const disabledStates: OperatorState[] = ['rate-limited', 'offline', 'unavailable', 'loading']
 
   for (const state of disabledStates) {
     it(`renders a visible action-disabled reason for ${state}`, () => {
@@ -140,10 +169,10 @@ describe('Operator — aria-live region', () => {
     expect(liveRegion).not.toBeNull()
   })
 
-  it('aria-live region contains state detail text for auth-required', () => {
+  it('aria-live region contains state detail text for signed out', () => {
     render(<Operator state="auth-required" />)
     const liveRegion = document.querySelector('[aria-live="polite"]')
-    expect(liveRegion?.textContent).toMatch(/session/i)
+    expect(liveRegion).toHaveTextContent("You're signed out.")
   })
 
   it('aria-live region contains state detail text for offline', () => {
@@ -871,8 +900,7 @@ describe('Operator — post-launch focus-steal guard', () => {
 })
 
 describe('Operator — failure state distinct treatments', () => {
-  const failureStates: ('auth-required' | 'rate-limited' | 'offline' | 'unavailable')[] = [
-    'auth-required',
+  const failureStates: ('rate-limited' | 'offline' | 'unavailable')[] = [
     'rate-limited',
     'offline',
     'unavailable',

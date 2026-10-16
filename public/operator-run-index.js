@@ -346,8 +346,8 @@ export async function initOperatorRunIndex(opts) {
   const onRestoreMiss = opts?.onRestoreMiss
   const onAuthRequired = opts?.onAuthRequired
 
-  if (isRunIndexInitStale(myGeneration)) return
-  if (typeof document === 'undefined') return
+  if (isRunIndexInitStale(myGeneration)) return 'stale'
+  if (typeof document === 'undefined') return 'unavailable'
 
   if (typeof onSelectRun === 'function') _onSelectRun = onSelectRun
 
@@ -366,7 +366,7 @@ export async function initOperatorRunIndex(opts) {
   const result = await fetchRunIndex({endpointBase, fixtureSessionId})
 
   // Guard: bail if reset/replaced while awaiting fetch.
-  if (isRunIndexInitStale(myGeneration)) return
+  if (isRunIndexInitStale(myGeneration)) return 'stale'
 
   if (runIndexLoading !== null) runIndexLoading.hidden = true
 
@@ -376,11 +376,11 @@ export async function initOperatorRunIndex(opts) {
     // skip any restore attempt entirely.
     if (result.authFailure === true && typeof onAuthRequired === 'function') {
       onAuthRequired()
-      return
+      return 'auth-required'
     }
     if (runIndexUnavailable !== null) runIndexUnavailable.hidden = false
     if (runIndexSection !== null) runIndexSection.dataset.state = 'unavailable'
-    return
+    return 'unavailable'
   }
 
   const {summaries} = result
@@ -403,7 +403,7 @@ export async function initOperatorRunIndex(opts) {
     if (restoreRunId !== undefined && restoreRunId !== null && typeof onRestoreMiss === 'function') {
       onRestoreMiss()
     }
-    return
+    return 'empty'
   }
 
   if (runIndexList !== null) {
@@ -441,6 +441,8 @@ export async function initOperatorRunIndex(opts) {
       }
     }
   }
+
+  return 'loaded'
 }
 
 /** Terminal run-summary statuses — a card in one of these will not progress further. */

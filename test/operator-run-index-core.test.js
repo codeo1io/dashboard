@@ -785,9 +785,10 @@ describe('initOperatorRunIndex — onSelectRun callback wired to card clicks', (
       status: 200,
       json: async () => ({runs: [makeValidSummary({runId: 'run-select-001'})]}),
     }))
-    // No DOM — function bails early when document is undefined
+    // No DOM — function bails early when document is undefined (reported as 'unavailable'
+    // since the #633 outcome-return port; callers that ignore the outcome are unchanged)
     const onSelectRun = vi.fn()
-    await expect(initOperatorRunIndex({endpointBase: '/operator', onSelectRun})).resolves.toBeUndefined()
+    await expect(initOperatorRunIndex({endpointBase: '/operator', onSelectRun})).resolves.toBe('unavailable')
     expect(onSelectRun).not.toHaveBeenCalled()
   })
 
