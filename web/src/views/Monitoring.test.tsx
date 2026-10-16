@@ -39,6 +39,8 @@ function makeData(overrides: Partial<MonitoringData> = {}): MonitoringData {
     driftCount: 0,
     enumerationIncomplete: null,
     refreshedAt: 1742000000000,
+    refreshDurationMs: null,
+    refreshDegraded: false,
     ...overrides
   }
 }
@@ -163,6 +165,36 @@ describe('Monitoring (rm-192 red-repo drill-down)', () => {
     })
 
     expect(screen.getByTestId('monitoring-stale-banner')).toHaveTextContent('Data is stale')
+  })
+
+  it('rm-863: renders the refresh-degraded banner with the last refresh duration', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({refreshDegraded: true, refreshDurationMs: 7432})
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    const banner = screen.getByTestId('monitoring-refresh-degraded-banner')
+    expect(banner).toHaveTextContent('Data refresh is degraded')
+    expect(banner).toHaveTextContent('7.4s')
+  })
+
+  it('rm-863: no degraded banner while the refresh watchdog is healthy', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({refreshDegraded: false, refreshDurationMs: 4200})
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.queryByTestId('monitoring-refresh-degraded-banner')).not.toBeInTheDocument()
   })
 
   it('renders the error state on contract drift', async () => {

@@ -126,10 +126,10 @@ export interface DetectorRunResult {
   exitCode: number
 }
 
-/** Injectable subprocess runner: given the hook payload and the worktree cwd, returns the detector's stdout/stderr/exitCode. */
+/** Injectable subprocess runner: given the hook payload and the worktree cwd, returns the detector's stdout/stderr/exitCode. `signal` aborts when the bridge gives up on the run (timeout) so the runner can reap its subprocess instead of orphaning it (rm-862, upstream #193 class). */
 export type DetectorRunner = (
   payload: ReturnType<typeof buildHookPayload>,
-  opts: { worktree: string },
+  opts: { worktree: string; signal?: AbortSignal },
 ) => Promise<DetectorRunResult>
 
 export interface CreateHookOptions {
@@ -140,10 +140,24 @@ export interface CreateHookOptions {
 
 const TIMEOUT_SENTINEL = Symbol('impeccable-hook-timeout')
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | typeof TIMEOUT_SENTINEL> {
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  onTimeout?: () => void,
+): Promise<T | typeof TIMEOUT_SENTINEL> {
   let timer: ReturnType<typeof setTimeout>
   const timeout = new Promise<typeof TIMEOUT_SENTINEL>((resolve) => {
-    timer = setTimeout(() => resolve(TIMEOUT_SENTINEL), timeoutMs)
+    timer = setTimeout(() => {
+      // Give the runner a chance to reap its subprocess BEFORE the race
+      // settles (rm-862): the losing detector promise keeps running unless
+      // the signal aborts it here.
+      try {
+        onTimeout?.()
+      } catch {
+        // Reaping must never break the timeout path itself.
+      }
+      resolve(TIMEOUT_SENTINEL)
+    }, timeoutMs)
   })
   try {
     return await Promise.race([promise, timeout])
@@ -227,8 +241,13 @@ export function createHook(options: CreateHookOptions) {
       })
 
       let result: DetectorRunResult | typeof TIMEOUT_SENTINEL
+      const abort = new AbortController()
       try {
-        result = await withTimeout(options.runDetector(payload, { worktree: options.worktree }), timeoutMs)
+        result = await withTimeout(
+          options.runDetector(payload, { worktree: options.worktree, signal: abort.signal }),
+          timeoutMs,
+          () => abort.abort(),
+        )
       } catch (err) {
         warnOnce(`[impeccable] design hook bridge failed: ${err instanceof Error ? err.message : String(err)}`)
         return

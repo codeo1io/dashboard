@@ -203,6 +203,54 @@ describe('bridge (createHook)', () => {
     await expect(hook(makeInput(), output)).resolves.toBeUndefined()
     expect(output.output).toBe('ok')
   })
+
+  it('rm-862: aborts the runner signal exactly on timeout so the subprocess is reaped, not orphaned', async () => {
+    let sawAbort = false
+    const hook = createHook({
+      // Hangs like a real detector subprocess until the bridge aborts the
+      // signal — the default runner kills hook.mjs at that moment (upstream
+      // #193 defect class); a signal-less runner still degrades to no-op.
+      runDetector: async (_payload, opts): Promise<DetectorRunResult> => {
+        if (!opts?.signal) throw new Error('signal not threaded to the runner')
+        await new Promise<never>((_resolve, reject) => {
+          opts.signal!.addEventListener('abort', () => {
+            sawAbort = true
+            reject(new Error('detector reaped'))
+          })
+        })
+        throw new Error('unreachable: the hang promise never resolves')
+      },
+      worktree: '/repo',
+      timeoutMs: 15,
+    })
+    const output = makeOutput()
+    await expect(hook(makeInput(), output)).resolves.toBeUndefined()
+    expect(output.output).toBe('ok') // timeout path: no warning, byte-unchanged
+    expect(sawAbort).toBe(true)
+  })
+
+  it('rm-862: fast paths never abort the signal (no spurious kills)', async () => {
+    let aborted = false
+    let sawSignal = false
+    const hook = createHook({
+      runDetector: async (_payload, opts) => {
+        sawSignal = Boolean(opts?.signal)
+        opts?.signal?.addEventListener('abort', () => {
+          aborted = true
+        })
+        return { stdout: '', stderr: '', exitCode: 0 }
+      },
+      worktree: '/repo',
+      timeoutMs: 1_000,
+    })
+    const output = makeOutput()
+    await hook(makeInput(), output)
+    expect(sawSignal).toBe(true)
+    expect(aborted).toBe(false)
+    // Let the timer lapse; it must not abort post-hoc either.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(aborted).toBe(false)
+  })
 })
 
 describe('extractFeedbackText', () => {
