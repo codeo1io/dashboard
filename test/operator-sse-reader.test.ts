@@ -16,7 +16,7 @@ import type {RunStreamFrame} from '../src/gateway/operator-contract/sse-frames.t
 import type {Logger} from '../src/logger.ts'
 import fc from 'fast-check'
 import {describe, expect, it, vi} from 'vitest'
-import {OPERATOR_CONTRACT_VERSION} from '../src/gateway/operator-contract/version.ts'
+import {ACCEPTED_OPERATOR_CONTRACT_VERSIONS, OPERATOR_CONTRACT_VERSION} from '../src/gateway/operator-contract/version.ts'
 import {FIXTURE_RUN_ID_FOR_TESTS, FIXTURE_SCENARIO_NAMES, serializeScenarioToSse} from '../src/gateway/operator-fixture-sse.ts'
 import {createOperatorSseReader, MAX_SSE_BUFFER_BYTES, parseSseChunk} from '../src/gateway/operator-sse-reader.ts'
 
@@ -2793,26 +2793,46 @@ async function runReader(
   return {events, errors}
 }
 
-describe('createOperatorSseReader — adjacent contract versions are rejected', () => {
-  const [major, minor, patch] = OPERATOR_CONTRACT_VERSION.split('.').map(Number) as [number, number, number]
-  const previousMinor = `${major}.${minor - 1}.${patch}`
-  const nextMinor = `${major}.${minor + 1}.${patch}`
-
+describe('createOperatorSseReader — supported contract version set (additive acceptance)', () => {
   it('accepts a ready frame at the pinned version', async () => {
     const {events, errors} = await runReader(readyText() + sseQuestion(questionPayload()))
     expect(errors).toHaveLength(0)
     expect(events.map(e => e.type)).toEqual(['ready', 'question'])
   })
 
-  it.each([
-    ['the previous minor', previousMinor],
-    ['the next minor', nextMinor],
-  ])('fails closed on %s and dispatches no question frame', async (_name, version) => {
-    const {events, errors} = await runReader(readyText(version) + sseQuestion(questionPayload()))
-    expect(errors).toHaveLength(1)
-    expect(errors[0]?.message).toContain('contract-drift')
-    expect(events).toHaveLength(0)
+  it('pins the supported set to the additive 1.6.0..1.11.0 ladder (rm-873)', () => {
+    expect([...ACCEPTED_OPERATOR_CONTRACT_VERSIONS]).toEqual([
+      '1.6.0',
+      '1.7.0',
+      '1.8.0',
+      '1.9.0',
+      '1.10.0',
+      '1.11.0',
+    ])
+    expect(ACCEPTED_OPERATOR_CONTRACT_VERSIONS.has(OPERATOR_CONTRACT_VERSION)).toBe(true)
   })
+
+  // Additive acceptance (rm-873): a gateway anywhere on the supported ladder
+  // streams through unchanged — including the pre-bump 1.9.0 estate.
+  it.each([...ACCEPTED_OPERATOR_CONTRACT_VERSIONS])(
+    'accepts a ready frame at supported version %s',
+    async version => {
+      const {events, errors} = await runReader(readyText(version) + sseQuestion(questionPayload()))
+      expect(errors).toHaveLength(0)
+      expect(events.map(e => e.type)).toEqual(['ready', 'question'])
+    },
+  )
+
+  // Unknown versions outside the set still fail closed with no frame dispatched.
+  it.each(['1.5.0', '1.12.0', DRIFTED_VERSION, '1.11', 'x'])(
+    'fails closed on unsupported version %s and dispatches no question frame',
+    async version => {
+      const {events, errors} = await runReader(readyText(version) + sseQuestion(questionPayload()))
+      expect(errors).toHaveLength(1)
+      expect(errors[0]?.message).toContain('contract-drift')
+      expect(events).toHaveLength(0)
+    },
+  )
 })
 
 describe('parseSseChunk — question frame', () => {

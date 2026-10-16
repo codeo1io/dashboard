@@ -841,7 +841,7 @@ describe('defaultRuntimeLoader — question region and summary status wiring', (
     runtime.cleanup()
   })
 
-  it('a status class outside the run-summary allowlist is never passed as summaryStatus', async () => {
+  it('passes summaryStatus for allowlisted classes — waiting overlays included — and never for others', async () => {
     document.body.innerHTML = `${cardHtml('run-q-wait', 'status-waiting-for-approval')}${cardHtml('run-q-evil', 'status-evil')}${cardHtml('run-q-none', '')}<div data-role="stream-status"></div>`
     const {runtime, initCalls, select} = await mountLoader()
 
@@ -850,7 +850,9 @@ describe('defaultRuntimeLoader — question region and summary status wiring', (
     select('run-q-none')
 
     expect(initCalls).toHaveLength(3)
-    for (const call of initCalls) expect('summaryStatus' in call.opts).toBe(false)
+    expect(initCalls[0]?.opts).toMatchObject({summaryStatus: 'waiting_for_approval'})
+    expect('summaryStatus' in (initCalls[1]?.opts ?? {})).toBe(false)
+    expect('summaryStatus' in (initCalls[2]?.opts ?? {})).toBe(false)
     runtime.cleanup()
   })
 
