@@ -294,6 +294,28 @@ export function Operator({state = 'loading', onRuntimeStateChange, fixtureMode, 
               Recent Runs
             </h2>
 
+            {/* A jump can leave the run open in the background while this fixed-copy notice stays visible. */}
+            <div
+              data-role="run-jump-notice"
+              hidden
+              className="operator-warning-panel operator-run-jump-notice"
+            >
+              <div
+                data-role="run-jump-miss"
+                role="status"
+                aria-live="polite"
+                hidden
+              />
+              <button
+                type="button"
+                data-role="run-jump-dismiss"
+                className="operator-run-jump-dismiss"
+                aria-label="Dismiss notice"
+              >
+                <span aria-hidden="true">×</span>
+              </button>
+            </div>
+
             <div
               data-role="run-index-loading"
               aria-live="polite"
@@ -345,6 +367,15 @@ export function Operator({state = 'loading', onRuntimeStateChange, fixtureMode, 
               aria-live="polite"
               hidden
               className="operator-stream-status"
+            />
+
+            {/* Separate from stream-status, which the stream rewrites on every frame. */}
+            <div
+              data-role="run-jump-announcer"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              className="sr-only"
             />
           </section>
 

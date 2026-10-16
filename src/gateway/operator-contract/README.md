@@ -60,6 +60,12 @@ inlined boundary types for RunPhase/Surface/RunState).
     parsers, which drop extra keys; a question frame is a closed wire shape.
   - `PendingQuestionDTO`, the decision request types, and the decision response types are
     copied as upstream has them. The dashboard server has no caller for them yet.
+- `run-summary.ts` — vendored from the operator-contract barrel. One deviation, an addition:
+  `RUN_SUMMARY_STATUSES` is an exported `as const` list of the summary statuses, and the
+  parser's private allowlist is built from it (it was a hand-listed `Set`). A compile-time check
+  (`RunSummaryStatusesAreExact`) fails the type check if the list and `RunSummaryStatus` differ
+  in either direction. Accept/reject behavior is unchanged. The union itself is left as upstream
+  has it, so this needs no upstream coordination to keep working.
 - `sse-frames.ts` — vendored from the gateway's web/sse/ surface
   (packages/gateway/src/web/sse/). This is a parallel surface to
   the contract barrel; it is NOT part of the upstream operator-contract barrel
@@ -94,6 +100,9 @@ The following upstream exports are omitted because they depend on upstream-only 
   `RunCoreErrorKind` from gateway-only execute code. `run-status.ts` keeps a local
   `OPERATOR_FAILURE_KINDS` set and `isOperatorFailureKind` instead.
 - `DecisionInput` — requires `ApprovalActor` from `../approvals/registry.js`
+- `toRunSummary` — requires `RunState` from `@fro-bot/runtime`
+- `OperatorPushVapidKeyResponse`, the subscription metadata and request types — not vendored from `responses.ts`;
+  `push.ts` is the dashboard's own copy of those shapes.
 
 The PUBLIC frozen types (OperatorDecisionState, OperatorWebStatus, OperatorRunStatus,
 OperatorSessionInfo, OperatorCsrfToken, OperatorOk, OperatorError, OperatorIdentity,

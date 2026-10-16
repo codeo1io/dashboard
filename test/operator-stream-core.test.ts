@@ -690,6 +690,18 @@ describe('nextStreamState — ready frame', () => {
     expect(state.connection).toBe('drift')
   })
 
+  it('drifts on the two minors behind the pin: an older gateway can never pass as current', () => {
+    const [major = 0, minor = 0] = PINNED_CONTRACT_VERSION.split('.').map(Number)
+    const olderMinors = [1, 2].map(back => `${major}.${minor - back}.0`)
+    expect(olderMinors).toHaveLength(2)
+    for (const contractVersion of olderMinors) {
+      expect(contractVersion).not.toBe(PINNED_CONTRACT_VERSION)
+      const state = nextStreamState(INITIAL_STATE, {type: 'ready', data: {contractVersion}})
+      expect(state.connection, contractVersion).toBe('drift')
+      expect(state.shouldReconnect, contractVersion).toBe(false)
+    }
+  })
+
   it('does not retain any run status on drift', () => {
     // Pre-populate a run, then drift
     const withRun = nextStreamState(INITIAL_STATE, {
@@ -9542,9 +9554,9 @@ describe('getEffectiveStatus — derived from the wire status and open questions
     expect(getEffectiveStatus(qEntry(state))).toBe('waiting_for_approval')
   })
 
-  it('wire waiting_for_question with an open approval is waiting_for_approval', () => {
+  it('wire waiting_for_question with an open approval stays waiting_for_question (the overlay applies to running only)', () => {
     const state = withApproval(qStatus(qLive(), 'waiting_for_question'))
-    expect(getEffectiveStatus(qEntry(state))).toBe('waiting_for_approval')
+    expect(getEffectiveStatus(qEntry(state))).toBe('waiting_for_question')
   })
 
   it('terminal wins over an open approval', () => {
@@ -9625,6 +9637,79 @@ describe('getEffectiveStatus — derived from the wire status and open questions
     expect(getEffectiveStatus(undefined)).toBe('')
     expect(getEffectiveStatus(null)).toBe('')
     expect(getEffectiveStatus({runId: 'r', status: 'running', phase: 'EXECUTING', startedAt: '', stale: false, terminal: false})).toBe('running')
+  })
+})
+
+// Truth table pinned to the gateway's overlay. Upstream: fro-bot/agent @ a119ba4ce8082b4c0bf2ce298466f31b42690541,
+// packages/gateway/src/web/sse/projection.ts `overlayWaitingStatus`:
+//   if (status !== 'running') return status
+//   if (hasPendingApproval(scope)) return 'waiting_for_approval'
+//   if (hasPendingQuestion(scope)) return 'waiting_for_question'
+//   return status
+// Only a wire `running` is overlaid; approval beats question; every other wire status passes through.
+// The one client-only rule on top (not in the gateway): a wire `waiting_for_question` with no open question
+// demotes to `running` once a question reconcile has completed (pinned separately below).
+describe('getEffectiveStatus — gateway overlay truth table', () => {
+  beforeEach(() => resetQuestionPageStore())
+  afterEach(() => resetQuestionPageStore())
+
+  const TERMINAL = ['succeeded', 'failed', 'cancelled']
+  const PASS_THROUGH = ['waiting_for_approval', 'queued', 'blocked', ...TERMINAL]
+
+  function entryWith(status: string, approval: boolean, question: boolean): RunEntry {
+    const base = qEntry(qStatus(qLive(), status))
+    return {
+      ...base,
+      status,
+      terminal: TERMINAL.includes(status),
+      approvalOpenPrompts: approval
+        ? {'req-a-1': {runId: Q_RUN, requestID: 'req-a-1', permission: 'shell', settled: false}}
+        : {},
+      questionOpen: new Map(question ? [['req-q-1', {requestID: 'req-q-1', questions: []}]] : []),
+    }
+  }
+
+  // [wire status, open approval, open question, expected]
+  const rows: [string, boolean, boolean, string][] = [
+    ['running', false, false, 'running'],
+    ['running', false, true, 'waiting_for_question'],
+    ['running', true, false, 'waiting_for_approval'],
+    ['running', true, true, 'waiting_for_approval'],
+    // No question is open and no reconcile has completed, so the wire value is kept.
+    ['waiting_for_question', false, false, 'waiting_for_question'],
+    ['waiting_for_question', false, true, 'waiting_for_question'],
+    ['waiting_for_question', true, false, 'waiting_for_question'],
+    ['waiting_for_question', true, true, 'waiting_for_question'],
+    ...PASS_THROUGH.flatMap((status): [string, boolean, boolean, string][] => [
+      [status, false, false, status],
+      [status, false, true, status],
+      [status, true, false, status],
+      [status, true, true, status],
+    ]),
+  ]
+
+  it.each(rows)('wire %s, open approval %s, open question %s -> %s', (status, approval, question, expected) => {
+    expect(getEffectiveStatus(entryWith(status, approval, question))).toBe(expected)
+  })
+
+  it('a terminal status always wins, whatever is open', () => {
+    for (const status of TERMINAL) {
+      for (const approval of [false, true]) {
+        for (const question of [false, true]) {
+          expect(getEffectiveStatus(entryWith(status, approval, question))).toBe(status)
+        }
+      }
+    }
+  })
+
+  it('a wire waiting_for_question with no open question demotes to running once a reconcile has completed', () => {
+    const entry = {...entryWith('waiting_for_question', false, false), questionReconcileDone: true}
+    expect(getEffectiveStatus(entry)).toBe('running')
+  })
+
+  it('a wire waiting_for_question with an open question is not demoted by a completed reconcile', () => {
+    const entry = {...entryWith('waiting_for_question', false, true), questionReconcileDone: true}
+    expect(getEffectiveStatus(entry)).toBe('waiting_for_question')
   })
 })
 
@@ -9833,6 +9918,35 @@ describe('question status — label, wire acceptance and styling', () => {
     const css = await fs.readFile(new URL('../web/src/index.css', import.meta.url).pathname, 'utf8')
     expect(css).toMatch(/\.run-status\.status-waiting-for-question\b/)
     expect(css).toMatch(/\[data-theme="light"\] \.run-status\.status-waiting-for-question\b/)
+  })
+
+  it.each([
+    ['queued', 'Queued'],
+    ['running', 'Running'],
+    ['waiting_for_approval', 'Waiting for approval'],
+    ['waiting_for_question', 'Waiting for answer'],
+    ['succeeded', 'Succeeded'],
+    ['failed', 'Failed'],
+    ['cancelled', 'Cancelled'],
+  ])('paints the label for the wire summary status %s, never the raw string', async (wire, label) => {
+    resetQuestionPageStore()
+    const status = await paintedStatus([statusRecord(wire)])
+    expect(status.textContent).toBe(label)
+    expect(status.textContent).not.toBe(wire)
+  })
+
+  it('keeps run-status badges on one line at narrow widths', async () => {
+    const fs = await import('node:fs/promises')
+    const css = await fs.readFile(new URL('../web/src/index.css', import.meta.url).pathname, 'utf8')
+    expect(css).toMatch(/\.run-status\s*\{[^}]*white-space:\s*nowrap;/)
+  })
+
+  it('keeps jump notices visible while the run list is scrolled', async () => {
+    const fs = await import('node:fs/promises')
+    const css = await fs.readFile(new URL('../web/src/index.css', import.meta.url).pathname, 'utf8')
+    const noticeStyles = css.match(/\.operator-run-jump-notice\s*\{([^}]*)\}/)?.[1] ?? ''
+    expect(noticeStyles).toMatch(/position:\s*sticky;/)
+    expect(noticeStyles).toMatch(/top:\s*calc\(var\(--space-12\)\s*\+\s*var\(--space-3\)\);/)
   })
 })
 
@@ -11843,5 +11957,69 @@ describe('rm-853 — nextStreamState output seq-gap detection', () => {
     expect(gapEl.hidden).toBe(false)
     expect(gapEl.textContent).not.toBe('')
     expect(coalescedEl.hidden).toBe(true)
+  })
+})
+
+describe('stream handle — getConnectionStatus (what a re-open from a notification needs to know)', () => {
+  afterEach(u4Cleanup)
+
+  it('is active while connecting, once live, and while reconnecting', async () => {
+    const h = u4Start({initial: [[U4_READY, u4Status('running')]]})
+    expect(h.handle.getConnectionStatus()).toBe('active') // connecting: nothing has arrived yet
+    await h.flush()
+    expect(h.handle.getConnectionStatus()).toBe('active') // live
+    h.push(0, U4_RESET_SHUTDOWN)
+    await h.flush(0)
+    expect(h.handle.getConnectionStatus()).toBe('active') // reconnecting, not given up
+  })
+
+  it('is inactive when the stream closed cleanly without a terminal status', async () => {
+    const h = u4Start({initial: [[U4_READY, u4Status('running')]]})
+    await h.flush()
+    h.end(0)
+    await h.flush(5000)
+    expect(h.handle.getConnectionStatus()).toBe('inactive')
+  })
+
+  it('is terminal once the run reached a terminal status, even after the connection closes', async () => {
+    const h = u4Start({initial: [[U4_READY, u4Status('succeeded')]]})
+    await h.flush()
+    expect(h.handle.getConnectionStatus()).toBe('terminal')
+    h.end(0)
+    await h.flush(5000)
+    expect(h.handle.getConnectionStatus()).toBe('terminal')
+  })
+
+  it('is inactive after close()', async () => {
+    const h = u4Start({initial: [[U4_READY, u4Status('running')]]})
+    await h.flush()
+    h.handle.close()
+    expect(h.handle.getConnectionStatus()).toBe('inactive')
+  })
+
+  it('is inactive when the gateway has no such stream (404) and does not reconnect', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('document', {createElement: (tag: string) => makeFakeEl(tag)})
+    vi.stubGlobal('addEventListener', () => {})
+    const fetchMock = vi.fn(async () => ({ok: false, status: 404, headers: {get: () => null}, body: null}))
+    vi.stubGlobal('fetch', fetchMock)
+    const handle = initOperatorStream({
+      runId: Q_RUN,
+      statusEl: makeFakeEl('span') as never,
+      noticeEl: makeFakeEl('div') as never,
+    })
+    u4Handles.push(handle)
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(handle.getConnectionStatus()).toBe('inactive')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('reads state only: calling it neither writes the DOM nor changes the connection', async () => {
+    const h = u4Start({initial: [[U4_READY, u4Status('running')]]})
+    await h.flush()
+    const before = h.statusEl.textContent
+    for (let i = 0; i < 3; i++) h.handle.getConnectionStatus()
+    expect(h.statusEl.textContent).toBe(before)
+    expect(h.listCalls).toHaveLength(1)
   })
 })
