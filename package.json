@@ -15,7 +15,8 @@
     "lint": "eslint --cache --cache-location node_modules/.cache/eslint/",
     "fix": "eslint --fix",
     "pretest": "pnpm build:web",
-    "test": "vitest run && vitest run --config web/vitest.config.ts"
+    "test": "vitest run && vitest run --config web/vitest.config.ts",
+    "gates": "pnpm check-types && node scripts/lint-baseline.ts && pnpm test && pnpm build:web"
   },
   "dependencies": {
     "@bfra.me/es": "0.1.0",
@@ -33,7 +34,7 @@
     "@bfra.me/eslint-config": "0.54.0",
     "@bfra.me/tsconfig": "0.13.2",
     "@opencode-ai/plugin": "1.18.35",
-    "@playwright/test": "^1.63.0",
+    "@playwright/test": "1.63.0",
     "@tailwindcss/vite": "4.3.3",
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/react": "16.3.3",
