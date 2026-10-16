@@ -54,8 +54,84 @@ describe('monitoring API', () => {
       const res = await fetchMonitoring()
       expect(res.ok).toBe(true)
       if (res.ok) {
-        expect(res.data.platformStatus).toEqual(mockData.platformStatus)
+        // rm-1467: the maintenance list is a later rider on the annotation;
+        // older servers omit it and that parses to the empty list.
+        expect(res.data.platformStatus).toEqual({...mockData.platformStatus, maintenances: []})
       }
+    })
+
+    // rm-1467: upcoming/underway platform maintenance windows ride the DTO.
+    // The parse is strict per-window (malformed window = drift, not silent
+    // drop) and fail-open only at the annotation level, matching rm-1447.
+    describe('rm-1467 maintenance windows', () => {
+      it('parses present windows, preserving order and both statuses', async () => {
+        const mockData = {
+          repos: [],
+          staleBanner: false,
+          driftCount: 0,
+          enumerationIncomplete: null,
+          refreshedAt: 1742000000000,
+          platformStatus: {
+            overall: 'none',
+            overallDescription: 'All Systems Operational',
+            actions: 'operational',
+            maintenances: [
+              {name: 'Actions maintenance', status: 'scheduled', scheduledFor: '2026-10-20T14:00:00Z', scheduledUntil: '2026-10-20T16:00:00Z'},
+              {name: 'API maintenance', status: 'in_progress', scheduledFor: '2026-10-17T04:00:00Z', scheduledUntil: '2026-10-17T06:00:00Z'},
+            ],
+            fetchedAt: 1742000001000,
+          },
+        }
+        vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+        const res = await fetchMonitoring()
+        expect(res.ok).toBe(true)
+        if (res.ok) {
+          expect(res.data.platformStatus?.maintenances).toEqual(mockData.platformStatus.maintenances)
+        }
+      })
+
+      it('a malformed window entry fails closed as contract-drift (no silent drop)', async () => {
+        const mockData = {
+          repos: [],
+          staleBanner: false,
+          driftCount: 0,
+          enumerationIncomplete: null,
+          refreshedAt: 1742000000000,
+          platformStatus: {
+            overall: 'none',
+            overallDescription: '',
+            actions: 'operational',
+            maintenances: [{name: 'bad window', status: 'whenever', scheduledFor: 'x', scheduledUntil: 'y'}],
+            fetchedAt: 1742000001000,
+          },
+        }
+        vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+        const res = await fetchMonitoring()
+        expect(res).toEqual({ ok: false, reason: 'contract-drift' })
+      })
+
+      it('a non-array maintenances value is contract-drift', async () => {
+        const mockData = {
+          repos: [],
+          staleBanner: false,
+          driftCount: 0,
+          enumerationIncomplete: null,
+          refreshedAt: 1742000000000,
+          platformStatus: {
+            overall: 'none',
+            overallDescription: '',
+            actions: 'operational',
+            maintenances: {name: 'not a list'},
+            fetchedAt: 1742000001000,
+          },
+        }
+        vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+        const res = await fetchMonitoring()
+        expect(res).toEqual({ ok: false, reason: 'contract-drift' })
+      })
     })
 
     it('rm-1447: explicit null platformStatus parses to null (fail-open absence)', async () => {
