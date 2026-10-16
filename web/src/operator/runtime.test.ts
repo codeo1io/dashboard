@@ -889,6 +889,217 @@ describe('defaultRuntimeLoader — question region and summary status wiring', (
   })
 })
 
+describe('defaultRuntimeLoader — card reveal (rm-873 port of upstream #634)', () => {
+  type RunIndexInitOpts = {
+    onSelectRun?: (runId: string) => void
+    onRestoreRun?: (runId: string, card: Element, status: string) => void
+  }
+  type LaunchInitOpts = {onRunLaunched?: (runId: string, card: HTMLElement) => void}
+
+  let scrolled: string[]
+  let scrollOptions: (ScrollIntoViewOptions | undefined)[]
+  let animationFrames: {id: number; cb: FrameRequestCallback}[]
+  let canceledFrames: number[]
+  let frameSeq: number
+  let markExpanded: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    scrolled = []
+    scrollOptions = []
+    animationFrames = []
+    canceledFrames = []
+    frameSeq = 0
+    markExpanded = vi.fn()
+    // Fake rAF with real cancellation semantics: a canceled frame is dropped from the queue.
+    Object.defineProperty(window, 'requestAnimationFrame', {
+      configurable: true,
+      value: (cb: FrameRequestCallback) => {
+        frameSeq += 1
+        animationFrames.push({id: frameSeq, cb})
+        return frameSeq
+      },
+    })
+    Object.defineProperty(window, 'cancelAnimationFrame', {
+      configurable: true,
+      value: (id: number) => {
+        canceledFrames.push(id)
+        const index = animationFrames.findIndex(frame => frame.id === id)
+        if (index >= 0) animationFrames.splice(index, 1)
+      },
+    })
+    // jsdom has no scrollIntoView; record which card was scrolled to.
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      writable: true,
+      value(this: HTMLElement, options?: ScrollIntoViewOptions) {
+        scrolled.push(this.dataset.runId ?? '')
+        scrollOptions.push(options)
+      },
+    })
+  })
+
+  afterEach(() => {
+    document.body.innerHTML = ''
+    vi.doUnmock('/static/operator-stream.js?manual=1')
+    vi.doUnmock('/static/operator-run-index.js?manual=1')
+    vi.doUnmock('/static/operator-launch.js?manual=1')
+    vi.restoreAllMocks()
+    Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView')
+    Reflect.deleteProperty(window, 'requestAnimationFrame')
+    Reflect.deleteProperty(window, 'cancelAnimationFrame')
+  })
+
+  /** Run every pending animation frame (bounded rounds, upstream's flushAnimationFrames). */
+  async function flushAnimationFrames() {
+    for (let frame = 0; frame < 4; frame += 1) {
+      const pending = animationFrames.splice(0)
+      if (pending.length === 0) break
+      for (const {cb} of pending) cb(0)
+      await new Promise<void>(resolve => {
+        setTimeout(resolve, 0)
+      })
+    }
+  }
+
+  /** Mount the real default loader with the public modules mocked; returns the captured seams. */
+  async function mountLoader() {
+    const handle = {close: vi.fn()}
+    const initOperatorStream = vi.fn(() => handle)
+    let captured: RunIndexInitOpts | undefined
+    let capturedLaunch: LaunchInitOpts | undefined
+    vi.doMock('/static/operator-stream.js?manual=1', () => ({
+      initOperatorStream,
+      bootstrapOperatorStreams: vi.fn(),
+      resetBootstrapState: vi.fn(),
+    }))
+    vi.doMock('/static/operator-run-index.js?manual=1', () => ({
+      initOperatorRunIndex: async (opts: RunIndexInitOpts) => {
+        captured = opts
+      },
+      resetRunIndexState: vi.fn(),
+      markRunStreamAttached: vi.fn(),
+      markCardExpandedForLaunch: markExpanded,
+    }))
+    vi.doMock('/static/operator-launch.js?manual=1', () => ({
+      initOperatorLaunch: vi.fn(async (opts: LaunchInitOpts) => {
+        capturedLaunch = opts
+      }),
+      resetLaunchState: vi.fn(),
+    }))
+    const runtime = createOperatorRuntime({container: makeContainer(), onStateChange: vi.fn()})
+    await vi.waitFor(() => {
+      expect(captured).toBeDefined()
+      expect(capturedLaunch).toBeDefined()
+    })
+    return {
+      runtime,
+      select: (runId: string) => captured?.onSelectRun?.(runId),
+      restore: (runId: string, card: Element) => captured?.onRestoreRun?.(runId, card, 'running'),
+      launched: (runId: string, card: HTMLElement) => capturedLaunch?.onRunLaunched?.(runId, card),
+    }
+  }
+
+  function cardHtml(runId: string): string {
+    return `
+      <div data-run-id="${runId}">
+        <span data-role="run-status" class="run-status status-running"></span>
+      </div>`
+  }
+
+  function cardEl(runId: string): HTMLElement {
+    return document.querySelector(`[data-run-id="${runId}"]`) as HTMLElement
+  }
+
+  it('onSelectRun expand reveals the card on the second animation frame with block nearest', async () => {
+    document.body.innerHTML = cardHtml('run-r-a')
+    const {runtime, select} = await mountLoader()
+
+    select('run-r-a')
+    // First frame only flushes the expansion's DOM work — nothing has scrolled yet.
+    const firstRound = animationFrames.splice(0)
+    expect(firstRound).toHaveLength(1)
+    for (const {cb} of firstRound) cb(0)
+    expect(scrolled).toEqual([])
+
+    await flushAnimationFrames()
+
+    expect(scrolled).toEqual(['run-r-a'])
+    expect(scrollOptions).toEqual([{block: 'nearest'}])
+    runtime.cleanup()
+  })
+
+  it('no reveal on the collapse path: selecting the active run again cancels the pending frame', async () => {
+    document.body.innerHTML = cardHtml('run-r-a')
+    const {runtime, select} = await mountLoader()
+
+    select('run-r-a')
+    select('run-r-a') // collapse: the pending reveal must be canceled, not fired
+    await flushAnimationFrames()
+
+    expect(scrolled).toEqual([])
+    expect(canceledFrames.length).toBeGreaterThan(0)
+    runtime.cleanup()
+  })
+
+  it('onRestoreRun reveals the restored card', async () => {
+    document.body.innerHTML = cardHtml('run-r-rest')
+    const {runtime, restore} = await mountLoader()
+
+    restore('run-r-rest', cardEl('run-r-rest'))
+    await flushAnimationFrames()
+
+    expect(scrolled).toEqual(['run-r-rest'])
+    expect(scrollOptions).toEqual([{block: 'nearest'}])
+    runtime.cleanup()
+  })
+
+  it('onRunLaunched reveals the launched card before marking it expanded-for-launch', async () => {
+    document.body.innerHTML = cardHtml('run-r-new')
+    const {runtime, launched} = await mountLoader()
+
+    launched('run-r-new', cardEl('run-r-new'))
+    // The reveal is already scheduled when the launch mark lands (source order: scroll, attach, mark).
+    expect(animationFrames.length).toBeGreaterThan(0)
+    expect(markExpanded).toHaveBeenCalledWith('run-r-new')
+
+    await flushAnimationFrames()
+
+    expect(scrolled).toEqual(['run-r-new'])
+    runtime.cleanup()
+  })
+
+  it('a second select before the frames flush cancels the first card’s reveal', async () => {
+    document.body.innerHTML = `${cardHtml('run-r-x')}${cardHtml('run-r-y')}`
+    const {runtime, select} = await mountLoader()
+
+    select('run-r-x')
+    select('run-r-y')
+    await flushAnimationFrames()
+
+    expect(scrolled).toEqual(['run-r-y'])
+    runtime.cleanup()
+  })
+
+  it('cleanup cancels a pending reveal', async () => {
+    document.body.innerHTML = cardHtml('run-r-c')
+    const {runtime, select} = await mountLoader()
+
+    select('run-r-c')
+    runtime.cleanup()
+    await flushAnimationFrames()
+
+    expect(scrolled).toEqual([])
+    runtime.cleanup()
+  })
+
+  it('index.css gives run cards a scroll margin below the sticky header', async () => {
+    const {readFileSync} = await import('node:fs')
+    const {resolve} = await import('node:path')
+    const text = readFileSync(resolve(import.meta.dirname, '..', 'index.css'), 'utf8')
+    expect(text).toMatch(/\.run-card\s*\{[^}]*scroll-margin-top:\s*calc\(var\(--space-12\) \+ var\(--space-4\)\)/s)
+  })
+})
+
 describe('discoverCardStreamTargets', () => {
   afterEach(() => {
     document.body.innerHTML = ''
