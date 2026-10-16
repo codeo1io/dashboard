@@ -27,6 +27,7 @@
 import {validateDynamicId} from './validate-dynamic-id.ts'
 import type {RunSummaryStatus} from '../../../public/operator-stream.js'
 import type {OperatorState} from './state.ts'
+import {clearGatewaySignInRedirectGuard, maybeAutoRedirectToGatewaySignIn} from './sign-in-recovery.ts'
 
 /**
  * Hard cap on a location.hash-sourced runId, matching the run-summary parser's
@@ -353,7 +354,7 @@ async function defaultRuntimeLoader(opts?: {
       onRestoreRun?: (runId: string, card: Element, status: string) => void
       onRestoreMiss?: () => void
       onAuthRequired?: () => void
-    }) => Promise<void>
+    }) => Promise<'loaded' | 'empty' | 'auth-required' | 'unavailable' | 'stale'>
     resetRunIndexState?: () => void
     markRunStreamAttached?: (runId: string) => void
     markCardExpandedForLaunch?: (runId: string) => void
@@ -424,7 +425,80 @@ async function defaultRuntimeLoader(opts?: {
   // - Otherwise the card was just expanded — close whichever stream is active
   //   (if any) and attach the new one. _attachStream already closes the prior
   //   handle first, so this covers both "nothing was open" and "switching cards."
+  let cancelPendingCardReveal = () => {}
+
+  /** Port of upstream #634 (de2ce7f, release 2026.10.34): scroll an expanded,
+   *  restored card fully into view — top edge just below the sticky header — and
+   *  again once its question or approval content paints, unless the user scrolls
+   *  first. The follow-up scroll expires after 10 seconds, stops on a press or an
+   *  ordinary card select or collapse, skips a collapsed card, ignores arrow keys
+   *  typed into a field, and reduced motion skips the smooth scroll. */
+  const scrollRunCardIntoView = (card: HTMLElement): void => {
+    cancelPendingCardReveal()
+
+    const reduceMotion = typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const behavior: ScrollBehavior = reduceMotion ? 'auto' : 'smooth'
+    const scrollToStart = () => {
+      if (typeof card.scrollIntoView === 'function') card.scrollIntoView({block: 'start', behavior})
+    }
+    scrollToStart()
+
+    let cancelled = false
+    let firstFrame: number | undefined
+    let secondFrame: number | undefined
+    let revealTimeout: number | undefined
+    const observer = new MutationObserver(checkForRevealedContent)
+
+    const cleanup = () => {
+      cancelled = true
+      observer.disconnect()
+      if (firstFrame !== undefined) window.cancelAnimationFrame?.(firstFrame)
+      if (secondFrame !== undefined) window.cancelAnimationFrame?.(secondFrame)
+      if (revealTimeout !== undefined) window.clearTimeout(revealTimeout)
+      window.removeEventListener('wheel', onUserScroll)
+      window.removeEventListener('touchmove', onUserScroll)
+      window.removeEventListener('pointerdown', onUserScroll)
+      window.removeEventListener('keydown', onScrollKey)
+      if (cancelPendingCardReveal === cleanup) cancelPendingCardReveal = () => {}
+    }
+    const onUserScroll = () => cleanup()
+    const onScrollKey = (event: KeyboardEvent) => {
+      if (event.target instanceof Element
+        && event.target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])') !== null) return
+      if (['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp', ' '].includes(event.key)) cleanup()
+    }
+
+    const hasRevealedContent = () =>
+      Array.from(card.querySelectorAll<HTMLElement>('[data-role="run-questions"], [data-role="run-approvals"]'))
+        .some(region => !region.hidden && region.childNodes.length > 0)
+
+    function checkForRevealedContent() {
+      if (cancelled || card.dataset.expanded !== 'true' || !hasRevealedContent()) return
+      observer.disconnect()
+      firstFrame = window.requestAnimationFrame(() => {
+        firstFrame = undefined
+        secondFrame = window.requestAnimationFrame(() => {
+          secondFrame = undefined
+          if (cancelled || card.dataset.expanded !== 'true') return cleanup()
+          scrollToStart()
+          cleanup()
+        })
+      })
+    }
+
+    cancelPendingCardReveal = cleanup
+    window.addEventListener('wheel', onUserScroll, {passive: true})
+    window.addEventListener('touchmove', onUserScroll, {passive: true})
+    window.addEventListener('pointerdown', onUserScroll)
+    window.addEventListener('keydown', onScrollKey)
+    revealTimeout = window.setTimeout(cleanup, 10_000)
+    observer.observe(card, {attributes: true, childList: true, subtree: true, attributeFilter: ['hidden', 'data-expanded']})
+    checkForRevealedContent()
+  }
+
   const onSelectRun = (runId: string) => {
+    cancelPendingCardReveal()
     if (streamOwner.activeRunId === runId) {
       streamOwner.close()
       _clearRunHash()
@@ -461,6 +535,7 @@ async function defaultRuntimeLoader(opts?: {
     const noticeEl = typeof document !== 'undefined'
       ? document.querySelector('[data-role="stream-status"]')
       : null
+    if (card instanceof HTMLElement) scrollRunCardIntoView(card)
     _attachStream(runId, statusEl, noticeEl)
   }
 
@@ -513,7 +588,10 @@ async function defaultRuntimeLoader(opts?: {
     const runIndexOpts = opts?.endpointBase !== undefined
       ? {endpointBase: opts.endpointBase, fixtureSessionId: opts.fixtureSessionId, onSelectRun, restoreRunId, onRestoreRun, onRestoreMiss, onAuthRequired}
       : {onSelectRun, restoreRunId, onRestoreRun, onRestoreMiss, onAuthRequired}
-    await runIndexMod.initOperatorRunIndex(runIndexOpts)
+    const initOutcome = await runIndexMod.initOperatorRunIndex(runIndexOpts)
+    // The fixture harness has no gateway sign-in route, so it never redirects.
+    if (initOutcome === 'auth-required' && opts?.endpointBase === undefined) maybeAutoRedirectToGatewaySignIn('auth-required')
+    if (initOutcome === 'loaded' || initOutcome === 'empty') clearGatewaySignInRedirectGuard()
   }
 
   if (typeof launchMod.resetLaunchState === 'function') {
