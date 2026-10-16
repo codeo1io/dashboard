@@ -206,9 +206,10 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### OAuth PKCE (S256) for the operator login flow
-- id: `rm-149` | track: reliability | priority: 66.0 | status: in_progress
+- id: `rm-149` | track: reliability | priority: 66.0 | status: done
 - acceptance: the authorization redirect carries state AND an S256 code_challenge; the verifier lives in a short-lived HttpOnly SameSite=Lax cookie mirroring the state pattern; the token exchange sends code_verifier and rejects mismatches; tests cover challenge-absent rejection at exchange, verifier-mismatch rejection, and the happy path; grep shows code_challenge wired at the single redirect builder
 - evidence: campaign-recorded in dashboard ROADMAP.md
+- rider: adopted from parked run ba5f6d7ddd67 (commit 8f42afb, batch rm-149/281) via the PR #295 review; the CodeQL js/insufficient-password-hash hits on validation PRs #232/#237/#295/#298 are false positives cured in-test per RFC 7636 §4.2 (challenge = BASE64URL(SHA-256(verifier)) is the mandated S256 transform over a one-time random verifier, not password storage); alert #75 is the same false positive — its dismissal rides the PR #295 review response
 
 ### Bound the installations enumeration transport (rm-156 fetch seam)
 - id: `rm-267` | track: reliability | priority: 66.0 | status: in_progress
