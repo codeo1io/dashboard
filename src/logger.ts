@@ -34,6 +34,14 @@ export const DEFAULT_SENSITIVE_FIELDS: readonly string[] = [
   'access_token',
   'refresh_token',
   'private',
+  // rm-1482 (2026-10-17): the cookie/session family. Structured-context
+  // values ride the field-NAME redactor (sanitizeErrorMessage only scrubs
+  // value shapes inside error-message STRINGS), so the names must be listed
+  // here for a future cookie-bearing context object to mask. 'cookie'
+  // covers cookie/setCookie spellings; 'session' covers session/sessionId —
+  // a session id is itself a bearer credential.
+  'cookie',
+  'session',
 ] as const
 
 const REDACTED = '[REDACTED]'
