@@ -25,9 +25,10 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Aggregator GraphQL queries are a live syntax error (//-comments inside templates)
-- id: `rm-177` | track: reliability | priority: 97.0 | status: in_progress
+- id: `rm-177` | track: reliability | priority: 97.0 | status: implemented 2026-10-16, validated pre-review, offline + live proven (run 528f458d245a cycle:1 implement 1724e837; registry-scoped guard test/query-shape-guard.test.ts joined by NEW directory-wide test/gql-template-guard.test.ts scanning every backtick template in src/github with a hazard-injection self-test; live tail proven the same day by scripts/graphql-canary.ts exit 0 — both registered templates answered by the real GraphQL API; full-suite confirmation rides the full_tests gate; batch doc delegate/dacfec67d7a34644867aed2a0f9da553-scratch/batch-selection-2026-10-16.md)
 - acceptance: the two comments become `#`-style or move outside the templates (the rm-110 ceiling note survives in valid form); a structural guard test asserts no exported query template contains a `//`-prefixed line (negative-verified); full suite green; the board's live data path recovers — proven by rm-179's canary or one recorded live query
 - evidence: campaign-recorded in dashboard ROADMAP.md
+- evidence: implement run 528f458d attempt 1724e837 — focused vitest of query-shape-guard + gql-template-guard green (11 tests), gql guard negative-verified by injecting a `//` line into REPO_STATUS_QUERY and observing red before revert; graphql-canary live run green on both templates (sha256 732438f0b992654223d826ed46216fc20e1e2bff702ddd8a727fffbd9cd3ba52 / 25bf331fe90fbf162667bbaac1c6da0beac23a667de22abb9f480513d57af094)
 
 ### Lint gate blocked on main: ROADMAP paragraph-length cliff (rm-103 and rm-157 signals paragraphs)
 - id: `rm-284` | track: reliability | priority: 97.0 | status: in_progress
@@ -50,9 +51,10 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Security floors + the audit-invisible hono pair: one lockfile refresh to audit-zero (GHSA-hrr3 hardens the fast-uri floor to 3.1.8)
-- id: `rm-285` | track: reliability | priority: 92.0 | status: in_progress
+- id: `rm-285` | track: reliability | priority: 92.0 | status: implemented 2026-10-16, validated pre-review (run 528f458d245a cycle:1 implement 1724e837; every named floor verified present in the lockfile at base 5d5f9be — fast-uri 3.1.8, brace-expansion 2.1.7 + 5.0.12, undici 7.30.0, hono 4.13.13; `pnpm audit -r` exits 0 re-probed LIVE 2026-10-16; dependabot state=open count 0; acceptance's stale figures re-derived at the flip: the lockfile now carries @hono/node-server 2.1.5, an in-range refresh past the recorded 2.1.3)
 - acceptance: floors go brace-expansion@2 >=2.1.7, brace-expansion@5 >=5.0.12, fast-uri@3 >=3.1.8 <4.0.0, undici@7 >=7.29.1 <8.0.0; the lockfile re-resolves to fast-uri 3.1.8, brace-expansion 2.1.7 + 5.0.12, undici 7.29.1, hono 4.13.11, @hono/node-server 2.1.3 — every one in-range for the package.json specifiers (no manifest edit); `pnpm audit -r` exits 0 re-probed LIVE at implement time; dependabot alerts #29/#30 close after the push; hono 4.13.12 (published 2026-09-30T09:43:03Z, routine — NOT the security line) is an optional in-range rider only after minimumReleaseAge maturity 2026-10-01T09:43Z
 - evidence: campaign-recorded in dashboard ROADMAP.md
+- evidence: implement run 528f458d attempt 1724e837 — grep pnpm-lock.yaml floors (fast-uri@3.1.8, brace-expansion@2.1.7 + @5.0.12, undici@7.30.0, hono@4.13.13); `pnpm audit -r` → 'No known vulnerabilities found' exit 0 (2026-10-16, engines WARN only); `gh api repos/codeo1io/dashboard/dependabot/alerts?state=open` → 0
 
 ### base-drift digest extraction yields empty (gate can never pass)
 - id: `rm-178` | track: reliability | priority: 91.0 | status: in_progress
@@ -71,9 +73,10 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Merge-residue guard test: assert the wiki-writer and renovate exclusions
-- id: `rm-131` | track: reliability | priority: 88.0 | status: in_progress
+- id: `rm-131` | track: reliability | priority: 88.0 | status: implemented 2026-10-16, validated pre-review (run 528f458d245a cycle:1 implement 1724e837; the guard already exists as test/fork-exclusion-guard.test.ts and was modernized past the acceptance's stale 11.27.0 pin to the live packageManager pnpm@11.28.5 — re-verified green this cycle instead of duplicating it; it runs in the root vitest project that Main's test job executes, so the class fails at PR time)
 - acceptance: a vitest test with no file-extension filters (the Dockerfile is extension-less) asserts zero occurrences of `wiki-writer` in Dockerfile, README.md, AGENTS.md, .github/copilot-instructions.md, vitest.config.ts, pnpm-workspace.yaml; asserts package-manager pnpm pinned 11.27.0 (upstream carries 11.8.0); asserts `.github/workflows/renovate.yaml` absent; asserts no `.conductor/` path is tracked; the test runs in Main so the class fails at PR time, not on push
 - evidence: campaign-recorded in dashboard ROADMAP.md
+- evidence: implement run 528f458d attempt 1724e837 — focused vitest of test/fork-exclusion-guard.test.ts green (7 tests): wiki-writer zero across all six extension-less targets, pnpm pin 11.28.5 (re-derived figure), renovate.yaml absent, `.conductor/` untracked-skipIf
 
 ### Repair the base-drift digest readback (broken sentinel) + digest-parse guard test
 - id: `rm-166` | track: reliability | priority: 88.0 | status: in_progress
@@ -86,9 +89,10 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Port the rm-155 bounded-poll pattern to Monitoring.tsx (poll wedge fix)
-- id: `rm-251` | track: reliability | priority: 85.0 | status: in_progress
+- id: `rm-251` | track: reliability | priority: 85.0 | status: implemented 2026-10-16, validated pre-review (run 528f458d245a cycle:1 implement 1724e837; web/src/hooks/useBoundedPoll.ts is the shared hook, consumed by BOTH Listener.tsx and Monitoring.tsx; the hook's own test pins the hung-fetch timeout race and the unmount abort, and Listener.test.tsx pins the never-settling fetch at the view layer)
 - acceptance: the rm-155 pattern is extracted into a shared bounded-poll hook (useBoundedPoll or equivalent) consumed by BOTH Listener.tsx and Monitoring.tsx — fetch gains an internal deadline or the view races a ~15s abort, the latch releases in a finally on every path including rejection, and unmount aborts the in-flight controller; a web test pins that a never-settling fetch (deferred promise) cannot hold the latch past the bound and that unmount aborts
 - evidence: campaign-recorded in dashboard ROADMAP.md
+- evidence: implement run 528f458d attempt 1724e837 — consumers at web/src/views/Listener.tsx:38 + web/src/views/Monitoring.tsx:28; focused vitest (web config) of useBoundedPoll.test.ts + Listener.test.tsx + Monitoring.test.tsx green (29 tests) incl. 'a hung fetch loses the timeout race' and 'unmount aborts the in-flight fetch'
 
 ### Release image carries a fixed HIGH in the pinned base's libpcre2 — in-image upgrade + comment truth (bundled-npm half already stripped wholesale)
 - id: `rm-647` | track: reliability | priority: 85.0 | status: in_progress
@@ -172,7 +176,7 @@
 
 ### Restore client push delivery via a minimal push-only service worker
 - id: `rm-249` | track: reliability | priority: 72.0 | status: in_progress
-- acceptance: a minimal push-only service worker registered alongside the existing shell (no fetch handler, no precache manifest — compatible with either rm-138 outcome), wired through sw-notification.ts's orphaned helpers; subscribe.ts reaches a real subscription or a distinguishable failure state; the joint decision with rm-138 recorded in the cycle batch doc; rm-106's digest/push delivery rides it once the gateway-side send contract (rm-106's first dependency discovery) exists
+- acceptance: a minimal push-only service worker registered alongside the existing shell (no fetch handler, no precache manifest — compatible with either rm-138 outcome), wired through sw-notification.ts's orphaned helpers; subscribe.ts reaches a real subscription or a distinguishable failure state; the joint decision with rm-138 recorded in the cycle batch doc; rm-106's digest/push delivery rides it once the gateway-side send contract (rm-106's first dependency discovery) exists; decision inputs appended 2026-10-16 (run 528f458d): upstream main's `sw.ts` is now a workbox deny-by-default fetch router with push + notificationclick handlers (at upstream 8470f86 and later) while the fork keeps the self-unregistering kill-switch — adopting costs adding the missing `workbox-*` devDependencies (absent from package.json) and re-wiring `web/vite.config.ts`'s injectManifest setup, so the minimal-push-only outcome above and the adopt-upstream-router outcome both stay on the table with the cost now named; `web/src/push/sw-notification.ts:2` header claims imported by `sw.ts` but has zero non-test importers at 5d5f9be — fix or honor the header under either outcome; upstream #638 (sw.ts SKIP_WAITING) is a clean full-skip under the kill-switch constraint per research run 48f621e31d
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### rm-225 canary born-broken at module resolution — isolate the query registry so the canary needs no install
@@ -722,7 +726,7 @@
 
 ### Toolchain majors window: vitest 5, jsdom 30, pnpm 12 (TS 7 rides rm-133's re-eval); in-range refreshes and the impeccable@4 decision
 - id: `rm-271` | track: reliability | priority: 34.0 | status: in_progress
-- acceptance: one deliberate pass — vitest 5 evaluated on the full suite (46 server files + web) with breaking changes named or the bump declined in the entry; jsdom 30 and pnpm 12 evaluated with their migration notes; impeccable@4 tried against .impeccable/config.json (bump both or record why not); the in-range trio lands as a lockfile refresh rider; no bundled mega-PR — each major is its own landing
+- acceptance: one deliberate pass — vitest 5 evaluated on the full suite (46 server files + web) with breaking changes named or the bump declined in the entry; jsdom 30 and pnpm 12 evaluated with their migration notes; impeccable@4 tried against .impeccable/config.json (bump both or record why not); the in-range trio lands as a lockfile refresh rider; no bundled mega-PR — each major is its own landing; registry refresh appended 2026-10-16 (run 528f458d): live npm shows TypeScript 7.0.2, vitest 5.0.4 (engines `^22.12.0 || ^24.0.0 || >=26.0.0` — compatible with the dev host's v22.22.0 and with engines `>=24`), vite-plugin-pwa 2.0.0, `@testing-library/jest-dom` 7.0.1, `@types/node` 26.6.5, react 19.3.1, hono 4.13.13; fork and upstream floors are identical on the big five at this base, so the majors window is open to whichever side rides first — add vite-plugin-pwa 2 and jest-dom 7 to the evaluated set
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Pre-gate base-digest and tool-pin sweep ahead of the Monday 2026-10-12 layer
@@ -1189,6 +1193,18 @@
 - id: `rm-606` | track: reliability | priority: 6.0 | status: in_progress
 - acceptance: AbortSignal.timeout(bounded) added with the bound named in a comment; web test pins the abort path; cycle doc updates the family census (which members remain open)
 - evidence: campaign-recorded in dashboard ROADMAP.md
+
+<!-- 2026-10-16 run 528f458d245a roadmap phase (attempt 349b9132, base origin/main 3e3664c): minted rm-873/rm-874 above all unlanded spool id claims (rm-857..861, rm-862..865, rm-866..872); first-landed-wins — renumber at apply after re-checking origin/main ROADMAP id occupancy -->
+
+### Hosted-CI darkness is undetectable in-repo: zero check-runs since 2026-10-09 passed invisibly through three landings
+- id: `rm-873` | track: reliability | priority: 40.0 | status: candidate
+- acceptance: a `scripts/actions-darkness-watch.ts` read-only probe (gh api: repo workflow-run timestamps vs latest main commit timestamp, with a dry-run local mode that never mutates) reports a dark verdict when commits land with no corresponding runs and reproduces the live gap from 2026-10-09T01:59Z onward on a local run against live GitHub data; an optional scheduled workflow ships disabled-by-default (enabled separately once Actions resumes) and files the probe output on a fresh dark verdict; rm-102 cross-referenced as the outage ledger with no duplication of its record; the probe adds zero lint errors and the full suite stays green
+- evidence: assess run 528f458d attempt 8b4d1b41 2026-10-16 — gh run list for workflows 330819998 (Main), 330820001 (Release), 330819991 (CodeQL) all last ran 2026-10-09T01:59Z success while main advanced 5530b5e (2026-10-13), a385ca5 (PR #676 upstream adoption, 2026-10-14) and 5d5f9be with zero runs; scripts/ has no watcher (compute-release-tag, graphql-canary, release-paths, should-release only); darkness is visible today only via ad-hoc gh probes
+
+### .slim clonedep mirror pins fro-bot/agent at v0.78.0 while the gateway ships v0.122.3
+- id: `rm-874` | track: developer-experience | priority: 12.0 | status: candidate
+- acceptance: the `.slim/clonedeps/repos/fro-bot__agent` mirror is refreshed to the v0.122.x line (the slim tooling's documented refresh path) OR the staleness is recorded in AGENTS.md's Cloned Dependency Source section with the exact refresh command and the version it pins, so the operator-contract reference material AGENTS.md points developers at matches the gateway the fork mirrors (contract 1.11.0 era); dev-only reference — no runtime dependency on the mirror's version; full suite green and zero new lint errors
+- evidence: research run 528f458d attempt 92472c58 2026-10-16 — AGENTS.md Cloned Dependency Source section pins the mirror at v0.78.0; gh api fro-bot/agent releases shows v0.122.1 (2026-10-13), v0.122.2 (2026-10-14), v0.122.3 (2026-10-15); upstream #625 already rode v0.122.3; the fork's operator-contract docs cite the mirror for the OAuth return-path and Result-primitive lineage
 
 ## Closed items
 

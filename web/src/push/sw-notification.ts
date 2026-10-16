@@ -1,5 +1,10 @@
 /**
- * Pure payload → safe-notification mapping, imported by `sw.ts`.
+ * Pure payload → safe-notification mapping. No runtime importer at HEAD —
+ * and none claimed: `sw.ts` is kill-switch-only (it self-unregisters and
+ * registers no event handlers), so this module is exercised by its unit
+ * test alone today. It is the payload-mapping half deliberately parked for
+ * rm-249's push-only service worker: when that worker lands it gets a
+ * tested mapper instead of a new one.
  *
  * SW no-leak discipline: this module performs no I/O, has no `console.*`
  * calls, and never echoes payload free-text into rendered copy or into an
