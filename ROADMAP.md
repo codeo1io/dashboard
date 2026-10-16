@@ -1190,6 +1190,30 @@
 - acceptance: AbortSignal.timeout(bounded) added with the bound named in a comment; web test pins the abort path; cycle doc updates the family census (which members remain open)
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
+### Absorb upstream window 2026.10.26-2026.10.27: operator contract 1.11.0 ladder (waiting runs, notification jumps) plus riders
+- id: `rm-1450` | track: reliability | priority: 99.0 | status: candidate
+- signals: fork parser pins contract 1.9.0 (src/gateway/operator-contract/version.ts:15; src/gateway/operator-sse-reader.ts:522 rejects any other) while fro-bot/agent emits OPERATOR_CONTRACT_VERSION 1.11.0 from v0.122.1 (infra-deployed) through v0.122.3 (packages/gateway/src/operator-contract/version.ts:30, verified via contents API at both refs); upstream releases 2026.10.26 (published 2026-10-14T21:47:48Z) and 2026.10.27 (21:57:54Z) sit unabsorbed past merge-base 1bcd98a; estate-tripwire VERDICT 2026-10-15: DRIFT (infra dashboard image 2026.10.24 carries the pre-#619 1.9.0 parser, so the deployed pair rejects every gateway frame)
+- acceptance: upstream #619 (45 files, +6421/-354: contract parse/responses/run-summary plus conformance tests, web Operator/Notifications surfaces with waiting-run states and the aria-live run-jump notice, fixture harness) is reconciled onto fork lineage with the sse-reader version gate accepting the ladder; the service-worker doctrine is decided in the same absorb - upstream buildNotification/handleNotificationClick versus the fork kill-switch SW doctrine (web/src/sw.ts:9,56) and the unlanded rm-1420 push-only rebuild; the read-only invariant is byte-preserved (no write path; wiki-write surfaces excluded per rm-259); riders land with it: @opencode-ai/plugin 1.19.0 (upstream #618), Dockerfile node digest 173f1258 to 7f486cab (#620), agent pin at least v0.122.2 (v0.122.3 preferred, see rm-1451), fro-bot.yaml bfra-me comment truth (#622); post-absorb residual `git diff upstream/main` over the window's files is explained line-by-line; upstream-drift accounting records both releases absorbed; the item supersedes the unlanded rm-1016 ladder shape and reopens the rm-1440/1441 UX ports whose #619-churn rejection rationale is resolved by the landed upstream form
+- evidence: releases API timestamps and the agent version constant at two refs (research notes, run e394f27c attempt 0ca4054b); the absorb PR diffstat; full gates green on the landing tree; estate-tripwire re-run expected to flip DRIFT to OK once the external infra image bump lands (outside-repo rider, not acceptance-blocking for the repo-side absorb)
+
+### fro-bot/agent pin security refresh: v0.122.1 to v0.122.3 (lead upstream)
+- id: `rm-1451` | track: security | priority: 95.0 | status: candidate
+- signals: .github/workflows/fro-bot.yaml:347 pins 15dc1d9d commented v0.122.1; fro-bot/agent v0.122.3 (published 2026-10-15T03:28:35Z) names security fixes in its release body - bounded indexed source-map processing, rejection of injected URI authority components, a Sharp/librsvg vulnerability patch - plus Node 24.22.0; upstream dashboard itself has only reached v0.122.2 (PR #621)
+- acceptance: the pin digest moves to the v0.122.3 tag commit with comment truth updated to v0.122.3 and a rationale comment naming the three security fixes; actionlint and pnpm lint green; lands standalone or as a rider on the rm-1450 absorb
+- evidence: releases/tags/v0.122.3 body; the workflow pin line before and after
+
+### In-range dependency floor refresh past the serveStatic advisory; vite-plugin-pwa 2.0.0 joins the majors window
+- id: `rm-1452` | track: security | priority: 90.0 | status: candidate
+- signals: npm registry 2026-10-15 - hono 4.13.13 and @hono/node-server 2.1.5 versus fork ^4.13.11 and ^2.1.3, react 19.3.1 versus 19.3.0, fast-check 4.10.2 versus 4.9.0, @playwright/test 1.64.1 versus ^1.63.0, @opencode-ai/plugin 1.19.0 versus 1.18.35 (equals upstream #618); the serveStatic advisory item (ROADMAP.md:193) still floors hono 4.13.12 and node-server 2.1.3 - stale; vite-plugin-pwa 2.0.0 is a shipped major absent from the toolchain-majors window (ROADMAP.md:723 lists vitest 5, jsdom 30, pnpm 12, TS 7)
+- acceptance: one lockfile-refresh rider lands the in-range set with `pnpm audit -r` at zero findings and the full suite green; the serveStatic advisory floors are updated to the landed values in the same change; vite-plugin-pwa 2.0.0 is added to the toolchain-majors acceptance without bundling any major into the in-range rider (that item's no-mega-PR rule stands)
+- evidence: dated npm view outputs, the lockfile diff, audit output
+
+### De-flake the prose-residue guard: prune excluded directories during traversal
+- id: `rm-1453` | track: reliability | priority: 88.0 | status: candidate
+- signals: test/prose-residue-guard.test.ts walk() (lines 88-96) enumerates node_modules, .git and dist then filters per file only after enumeration - 26,735 files walked in 2852ms versus 481 relevant files in 3ms when pruned (timing probe, run e394f27c assess); the first cold full `pnpm test` after a fresh install observed the guard at 55.5s against the 30s vitest per-test timeout - flake-red, warm rerun green
+- acceptance: traversal prunes EXCLUDED_DIRS and EXCLUDED_DIR_SUFFIXES during descent with the per-file exclusion semantics unchanged; a cold first full `pnpm test` after removing node_modules and reinstalling completes with the guard suite green inside the 30s per-test budget; the guard's coverage acceptance (the filter-free prose-residue item) is unchanged
+- evidence: before and after timing probe, the cold-suite run log
+
 ## Closed items
 
 - `rm-001` Refactor 20 high-complexity function(s) — superseded

@@ -13,7 +13,7 @@
 # --platform flag and COPY cannot express deletions, so this is the minimal
 # target-executed step the design allows — see the rm-558 CI-time note in
 # .github/workflows/release.yaml).
-ARG NODE_IMAGE=node:24-trixie-slim@sha256:173f125896c3087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6
+ARG NODE_IMAGE=node:24-trixie-slim@sha256:7f486cabe892bff8fef04c0f7da8dba84a560be3e4e2740b7a86afc57ebec315
 
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS builder
 
@@ -50,13 +50,12 @@ RUN pnpm install --frozen-lockfile --prod
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 # 2026-09-20: in-image libpcre2-8-0 patch retired — the pinned base digest
-# (0e0ff40, upstream #492) ships libpcre2-8-0 10.42-1+deb12u1, so the fix is
+# (7f486ca, upstream #620) ships libpcre2-8-0 10.42-1+deb12u1, so the fix is
 # absorbed at the base. History: docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md
 
 FROM ${NODE_IMAGE}
 
 WORKDIR /app
-
 
 # Copy only the production dependency tree. Package manifests and package-manager
 # state never enter the final image.

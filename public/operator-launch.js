@@ -22,6 +22,9 @@
  * - runId appears only in the data-run-id attribute and the stream URL.
  */
 
+// Stateless, so a second instance of it (this module is loaded with a query string) is harmless.
+import {formatRelativeTime, LAUNCH_TIME_SOURCE} from './operator-time.js'
+
 // Mirrors RUN_INDEX_CAP in operator-run-index.js. Not imported directly: this module
 // and operator-run-index.js are loaded as separate dynamic-import instances (each
 // carries its own ?manual=1 query string keyed module identity in the runtime seam),
@@ -677,6 +680,17 @@ export async function initOperatorLaunch(opts) {
           }
           card.append(repoSpan)
 
+          // Launch-seeded time: the launch instant until the stream sends the run's start time or
+          // the run list adopts the card. The marker sits on the <time>, not the card.
+          const launchedAt = new Date().toISOString()
+          const timeEl = document.createElement('time')
+          timeEl.className = 'run-updated-at'
+          timeEl.dataset.role = 'run-updated-at'
+          timeEl.dataset.timeSource = LAUNCH_TIME_SOURCE
+          timeEl.setAttribute('datetime', launchedAt)
+          timeEl.textContent = formatRelativeTime(launchedAt)
+          card.append(timeEl)
+
           // Hidden per-card substructure for the stream renderer.
 
           // Checkout-detail region — same slot as a fetched card: the first hidden region,
@@ -685,6 +699,12 @@ export async function initOperatorLaunch(opts) {
           checkoutEl.dataset.role = 'run-checkout-detail'
           checkoutEl.hidden = true
           card.append(checkoutEl)
+
+          // Waiting line — the stream shows it while nothing else is showing; same slot as a fetched card.
+          const waitingEl = document.createElement('div')
+          waitingEl.dataset.role = 'run-waiting'
+          waitingEl.hidden = true
+          card.append(waitingEl)
 
           const outputEl = document.createElement('div')
           outputEl.dataset.role = 'run-output'

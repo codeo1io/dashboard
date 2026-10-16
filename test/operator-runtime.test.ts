@@ -799,10 +799,11 @@ describe('createActiveStreamOwner — instance-scoped stream ownership (rm-283)'
 
   interface HandleSpy {
     close: ReturnType<typeof vi.fn<() => void>>
+    getConnectionStatus: ReturnType<typeof vi.fn<() => 'active' | 'terminal' | 'inactive'>>
   }
 
-  function makeHandle(): HandleSpy {
-    return {close: vi.fn<() => void>()}
+  function makeHandle(status: 'active' | 'terminal' | 'inactive' = 'active'): HandleSpy {
+    return {close: vi.fn<() => void>(), getConnectionStatus: vi.fn<() => 'active' | 'terminal' | 'inactive'>(() => status)}
   }
 
   it('attach records the active run and close releases exactly that handle', () => {
@@ -855,6 +856,24 @@ describe('createActiveStreamOwner — instance-scoped stream ownership (rm-283)'
     owner.close()
     expect(() => owner.close()).not.toThrow()
     expect(handle.close).toHaveBeenCalledTimes(1)
+  })
+
+  it('rm-1450 absorb: serves() answers for the attached run while the handle is live', () => {
+    const owner = createActiveStreamOwner()
+    owner.attach(makeHandle('active'), 'run-a')
+    expect(owner.serves('run-a')).toBe(true)
+    owner.attach(makeHandle('terminal'), 'run-b')
+    expect(owner.serves('run-b')).toBe(true) // 'terminal' still serves the card
+    expect(owner.serves('run-a')).toBe(false) // superseded run
+  })
+
+  it('rm-1450 absorb: serves() is false for an inactive handle or no stream at all', () => {
+    const owner = createActiveStreamOwner()
+    expect(owner.serves('run-a')).toBe(false) // never attached
+    owner.attach(makeHandle('inactive'), 'run-a')
+    expect(owner.serves('run-a')).toBe(false) // handle reports inactive
+    owner.close()
+    expect(owner.serves('run-a')).toBe(false)
   })
 
   it('close clears the data-stream-attached marker on the previously-active card', () => {

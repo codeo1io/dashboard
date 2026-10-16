@@ -344,7 +344,11 @@ jobs:
       - name: Run Fro Bot
         if: github.event_name != 'schedule' || env.HAS_FRO_BOT_PAT == 'true'
         id: fro-bot-agent
-        uses: fro-bot/agent@15dc1d9d9d144668b569efb994e65803aadf52d8 # v0.122.1
+        # v0.122.3 (direct v0.122.1 -> v0.122.3 jump, skipping v0.122.2): security
+        # fixes bounding indexed source-map processing, rejecting injected URI
+        # authority components, and patching a Sharp/librsvg vulnerability; plus
+        # zod 4.6.6 and Node 24.22.0. Release notes: fro-bot/agent v0.122.3.
+        uses: fro-bot/agent@7d273ac643c8f9c0dc8615222677693dc337adef # v0.122.3
         env:
           OPENCODE_PROMPT_ARTIFACT: 'true'
           TASK_PROMPT: >-
