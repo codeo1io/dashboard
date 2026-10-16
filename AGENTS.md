@@ -115,8 +115,8 @@ Read-only dependency source repositories are available under
   must end empty; staged untracks do NOT ride candidate-delta merges (the
   validation clone's `:(exclude).conductor/**` pathspec drops them), so the cure
   is a main-direct `git rm -r --cached .conductor` whose deletions ride the
-  landing merge itself. `.conductor/` is also gitignored in-repo (rm-175,
-  belt-and-braces) so fresh breadcrumbs cannot be `git add`-ed — but the
+  landing merge itself. `.conductor/` is also gitignored in-repo,
+  belt-and-braces, so fresh breadcrumbs cannot be `git add`-ed — but the
   post-merge emptiness check stands, because a candidate lineage's landing
   commit can still carry already-tracked breadcrumbs. Root mechanism + cure:
   `docs/solutions/workflow-issues/validation-clone-exclude-pathspec-drops-staged-breadcrumb-deletion-2026-09-24.md`.

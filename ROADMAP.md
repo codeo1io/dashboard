@@ -1075,7 +1075,7 @@
 - acceptance: README's class description names exactly the gated paths (or the gate is widened to match the claim — a behavior decision recorded in the entry); the contract doc's messages example carries prunedCount with the same semantics as src/listener/contract.ts; the existing env-docs guard stays green
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
-### main.yaml's rm-13640 rider comment contradicts the actual timeouts (claims 20/40; code says 35/20)
+### main.yaml's timeout-rider comment contradicted the actual timeouts (claims 20/40; code says 35/20)
 - id: `rm-486` | track: reliability | priority: 24.0 | status: in_progress
 - acceptance: the comment states 35 (Lint) and 20 (Test) with the poll-window rationale in one place; NO timeout-minutes value changes in this item; a grep across .github/workflows finds no other comment citing a timeout value that contradicts its job
 - evidence: campaign-recorded in dashboard ROADMAP.md

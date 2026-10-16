@@ -104,7 +104,7 @@ whitespace with `sed -E` or python `rstrip` — a plain BRE `sed` pattern with
 
 Precedent (2026-09-29): a markdown paragraph-length cliff ran a single file's
 lint past 35 minutes — see `ci-validator-poll-window-vs-cold-lint-2026-09-29.md`
-and the now-truthful rm-13640 rider comment in `.github/workflows/main.yaml`.
+and the now-truthful rider comment in `.github/workflows/main.yaml` (it originally cited a phantom id — the retired prose-id family recorded with the 2026-09-29 audit).
 This cycle measured the same cliff on the ledger itself: at base 31995a2,
 ROADMAP.md still carried two inherited monolith lines (7317 and 7967 chars,
 minted by earlier lineages), and cold `eslint ROADMAP.md` was killed at 900s
@@ -123,7 +123,7 @@ a multi-thousand-character line.
 
 ## L4 — comments that assert gate numerals are a truth surface of their own (rm-486)
 
-The rm-13640 rider comment claimed "20 min self-kills" and "the Test job's 40 is
+The rider comment claimed "20 min self-kills" and "the Test job's 40 is
 the precedent" while the YAML said 35 (Lint) and 20 (every other job, Test
 included). The fix was comment-ONLY — the 35 ceiling is load-bearing in both
 directions (above the worst legitimate cold eslint, below the CI validator's

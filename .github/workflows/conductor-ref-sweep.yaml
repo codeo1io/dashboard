@@ -1,0 +1,45 @@
+# Conductor ref sweep — manual-only hygiene lane (2026-10-17, repository
+# maintenance cycle 1, run 7d5af220 stewardship).
+#
+# Why manual-only: ref deletion is irreversible at the GitHub level and the
+# selected set moves with fleet activity (open PRs, in-flight validation
+# clones). A scheduled lane would delete refs nobody has just looked at; a
+# dispatched lane records a human/operator decision per sweep. The dry run is
+# the default even here — the apply flag must be set explicitly per dispatch.
+#
+# Scope: refs/heads/conductor/ci-*, ci-base-*, and run-* older than the
+# cutoff, never refs backing open PRs (gathered live), never anything else.
+# Policy and procedure: docs/runbooks/conductor-ref-hygiene.md.
+name: Conductor ref sweep
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Delete the selected stale refs (default reports dry-run only)
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  sweep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Report the sweepable set (dry run)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node --experimental-strip-types scripts/sweep-stale-conductor-refs.ts
+      - name: Apply deletions
+        if: ${{ inputs.apply }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node --experimental-strip-types scripts/sweep-stale-conductor-refs.ts --apply
