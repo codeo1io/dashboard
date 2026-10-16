@@ -464,7 +464,14 @@ export interface CancelActionEvent {
 }
 
 /** Statuses a run-list summary can carry. */
-export type RunSummaryStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+export type RunSummaryStatus =
+  | 'queued'
+  | 'running'
+  | 'waiting_for_approval'
+  | 'waiting_for_question'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
 
 export interface StreamState {
   readonly connection: ConnectionStatus
@@ -773,8 +780,13 @@ export interface QuestionNote {
   readonly status: QuestionRequestStatus
 }
 
+/** `terminal`: the run finished; `active`: connecting, live or reconnecting; `inactive`: closed early, failed, unavailable or close()d. */
+export type StreamConnectionStatus = 'active' | 'terminal' | 'inactive'
+
 export interface StreamHandle {
   close: () => void
+  /** Whether the stream still serves its card. Read-only; see StreamConnectionStatus. */
+  getConnectionStatus: () => StreamConnectionStatus
   /**
    * Submit a decision for one open request. Sends nothing (returns the current status) while the request
    * is in flight, being checked or claimed elsewhere, or once the run's questions are known unanswerable.
@@ -833,6 +845,16 @@ export interface InitOptions {
   readonly fixtureSessionId?: string
   /** Secondary status metadata element (data-role="run-reason"). */
   readonly reasonEl?: Element | null
+  /**
+   * Time element (data-role="run-updated-at") of a launch-seeded card. While attached, the stream
+   * writes the run's start time into it (`datetime` and relative text), and never blanks it.
+   */
+  readonly timeEl?: Element | null
+  /**
+   * Waiting-line element (data-role="run-waiting"). The stream shows it, with fixed copy, only while
+   * it is live, the run is not terminal, and no output, open approval or open question is showing.
+   */
+  readonly waitingEl?: (HTMLElement & {hidden: boolean}) | null
   /** Cancel control container element (data-role="run-cancel"). */
   readonly cancelEl?: (HTMLElement & {hidden: boolean}) | null
   /**

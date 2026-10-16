@@ -16,11 +16,12 @@
  * - /operator redirects to /; production /operator/* data routes remain absent.
  * - Fixture routes are public (no auth required) when flag is on.
  */
-import type {StreamFrame} from '../public/operator-stream.js'
+import type {StreamFrame, StreamState} from '../public/operator-stream.js'
 import type {GitHubOAuthClient} from '../src/auth/oauth.ts'
 import {Buffer} from 'node:buffer'
+import {createHash} from 'node:crypto'
 import process from 'node:process'
-import {afterEach, beforeEach, describe, expect, it} from 'vitest'
+import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {parseSseFrame as browserParseSseFrame, nextStreamState, PINNED_CONTRACT_VERSION} from '../public/operator-stream.js'
 import {CHECKOUT_REFUSAL_REASONS, OBSTRUCTION_KINDS, OPERATOR_CONTRACT_VERSION, QUESTION_DECISION_STATES} from '../src/gateway/operator-contract/index.ts'
 import {isOperatorFailureKind} from '../src/gateway/operator-contract/run-status.ts'
@@ -30,6 +31,7 @@ import {
   FIXTURE_SCENARIO_NAMES,
   fixtureQuestionScript,
   isHeldOpenScenario,
+  isNoApprovalScenario,
   serializeScenarioToSse,
 } from '../src/gateway/operator-fixture-sse.ts'
 import {parseSseChunk as serverParseSseChunk} from '../src/gateway/operator-sse-reader.ts'
@@ -67,7 +69,7 @@ async function buildFixtureTestApp(opts: FixtureAppOpts = {}) {
     cookieKey: TEST_KEY,
     oauthClient: makeFakeOAuthClient(),
     fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
+    getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
     operatorUiEnabled: opts.operatorUiEnabled ?? false,
     fixtureHarnessEnabled: opts.fixtureHarnessEnabled ?? false,
     fixtureBindHost: opts.bindHost ?? '127.0.0.1',
@@ -328,7 +330,7 @@ describe('fixture flag + non-loopback bind — throws at construction', () => {
         cookieKey: TEST_KEY,
         oauthClient: makeFakeOAuthClient(),
         fetchUserLogin: async (_token: string) => TEST_OPERATOR,
-        getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}),
+        getSnapshot: () => ({repos: [], staleBanner: false, driftCount: 0, refreshedAt: null}),
         fixtureHarnessEnabled: true,
       }),
     ).rejects.toThrow(/fixture.*loopback|loopback.*fixture/i)
@@ -1104,8 +1106,16 @@ describe('fixture runs index — GET /runs', () => {
     }
   })
 
-  it('statuses use only the five index summary values', async () => {
-    const ALLOWED_INDEX_STATUSES = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled'])
+  it('statuses use only the seven summary values', async () => {
+    const ALLOWED_INDEX_STATUSES = new Set([
+      'queued',
+      'running',
+      'waiting_for_approval',
+      'waiting_for_question',
+      'succeeded',
+      'failed',
+      'cancelled',
+    ])
     const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
     const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs`)
     const {runs: body} = await res.json() as {runs: Record<string, unknown>[]}
@@ -1114,8 +1124,8 @@ describe('fixture runs index — GET /runs', () => {
     }
   })
 
-  it('statuses do NOT include stream-only values (blocked, waiting_for_approval)', async () => {
-    const STREAM_ONLY_STATUSES = new Set(['blocked', 'waiting_for_approval'])
+  it('statuses do NOT include the stream-only value (blocked)', async () => {
+    const STREAM_ONLY_STATUSES = new Set(['blocked'])
     const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
     const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs`)
     const {runs: body} = await res.json() as {runs: Record<string, unknown>[]}
@@ -2167,7 +2177,7 @@ describe('fixture push routes — subscribe', () => {
 })
 
 describe('fixture push routes — subscriptions metadata + unsubscribe', () => {
-  it('GET /push/subscriptions returns not-subscribed shape with no active record', async () => {
+  it('GET /push/subscriptions returns an empty list when the session has no record', async () => {
     const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
     const fixtureSessionId = await mintFixtureSessionId(app)
     const res = await app.request(
@@ -2175,9 +2185,8 @@ describe('fixture push routes — subscriptions metadata + unsubscribe', () => {
     )
     expect(res.status).toBe(200)
     expect(res.headers.get('cache-control')).toBe('no-store')
-    const body = await res.json() as Record<string, unknown>
-    expect(body.active).toBeUndefined()
-    expect(body.endpointHash).toBeUndefined()
+    const body = await res.json()
+    expect(body).toEqual({subscriptions: []})
   })
 
   it('GET /push/subscriptions returns safe metadata after subscribe, never raw endpoint/keys', async () => {
@@ -2198,14 +2207,18 @@ describe('fixture push routes — subscriptions metadata + unsubscribe', () => {
       `${FIXTURE_OPERATOR_PREFIX}/push/subscriptions?fixtureSessionId=${fixtureSessionId}`,
     )
     expect(res.status).toBe(200)
-    const body = await res.json() as Record<string, unknown>
-    expect(body.active).toBe(true)
-    expect(typeof body.endpointHash).toBe('string')
-    expect((body.endpointHash as string)).not.toContain(PUSH_SUBSCRIPTION_BODY.endpoint)
-    expect(body.endpoint).toBeUndefined()
-    expect(body.keys).toBeUndefined()
-    expect(body.p256dh).toBeUndefined()
-    expect(body.auth).toBeUndefined()
+    const body = await res.json() as {subscriptions: Record<string, unknown>[]}
+    expect(body.subscriptions).toHaveLength(1)
+    const [record] = body.subscriptions
+    expect(record?.active).toBe(true)
+    expect(record?.endpointHash).toBe(createHash('sha256').update(PUSH_SUBSCRIPTION_BODY.endpoint).digest('hex'))
+    expect(typeof record?.createdAt).toBe('number')
+    expect(typeof record?.updatedAt).toBe('number')
+    expect(typeof record?.keyVersion).toBe('string')
+    expect(record?.endpoint).toBeUndefined()
+    expect(record?.keys).toBeUndefined()
+    expect(record?.p256dh).toBeUndefined()
+    expect(record?.auth).toBeUndefined()
     const rawText = JSON.stringify(body)
     expect(rawText).not.toContain(PUSH_SUBSCRIPTION_BODY.endpoint)
     expect(rawText).not.toContain(PUSH_SUBSCRIPTION_BODY.keys.p256dh)
@@ -2240,9 +2253,10 @@ describe('fixture push routes — subscriptions metadata + unsubscribe', () => {
     const metaRes = await app.request(
       `${FIXTURE_OPERATOR_PREFIX}/push/subscriptions?fixtureSessionId=${fixtureSessionId}`,
     )
-    const body = await metaRes.json() as Record<string, unknown>
-    expect(body.active).toBe(false)
-    expect(body.inactiveReason).toBe('unsubscribed')
+    const body = await metaRes.json() as {subscriptions: Record<string, unknown>[]}
+    expect(body.subscriptions).toHaveLength(1)
+    expect(body.subscriptions[0]?.active).toBe(false)
+    expect(body.subscriptions[0]?.inactiveReason).toBe('unsubscribed')
   })
 
   it('POST /push/subscriptions/unsubscribe requires a valid fixture session', async () => {
@@ -2687,13 +2701,15 @@ const EXPECTED_FRAME_TYPES: Readonly<Record<string, readonly string[]>> = {
   expired_completed_terminal_frame: ['ready', 'reset', 'status'],
   expired_completed_silent: ['ready', 'reset'],
   running_after_no_snapshot: ['ready', 'reset', 'status', 'output'],
+  waiting_no_output: ['ready', 'status'],
+  waiting_queued: ['ready', 'status'],
 }
 
 // eslint-disable-next-line no-control-regex
 const QUESTION_UNSAFE_CHARS = /[\u0000-\u0008\v\f\u000E-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/
 
 describe('question fixture scenarios — registry and manifest', () => {
-  it('lists the thirteen scenarios in the manifest, each with a row', async () => {
+  it('lists the fifteen scenarios in the manifest, each with a row', async () => {
     expect(QUESTION_SCENARIO_KEYS).toEqual(Object.keys(EXPECTED_FRAME_TYPES))
     const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
     const body = await (await app.request(`${FIXTURE_OPERATOR_PREFIX}`)).json() as {scenarios: string[]}
@@ -2712,6 +2728,8 @@ describe('question fixture scenarios — registry and manifest', () => {
       'run-fixture-index-expired-completed-terminal-frame',
       'run-fixture-index-expired-completed-silent',
       'run-fixture-index-running-after-no-snapshot',
+      'run-fixture-index-waiting-no-output',
+      'run-fixture-index-waiting-queued',
     ])
   })
 
@@ -2746,7 +2764,7 @@ describe('question fixture scenarios — frames parse under both readers', () =>
     for (const key of QUESTION_SCENARIO_KEYS) {
       const frames = serverFrames(serializeScenarioToSse(key, questionRunId(key)))
       const statuses = frames.filter(frame => frame.type === 'status').map(frame => frame.data.status)
-      for (const status of statuses) expect(['running', 'succeeded', 'failed']).toContain(status)
+      for (const status of statuses) expect(['queued', 'running', 'succeeded', 'failed']).toContain(status)
       const firstQuestion = frames.findIndex(frame => frame.type === 'question')
       if (firstQuestion !== -1) {
         const statusBefore = frames.slice(0, firstQuestion).findLast(frame => frame.type === 'status')
@@ -2947,7 +2965,20 @@ function rawOpenRequests(sse: string): {requestID: string; questions: unknown}[]
 describe('question fixture routes — recent-runs rows and streams', () => {
   it('every scenario has a fixture-prefixed row with its summary status, and its stream serves the scenario bytes', async () => {
     const {runs, openStream} = await questionHarness()
-    const expectedSummary: Record<string, string> = {expired_completed_silent: 'succeeded'}
+    // The gateway overlays waiting_for_question on a running run with an open request, so every scenario whose
+    // stream ends with a request still open reports it; the ones that settle or end first stay running.
+    const expectedSummary: Record<string, string> = {
+      question_single: 'waiting_for_question',
+      question_multi_shapes: 'waiting_for_question',
+      question_already_claimed_reopens: 'waiting_for_question',
+      question_failed_to_settle: 'waiting_for_question',
+      question_invalid_answer: 'waiting_for_question',
+      question_masked_404: 'waiting_for_question',
+      question_text_sentinels: 'waiting_for_question',
+      question_no_approval: 'waiting_for_question',
+      expired_completed_silent: 'succeeded',
+      waiting_queued: 'queued',
+    }
     for (const key of QUESTION_SCENARIO_KEYS) {
       const row = runs.find(candidate => candidate.runId === questionRunId(key))
       expect(row, `${key} row`).toBeDefined()
@@ -3126,7 +3157,7 @@ describe('question_no_approval — a question with no approval prompt', () => {
       return (await res.json() as {approvals: unknown[]}).approvals
     }
     expect(await approvals(key)).toEqual([])
-    for (const other of QUESTION_SCENARIO_KEYS.filter(candidate => candidate !== key)) {
+    for (const other of QUESTION_SCENARIO_KEYS.filter(candidate => candidate !== key && !isNoApprovalScenario(candidate))) {
       expect(await approvals(other), `${other} keeps the harness approval`).toHaveLength(1)
     }
   })
@@ -3214,5 +3245,368 @@ describe('question fixture routes — gating and ownership', () => {
     const decision = await app.request(`${base}/req-fixture-question-single-001/decision?fixtureSessionId=${other}`, {method: 'POST'})
     expect(decision.status).toBe(400)
     expect((await app.request(`${base}?fixtureSessionId=${owner}`)).status).toBe(200)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Waiting summaries (operator contract waiting overlays)
+//
+// The gateway's runs route overlays waiting_for_approval / waiting_for_question on a running base only
+// (approval beats question). The fixture rows mirror that so collapsed cards show the waiting badges.
+// ---------------------------------------------------------------------------
+
+async function harnessRuns() {
+  const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
+  const {fixtureSessionId} = await (await app.request(`${FIXTURE_OPERATOR_PREFIX}/session`)).json() as {fixtureSessionId: string}
+  const fetchRuns = async () => {
+    const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs?fixtureSessionId=${fixtureSessionId}`)
+    return (await res.json() as {runs: {runId: string; status: string; repo: string; createdAt: string}[]}).runs
+  }
+  return {app, fixtureSessionId, fetchRuns}
+}
+
+describe('waiting summary fixtures — rows map to their matching scenarios', () => {
+  it('GET /runs lists a waiting_for_approval row and waiting_for_question rows', async () => {
+    const {fetchRuns} = await harnessRuns()
+    const runs = await fetchRuns()
+    const approval = runs.filter(run => run.status === 'waiting_for_approval')
+    const question = runs.filter(run => run.status === 'waiting_for_question')
+    expect(approval.map(run => run.runId)).toEqual(['run-fixture-index-approval-flow'])
+    // Derived from the scenario specs so a new held-open question scenario is covered without editing this list.
+    const expected = FIXTURE_QUESTION_SCENARIO_ROWS.filter(row => row.summaryStatus === 'waiting_for_question').map(row => questionRunId(row.scenario))
+    expect(expected.length).toBeGreaterThan(0)
+    expect(expected).toContain('run-fixture-index-question-no-approval')
+    expect(question.map(run => run.runId)).toEqual(expected)
+  })
+
+  it('the waiting_for_approval row streams the approval scenario, not the default success stream', async () => {
+    const {app, fixtureSessionId, fetchRuns} = await harnessRuns()
+    await fetchRuns()
+    const runId = 'run-fixture-index-approval-flow'
+    const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs/${runId}/stream?fixtureSessionId=${fixtureSessionId}`)
+    expect(res.status).toBe(200)
+    const text = await res.text()
+    expect(text).toBe(serializeScenarioToSse('approval_flow', runId))
+    expect(text).not.toBe(serializeScenarioToSse('success', runId))
+    expect(text).toContain('event: approval')
+  })
+
+  it('every waiting_for_question row streams its own question scenario, and none is the default success stream', async () => {
+    const {app, fixtureSessionId, fetchRuns} = await harnessRuns()
+    const rows = (await fetchRuns()).filter(run => run.status === 'waiting_for_question' && !run.runId.includes('transition'))
+    expect(rows).toHaveLength(FIXTURE_QUESTION_SCENARIO_ROWS.filter(row => row.summaryStatus === 'waiting_for_question').length)
+    for (const row of rows) {
+      const scenario = row.runId.replace('run-fixture-index-', '').replaceAll('-', '_')
+      expect(QUESTION_SCENARIO_KEYS, row.runId).toContain(scenario)
+      const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs/${row.runId}/stream?fixtureSessionId=${fixtureSessionId}`)
+      const {text} = await firstChunkThenOpen(res)
+      expect(text, row.runId).toBe(serializeScenarioToSse(scenario, row.runId))
+      expect(text, row.runId).not.toBe(serializeScenarioToSse('success', row.runId))
+      expect(text, row.runId).toContain('event: question')
+    }
+  })
+
+  it('a waiting row\'s stream status frames stay running: the overlay lives on the list, not the wire', async () => {
+    for (const key of ['question_single', 'approval_flow']) {
+      const statuses = serverFrames(serializeScenarioToSse(key, 'run-fixture-wire-001'))
+        .filter(frame => frame.type === 'status').map(frame => frame.data.status)
+      expect(statuses[0]).toBe('running')
+      expect(statuses).not.toContain('waiting_for_question')
+      expect(statuses).not.toContain('waiting_for_approval')
+    }
+  })
+
+  it('the original rows keep their order and statuses at the top of the list', async () => {
+    const {fetchRuns} = await harnessRuns()
+    const runs = await fetchRuns()
+    expect(runs.slice(0, 9).map(run => [run.runId, run.status])).toEqual([
+      ['run-fixture-index-queued-001', 'queued'],
+      ['run-fixture-index-running-002', 'running'],
+      ['run-fixture-index-succeeded-003', 'succeeded'],
+      ['run-fixture-index-failed-004', 'failed'],
+      ['run-fixture-index-cancelled-005', 'cancelled'],
+      ['run-fixture-index-failed-reason-006', 'failed'],
+      ['run-fixture-index-failed-unknown-reason-007', 'failed'],
+      ['run-fixture-index-cancel-retry-008', 'running'],
+      ['run-fixture-index-cancel-unavailable-009', 'running'],
+    ])
+    expect(runs.length).toBeLessThanOrEqual(100)
+    expect(new Set(runs.map(run => run.runId)).size).toBe(runs.length)
+  })
+})
+
+const TRANSITION_T0 = Date.UTC(2026, 9, 13, 12, 0, 0)
+
+async function mintSession(app: Awaited<ReturnType<typeof buildFixtureTestApp>>): Promise<string> {
+  const {fixtureSessionId} = await (await app.request(`${FIXTURE_OPERATOR_PREFIX}/session`)).json() as {fixtureSessionId: string}
+  return fixtureSessionId
+}
+
+async function runsAt(
+  app: Awaited<ReturnType<typeof buildFixtureTestApp>>,
+  sessionId: string,
+  secondsAfterT0: number,
+): Promise<{runId: string; status: string}[]> {
+  vi.setSystemTime(TRANSITION_T0 + secondsAfterT0 * 1000)
+  const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs?fixtureSessionId=${sessionId}`)
+  return (await res.json() as {runs: {runId: string; status: string}[]}).runs
+}
+
+describe('waiting summary fixtures — a run whose status changes between refreshes', () => {
+  const TRANSITION_RUN_ID = 'run-fixture-index-transition-question'
+
+  beforeEach(() => {
+    vi.useFakeTimers({toFake: ['Date']})
+    vi.setSystemTime(TRANSITION_T0)
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  const statusOf = (runs: {runId: string; status: string}[]): string | undefined =>
+    runs.find(run => run.runId === TRANSITION_RUN_ID)?.status
+
+  it('reports running, then waiting_for_question, then succeeded over the session\'s first minute', async () => {
+    const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
+    const sessionId = await mintSession(app)
+
+    // The dashboard's first fetch, then its 30-second refreshes.
+    expect(statusOf(await runsAt(app, sessionId, 2))).toBe('running')
+    expect(statusOf(await runsAt(app, sessionId, 14))).toBe('running')
+    expect(statusOf(await runsAt(app, sessionId, 32))).toBe('waiting_for_question')
+    expect(statusOf(await runsAt(app, sessionId, 44))).toBe('waiting_for_question')
+    expect(statusOf(await runsAt(app, sessionId, 62))).toBe('succeeded')
+    expect(statusOf(await runsAt(app, sessionId, 600))).toBe('succeeded')
+  })
+
+  it('changes nothing else in the list', async () => {
+    const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
+    const sessionId = await mintSession(app)
+    const withoutTransition = (runs: {runId: string; status: string}[]) => runs.filter(run => run.runId !== TRANSITION_RUN_ID)
+    const early = withoutTransition(await runsAt(app, sessionId, 2))
+    const late = withoutTransition(await runsAt(app, sessionId, 90))
+    expect(late).toEqual(early)
+    expect(early.length).toBeGreaterThan(40)
+  })
+
+  it('is scoped to the fixture session: a new session starts again at running, and a request with no session sees running', async () => {
+    const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
+    const first = await mintSession(app)
+    expect(statusOf(await runsAt(app, first, 70))).toBe('succeeded')
+
+    const second = await mintSession(app) // minted at T0+70s
+    expect(statusOf(await runsAt(app, second, 72))).toBe('running')
+    expect(statusOf(await runsAt(app, second, 70 + 32))).toBe('waiting_for_question')
+    expect(statusOf(await runsAt(app, first, 110))).toBe('succeeded')
+
+    vi.setSystemTime(TRANSITION_T0 + 200_000)
+    const bare = await (await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs`)).json() as {runs: {runId: string; status: string}[]}
+    expect(statusOf(bare.runs)).toBe('running')
+  })
+
+  it('each status streams the scenario that matches it', async () => {
+    const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
+    const sessionId = await mintSession(app)
+    const stream = async (): Promise<string> => {
+      const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs/${TRANSITION_RUN_ID}/stream?fixtureSessionId=${sessionId}`)
+      expect(res.status).toBe(200)
+      return (await firstChunkThenOpen(res)).text
+    }
+
+    await runsAt(app, sessionId, 2)
+    expect(await stream()).toBe(serializeScenarioToSse('running_after_no_snapshot', TRANSITION_RUN_ID))
+    await runsAt(app, sessionId, 32)
+    expect(await stream()).toBe(serializeScenarioToSse('question_single', TRANSITION_RUN_ID))
+    await runsAt(app, sessionId, 62)
+    expect(await stream()).toBe(serializeScenarioToSse('expired_completed_terminal_frame', TRANSITION_RUN_ID))
+  })
+
+  it('its question list follows the phase: the open request while waiting, nothing before and after', async () => {
+    const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
+    const sessionId = await mintSession(app)
+    const list = async (): Promise<unknown[]> => {
+      const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs/${TRANSITION_RUN_ID}/questions?fixtureSessionId=${sessionId}`)
+      return (await res.json() as {requests: unknown[]}).requests
+    }
+    await runsAt(app, sessionId, 2)
+    expect(await list()).toEqual([])
+    await runsAt(app, sessionId, 32)
+    expect(await list()).toHaveLength(1)
+    await runsAt(app, sessionId, 62)
+    expect(await list()).toEqual([])
+  })
+})
+
+describe('waiting summary fixtures — a run ID that is valid but not in the list', () => {
+  const MISSING_RUN_ID = 'run-fixture-missing-001'
+
+  it('matches the notification run-ID pattern, is absent from the list, and has no stream', async () => {
+    expect(MISSING_RUN_ID).toMatch(/^[\w-]{1,128}$/)
+    const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
+    const {fixtureSessionId} = await (await app.request(`${FIXTURE_OPERATOR_PREFIX}/session`)).json() as {fixtureSessionId: string}
+    const {runs} = await (await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs?fixtureSessionId=${fixtureSessionId}`)).json() as {runs: {runId: string}[]}
+    expect(runs.map(run => run.runId)).not.toContain(MISSING_RUN_ID)
+    const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs/${MISSING_RUN_ID}/stream?fixtureSessionId=${fixtureSessionId}`)
+    expect(res.status).toBe(404)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Waiting fixture scenarios: a live run with nothing to show yet, held open
+// ---------------------------------------------------------------------------
+
+const FIXTURE_WAITING_SCENARIO_ROWS = FIXTURE_QUESTION_SCENARIO_ROWS.filter(row => row.scenario.startsWith('waiting_'))
+const WAITING_SCENARIO_KEYS = FIXTURE_WAITING_SCENARIO_ROWS.map(row => row.scenario)
+const waitingRunId = (key: string): string => `run-fixture-index-${key.replaceAll('_', '-')}`
+
+describe('waiting fixture scenarios — registry and manifest', () => {
+  it('registers a running scenario and a queued scenario, each with a fixture-prefixed row', async () => {
+    expect(FIXTURE_WAITING_SCENARIO_ROWS).toEqual([
+      {scenario: 'waiting_no_output', summaryStatus: 'running'},
+      {scenario: 'waiting_queued', summaryStatus: 'queued'},
+    ])
+    expect(WAITING_SCENARIO_KEYS.map(waitingRunId)).toEqual([
+      'run-fixture-index-waiting-no-output',
+      'run-fixture-index-waiting-queued',
+    ])
+    const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
+    const body = await (await app.request(`${FIXTURE_OPERATOR_PREFIX}`)).json() as {scenarios: string[]}
+    for (const key of WAITING_SCENARIO_KEYS) expect(body.scenarios).toContain(key)
+    expect(Object.values(FIXTURE_SCENARIO_NAMES)).toEqual(expect.arrayContaining(WAITING_SCENARIO_KEYS))
+  })
+
+  it('the scenario select in Operator.tsx lists exactly the waiting scenarios among its question-block options', async () => {
+    const fs = await import('node:fs/promises')
+    const source = await fs.readFile('web/src/views/Operator.tsx', 'utf8')
+    const block = source.slice(source.indexOf('QUESTION_FIXTURE_SCENARIOS'), source.indexOf('interface OperatorProps'))
+    const values = [...block.matchAll(/value: '([a-z0-9_]+)'/g)].map(match => match[1])
+    expect(values.filter(value => value?.startsWith('waiting_'))).toEqual(WAITING_SCENARIO_KEYS)
+  })
+})
+
+describe('waiting fixture scenarios — frames', () => {
+  it.each([
+    ['waiting_no_output', 'running', 'EXECUTING'],
+    ['waiting_queued', 'queued', 'PENDING'],
+  ])('%s: ready then one %s status frame, and nothing that would put content on the card', (key, status, phase) => {
+    const runId = waitingRunId(key)
+    const sse = serializeScenarioToSse(key, runId)
+    const server = serverFrames(sse)
+    const browser = browserFrames(sse)
+
+    expect(server.map(frame => frame.type)).toEqual(['ready', 'status'])
+    expect(browser).toEqual(server)
+    expect(server[0]?.data.contractVersion).toBe(OPERATOR_CONTRACT_VERSION)
+    expect(server[1]?.data.runId).toBe(runId)
+    expect(server[1]?.data.status).toBe(status)
+    expect(server[1]?.data.phase).toBe(phase)
+    for (const forbidden of ['event: output', 'event: approval', 'event: question', 'event: reset', 'checkoutProvenance', 'checkoutPreparation']) {
+      expect(sse, forbidden).not.toContain(forbidden)
+    }
+    expect(sse).not.toContain('waiting_for_')
+  })
+
+  it('the browser reducer leaves each run live and non-terminal with no output', () => {
+    for (const key of WAITING_SCENARIO_KEYS) {
+      const runId = waitingRunId(key)
+      let state: StreamState = {connection: 'connecting', runs: {}, retryCount: 0, shouldReconnect: false}
+      for (const frame of browserStreamFrames(serializeScenarioToSse(key, runId))) state = nextStreamState(state, frame)
+      const entry = state.runs[runId] as {terminal?: boolean; outputText?: string} | undefined
+      expect(state.connection, key).toBe('live')
+      expect(entry?.terminal, key).toBe(false)
+      expect(entry?.outputText ?? '', key).toBe('')
+    }
+  })
+})
+
+async function waitingHarness() {
+  const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
+  const {fixtureSessionId} = await (await app.request(`${FIXTURE_OPERATOR_PREFIX}/session`)).json() as {fixtureSessionId: string}
+  const {runs} = await (await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs?fixtureSessionId=${fixtureSessionId}`)).json() as {runs: {runId: string; status: string; repo: string}[]}
+  const get = async (key: string, suffix: string) => app.request(`${FIXTURE_OPERATOR_PREFIX}/runs/${waitingRunId(key)}/${suffix}?fixtureSessionId=${fixtureSessionId}`)
+  return {app, fixtureSessionId, runs, get}
+}
+
+describe('waiting fixture scenarios — routes', () => {
+  it('each scenario has a fixture-prefixed row with its summary status, and its stream serves the scenario bytes and stays open', async () => {
+    const {runs, get} = await waitingHarness()
+    for (const row of FIXTURE_WAITING_SCENARIO_ROWS) {
+      const found = runs.find(candidate => candidate.runId === waitingRunId(row.scenario))
+      expect(found, row.scenario).toBeDefined()
+      expect(found?.status, row.scenario).toBe(row.summaryStatus)
+      expect(found?.repo).toMatch(/fixture/)
+
+      const res = await get(row.scenario, 'stream')
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type')).toContain('text/event-stream')
+      const {text, endedAfterBytes} = await firstChunkThenOpen(res)
+      expect(text).toBe(serializeScenarioToSse(row.scenario, waitingRunId(row.scenario)))
+      expect(endedAfterBytes, `${row.scenario} stays open`).toBe(false)
+    }
+  })
+
+  it('both scenarios are held open with no approval, while every existing scenario keeps its behavior', () => {
+    for (const key of WAITING_SCENARIO_KEYS) {
+      expect(isHeldOpenScenario(key), key).toBe(true)
+      expect(isNoApprovalScenario(key), key).toBe(true)
+    }
+    expect(isHeldOpenScenario('success')).toBe(false)
+    expect(isHeldOpenScenario('no_output')).toBe(false)
+    expect(isHeldOpenScenario('approval_flow')).toBe(false)
+    expect(isNoApprovalScenario('approval_flow')).toBe(false)
+    expect(isHeldOpenScenario('question_single')).toBe(true)
+    expect(isNoApprovalScenario('question_single')).toBe(false)
+    expect(isNoApprovalScenario('question_no_approval')).toBe(true)
+    expect(isHeldOpenScenario('question_terminal_pending')).toBe(false)
+    expect(isHeldOpenScenario('not_a_scenario')).toBe(false)
+    expect(isNoApprovalScenario('not_a_scenario')).toBe(false)
+  })
+
+  it('lists no approvals and no questions for either scenario', async () => {
+    const {get} = await waitingHarness()
+    for (const key of WAITING_SCENARIO_KEYS) {
+      const approvals = await get(key, 'approvals')
+      expect(approvals.status).toBe(200)
+      expect((await approvals.json() as {approvals: unknown[]}).approvals, key).toEqual([])
+      const questions = await get(key, 'questions')
+      expect(questions.status).toBe(200)
+      expect((await questions.json() as {requests: unknown[]}).requests, key).toEqual([])
+    }
+  })
+
+  it('a launched run can use either scenario and is served its own held-open bytes', async () => {
+    const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
+    const {fixtureSessionId} = await (await app.request(`${FIXTURE_OPERATOR_PREFIX}/session`)).json() as {fixtureSessionId: string}
+    for (const key of WAITING_SCENARIO_KEYS) {
+      const launch = await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs`, {
+        method: 'POST',
+        headers: {'content-type': 'application/json'},
+        body: JSON.stringify({scenario: key, idempotencyKey: `fixture-idem-key-${key}-launch-001`, fixtureSessionId, csrfToken: 'fixture-csrf-placeholder', repo: 'fixture-org/fixture-repo', prompt: '[Fixture prompt]'}),
+      })
+      expect(launch.status).toBe(200)
+      const {runId} = await launch.json() as {runId: string}
+      const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs/${runId}/stream?fixtureSessionId=${fixtureSessionId}`)
+      const {text, endedAfterBytes} = await firstChunkThenOpen(res)
+      expect(text).toBe(serializeScenarioToSse(key, runId))
+      expect(endedAfterBytes).toBe(false)
+    }
+  })
+})
+
+describe('waiting fixture scenarios — production artifacts carry no scenario names or row IDs', () => {
+  it('web/dist, the service worker, and the shipped browser modules contain neither', async () => {
+    const fs = await import('node:fs/promises')
+    const path = await import('node:path')
+    const files = ['web/dist/sw.js', 'web/dist/index.html', 'public/operator-stream.js', 'public/operator-launch.js', 'public/operator-run-index.js', 'public/operator-time.js']
+    for (const file of await fs.readdir('web/dist/assets')) {
+      if (file.endsWith('.js') || file.endsWith('.css')) files.push(path.join('web/dist/assets', file))
+    }
+    for (const file of files) {
+      const src = await fs.readFile(file, 'utf8')
+      for (const key of WAITING_SCENARIO_KEYS) {
+        expect(src, `${file} must not contain scenario ${key}`).not.toContain(key)
+        expect(src, `${file} must not contain ${waitingRunId(key)}`).not.toContain(waitingRunId(key))
+      }
+    }
   })
 })

@@ -3,8 +3,21 @@
  * Loaded only by web/src/operator/runtime.ts via dynamic import with ?manual=1.
  */
 
-/** Index-only status set. Stream-only statuses (blocked, waiting_for_approval) are excluded. */
-export type RunSummaryStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+/** The status set a run summary can carry. The stream-only blocked status is excluded. */
+export type RunSummaryStatus =
+  | 'queued'
+  | 'running'
+  | 'waiting_for_approval'
+  | 'waiting_for_question'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+
+/**
+ * Run-summary status ↔ hyphenated CSS class token (`waiting_for_question` → `status-waiting-for-question`).
+ * The card emitter writes through it; web/src/operator/runtime.ts mirrors it to read a card's class back.
+ */
+export declare const RUN_STATUS_CLASS_TOKENS: Readonly<Record<RunSummaryStatus, string>>
 
 /** Operator-safe failure-reason code. */
 export type FailureKind =
@@ -79,6 +92,35 @@ export declare function resetRunIndexState(): void
  */
 export declare function markRunStreamAttached(runId: string): void
 
+/**
+ * Mark a run's card expanded without toggling it (single-open: any other expanded card collapses).
+ * Used by the launch handoff and by a notification jump. Idempotent; does nothing when the card is
+ * absent or already expanded.
+ */
+export declare function markCardExpandedForLaunch(runId: string): void
+
+/**
+ * Refresh the run list in place: fetch, then diff without the loading toggle. Single-flight — a
+ * request while a refresh is in flight joins ONE more refresh that starts after it, so a joined
+ * request is never answered with data fetched before it was made, and responses apply in order.
+ *
+ * Never writes the stream-attached card; updates the empty/unavailable states from the result;
+ * refocuses the card that had focus (preventScroll). A 401/403 routes to the `onAuthRequired` given
+ * to init and stops further refreshes; a 429, network failure or any other failure keeps the current
+ * list. Does not touch the init generation. Resolves false without fetching before init has loaded.
+ *
+ * The promise settles once its data has been applied (or dropped) and never rejects: true when fresh
+ * data was applied, false otherwise.
+ */
+export declare function refreshOperatorRunIndex(): Promise<boolean>
+
+/**
+ * How an init ended: 'loaded' (cards shown), 'empty' (no runs), 'unavailable' (a non-auth failure),
+ * 'auth-required' (401/403, after `onAuthRequired`), 'stale' (a reset or a newer init replaced it
+ * while it fetched; it rendered no result and left the loading state to the newer owner).
+ */
+export type RunIndexInitOutcome = 'loaded' | 'empty' | 'unavailable' | 'auth-required' | 'stale'
+
 export declare function initOperatorRunIndex(opts?: {
   endpointBase?: string
   fixtureSessionId?: string
@@ -115,4 +157,4 @@ export declare function initOperatorRunIndex(opts?: {
    * (401/403). The caller must reclassify to auth-required and skip any restore.
    */
   onAuthRequired?: () => void
-}): Promise<void>
+}): Promise<RunIndexInitOutcome>

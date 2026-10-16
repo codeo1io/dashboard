@@ -25,12 +25,14 @@
  * - Status labels are rendered from a local map, never from the raw wire string.
  */
 
+import {formatRelativeTime, normalizeIsoTimestamp} from './operator-time.js'
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 /** Contract version this client expects on the ready frame. */
-export const PINNED_CONTRACT_VERSION = '1.9.0'
+export const PINNED_CONTRACT_VERSION = '1.11.0'
 
 /** Base delay in milliseconds for exponential backoff. */
 export const RETRY_BASE_MS = 1000
@@ -113,10 +115,20 @@ const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled'])
  * Statuses a run-list summary can carry (the run index parser keeps only these). The optional
  * `summaryStatus` init option is accepted only from this set; anything else is dropped.
  */
-const SUMMARY_STATUSES = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled'])
+const SUMMARY_STATUSES = new Set([
+  'queued',
+  'running',
+  'waiting_for_approval',
+  'waiting_for_question',
+  'succeeded',
+  'failed',
+  'cancelled',
+])
 
 /** In-card copy for an expired run snapshot. Dashboard-owned; never wire text. */
 const OUTPUT_UNAVAILABLE_COPY = 'Output no longer available.'
+const WAITING_TO_START_COPY = 'Waiting to start\u2026'
+const WAITING_FOR_OUTPUT_COPY = 'Waiting for output\u2026'
 
 /** Valid ResetReason values from the gateway SSE surface. */
 const VALID_RESET_REASONS = new Set([
@@ -1882,9 +1894,11 @@ export function hasOpenQuestions(runEntry) {
  *
  *   1. Terminal wins.
  *   2. Wire `waiting_for_approval` stays.
- *   3. A `running` or `waiting_for_question` run with any open approval prompt is
- *      `waiting_for_approval`. The gateway does not re-send status when an approval opens, so
- *      the wire value alone cannot show it.
+ *   3. A `running` run with any open approval prompt is `waiting_for_approval`. The gateway does
+ *      not re-send status when an approval opens, so the wire value alone cannot show it. Only a
+ *      wire `running` is overlaid, matching the gateway's `overlayWaitingStatus`
+ *      (fro-bot/agent packages/gateway/src/web/sse/projection.ts): a wire `waiting_for_question`
+ *      is never turned into `waiting_for_approval`.
  *   4. A `running` run with any open question is `waiting_for_question`.
  *   5. A wire `waiting_for_question` with an open question stays; with none, once a question
  *      reconcile has completed in the current connection cycle, it is really `running`. (Before
@@ -1900,10 +1914,10 @@ export function getEffectiveStatus(runEntry) {
   const wire = runEntry.status
   if (runEntry.terminal === true) return wire
   if (wire === 'waiting_for_approval') return wire
-  if ((wire === 'running' || wire === 'waiting_for_question') && hasOpenApprovals(runEntry)) {
-    return 'waiting_for_approval'
+  if (wire === 'running') {
+    if (hasOpenApprovals(runEntry)) return 'waiting_for_approval'
+    return hasOpenQuestions(runEntry) ? 'waiting_for_question' : wire
   }
-  if (wire === 'running') return hasOpenQuestions(runEntry) ? 'waiting_for_question' : wire
   if (wire === 'waiting_for_question') {
     if (hasOpenQuestions(runEntry)) return wire
     return runEntry.questionReconcileDone === true ? 'running' : wire
@@ -2870,6 +2884,13 @@ export const CANCEL_RETRY_MAX_ATTEMPTS = 3
  *   'transport-failure' — network error: retryable, "didn't go through"
  */
 
+/** Whether a Cancel region holds a Cancel button or a non-empty status message; an emptied control does not count. */
+function cancelRegionHasContent(el) {
+  if (el.querySelector('.run-cancel-btn-cancel') !== null) return true
+  const message = el.querySelector('.run-cancel-status')
+  return message !== null && message.textContent !== ''
+}
+
 /**
  * Render a Cancel control with an inline two-step confirm for a single run.
  *
@@ -3330,6 +3351,10 @@ function makeQuestionNoteCard(status) {
  *   noticeEl    — element to show stream connection state notices
  *   approvalsEl — element with [data-role="run-approvals"] to render approval prompts
  *   badgeEl     — element with [data-role="approval-badge"] for the approval count badge
+ *   timeEl      — optional [data-role="run-updated-at"] element of a launch-seeded card, kept
+ *                 showing the run's start time while the stream is attached.
+ *   waitingEl   — optional [data-role="run-waiting"] element: fixed "waiting" copy shown only while
+ *                 the stream is live, the run is not terminal, and nothing else is showing.
  *   checkoutEl  — element with [data-role="run-checkout-detail"], the target for checkout
  *                 provenance / preparation, rendered only from the sanitized closed DTOs.
  *   summaryStatus — optional run-list summary status for this run (queued | running | succeeded |
@@ -3348,7 +3373,7 @@ function makeQuestionNoteCard(status) {
  * - Read-only: GET only for stream; approval decisions are operator-forwarded writes.
  */
 export function initOperatorStream(opts) {
-  const {runId, statusEl, noticeEl, outputEl, coalescedEl, gapEl, approvalsEl, badgeEl, reasonEl, checkoutEl, cancelEl, questionsEl, approvalClient: injectedApprovalClient, cancelClient: injectedCancelClient, questionClient: injectedQuestionClient, endpointBase, fixtureSessionId} = opts
+  const {runId, statusEl, noticeEl, outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, timeEl, waitingEl, checkoutEl, cancelEl, questionsEl, approvalClient: injectedApprovalClient, cancelClient: injectedCancelClient, questionClient: injectedQuestionClient, endpointBase, fixtureSessionId} = opts
 
   // The run-list summary status for this run, when the caller has one. Only a known summary status
   // is kept; it lets a no-snapshot reset close an expired terminal run without a status frame.
@@ -3356,9 +3381,26 @@ export function initOperatorStream(opts) {
     ? opts.summaryStatus
     : undefined
 
+  // Every stream-owned region starts each attachment empty and hidden; updateDOM alone shows one.
   if (checkoutEl) {
     checkoutEl.textContent = ''
     checkoutEl.hidden = true
+  }
+
+  if (waitingEl) {
+    waitingEl.textContent = ''
+    waitingEl.hidden = true
+  }
+
+  if (outputEl) {
+    outputEl.textContent = ''
+    outputEl.classList?.remove('run-output-unavailable')
+    outputEl.hidden = true
+  }
+  if (coalescedEl) coalescedEl.hidden = true
+  if (badgeEl) {
+    badgeEl.textContent = ''
+    badgeEl.hidden = true
   }
 
   if (questionsEl !== undefined && questionsEl !== null) {
@@ -3712,6 +3754,7 @@ export function initOperatorStream(opts) {
   let aborted = false // set by close() to prevent late timer from fetching
   let announcedFailure = false
   let paintedPreparationHeadline = false // reasonEl currently shows a headline this stream wrote from checkoutPreparation
+  let latestStartedAt = null // latest valid startedAt from a status frame; never reset to blank
 
   function updateDOM() {
     // Late-frame guard: after close(), no write of any kind (notice, status,
@@ -3719,6 +3762,12 @@ export function initOperatorStream(opts) {
     // buffered frame or microtask resolving after close() must not paint stale
     // state onto a card that may already be collapsed or reused for another run.
     if (aborted) return
+
+    // The seeded time is repainted from its own datetime on every paint, so it never goes stale.
+    if (timeEl) {
+      if (latestStartedAt !== null) timeEl.setAttribute('datetime', latestStartedAt)
+      timeEl.textContent = formatRelativeTime(timeEl.getAttribute('datetime'))
+    }
 
     if (noticeEl) {
       const conn = state.connection
@@ -3993,6 +4042,24 @@ export function initOperatorStream(opts) {
       questionsEl.hidden = presentIds.size === 0
     }
 
+    // Waiting line: shown only while live and non-terminal, and when no output, open prompt or open
+    // question is showing. Checkout detail, answered-question notes and the wire status do not hide it.
+    if (waitingEl) {
+      const runEntry = state.runs[runId]
+      const effectiveStatus = getEffectiveStatus(runEntry)
+      const hasContent = runEntry?.outputUnavailable === true ||
+        (typeof runEntry?.outputText === 'string' && runEntry.outputText !== '') ||
+        getOpenApprovals(runEntry).length > 0 ||
+        getQuestions().length > 0
+      // A terminal run-list status holds until the stream reports a status of its own.
+      const summaryTerminal = summaryStatus !== undefined && TERMINAL_STATUSES.has(summaryStatus) &&
+        (runEntry === undefined || runEntry.status === '')
+      const isTerminal = runEntry?.terminal === true || summaryTerminal
+      const waiting = state.connection === 'live' && !isTerminal && effectiveStatus !== 'blocked' && !hasContent
+      if (waiting) waitingEl.textContent = effectiveStatus === 'queued' ? WAITING_TO_START_COPY : WAITING_FOR_OUTPUT_COPY
+      waitingEl.hidden = !waiting
+    }
+
     // Cancel control (R1/R2): render on non-terminal runs, hide once terminal.
     // Gated on run status via the reducer's `terminal` flag, not local optimism.
     if (cancelEl !== undefined && cancelEl !== null && cancelClient !== null) {
@@ -4003,7 +4070,8 @@ export function initOperatorStream(opts) {
         if (cancelControl !== null) {
           cancelControl.notifyTerminal()
         }
-        cancelEl.hidden = false
+        // Only a Cancel button or a cancelled message is worth showing; an emptied control is not.
+        cancelEl.hidden = !cancelRegionHasContent(cancelEl)
       } else if (state.connection === 'live' && runEntry !== undefined) {
         if (cancelControl === null) {
           cancelControl = renderCancelControl(runId, cancelClient, targetRunId => {
@@ -4037,6 +4105,8 @@ export function initOperatorStream(opts) {
   function dispatch(event) {
     const prevConnection = state.connection
     state = nextStreamState(state, event)
+    const startedAt = normalizeIsoTimestamp(state.runs[runId]?.startedAt)
+    if (startedAt !== undefined) latestStartedAt = startedAt
     syncQuestionStatuses()
     updateDOM()
     // Trigger reconcile when the stream first goes live (or re-goes live after reconnect).
@@ -4694,11 +4764,30 @@ export function initOperatorStream(opts) {
     reconnectTimer = setTimeout(connect, delay)
   }
 
+  /**
+   * Whether this handle still serves its card, as a three-way read of the lifecycle state:
+   *   'terminal' — the run reached a terminal status (its card is complete; nothing more to stream);
+   *   'active'   — connecting, live, or reconnecting (it is, or will be, receiving frames);
+   *   'inactive' — closed without a terminal status, failed, not found, rate-limited, drifted, or
+   *                close()d: nothing will arrive without a new attach.
+   * Read-only: it never writes the DOM or the state.
+   */
+  function getConnectionStatus() {
+    if (aborted) return 'inactive'
+    if (state.runs[runId]?.terminal === true) return 'terminal'
+    const {connection} = state
+    return connection === 'connecting' || connection === 'live' || connection === 'reconnecting' ? 'active' : 'inactive'
+  }
+
+  // One paint before connecting, so the card shows "Connecting to run stream…" and no stale region.
+  updateDOM()
+
   // Start the connection
   connect()
 
   // Return a handle to allow external abort (e.g. page unload)
   return {
+    getConnectionStatus,
     decideQuestion,
     checkQuestions,
     getQuestions,
@@ -4724,6 +4813,7 @@ export function initOperatorStream(opts) {
         cancelControl.el.remove()
       }
       if (cancelEl !== undefined && cancelEl !== null) cancelEl.hidden = true
+      if (waitingEl) waitingEl.hidden = true
       state = nextStreamState(state, {type: 'stream-closed'})
     },
   }
@@ -4790,11 +4880,8 @@ export function bootstrapOperatorStreams(opts) {
 /**
  * Reset the bootstrap state.
  *
- * Closes all active stream handles and removes the pagehide listener registered
- * during the last bootstrapOperatorStreams() call. Called by the React runtime
- * seam cleanup so that a remount (e.g. after auth expiry and re-login) can
- * re-bootstrap the streams without leaking handles or duplicate listeners.
- * Also used in tests.
+ * Closes the handles and removes the pagehide listener from the last bootstrapOperatorStreams() call.
+ * That bootstrap is the module's own non-manual start; the runtime seam does not use it, and tests do.
  */
 export function resetBootstrapState() {
   // Close all active handles before clearing state
