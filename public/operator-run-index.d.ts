@@ -44,7 +44,7 @@ export type RunIndexResult =
   | {readonly kind: 'unavailable'; readonly authFailure?: boolean}
 
 export declare const RUN_INDEX_CAP: 100
-export declare const VALID_RUN_SUMMARY_STATUSES: ReadonlySet<string>
+export declare const VALID_RUN_SUMMARY_STATUSES: ReadonlySet<RunSummaryStatus>
 
 /**
  * Dashboard-owned display labels for known failure reasons, keyed by FailureKind.

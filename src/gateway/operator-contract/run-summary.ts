@@ -13,16 +13,19 @@
  */
 
 import type {Result} from '../../result.ts'
-import type {OperatorFailureKind} from './run-status.ts'
+import type {OperatorFailureKind, RunSummaryStatus} from './run-status.ts'
 
 import {err, ok} from '../../result.ts'
-import {isOperatorFailureKind} from './run-status.ts'
+import {isOperatorFailureKind, RUN_SUMMARY_STATUSES} from './run-status.ts'
 
 /**
- * Index-only status set. 'blocked' and 'waiting_for_approval' are stream-only
- * overlays — never produced by the run-summary projector.
+ * Index-only status set. 'blocked', 'waiting_for_approval', and
+ * 'waiting_for_question' are stream-only overlays — never produced by the
+ * run-summary projector. Single-sourced: the type and the runtime list below
+ * derive from run-status.ts STREAM_RUN_STATUSES / STREAM_ONLY_RUN_STATUSES
+ * (rm-1463); this module no longer hand-lists statuses.
  */
-export type RunSummaryStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+export type {RunSummaryStatus} from './run-status.ts'
 
 /**
  * Operator-safe projection of a run's summary.
@@ -46,13 +49,7 @@ export const RUN_INDEX_CAP = 100
 const MAX_ID_LENGTH = 512
 const MAX_DATE_LENGTH = 128
 
-const VALID_RUN_SUMMARY_STATUSES: ReadonlySet<string> = new Set([
-  'queued',
-  'running',
-  'succeeded',
-  'failed',
-  'cancelled',
-])
+const VALID_RUN_SUMMARY_STATUSES: ReadonlySet<string> = new Set(RUN_SUMMARY_STATUSES)
 
 function hasValidRunSummaryShape(value: unknown): value is RunSummary {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
