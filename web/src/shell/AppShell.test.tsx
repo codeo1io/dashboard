@@ -572,3 +572,30 @@ describe('AppShell', () => {
     })
   })
 })
+
+describe('AppShell dashboard version footer (rm-1483, upstream #641)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('links the release-channel version injected at build time', () => {
+    vi.stubEnv('VITE_DASHBOARD_VERSION', '2026.10.16')
+    render(<AppShell>content</AppShell>)
+    const link = screen.getByRole('link', {name: '2026.10.16'})
+    expect(link).toHaveAttribute('href', 'https://github.com/codeo1io/dashboard/releases/tag/2026.10.16')
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+  })
+
+  it('renders no version link for local dev builds', () => {
+    vi.stubEnv('VITE_DASHBOARD_VERSION', '')
+    render(<AppShell>content</AppShell>)
+    expect(screen.queryByRole('link', {name: 'dev'})).not.toBeInTheDocument()
+  })
+
+  it('keeps the privacy link alongside the version link', () => {
+    vi.stubEnv('VITE_DASHBOARD_VERSION', '2026.10.16')
+    render(<AppShell>content</AppShell>)
+    expect(screen.getByRole('link', {name: 'Privacy'})).toBeInTheDocument()
+  })
+})

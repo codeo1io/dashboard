@@ -26,6 +26,7 @@
 
 import {validateDynamicId} from './validate-dynamic-id.ts'
 import type {RunSummaryStatus} from '../../../public/operator-stream.js'
+import {clearGatewaySignInRedirectGuard, maybeAutoRedirectToGatewaySignIn} from './sign-in-recovery.ts'
 import type {OperatorState} from './state.ts'
 
 /**
@@ -353,7 +354,7 @@ async function defaultRuntimeLoader(opts?: {
       onRestoreRun?: (runId: string, card: Element, status: string) => void
       onRestoreMiss?: () => void
       onAuthRequired?: () => void
-    }) => Promise<void>
+    }) => Promise<void | 'loaded' | 'empty' | 'unavailable' | 'auth-required' | 'stale'>
     resetRunIndexState?: () => void
     markRunStreamAttached?: (runId: string) => void
     markCardExpandedForLaunch?: (runId: string) => void
@@ -476,7 +477,12 @@ async function defaultRuntimeLoader(opts?: {
     }
   }
 
+  // rm-1483 (#633/#637 port): an auth failure during the init await is this
+  // fork's init-outcome signal — the 1.9.0 run-index twin reports it only
+  // through this callback (upstream's newer twin also returns the outcome).
+  let authRequiredDuringInit = false
   const onAuthRequired = () => {
+    authRequiredDuringInit = true
     opts?.onStateChange?.('auth-required')
   }
 
@@ -513,7 +519,28 @@ async function defaultRuntimeLoader(opts?: {
     const runIndexOpts = opts?.endpointBase !== undefined
       ? {endpointBase: opts.endpointBase, fixtureSessionId: opts.fixtureSessionId, onSelectRun, restoreRunId, onRestoreRun, onRestoreMiss, onAuthRequired}
       : {onSelectRun, restoreRunId, onRestoreRun, onRestoreMiss, onAuthRequired}
-    await runIndexMod.initOperatorRunIndex(runIndexOpts)
+    const initOutcome = await runIndexMod.initOperatorRunIndex(runIndexOpts)
+    // rm-1483 (#637 port, fork-adapted from upstream's init-outcome wiring):
+    // redirect a signed-out tab to the gateway sign-in start URL at most once
+    // per tab, and clear that guard once a run list actually rendered. The
+    // 1.9.0 twin returns no outcome, so the loaded/empty signal is the
+    // data-state it sets on the run-index section itself; test doubles that
+    // return an outcome string (upstream shape) are honored directly. The
+    // fixture harness passes endpointBase and never redirects — it has no
+    // gateway sign-in route.
+    const runIndexSection = typeof document !== 'undefined'
+      ? document.querySelector('[data-role="run-index"]')
+      : null
+    const runIndexLoaded = initOutcome === 'loaded' || initOutcome === 'empty'
+      || (initOutcome === undefined
+        && runIndexSection instanceof HTMLElement
+        && (runIndexSection.dataset.state === 'loaded' || runIndexSection.dataset.state === 'empty'))
+    if ((authRequiredDuringInit || initOutcome === 'auth-required') && opts?.endpointBase === undefined) {
+      maybeAutoRedirectToGatewaySignIn('auth-required')
+    }
+    if (runIndexLoaded) {
+      clearGatewaySignInRedirectGuard()
+    }
   }
 
   if (typeof launchMod.resetLaunchState === 'function') {
