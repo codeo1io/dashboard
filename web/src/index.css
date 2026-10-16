@@ -105,6 +105,26 @@
   font-size: var(--text-body-lg);
 }
 
+/* rm-1447: upstream platform availability (githubstatus feed). Info-toned —
+   deliberately distinct from the amber stale banner: this is an annotation
+   about the upstream platform, not a degradation of our own data. */
+.operator-platform-banner {
+  background: color-mix(in srgb, var(--color-info) 8%, transparent);
+  border: 1px solid var(--color-info);
+  color: var(--color-info);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-3);
+  font-size: var(--text-body-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.operator-platform-banner::before {
+  content: "⚡";
+  font-size: var(--text-body-lg);
+}
+
 .operator-warning-panel.operator-failure-state-unavailable {
   background: color-mix(in srgb, var(--color-error) 8%, transparent);
   border: 1px solid var(--color-error);

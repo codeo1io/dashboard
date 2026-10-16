@@ -1,5 +1,11 @@
 import {useState} from 'react'
-import {fetchMonitoring, type FetchMonitoringResult, type MonitoringData, type MonitoringRepo} from '../api/monitoring.ts'
+import {
+  fetchMonitoring,
+  type FetchMonitoringResult,
+  type MonitoringData,
+  type MonitoringRepo,
+  type PlatformStatusSummary,
+} from '../api/monitoring.ts'
 import {useBoundedPoll} from '../hooks/useBoundedPoll.ts'
 
 type ViewState =
@@ -88,13 +94,48 @@ export function Monitoring() {
   )
 }
 
+/**
+ * rm-1447: statuses that make rollups ambiguous — checks may be failing to
+ * REGISTER rather than passing. 'under_maintenance' is planned and excluded
+ * (announced windows are not incidents); fetchedAt keeps even that state
+ * inspectable via /api/status.
+ */
+const PLATFORM_ACTIONS_DEGRADED: readonly string[] = ['degraded_performance', 'partial_outage', 'major_outage']
+
+function shouldShowPlatformBanner(platform: PlatformStatusSummary): boolean {
+  if (platform.actions !== null) return PLATFORM_ACTIONS_DEGRADED.includes(platform.actions)
+  // Actions component itself unreadable — fall back to broad overall
+  // incidents, which usually subsume it (a total feed failure shows nothing,
+  // matching the server's fail-open absence).
+  return platform.overall === 'major' || platform.overall === 'critical'
+}
+
+function platformBannerPhrase(platform: PlatformStatusSummary): string {
+  if (platform.actions === 'degraded_performance') return 'degraded performance'
+  if (platform.actions === 'partial_outage') return 'a partial outage'
+  if (platform.actions === 'major_outage') return 'a major outage'
+  return platform.overall === 'critical' ? 'a critical platform incident' : 'a major platform incident'
+}
+
 function MonitoringBoard({data}: {data: MonitoringData}) {
   const redRepos = data.repos.filter(repo => repo.status.rollupState === 'red' || repo.status.failingChecks > 0)
   const remaining = data.repos.length - redRepos.length
   const refreshedAt = data.refreshedAt === null ? null : new Date(data.refreshedAt).toLocaleString()
+  const platform = data.platformStatus
 
   return (
     <div data-testid="monitoring-board" style={{display: 'flex', flexDirection: 'column', gap: 'var(--space-3)'}}>
+      {platform !== null && shouldShowPlatformBanner(platform) && (
+        <div data-testid="monitoring-platform-banner" className="operator-platform-banner" role="status">
+          <span>
+            GitHub Actions reports {platformBannerPhrase(platform)} — CI checks may be failing to register
+            rather than passing, so green-looking rollups can be misleading.
+            {platform.overallDescription !== '' ? ` (${platform.overallDescription})` : ''} · platform status as
+            of {new Date(platform.fetchedAt).toLocaleTimeString()}
+          </span>
+        </div>
+      )}
+
       {data.staleBanner && (
         <div data-testid="monitoring-stale-banner" className="operator-warning-panel" role="status">
           Data is stale — showing the last known state. Counts may be outdated.

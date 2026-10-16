@@ -252,6 +252,31 @@ describe('/api/monitoring — BFF aggregation endpoint', () => {
       expect(body.repos).toHaveLength(0)
       expect(body.refreshedAt).toBeNull()
     })
+
+    it('rm-1447: platformStatus survives the DTO projection (additive annotation)', async () => {
+      const platformStatus = {
+        overall: 'minor',
+        overallDescription: 'Investigating Actions run creation delays',
+        actions: 'major_outage',
+        fetchedAt: 1_700_000_123_456,
+      } as const
+      const app = await buildTestApp(makeSnapshot({platformStatus}))
+      const res = await authedGet(app, '/api/monitoring')
+
+      expect(res.status).toBe(200)
+      const body = await res.json() as AggregatorSnapshot & {platformStatus: unknown}
+      expect(body.platformStatus).toEqual(platformStatus)
+    })
+
+    it('rm-1447: snapshot without platformStatus emits explicit null (fail-open absence, never undefined)', async () => {
+      const app = await buildTestApp(makeSnapshot())
+      const res = await authedGet(app, '/api/monitoring')
+
+      expect(res.status).toBe(200)
+      const body = await res.json() as {platformStatus?: unknown}
+      expect('platformStatus' in body).toBe(true)
+      expect(body.platformStatus).toBeNull()
+    })
   })
 
   describe('Cache-Control: no-store', () => {

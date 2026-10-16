@@ -27,6 +27,7 @@
 import type {Result} from '../result.ts'
 import type {EnumerateReposResult, InstallationsClient} from './installations.ts'
 import type {MetadataError, MetadataReader, MetadataResult} from './metadata.ts'
+import type {PlatformStatus} from './platform-status.ts'
 
 import {logger, sanitizeErrorMessage, type LogContext} from '../logger.ts'
 import {isErr, isOk} from '../result.ts'
@@ -160,6 +161,16 @@ export interface AggregatorSnapshot {
   readonly refreshDurationMs: number | null
   /** True when the last refresh attempt exceeded the watchdog ceiling — data is being served but the walk is degraded (rm-156) */
   readonly refreshDegraded: boolean
+  /**
+   * OPTIONAL (rm-1447): platform-availability annotation (githubstatus feed —
+   * overall indicator + Actions component status + fetchedAt). Absent when
+   * no fetch has succeeded or the last fetch failed (fail-open: the
+   * annotation never blocks or degrades the snapshot). Merged at SERVE time
+   * (getSnapshot), never written into setSnapshot literals or the persisted
+   * snapshot — existing snapshot stubs stay valid because the field is
+   * optional.
+   */
+  readonly platformStatus?: PlatformStatus
 }
 
 /**
@@ -328,6 +339,13 @@ export interface AggregatorDeps {
    * snapshots (the pre-bridge contract).
    */
   readonly snapshotStore?: SnapshotStore
+  /**
+   * rm-1447: once-per-refresh-cycle platform status fetch. Returns the
+   * annotation, or null when nothing usable came back (fail-open). Absent →
+   * the aggregator never fetches (hermetic default); production wiring in
+   * server.ts injects the real fetchPlatformStatus, tests inject stubs.
+   */
+  readonly platformStatusFetch?: () => Promise<PlatformStatus | null>
 }
 
 // ---------------------------------------------------------------------------
@@ -914,6 +932,44 @@ export function createAggregator(
   // up concurrent refreshes that race on lastGoodSnapshot.
   let refreshing = false
 
+  // rm-1447: latest platform-availability annotation (null = absent — no
+  // fetch succeeded yet, or the last fetch failed; a failed fetch CLEARS the
+  // annotation so a stale platform verdict can never outlive its feed). Kept
+  // OUT of the persisted snapshot and the setSnapshot literals: it is merged
+  // at serve time, so every existing snapshot shape stays byte-identical.
+  let lastPlatformStatus: PlatformStatus | null = null
+
+  /**
+   * rm-1447: fetch the platform annotation once per refresh cycle. Runs
+   * CONCURRENTLY with the walk (it must never delay it) and is joined in
+   * refresh()'s finally so a caller awaiting the cycle observes a settled
+   * annotation. Never throws — any failure clears the annotation (absent on
+   * the next serve) and the cycle proceeds untouched.
+   */
+  async function updatePlatformStatus(): Promise<void> {
+    const fetchPlatformStatusDep = deps.platformStatusFetch
+    if (fetchPlatformStatusDep === undefined) return
+    try {
+      lastPlatformStatus = await fetchPlatformStatusDep()
+      if (lastPlatformStatus === null) {
+        logger.debug('Platform status unavailable; serving snapshot without annotation (fail-open)')
+      }
+    } catch (error) {
+      lastPlatformStatus = null
+      logger.debug('Platform status fetch threw; serving snapshot without annotation (fail-open)', {
+        error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
+      })
+    }
+  }
+
+  /**
+   * rm-1447: merge the annotation at serve time — absent (not null-valued)
+   * when no fetch has succeeded, so consumers see no extra key by default.
+   */
+  function withPlatformStatus(snapshot: AggregatorSnapshot): AggregatorSnapshot {
+    return lastPlatformStatus === null ? snapshot : {...snapshot, platformStatus: lastPlatformStatus}
+  }
+
   /**
    * rm-156: stamp watchdog fields onto a snapshot write made from within a
    * refresh cycle — duration is measured from the cycle's wall-clock start
@@ -1272,6 +1328,10 @@ export function createAggregator(
     }
     refreshing = true
     cycleStartedAt = now()
+    // rm-1447: fire the platform-status read concurrently with the walk; it
+    // is joined below so refresh() resolves only after BOTH have settled
+    // (deterministic for awaiting tests) while never delaying the walk.
+    const platformStatusPromise = updatePlatformStatus()
     try {
       await runRefresh()
     } catch (error) {
@@ -1284,6 +1344,7 @@ export function createAggregator(
     } finally {
       refreshing = false
       cycleStartedAt = null
+      await platformStatusPromise
     }
   }
 
@@ -1296,7 +1357,7 @@ export function createAggregator(
    */
   function getSnapshot(): AggregatorSnapshot {
     if (lastGoodSnapshot === null) {
-      return {repos: [], staleBanner: true, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false}
+      return withPlatformStatus({repos: [], staleBanner: true, driftCount: 0, enumerationIncomplete: null, refreshedAt: null, refreshDurationMs: null, refreshDegraded: false})
     }
     // Stall watchdog: while a cycle is in flight longer than staleAfterMs
     // (default 2× the refresh interval), the served snapshot carries the
@@ -1305,9 +1366,9 @@ export function createAggregator(
     // deadlines above this window is bounded anyway; the watchdog is the
     // belt to that braces.)
     if (cycleStartedAt !== null && now() - cycleStartedAt > staleAfterMs) {
-      return {...lastGoodSnapshot, staleBanner: true}
+      return withPlatformStatus({...lastGoodSnapshot, staleBanner: true})
     }
-    return lastGoodSnapshot
+    return withPlatformStatus(lastGoodSnapshot)
   }
 
   /**
