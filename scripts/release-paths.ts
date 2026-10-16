@@ -48,4 +48,12 @@ export const HARD_RELEASE_ROOT_TSCONFIG_GLOB = 'tsconfig*.json'
 export const WORKFLOW_TRIGGER_ONLY_PATHS: readonly string[] = [
   'package.json',
   'pnpm-lock.yaml',
+  // 2026-10-18 review fix (run 21222e003a45 cycle:4, mixed-tree class of PR
+  // #898): origin/main's release.yaml on.push.paths gained
+  // scripts/gzip-static-sidecars.ts (rm-602, HARD on main where the file
+  // exists). This base predates the file, so the entry rides trigger-only
+  // here — the ephemeral validation tree pairs main's CURRENT workflows with
+  // this base's guard; at integrate main's HARD entry wins and this line can
+  // drop.
+  'scripts/gzip-static-sidecars.ts',
 ]
