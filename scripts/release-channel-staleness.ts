@@ -39,20 +39,28 @@
  * with fetch-depth: 0) — the script reads LOCAL refs only, so it performs no
  * authenticated network access of its own.
  */
+import type {CalverTag} from './calver-tag.ts'
 import {spawnSync} from 'node:child_process'
 import {appendFileSync, readFileSync} from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
 import {pathToFileURL} from 'node:url'
+import {compareCalverTags, parseCalverTag as sharedParseCalverTag} from './calver-tag.ts'
+
+export {sharedParseCalverTag as parseCalverTag}
 
 export const DEFAULT_THRESHOLD_DAYS = 45
 
-/** Calver tags as this repo's release channel mints them: YYYY.MM.D (day NOT zero-padded). */
-const CALVER_TAG = /^(\d{4})\.(\d{1,2})\.(\d{1,2})$/
+// rm-1468: the calver pattern and parseCalverTag moved to scripts/calver-tag.ts
+// (shape-only parse — the fork's PATCH is a per-month counter minted as
+// max(previous)+1, not a calendar day: it grows without bound, and foreign
+// upstream tags sharing this namespace have been observed past .43).
 
 export interface CalverTagInfo {
   name: string
   dateUnix: number
+  /** true when the tag's target commit is NOT reachable from HEAD — upstream-minted foreign ref (rm-1468); excluded from verdicts, reported separately. */
+  foreign?: boolean
 }
 
 export interface DormancyDecision {
@@ -70,35 +78,32 @@ export interface StalenessResult {
   newestTagDateUnix: number | null
   ageDays: number | null
   thresholdDays: number
+  /** How many foreign calver tags were excluded from the verdict (rm-1468). */
+  foreignTagsExcluded?: number
+  /** Newest foreign (not HEAD-reachable) calver tag excluded from the verdict (rm-1468). */
+  newestForeignTag?: string | null
   decision: DormancyDecision | null
 }
 
-/** Parses a calver tag name; day/month compare NUMERICALLY (2026.08.9 > 2026.08.10 lexically-reversed trap). */
-export function parseCalverTag(name: string): {year: number; month: number; day: number} | null {
-  const match = CALVER_TAG.exec(name)
-  if (match === null) return null
-  const year = Number(match[1])
-  const month = Number(match[2])
-  const day = Number(match[3])
-  if (month < 1 || month > 12 || day < 1 || day > 31) return null
-  return {year, month, day}
-}
+// parseCalverTag is re-exported from scripts/calver-tag.ts (see the note at
+// the former CALVER_TAG site): the fork's PATCH is a per-month counter, not
+// a calendar day — shape-only parse, no month/day range validation.
 
 /** Newest calver tag by numeric calver comparison (ignores non-calver tags entirely). */
 export function selectNewestCalverTag(tags: readonly CalverTagInfo[]): CalverTagInfo | null {
+  // rm-1468: numeric calver ordering over the GIVEN list — callers scope the
+  // list (evaluateReleaseChannelStaleness passes fork-authored tags only;
+  // foreign tags are excluded from every verdict). PATCH compares numerically
+  // and is unbounded (2026.08.9 > 2026.08.10 lexically-reversed trap,
+  // preserved; 2026.10.43 > 2026.10.9 now also holds).
   let newest: CalverTagInfo | null = null
-  let newestKey: {year: number; month: number; day: number} | null = null
+  let newestCalver: CalverTag | null = null
   for (const tag of tags) {
-    const key = parseCalverTag(tag.name)
-    if (key === null) continue
-    if (
-      newestKey === null ||
-      key.year > newestKey.year ||
-      (key.year === newestKey.year && key.month > newestKey.month) ||
-      (key.year === newestKey.year && key.month === newestKey.month && key.day > newestKey.day)
-    ) {
+    const calver = sharedParseCalverTag(tag.name)
+    if (calver === null) continue
+    if (newestCalver === null || compareCalverTags(calver, newestCalver) > 0) {
       newest = tag
-      newestKey = key
+      newestCalver = calver
     }
   }
   return newest
@@ -150,6 +155,28 @@ export function evaluateReleaseChannelStaleness(input: {
   thresholdDays: number
   decision: DormancyDecision | null
 }): StalenessResult {
+  // rm-1468: foreign tags — target commit not reachable from HEAD, i.e.
+  // upstream-minted refs pushed into this tag namespace — are excluded from
+  // the verdict entirely. A channel whose only NEWER tags are foreign reads on
+  // its own newest tag: foreign freshness can never green-wash a verdict.
+  const authored = input.tags.filter(tag => tag.foreign !== true)
+  const foreign = input.tags.filter(tag => tag.foreign === true)
+  if (authored.length === 0 && foreign.length > 0) {
+    throw new Error('only foreign calver tags readable from refs/tags (none reachable from HEAD): cannot evaluate the release channel (rm-1468)')
+  }
+  const result = evaluateUnscoped({...input, tags: authored})
+  const newestForeign = selectNewestCalverTag(foreign)
+  result.newestForeignTag = newestForeign === null ? null : newestForeign.name
+  result.foreignTagsExcluded = foreign.length
+  return result
+}
+
+function evaluateUnscoped(input: {
+  nowMs: number
+  tags: readonly CalverTagInfo[]
+  thresholdDays: number
+  decision: DormancyDecision | null
+}): StalenessResult {
   const {nowMs, tags, thresholdDays, decision} = input
   const newest = selectNewestCalverTag(tags)
   if (newest === null) {
@@ -193,6 +220,9 @@ export function buildSummaryLines(result: StalenessResult): string[] {
       '- Decision owner: **rm-714** (branch-b dormancy decision) — either record the channel retired-with-owner in `docs/runbooks/release-channel-decision.json` or fix the channel (provision the release App / secrets). Red while undecided is BY DESIGN.',
     )
   }
+  if ((result.foreignTagsExcluded ?? 0) > 0) {
+    lines.push(`foreign tags excluded from the verdict (not reachable from HEAD): ${String(result.foreignTagsExcluded)} (newest foreign ${result.newestForeignTag ?? 'none'}) — rm-1468`)
+  }
   return lines
 }
 
@@ -204,6 +234,13 @@ function gatherLocalTags(): CalverTagInfo[] {
     throw new Error(`git for-each-ref failed (rc=${git.status}): ${git.stderr}`)
   }
   const tags: CalverTagInfo[] = []
+  const mergedOut = spawnSync('git', ['tag', '--merged', 'HEAD', '--format=%(refname:short)'], {
+    encoding: 'utf8',
+  })
+  if (mergedOut.status !== 0) {
+    throw new Error(`git tag --merged failed (rc=${mergedOut.status}): ${mergedOut.stderr}`)
+  }
+  const forkAuthored = new Set(mergedOut.stdout.split('\n').map(line => line.trim()).filter(line => line !== ''))
   for (const line of git.stdout.split('\n')) {
     const trimmed = line.trim()
     if (trimmed === '') continue
@@ -211,7 +248,7 @@ function gatherLocalTags(): CalverTagInfo[] {
     const name = parts[0]
     const dateUnix = Number(parts[1])
     if (name === undefined || !Number.isFinite(dateUnix) || dateUnix <= 0) continue
-    if (parseCalverTag(name) !== null) tags.push({name, dateUnix})
+    if (sharedParseCalverTag(name) !== null) tags.push({name, dateUnix, foreign: !forkAuthored.has(name)})
   }
   return tags
 }

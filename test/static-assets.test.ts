@@ -414,6 +414,79 @@ describe('operator runtime JS assets — served regardless of operatorUiEnabled 
   })
 })
 
+// ---------------------------------------------------------------------------
+// rm-1469 — serve-static verb restriction on the operator runtime assets
+//
+// On @hono/node-server 2.1.3 the serveStatic middleware served the file for
+// ANY request method, so the verb-unrestricted app.use mounts at
+// src/server.ts served operator runtime JS in response to POST/PUT/DELETE.
+// v2.1.5 (honojs/node-server, 2026-10-13, 'fix(serve-static): only serve GET
+// and HEAD requests') makes non-GET/HEAD requests fall through via next(),
+// and no later handler matches these paths, so the app answers 404. The
+// operatorRuntimeCaching middleware only decorates status-200 responses, so a
+// fall-through response carries no operator ETag either.
+//
+// v2.1.5 also carries 'fix(listener): abort the request signal when an HTTP/2
+// client resets the stream' — listener-level behavior that app.request()
+// cannot reach in vitest (no real node:http2 listener). Documented manual
+// verification (the acceptance's 'or documented manual verification' branch,
+// tying to the rm-261 stranded-SSE / rm-477 CRLF lines): front the server with
+// an HTTP/2 listener, open an SSE stream with curl --http2-prior-knowledge,
+// kill the client mid-stream (RST_STREAM), and observe the server-side
+// request 'aborted' event fire and the connection slot release — on 2.1.3 the
+// aborted signal never fired and SSE connections stranded. The lockfile pins
+// @hono/node-server 2.1.5 for this behavior.
+// ---------------------------------------------------------------------------
+
+describe('rm-1469 — serve-static verb restriction on operator runtime assets', () => {
+  const operatorAssets = [
+    '/static/operator-stream.js',
+    '/static/operator-launch.js',
+    '/static/operator-run-index.js',
+  ] as const
+
+  for (const asset of operatorAssets) {
+    describe(asset, () => {
+      it('POST does not serve the asset (404/405, never the file body)', async () => {
+        const app = await buildTestApp(true)
+        const res = await app.request(asset, {method: 'POST'})
+        expect([404, 405]).toContain(res.status)
+        expect(res.headers.get('content-type') ?? '').not.toMatch(/javascript/)
+        expect(res.headers.get('etag')).toBeNull()
+      })
+
+      it('PUT does not serve the asset (404/405, never the file body)', async () => {
+        const app = await buildTestApp(true)
+        const res = await app.request(asset, {method: 'PUT'})
+        expect([404, 405]).toContain(res.status)
+        expect(res.headers.get('content-type') ?? '').not.toMatch(/javascript/)
+      })
+
+      it('DELETE does not serve the asset (404/405, never the file body)', async () => {
+        const app = await buildTestApp(true)
+        const res = await app.request(asset, {method: 'DELETE'})
+        expect([404, 405]).toContain(res.status)
+        expect(res.headers.get('content-type') ?? '').not.toMatch(/javascript/)
+      })
+
+      it('HEAD still serves with the ETag revalidation path intact', async () => {
+        const app = await buildTestApp(true)
+        const res = await app.request(asset, {method: 'HEAD'})
+        expect(res.status).toBe(200)
+        expect(res.headers.get('etag')).toMatch(/^"[0-9a-f]{32}"$/)
+      })
+
+      it('GET still serves the asset with the no-cache ETag path intact', async () => {
+        const app = await buildTestApp(true)
+        const res = await app.request(asset)
+        expect(res.status).toBe(200)
+        expect(res.headers.get('cache-control')).toBe('no-cache')
+        expect(res.headers.get('etag')).toMatch(/^"[0-9a-f]{32}"$/)
+      })
+    })
+  }
+})
+
 describe('PWA SW asset serving — /sw.js', () => {
   it('GET /sw.js returns 200', async () => {
     const app = await buildTestApp(false)
