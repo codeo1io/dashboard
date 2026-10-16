@@ -2627,6 +2627,13 @@ export function renderApprovalPrompt(prompt, runId, approvalClient, _onSettle) {
   el.setAttribute('role', 'region')
   el.setAttribute('aria-label', 'Approval prompt')
 
+  // The approval prompt sits inside the run card, which toggles expansion on
+  // click. Contain clicks inside the prompt so a decision does not collapse
+  // the card mid-action.
+  el.addEventListener('click', event => {
+    event.stopPropagation()
+  })
+
   // Permission label
   const permEl = document.createElement('div')
   permEl.className = 'approval-prompt-permission'
@@ -2895,6 +2902,12 @@ export function renderCancelControl(runId, cancelClient, onCancelDispatch) {
   el.className = 'run-cancel-control'
   el.setAttribute('role', 'group')
   el.setAttribute('aria-label', 'Cancel run')
+
+  // The Cancel control sits inside the run card as well; contain its clicks
+  // for the same reason.
+  el.addEventListener('click', event => {
+    event.stopPropagation()
+  })
 
   const statusEl = document.createElement('div')
   statusEl.className = 'run-cancel-status'
