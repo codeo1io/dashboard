@@ -114,6 +114,53 @@ client address (`X-Forwarded-For`) instead of the proxy's own address.
   separate rate-limit buckets (check the resolved address in the log line, not
   the proxy's).
 
+### Verifying the dashboard's own limiter buckets through the proxy (rm-183)
+
+The gateway section above governs `GATEWAY_OPERATOR_TRUSTED_PROXIES` on the
+**gateway** deployment. The **dashboard** server has its own per-path-class
+limiter with its own proxy decision (`RATE_LIMIT_TRUSTED_PROXY`, default OFF —
+see README's rate-limit rows). Since 2026-10-09 the default topology carries a
+log-once collapse detector: the first time it observes two **different**
+`X-Forwarded-For` values arriving at the **same** direct connection address,
+it emits one `Rate limiter client collapse` warning and goes silent for the
+process lifetime. That warning is the fastest two-source check available:
+
+1. From **two different client sources** (two machines, or one machine plus a
+   phone on mobile data — the sources must differ in public IP), note each
+   source's public address and issue one request each through the proxy:
+
+   ```sh
+   curl -s https://api.ipify.org   # this source's public IP, for step 3
+   curl -sS -o /dev/null -w '%{http_code}\n' https://<dashboard-host>/api/healthz
+   ```
+
+2. Check the dashboard server's logs for the detector's output:
+
+   ```sh
+   docker logs <dashboard-container> 2>&1 | grep 'Rate limiter client collapse' | tail -1
+   ```
+
+   The warning carries `directAddress` (the proxy's address), `firstXff` and
+   `secondXff` (the two observed forwarded values), and the `pathClass`.
+3. **Interpret it** — the warning means all proxied clients currently share
+   ONE per-class bucket:
+   - If the proxy **overwrites** `X-Forwarded-For` with the real client (verify
+     with step 1: the two curls' forwarded values must equal the two sources'
+     addresses), set `RATE_LIMIT_TRUSTED_PROXY=1` on the dashboard deployment
+     — first-hop keying is then correct per-client keying.
+   - If the proxy **appends** (`firstXff` can name an address neither curl
+     came from — the chain format is `client, proxy, …`), do NOT enable the
+     flag: first-hop keying would be client-spoofable. Fix the proxy to
+     overwrite, or accept the shared budget for the single-operator traffic
+     pattern this deployment runs.
+
+Two-source discipline matters: a single source can never produce two distinct
+forwarded values, so one client alone cannot fire (or verify) the detector —
+which is also why a false positive requires two genuinely distinct forwarded
+values, not one client retrying. Full background — the shared-key failure mode
+behind the gateway variant of this trap — in
+`docs/solutions/security-issues/gateway-operator-oauth-rate-limit-shared-key-behind-caddy-2026-09-21.md`.
+
 ---
 
 ## Traps
