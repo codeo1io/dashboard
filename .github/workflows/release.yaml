@@ -54,7 +54,7 @@ jobs:
 
       - name: 🟢 Set up Node.js
         if: github.event_name == 'push'
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
 
@@ -354,7 +354,7 @@ jobs:
           retention-days: 5
 
       - name: 🛡️ Upload Trivy results to code scanning
-        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: trivy-results-${{ steps.digest.outputs.normalized }}.sarif
           category: trivy/release-image
@@ -386,7 +386,7 @@ jobs:
           version: v0.72.0
 
       - name: 🟢 Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
 

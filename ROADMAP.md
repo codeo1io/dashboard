@@ -181,7 +181,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### rm-779
-- id: `rm-779` | track: reliability | priority: 72.0 | status: in_progress
+- id: `rm-779` | track: reliability | priority: 72.0 | status: implemented (2026-10-16 at the integrate of run a794d381b4f0, conflict case 711c8891c15946efbe5b9ecd55544ad5 (round 1 of the same integrate, case 1c4548b2461547018a572d7153593d99, timed out mid-resolution) — the ARG-derived whole-image pin + ubuntu-24.04 runner + ignorelist-as-gate semantics landed inside .github/workflows/cve-tripwire.yaml, which the October upstream-adoption lineage had dropped as collateral (same collateral class as rm-701/rm-759, restored at the integrate of d8fdf8b79ad5 2026-10-15); restored here per that precedent with the resolve-step sed re-verified positive/negative against the live Dockerfile ARG, and its standing-CVE triage record docs/solutions/security-issues/zlib1g-cve-2023-45853-standing-critical-2026-10-07.md (the ignorelist the gate semantics cite) restored from the same collateral drop so the workflow's references resolve; first-fire green-at-parity evidence stays re-enable-conditional)
 - acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -600,7 +600,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### codeql-action pin refresh to current v4.38.x — was the lone stale action pin
-- id: `rm-650` | track: reliability | priority: 40.0 | status: in_progress
+- id: `rm-650` | track: reliability | priority: 40.0 | status: implemented (digest 24c54180 / v4.38.3 is live at all four sites — init + analyze in codeql.yaml, upload-sarif in release.yaml and scorecard.yaml — landed via upstream's own re-pin PR #589 in the 2026.10.17 adoption, convergent with run a794d381b4f0's batch; this 2026-10-16 integrate normalizes the four trailing comments to the verified # v4.38.3 tag)
 - acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -754,7 +754,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### ubuntu-latest alias-flip guard for non-containerized jobs
-- id: `rm-188` | track: reliability | priority: 33.0 | status: in_progress
+- id: `rm-188` | track: reliability | priority: 33.0 | status: implemented (the fleet's last ubuntu-latest site — cve-tripwire.yaml's runner — flipped to ubuntu-24.04 inside run a794d381b4f0's rm-779 landing batch 2026-10-10 and rides the workflow restored at this 2026-10-16 integrate; zero non-comment runs-on: ubuntu-latest across .github/ re-verified at this resolution)
 - acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -1159,7 +1159,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Re-pin pnpm/action-setup v6.0.10 → v6.1.0 at its three workflow sites
-- id: `rm-761` | track: reliability | priority: 20.0 | status: in_progress
+- id: `rm-761` | track: reliability | priority: 20.0 | status: implemented (re-restored 2026-10-16 at the integrate of run a794d381b4f0, conflict case 711c8891c15946efbe5b9ecd55544ad5 — the v6.1.0 re-pin landed 2026-10-08 at 7ee3b45 and was dropped as adoption collateral by the October upstream-adoption lineage with all three sites reverted to the pre-pin 0977fd9 digest; this merge restores pnpm/action-setup@ea17c68 # v6.1.0 at .github/actions/setup/action.yaml, audit.yaml and visual.yaml)
 - acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
