@@ -1,0 +1,64 @@
+name: Release channel staleness check
+
+# rm-740 — a silently dead release channel must be LOUD.
+#
+# Context (run 405e9004 assess F1, HIGH): this fork's durable release channel
+# is half-dead by design today — `actions/secrets` is empty (total_count=0),
+# so `HAS_RELEASE_APP` is false and release.yaml skips create-tag /
+# promote-calver / create-GitHub-Release on every push; the live path is
+# promote-latest only. Nothing alerts on that silence. This weekly check
+# compares the newest calver tag on THIS repo's public refs against a stated
+# 45-day threshold and goes RED while the channel is stale and no dormancy
+# decision is recorded.
+#
+# Red-while-undecided is BY DESIGN: the decision owner is rm-714 (branch-b
+# dormancy decision — either record the channel retired-with-owner in
+# docs/runbooks/release-channel-decision.json, or fix the channel by
+# provisioning the release App / secrets). The step summary names rm-714 so
+# the red is actionable, not mysterious.
+#
+# Reads only public refs (tags). No new secrets: the default GITHUB_TOKEN
+# (contents: read) via actions/checkout is the only credential involved —
+# fetch-depth: 0 brings the tags with the checkout's own credentials, so the
+# script reads LOCAL refs only and performs no authenticated network access.
+# issues: write is NOT granted — this workflow opens no issues (the red run
+# itself is the signal, matching the upstream-drift.yaml alert-only posture).
+
+on:
+  schedule:
+    # Weekly, Monday 07:23 UTC — off-hour vs the Monday cron cluster
+    # (03:37 audit, 04:13 base-drift, 05:17 upstream-drift, 05:23 canary,
+    # 06:27 scorecard, 06:53 cve-tripwire on main) — avoid contributing to a
+    # simultaneous-failure cliff (rm-674 Monday-queue contention signals).
+    - cron: '23 7 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  staleness:
+    name: Evaluate release channel staleness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: ⤵ Checkout with tags
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the tag set IS the evidence — a shallow checkout
+          # without tags would make the check fail as extraction error, not
+          # pass silently (rm-166 lesson).
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 🟢 Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - name: 🔍 Evaluate release channel staleness (rm-740)
+        # Exit 0 = healthy or recorded-retired; 1 = stale (red BY DESIGN while
+        # the dormancy decision is undecided); 2 = extraction error (never a
+        # pass). The runner injects GITHUB_STEP_SUMMARY automatically — the
+        # script appends the rm-740/rm-714 summary there.
+        run: node scripts/release-channel-staleness.ts
