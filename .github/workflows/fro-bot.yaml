@@ -10,8 +10,12 @@ on:
     types: [opened, edited]
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened, review_requested]
+  # Off-hour on purpose (rm-109 truth-up, 2026-10-16): 02:37 UTC daily dodges the
+  # midnight-UTC fleet spike and the base-drift (04:13 Mon) / upstream-drift
+  # (05:17 Mon) maintenance windows. Without FRO_BOT_PAT the schedule path skips
+  # the agent step (see the HAS_FRO_BOT_PAT guards below).
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '37 2 * * *'
   workflow_dispatch:
     inputs:
       prompt:
@@ -344,7 +348,7 @@ jobs:
       - name: Run Fro Bot
         if: github.event_name != 'schedule' || env.HAS_FRO_BOT_PAT == 'true'
         id: fro-bot-agent
-        uses: fro-bot/agent@15dc1d9d9d144668b569efb994e65803aadf52d8 # v0.122.1
+        uses: fro-bot/agent@7d273ac643c8f9c0dc8615222677693dc337adef # v0.122.3
         env:
           OPENCODE_PROMPT_ARTIFACT: 'true'
           TASK_PROMPT: >-
