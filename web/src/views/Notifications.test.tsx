@@ -1,6 +1,7 @@
-import {render, screen, fireEvent, act} from '@testing-library/react'
+import {render, screen, fireEvent, act, waitFor} from '@testing-library/react'
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {getNotificationPermission, getPushSupport} from '../push/capability.ts'
+import {endpointHash} from '../push/endpoint-hash.ts'
 import {
   buildPushClient,
   resubscribeStaleKey,
@@ -240,6 +241,76 @@ describe('Notifications Component', () => {
 
     expect(screen.getByTestId('notifications-headline')).toHaveTextContent('Push Alerts')
     expect(screen.getByTestId('notifications-cta')).toHaveTextContent('Enable notifications')
+  })
+
+  it('shows Disable notifications when the gateway list holds this browser\'s active record', async () => {
+    addMetaTag()
+    const actual = await vi.importActual<typeof import('../push/subscribe.ts')>('../push/subscribe.ts')
+    const endpoint = 'https://push.example/this-browser'
+    const localHash = await endpointHash(endpoint)
+    const wireRecord = (endpointHashValue: string) => ({
+      endpointHash: endpointHashValue,
+      createdAt: 1_760_000_000_000,
+      updatedAt: 1_760_000_100_000,
+      keyVersion: 'v1',
+      active: true,
+    })
+    // One fresh Response per call: the sweep now issues TWO GETs (the rm-600
+    // key-version refresh hits /vapid-key, the reconcile reads /subscriptions)
+    // and a single shared Response can have its body read only once — the
+    // second read would throw and misclassify the sweep as inconclusive.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input)
+        const body = url.includes('/vapid-key')
+          ? JSON.stringify({publicKey: 'BNc3xVwB', keyVersion: 'v1'})
+          : JSON.stringify({subscriptions: [wireRecord('b'.repeat(64)), wireRecord(localHash)]})
+        return Promise.resolve(
+          new Response(body, {status: 200, headers: {'content-type': 'application/json'}}),
+        )
+      }),
+    )
+    vi.mocked(getNotificationPermission).mockReturnValue('granted')
+    vi.mocked(buildPushClient).mockReturnValue(actual.buildPushClient())
+    vi.mocked(runReconcileSweep).mockImplementation(actual.runReconcileSweep)
+
+    const originalSw = Object.getOwnPropertyDescriptor(globalThis.navigator, 'serviceWorker')
+    Object.defineProperty(globalThis.navigator, 'serviceWorker', {
+      value: {
+        ready: Promise.resolve({pushManager: {getSubscription: async () => ({endpoint})}}),
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      },
+      configurable: true,
+    })
+
+    try {
+      await act(async () => {
+        render(<Notifications />)
+      })
+
+      await waitFor(() => {
+        expect(screen.getByTestId('notifications-cta')).toHaveTextContent('Disable notifications')
+      })
+      expect(screen.getByTestId('notifications-cta')).not.toHaveTextContent('Enable notifications')
+    } finally {
+      vi.unstubAllGlobals()
+      // Restore the module-default fail-open stub — it MUST carry getVapidKey
+      // (the sweep's key-version refresh calls it on first mount; resetting to
+      // {} makes every later test in this file crash its first sweep).
+      vi.mocked(buildPushClient).mockReturnValue({
+        getVapidKey: vi.fn().mockResolvedValue({
+          success: true,
+          data: {pushDisabled: true, vapidKey: undefined},
+        }),
+      } as never)
+      if (originalSw) {
+        Object.defineProperty(globalThis.navigator, 'serviceWorker', originalSw)
+      } else {
+        Reflect.deleteProperty(globalThis.navigator, 'serviceWorker')
+      }
+    }
   })
 
   it('renders the privacy policy link before the consent CTA without requesting permission', async () => {
