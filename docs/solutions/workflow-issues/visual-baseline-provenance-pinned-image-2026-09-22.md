@@ -43,7 +43,7 @@ baseline inside it (rm-142, landed with the cycle-7 batch):
   ```bash
   docker run --rm -v "$PWD:/repo" -w /repo \
     -e PLAYWRIGHT_BROWSERS_PATH=/ms-playwright -e CI=1 \
-    mcr.microsoft.com/playwright:v1.63.0-noble bash -Eeuo pipefail -c '
+    mcr.microsoft.com/playwright:v1.64.0-noble bash -Eeuo pipefail -c '
       npm install -g pnpm@11.27.0 && pnpm install --frozen-lockfile
       pnpm exec playwright test --update-snapshots'
   ```
@@ -56,6 +56,29 @@ owns it; never a moving tag). The in-container install poisons host
 node_modules — see
 `docs/solutions/workflow-issues/container-pnpm-install-poisons-host-node-modules-2026-09-22.md`
 before running the procedure locally.
+
+## Addendum (2026-10-17): the image pin must track the lockfile, not just itself
+
+The gate reddened a second way (case 87241f2e): the lockfile's
+`@playwright/test` drifted **in-range** to 1.64.0 (a lockfile regen under
+package.json's `^1.63.0` caret, commit 6179cb7) while the job container
+stayed at `v1.63.0-noble`. `pnpm install --frozen-lockfile` is satisfied —
+the failure surfaces later, at browser launch: "Executable doesn't exist at
+/ms-playwright/chromium_headless_shell-1248/…" with Playwright's own hint
+"Looks like Playwright was just updated to 1.64.0. Please update docker
+image as well." Every visual run 2026-10-11..16 died this way (e.g. run
+38963562396) even though no commit touched `web/`.
+
+Fix applied: tag+digest re-pinned together to
+`mcr.microsoft.com/playwright:v1.64.0-noble@sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f`
+(validated green, run 38963773814), and the regen procedure's image tag
+above moves with it. Only the operator baseline needed regeneration
+(listener/privacy matched pixel-identical across the two chromium builds);
+see the provenance header in `tests/visual/dashboard.spec.ts`.
+
+Detection for next time: `grep -m1 "'@playwright/test@" pnpm-lock.yaml`
+versus the `image:` line in `.github/workflows/visual.yaml` — major.minor
+agreement is a prerequisite for the gate to run at all.
 
 ## Detection
 

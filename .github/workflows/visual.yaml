@@ -55,7 +55,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     # Deterministic render environment (rm-142): the pinned Playwright image
-    # bundles the chromium build that matches the @playwright/test 1.63.0 pin,
+    # bundles the chromium build that matches the @playwright/test 1.64.0 pin,
     # so baselines render identically across runner generations. The rolling
     # ubuntu-latest + runtime `playwright install` mix already reddened this
     # gate once (run 35678222963, cloud font stack vs workstation-captured
@@ -67,8 +67,19 @@ jobs:
     # bit-identical forever. Dependabot (docker ecosystem) owns bumping the
     # tag+digest pair together; on landing, regenerate all baselines in the
     # new image (see the provenance spec in the rm-142 acceptance).
+    # 2026-10-17 (integration conflict case 87241f2e, run 1c814809d084):
+    # re-pin v1.63.0-noble -> v1.64.0-noble. The lockfile's @playwright/test
+    # had drifted in-range to 1.64.0 (6179cb7's regen under package.json's
+    # ^1.63.0 range) while this image stayed at 1.63.0, so every post-Oct-11
+    # visual run died at browser launch — "Executable doesn't exist at
+    # /ms-playwright/chromium_headless_shell-1248/..." (e.g. run 38963562396,
+    # the failure that opened the case). Tag+digest moved together per the
+    # rm-142 doctrine; this digest is the one validated green in run
+    # 38963773814. Only the operator baseline needed regeneration
+    # (listener/privacy matched pixel-identical across the chromium builds) —
+    # provenance header in tests/visual/dashboard.spec.ts.
     container:
-      image: mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27
+      image: mcr.microsoft.com/playwright:v1.64.0-noble@sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
