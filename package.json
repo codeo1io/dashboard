@@ -15,7 +15,10 @@
     "lint": "eslint --cache --cache-location node_modules/.cache/eslint/",
     "fix": "eslint --fix",
     "pretest": "pnpm build:web",
-    "test": "vitest run && vitest run --config web/vitest.config.ts"
+    "test": "vitest run && vitest run --config web/vitest.config.ts",
+    "lint:workflows": "uvx zizmor@1.31.1 --config .github/zizmor.yml .github",
+    "pins:census": "node scripts/actions-pin-census.ts",
+    "pins:census:online": "node scripts/actions-pin-census.ts --online"
   },
   "dependencies": {
     "@bfra.me/es": "0.1.0",
