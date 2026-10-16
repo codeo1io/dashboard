@@ -101,10 +101,21 @@ view of Fro Bot's cross-repo footprint.
 Read-only dependency source repositories are available under
 `.slim/clonedeps/repos/` for inspection. Do not edit these clones.
 
-- `.slim/clonedeps/repos/fro-bot__agent/` — `fro-bot/agent` at `v0.78.0`; the
-  gateway's operator OAuth return path contract, GitHub App client, secret
-  readers, Hono build/serve split, and runtime logger/Result primitives that
-  this app mirrors.
+- `.slim/clonedeps/repos/fro-bot__agent/` — `fro-bot/agent` for read-only
+  reference: the gateway's operator OAuth return path contract, GitHub App
+  client, secret readers, Hono build/serve split, and runtime logger/Result
+  primitives that this app mirrors. VERSION TRUTH (rm-874, 2026-10-16): the
+  manifest `.slim/clonedeps.json` still pins `v0.78.0` — stale by 44+ gateway
+  releases (upstream removed the clonedeps machinery in PR #493; this fork
+  restored the manifest as a fork-keep at fa1b333) — while the clone on disk
+  in the canonical checkout was refreshed to `v0.122.1` on 2026-10-14 and the
+  gateway line has since moved to v0.122.3 (2026-10-15). Treat the clone's
+  own `git describe --tags` as the source of truth for what you are reading,
+  not the manifest. Refresh (canonical checkout only — conductor worktrees
+  carry the manifest but never the clones; do not edit the clone):
+  `rm -rf .slim/clonedeps/repos/fro-bot__agent && git clone --depth 1 --branch v0.122.3 https://github.com/fro-bot/agent.git .slim/clonedeps/repos/fro-bot__agent`
+  then update `ref`/`resolvedVersion` in `.slim/clonedeps.json` to match the
+  new tag (that manifest edit is a tracked change and lands like any other).
 
 ## Landing-pipeline traps
 
