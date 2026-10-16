@@ -1081,6 +1081,9 @@ function makeMockListUsing(children) {
     get firstChild() { return children[0] ?? null },
     append(el) {
       el._parentList = list
+      // Like the DOM, appending a node already in the list moves it.
+      const existingIdx = children.indexOf(el)
+      if (existingIdx !== -1) children.splice(existingIdx, 1)
       children.push(el)
     },
     insertBefore(el, ref) {
@@ -2078,58 +2081,6 @@ describe('initOperatorRunIndex — in-place diff reconciliation (background refr
     expect(cards).toHaveLength(0)
   })
 
-  it('CRITICAL: an expanded active run that receives a terminal status update does NOT change list position (re-sort lock); re-sorts only after collapse', async () => {
-    const runIdA = 'run-diff-lock-A'
-    const runIdB = 'run-diff-lock-B'
-
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true, status: 200,
-      json: async () => ({runs: [
-        makeValidSummary({runId: runIdA, status: 'running'}),
-        makeValidSummary({runId: runIdB, status: 'running'}),
-      ]}),
-    }))
-    const cards = []
-    stubDOMWithSubstructureCards(cards)
-
-    const onSelectRun = vi.fn()
-    await initOperatorRunIndex({endpointBase: '/operator', onSelectRun})
-
-    // Expand A (single-open accordion — sets _expandedRunId to A).
-    const cardA = cards.find(c => c.dataset.runId === runIdA)
-    cardA.dispatchEvent({type: 'click'})
-    markRunStreamAttached(runIdA)
-    expect(cardA.dataset.expanded).toBe('true')
-
-    // Refresh reports A as terminal now, and reorders A after B in the fetch
-    // (mirroring "terminal sorts below active" resting-order logic upstream).
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true, status: 200,
-      json: async () => ({runs: [
-        makeValidSummary({runId: runIdB, status: 'running'}),
-        makeValidSummary({runId: runIdA, status: 'succeeded'}),
-      ]}),
-    }))
-
-    await initOperatorRunIndex({endpointBase: '/operator'})
-
-    // Position lock: A must still be BEFORE B in DOM order (frozen), not moved to
-    // the back to match the fetched order, because A is the expanded/active card.
-    const idxA = cards.indexOf(cardA)
-    const idxB = cards.findIndex(c => c.dataset.runId === runIdB)
-    expect(idxA).toBeLessThan(idxB)
-
-    // Collapse A — releases the re-sort lock.
-    cardA.dispatchEvent({type: 'click'})
-    expect(cardA.dataset.expanded).toBe('false')
-
-    // Next refresh may now reposition freely.
-    await initOperatorRunIndex({endpointBase: '/operator'})
-    const idxA2 = cards.indexOf(cardA)
-    const idxB2 = cards.findIndex(c => c.dataset.runId === runIdB)
-    expect(idxB2).toBeLessThan(idxA2)
-  })
-
   it('happy path: launch prepends a Pending card and hands off — exactly one stream opens, no duplicate', async () => {
     const fs = await import('node:fs/promises')
     const src = await fs.readFile('public/operator-launch.js', 'utf8')
@@ -2676,7 +2627,7 @@ describe('optimistic launch card — adoption by a fetch gains full fetched-card
     expect(onSelectRun).toHaveBeenCalledWith(runId)
   })
 
-  it('an expanded (position-frozen) optimistic card is upgraded in place without being repositioned', async () => {
+  it('an expanded optimistic card is upgraded in place: same node, still expanded, still first', async () => {
     const runId = 'run-adopt-frozen-001'
     const otherId = 'run-adopt-frozen-other-001'
     const onSelectRun = vi.fn()
@@ -2691,16 +2642,17 @@ describe('optimistic launch card — adoption by a fetch gains full fetched-card
     cards.splice(cards.indexOf(optimistic), 1)
     cards.unshift(optimistic)
 
-    markCardExpandedForLaunch(runId) // expanded -> re-sort lock
+    markCardExpandedForLaunch(runId)
     expect(optimistic.dataset.expanded).toBe('true')
 
-    // The fetch ranks the optimistic run after the other one; the lock must hold it first.
+    // The fetch lists the launched run first (newest), the other one after it.
     stubFetchRuns([
-      makeValidSummary({runId: otherId, status: 'running'}),
       makeValidSummary({runId, status: 'succeeded', repo: 'fro-bot/agent', updatedAt: UPDATED_AT}),
+      makeValidSummary({runId: otherId, status: 'running'}),
     ])
     await initOperatorRunIndex({endpointBase: '/operator', onSelectRun})
 
+    expect(cards.find(c => c.dataset.runId === runId)).toBe(optimistic)
     expect(cards.indexOf(optimistic)).toBeLessThan(cards.indexOf(other))
     expect(optimistic.dataset.expanded).toBe('true')
     expect(optimistic.querySelector('[data-role="run-repo"]').textContent).toBe('fro-bot/agent')
@@ -3309,5 +3261,168 @@ describe('question region — adopted optimistic cards (ensureRunCardAnatomy)', 
     const hiddenRoles = card => childRoles(card).filter(role => role !== undefined && !['run-status-group', 'run-repo', 'run-updated-at'].includes(role))
     expect(hiddenRoles(optimistic)).toEqual(hiddenRoles(fetched))
     expect(hiddenRoles(fetched)).toContain(QUESTIONS_ROLE)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// A run launched elsewhere must land above the run the operator has open.
+//
+// Port of upstream #639 (run-list ordering fidelity): the diff follows fetch
+// order for every card — the gateway sorts by createdAt, which never changes —
+// so a new run takes its fetch slot above an older run the operator has open,
+// and a protected card the fetch no longer lists sits behind the fetched cards
+// at the end of the list. Expressed with this fork's refresh seam (a repeated
+// initOperatorRunIndex call re-diffs the still-mounted DOM, with the fetch
+// re-stubbed per call); upstream drives refreshOperatorRunIndex instead, and
+// its focus variant needs a focus-aware DOM stub this fork's test harness
+// does not carry — node identity + expanded/streamAttached survival is the
+// equivalent guarantee here (a DOM Node move keeps identity and focus).
+// ---------------------------------------------------------------------------
+
+const orderedRunIds = cards => cards.map(c => c.dataset.runId)
+
+async function initOrderedList(runIds) {
+  const cards = []
+  stubDOMWithSubstructureCards(cards)
+  stubFetchRuns(runIds.map(runId => makeValidSummary({runId, status: 'succeeded'})))
+  // Cards are only click-activatable when a selection handler is wired
+  // (bindCardActivation no-ops without one), so every init passes one.
+  await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
+  return cards
+}
+
+async function refreshOrderedList(runIds) {
+  stubFetchRuns(runIds.map(runId => makeValidSummary({runId, status: 'succeeded'})))
+  await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
+}
+
+// The launch card is inserted on top (newest run) and expanded; the expand triggers a refresh that
+// can land before the gateway lists the run. It must stay on top, then be adopted in place.
+async function initWithUnlistedOptimisticOnTop() {
+  const cards = await initOrderedList(['run-ord-B', 'run-ord-C'])
+  const optimistic = makeStatusOnlyOptimisticCard(cards, 'run-ord-A')
+  cards.splice(cards.indexOf(optimistic), 1)
+  cards.unshift(optimistic)
+  markCardExpandedForLaunch('run-ord-A')
+  expect(optimistic.dataset.expanded).toBe('true')
+  return {cards, optimistic}
+}
+
+describe('run-list ordering — a new run lands in fetch order around the open card', () => {
+  afterEach(() => {
+    resetRunIndexState()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  const ids = orderedRunIds
+
+  it('collapsed older run: the new run lands above it', async () => {
+    const cards = await initOrderedList(['run-ord-B'])
+
+    await refreshOrderedList(['run-ord-A', 'run-ord-B'])
+    expect(ids(cards)).toEqual(['run-ord-A', 'run-ord-B'])
+  })
+
+  it('expanded older run (click, no stream yet): the new run lands above it', async () => {
+    const cards = await initOrderedList(['run-ord-B'])
+    cards[0].dispatchEvent({type: 'click'})
+    expect(cards[0].dataset.expanded).toBe('true')
+
+    await refreshOrderedList(['run-ord-A', 'run-ord-B'])
+    expect(ids(cards)).toEqual(['run-ord-A', 'run-ord-B'])
+  })
+
+  it('expanded older run with its stream attached: the new run lands above it, the card node is untouched', async () => {
+    const cards = await initOrderedList(['run-ord-B'])
+    const cardB = cards[0]
+    cardB.dispatchEvent({type: 'click'})
+    markRunStreamAttached('run-ord-B')
+
+    await refreshOrderedList(['run-ord-A', 'run-ord-B'])
+    expect(ids(cards)).toEqual(['run-ord-A', 'run-ord-B'])
+    expect(cards.find(c => c.dataset.runId === 'run-ord-B')).toBe(cardB)
+    expect(cardB.dataset.expanded).toBe('true')
+    expect(cardB.dataset.streamAttached).toBe('true')
+  })
+
+  it('hash-restored older run: the new run lands above it', async () => {
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    stubFetchRuns([makeValidSummary({runId: 'run-ord-B', status: 'succeeded'})])
+    await initOperatorRunIndex({endpointBase: '/operator', restoreRunId: 'run-ord-B', onRestoreRun: vi.fn()})
+    expect(cards[0].dataset.expanded).toBe('true')
+
+    await refreshOrderedList(['run-ord-A', 'run-ord-B'])
+    expect(ids(cards)).toEqual(['run-ord-A', 'run-ord-B'])
+  })
+
+  it('several cards, expanded one in the middle: the new run goes on top and the rest keep their order', async () => {
+    const cards = await initOrderedList(['run-ord-C', 'run-ord-B', 'run-ord-D'])
+    cards.find(c => c.dataset.runId === 'run-ord-B').dispatchEvent({type: 'click'})
+
+    await refreshOrderedList(['run-ord-A', 'run-ord-C', 'run-ord-B', 'run-ord-D'])
+    expect(ids(cards)).toEqual(['run-ord-A', 'run-ord-C', 'run-ord-B', 'run-ord-D'])
+  })
+
+  it('several cards, expanded one last: the new run goes on top and the expanded run stays last', async () => {
+    const cards = await initOrderedList(['run-ord-C', 'run-ord-B'])
+    cards.find(c => c.dataset.runId === 'run-ord-B').dispatchEvent({type: 'click'})
+
+    await refreshOrderedList(['run-ord-A', 'run-ord-C', 'run-ord-B'])
+    expect(ids(cards)).toEqual(['run-ord-A', 'run-ord-C', 'run-ord-B'])
+  })
+
+  it('several new runs at once all land above the expanded run, newest first', async () => {
+    const cards = await initOrderedList(['run-ord-B'])
+    cards[0].dispatchEvent({type: 'click'})
+
+    await refreshOrderedList(['run-ord-A2', 'run-ord-A1', 'run-ord-B'])
+    expect(ids(cards)).toEqual(['run-ord-A2', 'run-ord-A1', 'run-ord-B'])
+  })
+
+  it('an older run the gateway lists below the expanded one stays below it', async () => {
+    const cards = await initOrderedList(['run-ord-B'])
+    cards[0].dispatchEvent({type: 'click'})
+
+    await refreshOrderedList(['run-ord-B', 'run-ord-Z'])
+    expect(ids(cards)).toEqual(['run-ord-B', 'run-ord-Z'])
+  })
+
+  it('an attached card the fetch no longer lists is kept, behind the fetched cards at the end of the list', async () => {
+    const cards = await initOrderedList(['run-ord-B', 'run-ord-C'])
+    const cardB = cards.find(c => c.dataset.runId === 'run-ord-B')
+    cardB.dispatchEvent({type: 'click'})
+    markRunStreamAttached('run-ord-B')
+
+    // B aged off the end of the gateway's window while its stream is attached.
+    await refreshOrderedList(['run-ord-A', 'run-ord-C'])
+    expect(ids(cards)).toEqual(['run-ord-A', 'run-ord-C', 'run-ord-B'])
+    expect(cards.find(c => c.dataset.runId === 'run-ord-B')).toBe(cardB)
+    expect(cardB.dataset.expanded).toBe('true')
+    expect(cardB.dataset.streamAttached).toBe('true')
+  })
+
+  it('an unlisted optimistic card stays on top of the fetched cards, same node, still expanded', async () => {
+    const {cards, optimistic} = await initWithUnlistedOptimisticOnTop()
+
+    await refreshOrderedList(['run-ord-B', 'run-ord-C'])
+    expect(ids(cards)).toEqual(['run-ord-A', 'run-ord-B', 'run-ord-C'])
+    expect(cards[0]).toBe(optimistic)
+    expect(optimistic.dataset.expanded).toBe('true')
+    expect(optimistic.dataset.optimistic).toBe('true')
+  })
+
+  it('once the fetch lists the optimistic card it is adopted in place', async () => {
+    const {cards, optimistic} = await initWithUnlistedOptimisticOnTop()
+
+    await refreshOrderedList(['run-ord-B', 'run-ord-C'])
+    expect(ids(cards)).toEqual(['run-ord-A', 'run-ord-B', 'run-ord-C'])
+
+    await refreshOrderedList(['run-ord-A', 'run-ord-B', 'run-ord-C'])
+    expect(ids(cards)).toEqual(['run-ord-A', 'run-ord-B', 'run-ord-C'])
+    expect(cards[0]).toBe(optimistic)
+    expect(optimistic.dataset.expanded).toBe('true')
+    expect(optimistic.dataset.optimistic).toBeUndefined()
   })
 })
