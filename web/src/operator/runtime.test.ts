@@ -1375,3 +1375,132 @@ describe('URL-hash restore — expand sets hash, remount restores', () => {
     expect(window.location.hash).toBe('')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Default loader — hash-restore card reveal (scroll port of upstream #634)
+// ---------------------------------------------------------------------------
+
+describe('defaultRuntimeLoader — hash-restore card reveal (scroll port of #634)', () => {
+  const originalScrollIntoView = window.HTMLElement.prototype.scrollIntoView
+
+  afterEach(() => {
+    window.HTMLElement.prototype.scrollIntoView = originalScrollIntoView
+    window.location.hash = ''
+    document.body.innerHTML = ''
+    vi.doUnmock('/static/operator-stream.js?manual=1')
+    vi.doUnmock('/static/operator-run-index.js?manual=1')
+    vi.doUnmock('/static/operator-launch.js?manual=1')
+    vi.unstubAllGlobals()
+  })
+
+  /**
+   * Runs the real default loader (createOperatorRuntime) against the real run
+   * index with a hash restore: the restored card must scroll fully into view
+   * (top edge below the sticky header), not merely be focused. Adapted from
+   * upstream de2ce7f ("scrolls a hash-restored card to its start"); the jump
+   * machinery the rest of that commit targets does not exist in this fork.
+   */
+  it('scrolls a hash-restored card to its start', async () => {
+    const scrollCalls: ScrollIntoViewOptions[] = []
+    window.HTMLElement.prototype.scrollIntoView = function (this: HTMLElement, options?: ScrollIntoViewOptions) {
+      scrollCalls.push(options ?? {})
+    }
+
+    vi.doMock('/static/operator-stream.js?manual=1', () => import('../../../public/operator-stream.js'))
+    vi.doMock('/static/operator-run-index.js?manual=1', () => import('../../../public/operator-run-index.js'))
+    vi.doMock('/static/operator-launch.js?manual=1', () => ({
+      initOperatorLaunch: vi.fn(async () => {}),
+      resetLaunchState: vi.fn(),
+    }))
+    const runIndexMod = await import('../../../public/operator-run-index.js')
+    runIndexMod.resetRunIndexState()
+
+    const sse = (event: string, payload: unknown) => `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`
+    vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+      const url = String(input)
+      if (url.endsWith('/stream')) {
+        let delivered = false
+        return {
+          ok: true,
+          status: 200,
+          headers: {get: (name: string) => (name.toLowerCase() === 'content-type' ? 'text/event-stream' : null)},
+          body: {
+            getReader: () => ({
+              read: async () => {
+                if (!delivered) {
+                  delivered = true
+                  return {done: false, value: new TextEncoder().encode(sse('ready', {contractVersion: PINNED_CONTRACT_VERSION}))}
+                }
+                return new Promise<never>(() => {})
+              },
+            }),
+          },
+        }
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({runs: [{runId: 'run-scroll-1', repo: 'org/repo', status: 'running', createdAt: '2026-01-01T00:00:00.000Z'}]}),
+      }
+    }))
+
+    document.body.innerHTML = '<div data-role="run-index-list"></div><div data-role="stream-status" hidden></div>'
+    window.location.hash = '#run-scroll-1'
+
+    const {createOperatorRuntime} = await import('./runtime.ts')
+    const runtime = createOperatorRuntime({container: document.createElement('div'), onStateChange: vi.fn()})
+
+    const card = await vi.waitFor(() => {
+      const found = document.querySelector<HTMLElement>('[data-run-id="run-scroll-1"]')
+      expect(found?.dataset.expanded).toBe('true')
+      return found as HTMLElement
+    })
+    await vi.waitFor(() => expect(scrollCalls).toEqual([{block: 'start', behavior: 'smooth'}]))
+    expect(card).not.toBeNull()
+    runtime.cleanup()
+  })
+
+  it('an ordinary card select cancels a pending reveal without scrolling the other card', async () => {
+    const scrollCalls: string[] = []
+    window.HTMLElement.prototype.scrollIntoView = function (this: HTMLElement) {
+      scrollCalls.push(this.dataset.runId ?? 'unknown')
+    }
+
+    vi.doMock('/static/operator-stream.js?manual=1', () => import('../../../public/operator-stream.js'))
+    vi.doMock('/static/operator-run-index.js?manual=1', () => import('../../../public/operator-run-index.js'))
+    vi.doMock('/static/operator-launch.js?manual=1', () => ({
+      initOperatorLaunch: vi.fn(async () => {}),
+      resetLaunchState: vi.fn(),
+    }))
+    const runIndexMod = await import('../../../public/operator-run-index.js')
+    runIndexMod.resetRunIndexState()
+
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({runs: [
+        {runId: 'run-scroll-2', repo: 'org/repo', status: 'running', createdAt: '2026-01-01T00:00:00.000Z'},
+        {runId: 'run-scroll-3', repo: 'org/repo', status: 'running', createdAt: '2026-01-01T00:00:01.000Z'},
+      ]}),
+    })))
+
+    document.body.innerHTML = '<div data-role="run-index-list"></div><div data-role="stream-status" hidden></div>'
+    window.location.hash = '#run-scroll-2'
+
+    const {createOperatorRuntime} = await import('./runtime.ts')
+    const runtime = createOperatorRuntime({container: document.createElement('div'), onStateChange: vi.fn()})
+
+    await vi.waitFor(() => {
+      const found = document.querySelector<HTMLElement>('[data-run-id="run-scroll-2"]')
+      expect(found?.dataset.expanded).toBe('true')
+    })
+    expect(scrollCalls).toEqual(['run-scroll-2'])
+
+    // An ordinary select of another card cancels the pending reveal: the new
+    // card must not receive the restored card's reveal scroll.
+    document.querySelector<HTMLElement>('[data-run-id="run-scroll-3"]')?.click()
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(scrollCalls).toEqual(['run-scroll-2'])
+    runtime.cleanup()
+  })
+})
