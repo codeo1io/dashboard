@@ -108,12 +108,12 @@
 ### Gateway contract forward-support: 1.7.0/1.8.0 fields, v0.116.0 401 semantics, and the v0.117.0 absorb riders (grows rm-157)
 - id: `rm-252` | track: reliability | priority: 80.0 | status: in_progress
 - acceptance: the operator contract version accepted extends additively to 1.8.0 (1.6.0/1.7.0/1.8.0); run-status renders checkout-advance provenance and distinguishes workspace-preparation failures from run failures and incomplete invocation (rm-157's acceptance rides here); 401 from a gateway at v0.116.0+ maps to an operator-actionable workspace-unavailable state rather than auth-required; BOTH parsers (src/gateway/operator-sse-reader.ts and public/operator-stream.js — see rm-253's wire-or-fold decision) grow the new fields exactly once; the workflow pin bumps to the absorbed agent version with the riders above
-- evidence: campaign-recorded in dashboard ROADMAP.md; 2026-10-15 rider (run ccde661ea990 cycle:1 roadmap fe5d7f42, from research 035cd3de R1): window WIDENED — upstream published releases 2026.10.26 and 2026.10.27 (both 2026-10-14, first push past the fork's absorb point #676/2026.10.25): PR #619 merged 2026-10-14T21:46:18Z is the CANONICAL contract-1.11.0 adoption (45 files — waiting-run collapsed cards, notification jumps, vendored session push:{ready|degraded|unknown} health + push trigger kinds, always-current run list) and supersedes-in-scope the fork's unlanded home-grown 1.10/1.11 twin (sibling run 76d7977a, 18 files, gate-green but unlanded); PR #620 bumps the node image digest 173f125 to 7f486ca (feeds rm-139); PR #618 dev-dep @opencode-ai/plugin 1.19.0; upstream quiescent since (no commits after 2026-10-20). Disposition for the next absorb: absorb canonical OVER landing the twin — the canonical implementation carries capabilities the twin lacks; the twin retires or rebases onto the absorb; new mints rm-1446 (push-health UI) + rm-1449 (dependency majors) sequence behind this disposition. INTEGRATE CORRECTION (prioritize attempt 4241e547, recorded for integrate and applied at this merge): the rider's original 'deploy-together constraint (gateway >= v0.122.1) already satisfied by the deployed agent' phrasing CONFLATED the fro-bot.yaml workflow agent pin (v0.122.1, CI-side) with the infra gateway deployment — the estate of record has the deployed gateway (v0.119.2) speaking contract 1.9.0 == the fork pin, so absorbing 1.11.0 acceptance now would fail-close the operator stream to 'drift' (operator-stream.js:1022, no reconnect) against the LIVE gateway; the absorb is dependency-blocked on a gateway-side estate verdict, not code-ready, and rm-1446 rides behind that same gate.
+- evidence: campaign-recorded in dashboard ROADMAP.md; 2026-10-15 rider (run ccde661ea990 cycle:1 roadmap fe5d7f42, from research 035cd3de R1): window WIDENED — upstream published releases 2026.10.26 and 2026.10.27 (both 2026-10-14, first push past the fork's absorb point #676/2026.10.25): PR #619 merged 2026-10-14T21:46:18Z is the CANONICAL contract-1.11.0 adoption (45 files — waiting-run collapsed cards, notification jumps, vendored session push:{ready|degraded|unknown} health + push trigger kinds, always-current run list) and supersedes-in-scope the fork's unlanded home-grown 1.10/1.11 twin (sibling run 76d7977a, 18 files, gate-green but unlanded); PR #620 bumps the node image digest 173f125 to 7f486ca (feeds rm-139); PR #618 dev-dep @opencode-ai/plugin 1.19.0; upstream quiescent since (no commits after 2026-10-20). Disposition for the next absorb: absorb canonical OVER landing the twin — the canonical implementation carries capabilities the twin lacks; the twin retires or rebases onto the absorb; new mints rm-1446 (push-health UI) + rm-1449 (dependency majors) sequence behind this disposition. INTEGRATE CORRECTION (prioritize attempt 4241e547, recorded for integrate and applied at this merge): the rider's original 'deploy-together constraint (gateway >= v0.122.1) already satisfied by the deployed agent' phrasing CONFLATED the fro-bot.yaml workflow agent pin (v0.122.1, CI-side) with the infra gateway deployment — the estate of record has the deployed gateway (v0.119.2) speaking contract 1.9.0 == the fork pin, so absorbing 1.11.0 acceptance now would fail-close the operator stream to 'drift' (operator-stream.js:1022, no reconnect) against the LIVE gateway; the absorb is dependency-blocked on a gateway-side estate verdict, not code-ready, and rm-1446 rides behind that same gate. 2026-10-17 rider (run 475b46bc cycle:1 roadmap a2163ef7, from research 5893c77e): ESTATE VERDICT RESOLVED-FAVORABLE and the record above superseded — live infra probe: last successful deploy-gateway run 2026-10-15T07:20:23Z (run 38698076821), the upstream.json bump db1d611f to v0.122.1 committed 2026-10-14T23:38Z precedes it while the v0.122.3 bump cbf5dca4 2026-10-15T22:19Z has no deploy after, and the pinned clonedep proves v0.122.1 ships gateway contract 1.11.0 — the deployed-v0.119.2 estate-of-record above predates the deploy, so the fork's 1.9.0 twins have fail-closed against the LIVE gateway since 2026-10-15T07:20Z: the absorb re-frames from dependency-blocked to live-breakage remediation and rm-1446 unblocks with it; the window WIDENED again to 27 commits through 8d867b9, 12 of them the 2026-10-15/16 operator/push UX cluster (waiting lines, operator-time, sign-in recovery, redirect-once, PWA refresh, new-runs-above, notification jump, footer version, finished-run cache) — all verified absent from the fork.
 
 ### Transitive override floors sit below every patched line — fast-uri carries two live high alerts
-- id: `rm-276` | track: reliability | priority: 80.0 | status: in_progress
+- id: `rm-276` | track: reliability | priority: 80.0 | status: implemented 2026-10-17, acceptance verified at HEAD 7b4d425 (run 475b46bc roadmap a2163ef7)
 - acceptance: all four floors raised with GHSA rationale comments in the existing toml-override style — fast-uri@3 '>=3.1.8 <4.0.0', brace-expansion@2 '>=2.1.7 <3.0.0', brace-expansion@5 '>=5.0.12 <6.0.0', undici@7 '>=7.29.1 <8.0.0' (pnpm-workspace.yaml:25-33); lockfile re-resolved so every advisory-listed resolution moves to a patched line; `pnpm audit --recursive` reports 0 advisories; Dependabot alerts #29/#30 close after GitHub re-indexes; the lockfile diff touches only the four packages' resolution subtrees; the majors-cap question is recorded as a named follow-on (rm-252's absorb chain or rm-271's window), not silently widened
-- evidence: campaign-recorded in dashboard ROADMAP.md
+- evidence: campaign-recorded in dashboard ROADMAP.md — 2026-10-17 rider (run 475b46bc roadmap a2163ef7, from research 5893c77e): verified live — pnpm audit --recursive reports 0 advisories at HEAD, open Dependabot alerts = 0 (gh api, 2026-10-17), and the floors sit in pnpm-workspace.yaml overrides under the rm-276 dated rationale header
 
 ### Release-trigger completeness: pnpm-workspace.yaml is build-behavior input
 - id: `rm-154` | track: reliability | priority: 78.0 | status: in_progress
@@ -128,6 +128,15 @@
 ### Release pipeline unfreeze — early-exit-awk digest readback SIGPIPEs the producer under pipefail
 - id: `rm-708` | track: reliability | priority: 78.0 | status: in_progress
 - acceptance: TWO consecutive green `release.yaml` runs end-to-end past '🏷️ Promote latest image tag' with 'Dispatch infra deploy' firing — a single green run is the documented race (37463802355), not closure; the rm-166 guard extension green on main (repo-wide fence + END-block pin); actionlint clean on the repaired workflow
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Base digest unpullable — cure the 173f1258 pin and add a pullability guard
+- id: `rm-1478` | track: reliability | priority: 78.0 | status: candidate (added 2026-10-17, repository-maintenance cycle:1 run 475b46bc roadmap a2163ef7, from research 5893c77e R3 + assess 72090c4a; unowned at HEAD — no ledger def cited the digest or pullability)
+- signals: live 2026-10-17 — Dockerfile:16 pins node:24-trixie-slim@sha256:173f1258 which returns 404 from registry-1.docker.io (authed HEAD probe), while the node:24-trixie-slim tag resolves to sha256:7f486ca (200, multi-arch) and upstream PR #620 already adopted that digest — every fork image build now fails at FROM, so rm-708's release-unfreeze acceptance cannot even start.
+- acceptance:
+  - the Dockerfile:16 ARG NODE_IMAGE digest moves to the registry-resolvable current digest (upstream #620's sha256:7f486ca shape), preserving the rm-558 multi-arch BUILDPLATFORM design and every in-image prune step
+  - a pullability guard lands beside the pin: a script or workflow step performs the authed registry HEAD against the digest parsed out of the Dockerfile and fails on 404 — the unpullable class surfaces before the release pipeline hits it, with a test pinning the parse
+  - rm-139's rider is updated to record that the digest question is release-blocking, not CVE hygiene alone
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Port upstream security fix #481 — global redaction chokepoint
@@ -165,6 +174,16 @@
 - acceptance: floors raised — fast-uri@3 `>=3.1.8 <4.0.0` (stays 3.x unless a deliberate fast-uri@4 escape is chosen), brace-expansion@2 `>=2.1.7 <3.0.0`, brace-expansion@5 `>=5.0.12 <6.0.0`, undici either interim `>=7.29.1 <8.0.0` (resolves 7.30.0, OSV-clean but audit still nonzero) or DURABLE `>=8.10.2 <9.0.0` paired with jsdom 29.1.1→30.1.1 (jsdom 30.1.1's undici dep is `^8.10.2`) — the durable pair is the only path to the gate `pnpm audit -r == 0`, re-probed at implement time and re-confirmed by per-advisory OSV reads on the final resolved set; lockfile re-resolved on the raised floors with `minimumReleaseAge: 1440` respected; the brace-expansion alert re-checked after the rescan push (auto-close expected; manual dismiss only if it sticks)
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
+### Foreign-tag de-contamination of both local stores
+- id: `rm-1479` | track: reliability | priority: 74.0 | status: candidate (added 2026-10-17, repository-maintenance cycle:1 run 475b46bc roadmap a2163ef7, from assess 72090c4a headline finding)
+- signals: live 2026-10-16/17 — both local stores (/work/projects/dashboard and the shared conductor store) carry 86 foreign upstream calver tags: 195 local 2026.* vs 109 on origin; the local newest 2026.10.31 points at upstream commit baa0e48 (#630) and the ladder runs to 2026.10.43 == upstream/main; provenance is an explicit autonomy-upstream --tags fetch. Hazards proven live: a manual staleness smoke read newest 2026.10.31 while authoritative ls-remote origin max is 2026.10.25; a git push --tags from either store would mint 86 foreign tags onto origin; a local compute-release-tag mint would be foreign-skewed.
+- acceptance:
+  - both stores end with refs/tags exactly equal to origin's set (diff of tag -l vs ls-remote origin is empty); the foreign tags are deleted or quarantined under a named refs/remotes/ namespace, never left as plain refs/tags
+  - the stale canonical checkout is fast-forwarded to origin/main and its tag set re-verified in the same pass
+  - the hazard is recorded in AGENTS.md or the release runbook: never fetch --tags from the upstream remote; staleness smokes read origin by URL, not local refs
+  - a fresh pristine smoke in a clean store reproduces the authoritative newest tag with rc=0, recorded in the runbook
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
 ### Absorb fro-bot/agent v0.115.0 (operator-contract drift)
 - id: `rm-157` | track: reliability | priority: 72.0 | status: in_progress
 - acceptance: pin bump to v0.115.0 or later rides a gateway-verified change — GATEWAY_OPERATOR_TRUSTED_PROXIES documented in docs/runbooks/gateway-access.md alongside the proxy topology it assumes, local mirror surfaces (operator-client, sse-reader conformance tests) re-checked against the v0.115.0 contract, full suite plus a live gateway login regression before merge; concrete 1.7.0 surface work (added 2026-09-24, run 41c7d471 roadmap): PINNED_CONTRACT_VERSION -> 1.7.0, parser/Dto plumbing for checkoutProvenance (commit / branch-or-detached / dirty / mid-git-op) and the two new failureKinds, fixture-harness parity fixtures for both new shapes, and the operator run detail rendering the provenance — the release's own payoff: readers see which code a persistent workspace actually ran; the pnpm 11.27.1 rider lands in the same batch
@@ -183,6 +202,15 @@
 ### rm-779
 - id: `rm-779` | track: reliability | priority: 72.0 | status: in_progress
 - acceptance:
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Ledger rows for the 8 untracked HIGH code-scanning CVE rules
+- id: `rm-1480` | track: reliability | priority: 72.0 | status: candidate (added 2026-10-17, repository-maintenance cycle:1 run 475b46bc roadmap a2163ef7, from assess 72090c4a — a grep of this ledger had zero hits for any of these ids)
+- signals: live 2026-10-16 — 49 open code-scanning alerts carrying 8 distinct HIGH CVE rules: CVE-2026-76642, CVE-2026-78408, CVE-2026-78409, CVE-2026-78410 (nine instances each), CVE-2025-69720 x3, CVE-2026-16742 x2, CVE-2026-9538, CVE-2026-54369; plus Scorecard CodeReviewID and MaintainedID HIGH — none tracked anywhere in the ledger.
+- acceptance:
+  - every HIGH rule gets a ledger row naming the CVE id, the affected surface, and a triage verdict — fix path, absorb path, or accepted-with-rationale; no id left untracked
+  - the container-image cluster cross-links the base-digest cure (rm-1478) and rm-139's matrix instead of duplicating their acceptance
+  - a probe record shows per-rule alert counts before and after the disposition lands
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Reality canary for the GitHub data path (verify the real transport contract)
@@ -274,6 +302,15 @@
 ### Machine-check the read-only invariant: static guard test against write-capability imports and Octokit write call sites
 - id: `rm-649` | track: reliability | priority: 60.0 | status: in_progress
 - acceptance:
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Restore the Lockfile Guard workflow
+- id: `rm-1481` | track: reliability | priority: 60.0 | status: candidate (added 2026-10-17, repository-maintenance cycle:1 run 475b46bc roadmap a2163ef7, from assess 72090c4a — unowned at HEAD)
+- signals: the Lockfile Guard workflow exists only as 2026-10-09 run history; docs/runbooks/release.md:28 admits the lockfile-pair check is manual until restored; no restoration def landed (ledger grep for the workflow name = 0 at HEAD).
+- acceptance:
+  - the workflow is restored — lockfile + manifest pair verification on pushes and PRs touching pnpm-lock.yaml or package.json — in the repo's digest-pinned action style with single-quoted yml values (lint gate)
+  - actionlint clean via the container form; release.md:28's manual-until-restored wording is replaced by a pointer at the live workflow
+  - a forced red in a scratch branch (mutate the lockfile) proves the guard fires, recorded in the runbook
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Aggregator cold-start in-flight degradation contract
@@ -490,7 +527,16 @@
 - id: `rm-740` | track: reliability | priority: 46.0 | status: implemented 2026-10-08/09, validated pre-review, landed at this integrate (run 405e9004bd5a424aad06019cc342efa6 terminal-salvage, conflict case 5eb4cb85; implement e3e009f1 + targeted_tests 759/759 over the engine-named 22 files + full_tests green on ephemeral draft PR #456 — all 10 checks; review-fix bf4dbff9 corrected the cron to Monday 07:23Z and the permissions record to contents: read; the workflow triggers schedule/workflow_dispatch only, so PR CI proved its lint/actionlint surface but never a live fire — the first scheduled fire is owed post-landing and reads RED by design while the rm-714 dormancy decision stays undecided; batch doc docs/prioritization/2026-10-08-repository-maintenance-cycle-2-batch-run-405e9004bd5a.md)
 - signals: live 2026-10-08 — actions secrets total_count=0 so HAS_RELEASE_APP=false skips the tag/promote/Release/dispatch gates, yet a green Main run says nothing about the release channel; newest calver tag 2026.08.15, 59d old at mint (earlier 2026.08.9 readings were a refname string-sort artifact, corrected by the module's numeric compare); nothing anywhere distinguishes designed-dormant from broken — unlanded sibling rm-714 (2ca90eb1 ext#19 spool) owns the dormant-vs-active DECISION and prove-one-release acceptance; this def owns only the observability surface, which survives either branch of that decision
 - acceptance: a weekly scheduled workflow fails when the newest calver tag on origin is older than a stated 45-day threshold unless a recorded dormancy decision explicitly marks the channel retired-with-owner; the step summary names the owning def id so a human landing on the red knows where the decision lives; actionlint-clean; the check reads only public refs, no new secrets
-- evidence: scripts/release-channel-staleness.ts (verdict core parseCalverTag/selectNewestCalverTag/parseDormancyDecision/evaluateReleaseChannelStaleness + buildSummaryLines naming rm-740 and decision owner rm-714) + .github/workflows/release-channel.yaml (weekly Mon 07:23Z + workflow_dispatch, contents: read, fetch-depth:0, persist-credentials: false) + test/release-channel-staleness.test.ts 19/19; pristine-origin smoke (fresh clone of origin): status stale, rc=1 — the designed red while rm-714 is undecided
+- evidence: scripts/release-channel-staleness.ts (verdict core parseCalverTag/selectNewestCalverTag/parseDormancyDecision/evaluateReleaseChannelStaleness + buildSummaryLines naming rm-740 and decision owner rm-714) + .github/workflows/release-channel.yaml (weekly Mon 07:23Z + workflow_dispatch, contents: read, fetch-depth:0, persist-credentials: false) + test/release-channel-staleness.test.ts 19/19; pristine-origin smoke (fresh clone of origin): status stale, rc=1 — the designed red while rm-714 is undecided; 2026-10-17 correction (run 475b46bc roadmap a2163ef7, from assess 72090c4a): the pristine-smoke stale rc=1 record is disproven a third consecutive day — authoritative origin tags max 2026.10.25 (about a day old) so the pristine smoke reads healthy rc=0; the recorded red traced to foreign-tag pollution in the local store (rm-1479 quarantines it), and the owed Monday 07:23Z fire never happened because Actions run-creation is dead since 2026-10-09 — validated-pre-review stands for the PR CI surface only
+
+### Harden actions-darkness-watch: owed-condition precision, fetch timeout, run pagination
+- id: `rm-1482` | track: reliability | priority: 46.0 | status: candidate (added 2026-10-17, repository-maintenance cycle:1 run 475b46bc roadmap a2163ef7, from assess 72090c4a tool review)
+- signals: the tool landed sound (16 tests, live DARK verdict correct) but carries three defects: the owed condition at scripts/actions-darkness-watch.ts:150 compares repo-level pushed_at (any ref — 315 conductor refs keep it fresh) while main.yaml's push trigger filters to the main branch, so the runbook's a-run-was-owed claim overstates what the condition proves; fetchJson has no timeout; per-page 100 with no pagination mislabels last_run=never (live: the fro-bot lane, last real run 2026-09-16..18).
+- acceptance:
+  - the owed condition filters to trigger-relevant pushes or the runbook and code comment are reworded to claim exactly what the condition proves; the test suite pins the chosen semantics with new cases for both directions
+  - fetchJson carries an AbortController timeout with a named constant; the runbook Bounds section is updated to match
+  - runs are paginated or per-workflow filtered so last_run=never is emitted only when the workflow truly never ran; the fro-bot lane proves the fix live
+- evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Release-pipeline failure triage: promote-readback exhaustion and build-and-push
 - id: `rm-691` | track: reliability | priority: 45.0 | status: in_progress
@@ -546,6 +592,15 @@
   - twin parity: public/operator-run-index.js and the web runtime agree on the health vocabulary (static list tested on both sides)
 - evidence: PR #619 body sentence (github api); the vendored field in the absorbed tree; focused tests green
 
+### Calver scheme harmonization — staleness parser vs mint
+- id: `rm-1483` | track: reliability | priority: 44.0 | status: candidate (added 2026-10-17, repository-maintenance cycle:1 run 475b46bc roadmap a2163ef7, from assess 72090c4a standing-defect review)
+- signals: scripts/release-channel-staleness.ts:51 caps scheme components at 2 digits and :83 rejects day values over 31, while scripts/compute-release-tag.ts:76-89 mints unbounded max-plus-one from local tags — a minted out-of-range tag would be silently invisible to the staleness check, and test/release-channel-staleness.test.ts enshrines the current parser; rides rm-1479 because local foreign tags skew the mint input.
+- acceptance:
+  - one scheme wins and is recorded in both script headers: the parser deliberately widens with a documented bound, or the mint clamps to the parser's domain
+  - a cross-property test mints via compute-release-tag and asserts the staleness parser accepts the mint — the enshrining test is reshaped, not deleted
+  - a red-path record shows an out-of-range tag either parses or is rejected loudly at mint time, never silently invisible
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
 ### Client polling hygiene batch (listener latch, unread-poll guard)
 - id: `rm-155` | track: reliability | priority: 42.0 | status: in_progress
 - acceptance: the Listener poll releases its latch in a finally block and aborts in-flight fetches on unmount (controller wired to the request signal), with a regression test seeding a never-settling fetch and asserting the next tick still polls; the App poll gains an in-flight guard, surfaces poll failure once (silent recovery allowed), and pauses while document.hidden (visibilitychange resumes with an immediate poll); no behavior change on the happy path
@@ -559,6 +614,15 @@
 ### Push subscribe abort windows before the POST strand the local subscription
 - id: `rm-264` | track: reliability | priority: 42.0 | status: in_progress
 - acceptance: both pre-POST abort windows unsubscribe the just-created browser subscription, or an explicit recorded decision why not (e.g. logout-purge ownership — then a comment plus a test pin that ownership); resubscribeStaleKey's window gets the same treatment
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Release version in the operator footer
+- id: `rm-1484` | track: operator-experience | priority: 42.0 | status: candidate (added 2026-10-17, repository-maintenance cycle:1 run 475b46bc roadmap a2163ef7, from research 5893c77e R5 — upstream PR #641 adoption candidate)
+- signals: upstream #641 ships a build-arg release version into a VITE env var rendered in the AppShell footer with a calver-gated release-notes link (upstream AppShell.tsx:97-99 and 391-424, release.yaml build-args at :154-171); the fork surfaces no version in-product while its whole release-channel lane (rm-740) is script-only — the operator cannot see channel staleness without running a script.
+- acceptance:
+  - the footer renders the release version from the build-arg env with a dev fallback in local builds; the release-notes link renders only on a strict calver match
+  - the link targets codeo1io/dashboard releases (upstream points at fro-bot/dashboard and is repointed), pinned by a test
+  - release.yaml passes the version at build and the staleness tooling is unchanged; rides the rm-252 absorb batch, not separate from it
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Redaction single-char token boundary
@@ -1053,7 +1117,7 @@
 ### Node 26 LTS adoption gate (time-gated)
 - id: `rm-139` | track: reliability | priority: 24.0 | status: in_progress
 - acceptance: when 26 promotes to LTS (~late 2026-10): a go/no-go recorded in rm-108's matrix covering engines >=24, the node:24-slim tag choice, the @types/node major, and runner tool-cache impact; adoption, if approved, lands as one reviewed change with all gates green
-- evidence: campaign-recorded in dashboard ROADMAP.md; 2026-10-15 rider (run ccde661ea990 cycle:1 roadmap fe5d7f42, from research 035cd3de R3): gate-week evidence — nodejs releases API shows v26.12.0 and v24.22.0 both published 2026-10-14 (v26 twelve minors into the line); v24 active support ends 2026-10-20 per the prior rider; @types/node 26.6.5 available (pnpm outdated at a385ca5); upstream's 2026.10.27 already bumped its node image digest (PR #620) — run the go/no-go matrix on schedule so the 2026-10-28 gate lands as a decision, not a scramble. The @types/node 26 pairing rides rm-1449's sweep.
+- evidence: campaign-recorded in dashboard ROADMAP.md; 2026-10-15 rider (run ccde661ea990 cycle:1 roadmap fe5d7f42, from research 035cd3de R3): gate-week evidence — nodejs releases API shows v26.12.0 and v24.22.0 both published 2026-10-14 (v26 twelve minors into the line); v24 active support ends 2026-10-20 per the prior rider; @types/node 26.6.5 available (pnpm outdated at a385ca5); upstream's 2026.10.27 already bumped its node image digest (PR #620) — run the go/no-go matrix on schedule so the 2026-10-28 gate lands as a decision, not a scramble. The @types/node 26 pairing rides rm-1449's sweep. 2026-10-17 rider (run 475b46bc roadmap a2163ef7, from research 5893c77e): the digest half is now release-blocking, not hygiene — the pinned base sha256:173f1258 returns 404 from registry-1.docker.io (authed HEAD probe 2026-10-17) while the node:24-trixie-slim tag resolves to sha256:7f486ca, which upstream #620 already adopted; rm-1478 owns the cure plus a pullability guard, this def keeps the go/no-go matrix.
 
 ### Origin validation-residue sweep: cycle-1 batch landing rider
 - id: `rm-217` | track: reliability | priority: 24.0 | status: in_progress
@@ -1076,9 +1140,9 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### main.yaml's rm-13640 rider comment contradicts the actual timeouts (claims 20/40; code says 35/20)
-- id: `rm-486` | track: reliability | priority: 24.0 | status: in_progress
+- id: `rm-486` | track: reliability | priority: 24.0 | status: implemented 2026-10-17, acceptance verified at HEAD 7b4d425 (run 475b46bc roadmap a2163ef7)
 - acceptance: the comment states 35 (Lint) and 20 (Test) with the poll-window rationale in one place; NO timeout-minutes value changes in this item; a grep across .github/workflows finds no other comment citing a timeout value that contradicts its job
-- evidence: campaign-recorded in dashboard ROADMAP.md
+- evidence: campaign-recorded in dashboard ROADMAP.md — 2026-10-17 rider (run 475b46bc roadmap a2163ef7, from assess 72090c4a): re-verified two-sided — main.yaml:33-44 states 35 for Lint and 20 for every other job with the poll-window rationale, timeout-minutes is 35 at :45 and 20 at :67/:95/:115/:137/:162, and the cross-workflow comment grep is clean
 
 ### Permissions-Policy header: deny-by-default powerful features on every response
 - id: `rm-557` | track: reliability | priority: 24.0 | status: in_progress
@@ -1186,6 +1250,15 @@
 ### Re-pin pnpm/action-setup v6.0.10 → v6.1.0 at its three workflow sites
 - id: `rm-761` | track: reliability | priority: 20.0 | status: in_progress
 - acceptance:
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Doc-truth micro-batch: Fro Bot state, phantom cve-tripwire cron
+- id: `rm-1485` | track: reliability | priority: 20.0 | status: candidate (added 2026-10-17, repository-maintenance cycle:1 run 475b46bc roadmap a2163ef7, from assess 72090c4a)
+- signals: AGENTS.md:94 still asserts the Fro Bot workflow is disabled_manually (verified 2026-09-19) while live state is active and fro-bot.yaml's own 2026-10-15 comment says active again, schedule-inert, FRO_BOT_PAT absent; .github/workflows/release-channel.yaml:31 cites a 06:53 cve-tripwire Monday cron among the cluster but no such workflow exists at HEAD; the rm-740 pristine-smoke correction is already recorded in this same roadmap delta.
+- acceptance:
+  - AGENTS.md states active/schedule-inert with the FRO_BOT_PAT condition, matching fro-bot.yaml's comment
+  - the phantom cve-tripwire reference is removed or the workflow is restored — mutually exclusive, decision recorded inline at the site
+  - a repo-wide grep finds no doc asserting a dead schedule or a disabled state contradicted by live workflow state
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### App badge for unread listener notifications
