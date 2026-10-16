@@ -167,6 +167,7 @@
 
 ### Absorb fro-bot/agent v0.115.0 (operator-contract drift)
 - id: `rm-157` | track: reliability | priority: 72.0 | status: in_progress
+- rider (2026-10-16, integrate conflict case 63c7ca0db3d6477aa947636e3c6ff18b): run a794d381's agent-pin catch-up (v0.117.5→v0.118.3 at base 88e423a, digest re-resolved first-hand) is superseded at this integrate — fro-bot.yaml already carries fro-bot/agent@15dc1d9d (v0.122.1) via the later upstream adoption; keeping the newer pin preserves the run's intent (track the current release) without regressing the digest
 - acceptance: pin bump to v0.115.0 or later rides a gateway-verified change — GATEWAY_OPERATOR_TRUSTED_PROXIES documented in docs/runbooks/gateway-access.md alongside the proxy topology it assumes, local mirror surfaces (operator-client, sse-reader conformance tests) re-checked against the v0.115.0 contract, full suite plus a live gateway login regression before merge; concrete 1.7.0 surface work (added 2026-09-24, run 41c7d471 roadmap): PINNED_CONTRACT_VERSION -> 1.7.0, parser/Dto plumbing for checkoutProvenance (commit / branch-or-detached / dirty / mid-git-op) and the two new failureKinds, fixture-harness parity fixtures for both new shapes, and the operator run detail rendering the provenance — the release's own payoff: readers see which code a persistent workspace actually ran; the pnpm 11.27.1 rider lands in the same batch
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -181,9 +182,10 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### rm-779
-- id: `rm-779` | track: reliability | priority: 72.0 | status: in_progress
-- acceptance:
-- evidence: campaign-recorded in dashboard ROADMAP.md
+- id: `rm-779` | track: reliability | priority: 72.0 | status: implemented 2026-10-10, validated pre-review (targeted 4020f613 + full-suite aaf184c6 green at cycle close), landed at the 2026-10-16 integrate (repository-maintenance cycle:2 run a794d381b4f04a8ebefc18ea76e58067 implement 45ecba5e at base 88e423a, conflict case 63c7ca0db3d6477aa947636e3c6ff18b) — the tripwire's resolve step derives the whole pinned image from the Dockerfile `ARG NODE_IMAGE=` line (one sed -nE read, fail-closed ::error) and the job runs on ubuntu-24.04, folding rm-188's last ubuntu-latest site
+- rider (2026-10-16, integrate conflict case 63c7ca0db3d6477aa947636e3c6ff18b): .github/workflows/cve-tripwire.yaml restored to the tree — it had been dropped as adoption collateral when the 2026.10.17 upstream-adoption merge (4b73309, 2026-10-10 19:59Z) took a base that predated the fork-side workflow landing; release-channel.yaml's deliberate 06:53 Monday off-slot scheduling comment and the zlib1g standing-critical triage doc (also restored at this integrate) again have their referent
+- acceptance: the tripwire always scans exactly what the Dockerfile pins, with the image literal DERIVED from the ARG line so a base-image family move can never desynchronize workflow and Dockerfile; resolve fails closed when the ARG pin is absent; no hardcoded NODE_IMAGE env literal remains
+- evidence: campaign-recorded in dashboard ROADMAP.md; resolve-sim re-verified at this integrate against the live Dockerfile — the sed yields node:24-trixie-slim@sha256:173f125896c3087845… (HEAD's digest, which itself moved past the run's base pin 173f125896c3b47ddf…, a drift the derivation tolerates by construction); checkout carries persist-credentials: false; runs-on ubuntu-24.04
 
 ### Reality canary for the GitHub data path (verify the real transport contract)
 - id: `rm-179` | track: reliability | priority: 71.0 | status: in_progress
@@ -227,7 +229,8 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Pre-Release CVE tripwire: weekly trivy scan of the pinned base digest (the layer no detector covers)
-- id: `rm-648` | track: reliability | priority: 65.0 | status: in_progress
+- id: `rm-648` | track: reliability | priority: 65.0 | status: implemented 2026-10-08, dropped as 2026.10.17-adoption collateral, restored at the 2026-10-16 integrate in its rm-779-fixed form (conflict case 63c7ca0db3d6477aa947636e3c6ff18b)
+- rider (2026-10-16, integrate conflict case 63c7ca0db3d6477aa947636e3c6ff18b): the restore carries the rm-779 derivation fix (Mondays 06:53 UTC, off the 03:37/04:13/05:17/05:23/06:27 slots; trivy-action v0.36.0 + binary v0.72.0 mirroring release.yaml's Enforce invocation; gate fails only on FIXED HIGH/CRITICAL findings; alert degrades gracefully where issues are disabled) — internal pins all match the landed fleet (checkout v7.0.1, trivy ed142fd0)
 - acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -608,6 +611,7 @@
 
 ### codeql-action pin refresh to current v4.38.x — was the lone stale action pin
 - id: `rm-650` | track: reliability | priority: 40.0 | status: in_progress
+- rider (2026-10-16, integrate conflict case 63c7ca0db3d6477aa947636e3c6ff18b — run a794d381's v4.38.2→v4.38.3 advance): confirmed current on main's tree — codeql-action at 24c54180a607b1449ed407dd24f251e4e9147c8d (v4.38.3) at all four sites (codeql.yaml init+analyze, release.yaml upload-sarif, scorecard.yaml upload-sarif); HEAD had already absorbed the digest via the adoption lineage, this integrate adopted the run's version-specific `# v4.38.3` comments over the bare `# v4`
 - acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -768,6 +772,7 @@
 
 ### ubuntu-latest alias-flip guard for non-containerized jobs
 - id: `rm-188` | track: reliability | priority: 33.0 | status: in_progress
+- rider (2026-10-16, integrate conflict case 63c7ca0db3d6477aa947636e3c6ff18b): the fold is materialized on main's tree — the restored cve-tripwire.yaml carries runs-on: ubuntu-24.04 (the run's implement 45ecba5e executed the flip at base 88e423a); fleet grep after the restore shows all 21 jobs across the 13 workflows pinned, zero ubuntu-latest
 - acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -1210,6 +1215,7 @@
   - one re-pin sweep including the composite action copies, every digest re-derived from its release tag; actionlint container-form green locally
   - CI validation gated on Actions recovery (the local outage pattern documents the interim evidence form)
 - evidence: the re-pin diff (both directories); actionlint output; gh api tag/digest pairs
+- rider (2026-10-16, integrate conflict case 63c7ca0db3d6477aa947636e3c6ff18b — run a794d381's U2 re-pins, executed 2026-10-10 at base 88e423a, landed here): the minor-class drift named in signals is discharged on main's tree — actions/setup-node @949feb24 (v7.1.0) at all six sites (actions/setup/action.yaml:19, audit.yaml, release.yaml ×2, visual.yaml from the run; plus release-channel.yaml:55, a sixth site restored after the run's base, re-pinned at this integrate for fleet consistency), actions/upload-artifact @cf430e03 (v7.0.2) at visual.yaml ×2 (release.yaml/scorecard.yaml were already current on HEAD); pnpm/action-setup stays at HEAD's renovate digest 0977fd9 (#295, upstream-adoption lineage — newer landed authority than the run's ea17c68d v6.1.0); checkout v7.0.1, buildx v4.4.1, login v4.6.0 and create-github-app-token v3.3.0 were already absorbed on HEAD; remaining rm-1451 scope is the docker/setup-qemu-action v3→v4 major decision plus its CI-validation gate
 
 ### operator-stream runtime: module-singleton stream handle vs StrictMode double-mount (dev-only today)
 - id: `rm-283` | track: reliability | priority: 16.0 | status: in_progress
