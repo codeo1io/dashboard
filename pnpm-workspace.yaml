@@ -56,7 +56,12 @@ overrides:
   # @opencode-ai/plugin>effect; >=4.2.0 is the patched line
   # (rescued by content from run b4aac9ba / PR #82 via cycle-13;
   # the batch's internal rm-171 numbering collided with landed ids).
-  toml: '>=4.2.0'
+  # 2026-10-09 (run 1c814809d084, rm-841, landed via conflict case
+  # 72dc473b): floor lifted >=4.2.0 -> >=4.3.0 for upstream parity
+  # (fro-bot/dashboard #582 'bump toml to 4.3.0'); the resolved chain
+  # already held toml@4.3.0, so this is a floor pin, not a move, and
+  # eslint-plugin-toml's own parser stays out of the override's reach.
+  toml: '>=4.3.0'
   # All ten npm-DB undici advisories patch at >=7.29.1 (highs
   # GHSA-rfgv-xxqx-mfg5 + GHSA-w293-vg96-wgc3); the floor deliberately takes
   # the published 7.x tip 7.30.0, not the bare minimum. 7.29.1 itself sits in
