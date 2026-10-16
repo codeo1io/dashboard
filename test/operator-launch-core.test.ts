@@ -7,7 +7,8 @@
  * Security invariants tested:
  * - submitLaunch: happy path, CSRF retry (same key reused), no retry on 404/429.
  * - All post-submit 400s map to one generic failure outcome (no oracle).
- * - mintIdempotencyKey returns unique non-empty strings.
+ * - mintIdempotencyKey returns unique non-empty strings (null when the
+ *   environment lacks crypto.randomUUID — rm-482 fail-closed).
  * - buildPendingCardHooks returns the right runId + selectors.
  * - No DOM access at module top-level (safe to import in Node).
  */
@@ -276,12 +277,27 @@ describe('mintIdempotencyKey', () => {
   it('returns a non-empty string', () => {
     const key = mintIdempotencyKey()
     expect(typeof key).toBe('string')
-    expect(key.length).toBeGreaterThan(0)
+    expect(key?.length ?? 0).toBeGreaterThan(0)
   })
 
   it('returns unique values on successive calls', () => {
-    const keys = new Set(Array.from({length: 20}, () => mintIdempotencyKey()))
+    const keys = new Set(
+      Array.from({length: 20}, () => mintIdempotencyKey()).flatMap(k => (k === null ? [] : [k])),
+    )
     expect(keys.size).toBe(20)
+  })
+
+  // rm-482: fail-closed doctrine — if the environment cannot mint a secure
+  // key we return null (never a weak Date.now/Math.random fabrication,
+  // mirroring web/src/push/subscribe.ts).
+  it('returns null when crypto.randomUUID is unavailable (fail closed)', () => {
+    const realCrypto = globalThis.crypto
+    Object.defineProperty(globalThis, 'crypto', {value: {}, configurable: true})
+    try {
+      expect(mintIdempotencyKey()).toBeNull()
+    } finally {
+      Object.defineProperty(globalThis, 'crypto', {value: realCrypto, configurable: true})
+    }
   })
 })
 

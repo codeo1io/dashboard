@@ -2602,6 +2602,24 @@ export function buildCancelClient(opts) {
  *   'already-settled'   — already_claimed/unavailable: inline settled copy
  */
 
+/**
+ * Mint a secure idempotency key, or null when the environment cannot
+ * (rm-482 fail-closed doctrine, mirroring web/src/push/subscribe.ts and
+ * public/operator-launch.js: never fabricate a weak Date.now/Math.random
+ * key on the operator decision surfaces — decision retries must not be
+ * deduped on a guessable id). Shared by renderApprovalPrompt (decisions) and
+ * renderCancelControl (cancels).
+ */
+export function mintSecureIdempotencyKey() {
+  if (
+    globalThis.crypto !== undefined &&
+    typeof globalThis.crypto.randomUUID === 'function'
+  ) {
+    return globalThis.crypto.randomUUID()
+  }
+  return null
+}
+
 export function renderApprovalPrompt(prompt, runId, approvalClient, _onSettle) {
   const {requestID, permission, command, filepath} = prompt
 
@@ -2739,13 +2757,18 @@ export function renderApprovalPrompt(prompt, runId, approvalClient, _onSettle) {
 
   async function handleDecision(decision) {
     if (promptState === 'in-flight') return
+    // rm-482: fail closed — never fabricate a weak idempotency key for a
+    // decision; surface a retryable failure instead (setTransportFailure
+    // re-enables the controls and stages the retry message).
+    const idempotencyKey = mintSecureIdempotencyKey()
+    if (idempotencyKey === null) {
+      setInFlight()
+      setTransportFailure()
+      statusEl.textContent =
+        'Decision blocked: this browser cannot generate a secure request id (crypto.randomUUID unavailable). Please use a current browser.'
+      return
+    }
     setInFlight()
-
-    const idempotencyKey = (
-      globalThis.crypto !== undefined && typeof globalThis.crypto.randomUUID === 'function'
-        ? globalThis.crypto.randomUUID()
-        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-    )
 
     const result = await approvalClient.decideRunApproval(runId, requestID, decision, idempotencyKey)
 
@@ -3075,13 +3098,20 @@ export function renderCancelControl(runId, cancelClient, onCancelDispatch) {
     cancelInitiated = true
     clearRetryTimer()
     retryAttempt = 0
+    // rm-482: fail closed — never fabricate a weak idempotency key for a
+    // cancel; mirror the catch path's recovery EXACTLY (setTransportFailure
+    // re-renders the 'Try again' button — setRetrying wipes controls and is
+    // only for the auto-retry timer path), then stage the blocked message.
+    const idempotencyKey = mintSecureIdempotencyKey()
+    if (idempotencyKey === null) {
+      canceling = false
+      cancelInitiated = false
+      setTransportFailure()
+      statusEl.textContent =
+        'Cancel blocked: this browser cannot generate a secure request id (crypto.randomUUID unavailable). Please use a current browser.'
+      return
+    }
     setPending()
-
-    const idempotencyKey = (
-      globalThis.crypto !== undefined && typeof globalThis.crypto.randomUUID === 'function'
-        ? globalThis.crypto.randomUUID()
-        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-    )
 
     if (typeof onCancelDispatch === 'function') onCancelDispatch(runId)
 

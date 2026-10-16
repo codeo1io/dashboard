@@ -1010,6 +1010,15 @@ export declare function renderCancelControl(
 ): CancelControlHandle
 
 /**
+ * Mint a secure idempotency key for operator decisions/cancels
+ * (rm-482 fail-closed doctrine, mirroring public/operator-launch.js and
+ * web/src/push/subscribe.ts): returns a randomUUID, or null when the
+ * environment cannot mint a secure key — callers must surface a retryable
+ * failure and never side-effect.
+ */
+export declare function mintSecureIdempotencyKey(): string | null
+
+/**
  * Render a single open approval prompt into a container element.
  * Uses safe DOM (textContent only — never innerHTML or HTML interpolation).
  * Exported for direct unit testing of the safe-DOM inertness guarantee.

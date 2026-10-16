@@ -1,5 +1,17 @@
 # Dashboard roadmap prioritization — 2026-10-09, repository-maintenance cycle:3 batch (conductor run d8fdf8b79ad54a68883810c1fc29a2da)
 
+> **Truth annotation (2026-10-15, run 8aabd64de4e repository-maintenance cycle 2, rm-857):**
+> deliverables this report lists below — `scripts/roadmap-census.ts`,
+> `test/roadmap-integrity-guard.test.ts`, `.github/workflows/cve-tripwire.yaml`,
+> `.github/workflows/lockfile-guard.yaml`, `docs/runbooks/release.md` — never
+> reached main: the landing pipeline resolved modify-vs-delete as delete across
+> three consecutive landings (0 hits across all 350 first-parent commits of
+> origin/main). They are re-landed with constants re-derived in the same batch;
+> `.github/workflows/base-drift.yaml` named below is superseded on main by
+> `.github/workflows/upstream-drift.yaml`; the 2026-10-0x batch reports
+> cross-referenced below are archival and remain unlanded (tracked with the
+> tooling family at rm-857).
+
 Worktree base `364272b` (== origin/main, re-verified at selection: `git fetch origin` +
 `rev-list --left-right --count HEAD...origin/main` → 0 0). Porcelain at phase start =
 exactly the roadmap-phase deliverable pair `ROADMAP.md` +

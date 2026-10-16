@@ -4,6 +4,18 @@ tags: [repository-maintenance, cycle-2, compound, rm-842, rm-843, rm-180]
 problem_type: maintenance-compound
 ---
 
+> **Truth annotation (2026-10-15, run 8aabd64de4e repository-maintenance cycle 2, rm-857):**
+> deliverables this report lists below — `scripts/roadmap-census.ts`,
+> `test/roadmap-integrity-guard.test.ts`, `.github/workflows/cve-tripwire.yaml`,
+> `.github/workflows/lockfile-guard.yaml`, `docs/runbooks/release.md` — never
+> reached main: the landing pipeline resolved modify-vs-delete as delete across
+> three consecutive landings (0 hits across all 350 first-parent commits of
+> origin/main). They are re-landed with constants re-derived in the same batch;
+> `.github/workflows/base-drift.yaml` named below is superseded on main by
+> `.github/workflows/upstream-drift.yaml`; the 2026-10-0x batch reports
+> cross-referenced below are archival and remain unlanded (tracked with the
+> tooling family at rm-857).
+
 # Repository-maintenance cycle 2 — compound record (2026-10-10, run 08a0abac9453)
 
 Pre-review compounding of the whole cycle: assess `0b1bd864` → research `a2cbb8e9` →

@@ -57,6 +57,7 @@ import {
   MAX_OPEN_QUESTIONS,
   MAX_OUTPUT_TEXT_CHARS,
   MAX_SSE_BUFFER_BYTES,
+  mintSecureIdempotencyKey,
   nextStreamState,
   parseSseFrame,
   PHASE_TO_WEB_STATUS,
@@ -11843,5 +11844,77 @@ describe('rm-853 — nextStreamState output seq-gap detection', () => {
     expect(gapEl.hidden).toBe(false)
     expect(gapEl.textContent).not.toBe('')
     expect(coalescedEl.hidden).toBe(true)
+  })
+})
+
+// rm-482 — fail-closed idempotency minting (decision + cancel surfaces):
+// mintSecureIdempotencyKey returns a UUID when the environment can mint one
+// and null (never a weak Date.now/Math.random fabrication) when it cannot,
+// mirroring web/src/push/subscribe.ts and public/operator-launch.js.
+describe('mintSecureIdempotencyKey (rm-482 fail-closed)', () => {
+  it('returns a non-empty uuid-shaped key when randomUUID is available', () => {
+    const key = mintSecureIdempotencyKey()
+    expect(typeof key).toBe('string')
+    expect(key).toMatch(/^[0-9a-f-]{36}$/)
+  })
+
+  it('returns null when crypto.randomUUID is unavailable (fail closed)', () => {
+    const realCrypto = globalThis.crypto
+    Object.defineProperty(globalThis, 'crypto', {value: {}, configurable: true})
+    try {
+      expect(mintSecureIdempotencyKey()).toBeNull()
+    } finally {
+      Object.defineProperty(globalThis, 'crypto', {value: realCrypto, configurable: true})
+    }
+  })
+})
+
+// rm-482 — fail-closed CALL SITES: when the minter returns null, both the
+// decision and the cancel surfaces must abort BEFORE any side effect (no
+// client request, no onCancelDispatch) and leave a retryable UI: the decision
+// prompt lands in transport-failure with its controls re-rendered, and the
+// cancel control re-renders its 'Try again' button (setRetrying would wipe
+// the controls — that path is only for the auto-retry timer).
+describe('rm-482 — fail-closed call sites (decision + cancel)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('decision: crypto-less environment blocks with a retryable prompt and issues no request', async () => {
+    stubRenderEnv()
+    vi.stubGlobal('crypto', {})
+    const prompt: ApprovalFrameDataOpen = {
+      runId: 'run-001', requestID: 'req-001', permission: 'shell', command: 'echo hi', settled: false,
+    }
+    const {client, decideCalls} = makeFakeApprovalClient()
+    const el = renderPromptAsFake(prompt, 'run-001', client)
+
+    findVisibleButtons(el).find(b => b.textContent === 'Once')?.dispatchEvent({type: 'click'})
+    await new Promise(resolve => setTimeout(resolve, 10))
+
+    expect(decideCalls).toHaveLength(0)
+    expect(el.dataset.state).toBe('transport-failure')
+    expect(findVisibleButtons(el).length).toBeGreaterThan(0)
+    expect(findStatusElement(el)?.textContent).toMatch(/cannot generate a secure request id/)
+  })
+
+  it('cancel: crypto-less environment blocks with a Try again button, no request, no dispatch', async () => {
+    stubCancelRenderEnv()
+    vi.stubGlobal('crypto', {})
+    const {client, cancelCalls} = makeFakeCancelClient()
+    const dispatchCalls: string[] = []
+    const {el} = renderCancelControl('run-001', client, runId => {
+      dispatchCalls.push(runId)
+    }) as unknown as {el: FakeElement}
+
+    findVisibleButtons(el).find(b => b.textContent === 'Cancel run')?.dispatchEvent({type: 'click'})
+    findVisibleButtons(el).find(b => b.textContent === 'Confirm cancel')?.dispatchEvent({type: 'click'})
+    await new Promise(resolve => setTimeout(resolve, 10))
+
+    expect(cancelCalls).toHaveLength(0)
+    expect(dispatchCalls).toEqual([])
+    expect(el.dataset.state).toBe('transport-failure')
+    expect(findVisibleButtons(el).find(b => b.textContent === 'Try again')).toBeDefined()
+    expect(findStatusElement(el)?.textContent).toMatch(/cannot generate a secure request id/)
   })
 })
