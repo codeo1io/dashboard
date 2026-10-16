@@ -181,7 +181,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### rm-779
-- id: `rm-779` | track: reliability | priority: 72.0 | status: in_progress
+- id: `rm-779` | track: reliability | priority: 72.0 | status: implemented 2026-10-10 (run a794d381b4f0 cycle:2, implement 45ecba5e, adopted-by-content from sibling 533ad14f), landed at this integrate (conflict case d1bd172e) — .github/workflows/cve-tripwire.yaml restored after its October adoption-lineage drop (the stitch at fc69b91 took the adoption tree wholesale; upstream never carried the fork-invented workflow and no retirement record exists) carrying the cure: the resolve step derives the image pin from the Dockerfile `ARG NODE_IMAGE` line (fail-closed `::error` + exit 1 on a missing digest pin — the born-broken `node:24-slim` literal desync class cannot recur); companion triage doc docs/solutions/security-issues/zlib1g-cve-2023-45853-standing-critical-2026-10-07.md restored with it (referenced at cve-tripwire.yaml:14; rm-205's acceptance record)
 - acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -607,7 +607,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### codeql-action pin refresh to current v4.38.x — was the lone stale action pin
-- id: `rm-650` | track: reliability | priority: 40.0 | status: in_progress
+- id: `rm-650` | track: reliability | priority: 40.0 | status: implemented 2026-10-10 (run a794d381b4f0 cycle:2, implement 45ecba5e), landed at this integrate (conflict case d1bd172e) — digest 24c54180a607b1449ed407dd24f251e4e9147c8d at all four sites (codeql.yaml init+analyze, release.yaml Trivy SARIF upload, scorecard.yaml) with the fork's precise-version `# v4.38.3` accuracy comment unified over the adoption's major-only `# v4` style
 - acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -767,7 +767,7 @@
 - evidence: Dockerfile HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 with a node fetch one-liner against 127.0.0.1:3000/api/healthz (no curl/wget added to node:24-slim — the Trivy surface stays flat); test/dockerfile-healthcheck-guard.test.ts 7/7 (exactly-one directive, the four tuning flags, healthz target + r.ok gate with forbidden staleness tokens, node exec form, rm-743 citation, runbook notes); docs/runbooks/release.md orchestration-expectation section
 
 ### ubuntu-latest alias-flip guard for non-containerized jobs
-- id: `rm-188` | track: reliability | priority: 33.0 | status: in_progress
+- id: `rm-188` | track: reliability | priority: 33.0 | status: implemented 2026-10-10 (run a794d381b4f0 cycle:2 — the fold executed inside rm-779's landing batch), landed at this integrate (conflict case d1bd172e) — the restored cve-tripwire.yaml carries `runs-on: ubuntu-24.04`, the fleet's last non-comment `ubuntu-latest` site; zero remain across .github/
 - acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -1184,7 +1184,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Re-pin pnpm/action-setup v6.0.10 → v6.1.0 at its three workflow sites
-- id: `rm-761` | track: reliability | priority: 20.0 | status: in_progress
+- id: `rm-761` | track: reliability | priority: 20.0 | status: implemented 2026-10-08 (run 788aa489c1d5 implement 5b81fe87), re-landed at this integrate (conflict case d1bd172e, run a794d381b4f0 cycle:2) — the October upstream-adoption lineage had reverted all three surviving sites to the stale moving-tag `0977fd9 # v6`; restored to ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0 at .github/actions/setup/action.yaml + audit.yaml + visual.yaml
 - acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
