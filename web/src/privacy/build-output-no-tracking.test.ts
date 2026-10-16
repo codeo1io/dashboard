@@ -79,9 +79,11 @@ describe('built client output — no analytics or advertising', () => {
   // external link (github.com/fro-bot/dashboard/issues) is a page citation,
   // already pinned exactly by content.test.ts, and isn't a network call the
   // browser makes on load — a new fetch/beacon target in the bundle is what
-  // this exists to catch.
-  it('GUARD: the JS bundle contains no third-party origin beyond the known two', () => {
-    const ALLOWED = new Set(['http://www.w3.org', 'https://react.dev'])
+  // this exists to catch. github.com joins the allowed set for rm-882: the
+  // AppShell footer version chip links to this fork's release notes — an
+  // intentional navigation link, not a network call made on load.
+  it('GUARD: the JS bundle contains no third-party origin beyond the documented set', () => {
+    const ALLOWED = new Set(['http://www.w3.org', 'https://react.dev', 'https://github.com'])
     const origins = new Set(jsBundleText().match(/https?:\/\/[a-zA-Z0-9.-]+/g) ?? [])
     const unexpected = [...origins].filter(origin => !ALLOWED.has(origin)).sort()
 
