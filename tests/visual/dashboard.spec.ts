@@ -9,11 +9,22 @@ import AxeBuilder from '@axe-core/playwright'
  *
  * Baseline provenance (rm-142): all three dark baselines are regenerated
  * inside the same pinned container image the visual job runs in —
- * mcr.microsoft.com/playwright:v1.63.0-noble (digest sha256:eff16c30…,
- * 2026-09-22) — so baseline capture and comparison share one deterministic
- * render environment. Regen procedure: delete the baseline PNGs, then run
- * `pnpm exec playwright test --update-snapshots` inside that image (the
- * container block in .github/workflows/visual.yaml documents the same).
+ * mcr.microsoft.com/playwright:v1.64.0-noble (digest sha256:06a9939e…,
+ * 2026-10-17; prior capture v1.63.0-noble sha256:eff16c30…, 2026-09-22 —
+ * the 2026-10-17 regen kept listener/privacy byte-identical and rewrote only
+ * dashboard-operator-dark.png, whose fixture run list had grown via the
+ * 2026-10-11..17 upstream adoptions while the gate sat unrunnable on the
+ * stale 1.63.0 image) — so baseline capture and comparison share one
+ * deterministic render environment. Regen procedure: delete the baseline
+ * PNGs, then run `pnpm exec playwright test --update-snapshots` inside that
+ * image (the container block in .github/workflows/visual.yaml documents the
+ * same).
+ * 2026-10-17 second regen (run 8fd22b8b integrate, conflict case 0310ad63):
+ * dashboard-operator-dark.png rewritten once more in the same image — the
+ * #619 absorb (contract 1.11.0 collapsed waiting cards, run-jump notices)
+ * grew the operator page 3178px→3294px past the morning capture; listener
+ * and privacy stayed byte-identical and the in-image clean compare re-ran
+ * 3/3 green.
  * Axe: fails only on `critical`/`serious` impact violations (moderate/minor are
  * logged for visibility). Any pre-existing fixture-page violations are scoped
  * or disabled inline with a justification — see `axeCommon()` below.
