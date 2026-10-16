@@ -325,6 +325,8 @@ describe('Operator — fixture scenario selector', () => {
         'expired_completed_terminal_frame',
         'expired_completed_silent',
         'running_after_no_snapshot',
+        'waiting_no_output',
+        'waiting_queued',
       ].sort(),
     )
   })
@@ -900,5 +902,39 @@ describe('Operator — stream and status announcement hooks', () => {
     expect(noticeEl).toHaveAttribute('role', 'status')
     expect(noticeEl).toHaveAttribute('aria-live', 'polite')
     expect(noticeEl).toHaveClass('operator-stream-status')
+  })
+
+  it('renders a dedicated, hidden miss notice for the jump to a run, separate from stream-status', () => {
+    render(<Operator state="ready" />)
+    const missEl = document.querySelector('[data-role="run-jump-miss"]')
+    expect(missEl).not.toBeNull()
+    expect(missEl).not.toBe(document.querySelector('[data-role="stream-status"]'))
+    expect(missEl).toHaveAttribute('role', 'status')
+    expect(missEl).toHaveAttribute('aria-live', 'polite')
+    expect(missEl).toBeEmptyDOMElement()
+    expect((missEl as HTMLElement).hidden).toBe(true)
+    expect(document.querySelector('[data-role="run-index"]')?.contains(missEl)).toBe(true)
+  })
+
+  it('places the dismissible jump notice before the run list', () => {
+    render(<Operator state="ready" />)
+    const notice = document.querySelector('[data-role="run-jump-notice"]')
+    const runList = document.querySelector('[data-role="run-index-list"]')
+
+    expect(notice).not.toBeNull()
+    expect(runList).not.toBeNull()
+    expect((notice?.compareDocumentPosition(runList as Node) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+    expect(screen.getByRole('button', {name: 'Dismiss notice', hidden: true})).toBeInTheDocument()
+  })
+
+  it('renders a visually-hidden polite live region for the jump announcement', () => {
+    render(<Operator state="ready" />)
+    const announcer = document.querySelector('[data-role="run-jump-announcer"]')
+    expect(announcer).not.toBeNull()
+    expect(announcer).toHaveAttribute('aria-live', 'polite')
+    expect(announcer).toHaveAttribute('aria-atomic', 'true')
+    expect(announcer).toHaveClass('sr-only')
+    expect(announcer).toBeEmptyDOMElement()
+    expect(document.querySelector('[data-role="run-index"]')?.contains(announcer)).toBe(true)
   })
 })

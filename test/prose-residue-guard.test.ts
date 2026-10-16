@@ -102,7 +102,15 @@ function isExcluded(relPath: string): boolean {
 function walk(dir: string, files: string[] = []): string[] {
   for (const entry of readdirSync(dir, {withFileTypes: true})) {
     const full = join(dir, entry.name)
+    // Prune excluded directories DURING descent (rm-1453): node_modules/.git/dist
+    // subtrees never enter `files`, so enumeration cost scales with the relevant
+    // set (481 files in ~3ms) instead of the whole tree (26,735 files, ~2.9s) —
+    // which cold-suite runs proved is enough to blow the 30s per-test budget.
+    // Pruning keeps the per-file exclusion semantics unchanged: the excluded
+    // dir names/suffixes tested by isExcluded still apply to files reached via
+    // non-excluded paths.
     if (entry.isDirectory()) {
+      if (isExcluded(`${entry.name}/`)) continue
       walk(full, files)
     } else if (entry.isFile()) {
       files.push(full)
