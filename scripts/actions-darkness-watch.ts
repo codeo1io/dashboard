@@ -1,49 +1,35 @@
 #!/usr/bin/env node
-// scripts/actions-darkness-watch.ts
-//
-// Out-of-band Actions-darkness watchdog (rm-1411, run a79dc20458f1).
-//
 // Detects GitHub Actions run-creation darkness WITHOUT depending on Actions
 // itself: queries the Actions REST API for the latest-run timestamps of every
-// push/schedule-triggered workflow in this repository and raises ONE tracked
-// signal when any of them shows run-creation dark for more than two days while
-// the repository's pushed_at is newer than that workflow's last run (i.e. a run
-// was owed by a push/schedule trigger and never created).
-//
-// Boundary (recorded with rm-289): the in-repo red-watch owns workflow-file
-// drift; this script owns the out-of-band run-creation signal. It intentionally
-// performs no repository writes and needs no CI lane — it is the probe you run
-// locally while Actions is dark.
-//
-// Usage:
-//   node scripts/actions-darkness-watch.ts
-//
-// Environment:
-//   ACTIONS_DARKNESS_REPO   Repository to probe (default: codeo1io/dashboard).
-//   ACTIONS_DARKNESS_NOW    Override "now" (ISO-8601). Test seam — production
-//                           callers omit this.
-//   ACTIONS_DARKNESS_TOKEN  Optional GitHub token for the API reads (falls
-//                           back to unauthenticated rate limits).
-//   GITHUB_TOKEN            Fallback if ACTIONS_DARKNESS_TOKEN is unset.
-//
-// Inputs:
-//   - Workflow triggers are parsed from the local .github/workflows/*.yaml
-//     files (resolved relative to this script's repo root), because a dark
-//     workflow has no runs to infer triggers from.
-//   - Workflows, their runs, and pushed_at come from the live REST API.
+// push/schedule-triggered workflow in this repository (per-workflow reads) and
+// raises ONE tracked signal when any lane is beyond its cadence-aware
+// threshold without a run, or when the main head commit is newer than a
+// candidate lane's last run (a push was owed but no run followed — the usual
+// trigger misfire). Run counts for workflows that only ever run manually
+// (workflow_dispatch & friends) are not considered candidates.
 //
 // Verdict semantics:
-//   GREEN   no push/schedule-triggered workflow is both >2 days without a run
-//           and owed one (pushed_at newer than its last run).
+//   GREEN   no push/schedule-triggered workflow is beyond its lane threshold
+//           without a run, and no push-owed lane exists (main-head commit
+//           newer than its last run).
 //   DARK    at least one such workflow exists. Exit code 3.
-//   UNKNOWN inputs could not be read (API failure). Exit code 1.
-//   GREEN exits 0, matching the estate-tripwire OK/UNKNOWN/DRIFT exit ladder
-//   (0/1/3) so operator tooling can treat both probes uniformly.
+//   UNKNOWN a candidate lane's run timestamps are present but unparseable
+//           (fail closed: never silently green). Exit code 4.
+//   API failures also surface as UNKNOWN with exit code 1.
+//   GREEN exits 0. The ladder 0/1/3/4 extends the estate-tripwire
+//   OK/UNKNOWN/DRIFT exit ladder (0/1/3) so operator tooling can treat both
+//   probes uniformly.
 //
-// A run of ANY event kind counts as run-creation activity for its workflow:
-// darkness means no runs at all are being created, not that a particular
-// trigger misfired. Run counts for workflows that only ever run manually
-// (workflow_dispatch & friends) are not considered candidates.
+// Lane thresholds (rm-1411 repair): a lane whose cron schedules are known is
+// dark when it has no run newer than max(48h, longest cron gap over a
+// daily-repeating grid + 12h grace) — cadence-owed, no push needed. Lanes
+// without known crons keep the conservative rule: dark only when both >48h
+// stale AND a push was owed (main-head commit newer than the last run).
+//
+// Latest-run reads are PER WORKFLOW (.../actions/workflows/<id>/runs?
+// per_page=1), so a busy lane can never push another lane's true last run
+// out of the fetch window the way a repo-wide page did. Reads carry a 15s
+// timeout.
 
 import {readdirSync, readFileSync} from 'node:fs'
 import process from 'node:process'
@@ -51,6 +37,82 @@ import {fileURLToPath} from 'node:url'
 import {parse} from 'yaml'
 
 export const DARKNESS_THRESHOLD_MS = 48 * 60 * 60 * 1000
+
+/** Grace added on top of a lane's longest cron gap before it reads dark. */
+export const SCHEDULE_GRACE_MS = 12 * 60 * 60 * 1000
+
+/** Fallback for unparseable crons: assume at-least-weekly cadence. */
+const WEEK_FALLBACK_MS = 7 * 24 * 60 * 60 * 1000
+
+const MINUTES_PER_DAY = 24 * 60
+
+/** Longest gap between fires of the cron union over a repeating day grid. */
+export function maxCronGapMs(crons: string[]): number {
+  const minutes = new Set<number>()
+  let parseable = false
+  for (const raw of crons) {
+    const fields = raw.trim().split(/\s+/)
+    if (fields.length !== 5) continue
+    const [minute, hour, dom, month, dow] = fields as [string, string, string, string, string]
+    // Only the widely used subset: minute/hour may be *, n, */n, lists, or
+    // ranges; dom/month/dow must be * (otherwise fall back to weekly).
+    if (dom !== '*' || month !== '*' || dow !== '*') continue
+    const expand = (spec: string, max: number): number[] | null => {
+      if (spec === '*') return Array.from({length: max + 1}, (_, i) => i)
+      const values: number[] = []
+      for (const part of spec.split(',')) {
+        const stepMatch = /^\*\/(\d+)$/.exec(part)
+        const rangeMatch = /^(\d+)-(\d+)$/.exec(part)
+        if (stepMatch) {
+          const step = Number(stepMatch[1])
+          if (step < 1) return null
+          for (let i = 0; i <= max; i += step) values.push(i)
+        } else if (rangeMatch) {
+          const lo = Number(rangeMatch[1])
+          const hi = Number(rangeMatch[2])
+          if (lo > hi || hi > max) return null
+          for (let i = lo; i <= hi; i++) values.push(i)
+        } else if (/^\d+$/.test(part)) {
+          const v = Number(part)
+          if (v > max) return null
+          values.push(v)
+        } else {
+          return null
+        }
+      }
+      return values
+    }
+    const minutesList = expand(minute, 59)
+    const hoursList = expand(hour, 23)
+    if (minutesList === null || hoursList === null) continue
+    parseable = true
+    for (const h of hoursList) {
+      for (const m of minutesList) {
+        minutes.add(h * 60 + m)
+      }
+    }
+  }
+  if (!parseable || minutes.size === 0) return WEEK_FALLBACK_MS
+  const sorted = [...minutes].sort((a, b) => a - b)
+  let maxGap = 0
+  for (let i = 1; i < sorted.length; i++) {
+    maxGap = Math.max(maxGap, (sorted.at(i) ?? 0) - (sorted.at(i - 1) ?? 0))
+  }
+  // dom/month/dow are restricted to * (daily repetition), so the grid wraps
+  // at minute-of-day boundaries.
+  maxGap = Math.max(maxGap, (sorted.at(0) ?? 0) + MINUTES_PER_DAY - (sorted.at(-1) ?? 0))
+  return maxGap * 60 * 1000
+}
+
+/** Darkness threshold for one lane: cron-derived when schedules are known. */
+export function laneThresholdMs(
+  path: string,
+  schedules: Record<string, string[]> | undefined,
+): number {
+  const crons = schedules?.[path]
+  if (crons === undefined || crons.length === 0) return DARKNESS_THRESHOLD_MS
+  return Math.max(DARKNESS_THRESHOLD_MS, maxCronGapMs(crons) + SCHEDULE_GRACE_MS)
+}
 
 export interface WorkflowSummary {
   id: number
@@ -63,53 +125,83 @@ export interface RunSummary {
   createdAt: string
 }
 
-/** workflow path (e.g. '.github/workflows/main.yaml') -> normalized trigger names */
-export type TriggerIndex = Record<string, string[]>
-
 export interface DarkWorkflow {
   name: string
   path: string
-  lastRun: string | 'never'
+  lastRun: string
   ageDays: number
+  /** Lane threshold actually applied (days); present on cron-derived darks. */
+  thresholdDays?: number
 }
 
 export interface DarknessVerdict {
-  verdict: 'GREEN' | 'DARK'
+  verdict: 'GREEN' | 'DARK' | 'UNKNOWN'
   candidates: number
   darkWorkflows: DarkWorkflow[]
+  /** Lanes whose run timestamps exist but are unparseable (fail closed). */
+  unknownWorkflows: DarkWorkflow[]
 }
+
+export type TriggerIndex = Record<string, string[]>
 
 const PUSH_SCHEDULE_TRIGGERS = new Set(['push', 'schedule'])
 
-/** Normalize a parsed `on:` value (string | string[] | mapping) to trigger names. */
-function normalizeOnValue(value: unknown): string[] {
-  if (typeof value === 'string') return [value]
-  if (Array.isArray(value)) return value.filter((v): v is string => typeof v === 'string')
-  if (value !== null && typeof value === 'object') {
-    return Object.keys(value)
-  }
+function normalizeOnValue(on: unknown): string[] {
+  if (typeof on === 'string') return [on]
+  if (Array.isArray(on)) return on.filter(t => typeof t === 'string')
+  if (typeof on === 'object' && on !== null) return Object.keys(on)
   return []
 }
 
-/** Parse workflow files' text into a trigger index. */
+/** Local workflow file map (name -> text) -> trigger index by file name. */
 export function classifyWorkflows(files: Record<string, string>): TriggerIndex {
   const index: TriggerIndex = {}
   for (const [path, text] of Object.entries(files)) {
-    let doc: Record<string, unknown>
+    let doc: unknown
     try {
-      const parsed: unknown = parse(text)
-      if (parsed === null || typeof parsed !== 'object') continue
-      doc = parsed as Record<string, unknown>
+      doc = parse(text)
     } catch {
       continue
     }
-    // YAML 1.2 keeps `on` a string key; some authors write the legacy boolean
-    // form (`true:`), which YAML parses under the boolean's string rendering.
-    const onKey = Object.keys(doc).find(k => k === 'on' || k === 'true')
+    if (doc === null || typeof doc !== 'object') continue
+    const record = doc as Record<string, unknown>
+    const onKey = Object.keys(record).find(k => k === 'on' || k === 'true')
     if (onKey === undefined) continue
-    index[path] = normalizeOnValue(doc[onKey])
+    index[path] = normalizeOnValue(record[onKey])
   }
   return index
+}
+
+/** Cron schedules per workflow file name, parsed from workflow texts. */
+export function extractSchedules(files: Record<string, string>): Record<string, string[]> {
+  const schedules: Record<string, string[]> = {}
+  for (const [name, text] of Object.entries(files)) {
+    let doc: unknown
+    try {
+      doc = parse(text)
+    } catch {
+      continue
+    }
+    if (doc === null || typeof doc !== 'object') continue
+    const record = doc as Record<string, unknown>
+    const onKey = Object.keys(record).find(k => k === 'on' || k === 'true')
+    if (onKey === undefined) continue
+    const raw = record[onKey]
+    const schedule =
+      raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+        ? (raw as Record<string, unknown>).schedule
+        : undefined
+    if (!Array.isArray(schedule)) continue
+    const crons: string[] = []
+    for (const entry of schedule) {
+      if (typeof entry === 'object' && entry !== null) {
+        const cron = (entry as Record<string, unknown>).cron
+        if (typeof cron === 'string') crons.push(cron)
+      }
+    }
+    if (crons.length > 0) schedules[name] = crons
+  }
+  return schedules
 }
 
 export function computeDarkness(input: {
@@ -118,6 +210,7 @@ export function computeDarkness(input: {
   triggers: TriggerIndex
   pushedAt: string
   now: string
+  schedules?: Record<string, string[]>
 }): DarknessVerdict {
   const nowMs = Date.parse(input.now)
   const pushedMs = Date.parse(input.pushedAt)
@@ -126,14 +219,31 @@ export function computeDarkness(input: {
     return triggers.some(t => PUSH_SCHEDULE_TRIGGERS.has(t))
   })
   const darkWorkflows: DarkWorkflow[] = []
+  const unknownWorkflows: DarkWorkflow[] = []
   for (const workflow of candidates) {
     let latestMs = Number.NEGATIVE_INFINITY
+    let sawRun = false
     for (const run of input.runs) {
       if (run.workflowId !== workflow.id) continue
+      sawRun = true
       const createdMs = Date.parse(run.createdAt)
       if (Number.isNaN(createdMs)) continue
       if (createdMs > latestMs) latestMs = createdMs
     }
+    if (sawRun && latestMs === Number.NEGATIVE_INFINITY) {
+      // Runs exist but every timestamp is unparseable: the lane state is
+      // UNKNOWN, never silently green (rm-1411 fail-closed rule).
+      unknownWorkflows.push({
+        name: workflow.name,
+        path: workflow.path,
+        lastRun: 'unparseable',
+        ageDays: Number.NaN,
+      })
+      continue
+    }
+    const crons = input.schedules?.[workflow.path]
+    const cadenceKnown = crons !== undefined && crons.length > 0
+    const thresholdMs = laneThresholdMs(workflow.path, input.schedules)
     if (latestMs === Number.NEGATIVE_INFINITY) {
       // Never ran: dark as soon as anything was ever pushed.
       if (pushedMs > 0) {
@@ -146,41 +256,62 @@ export function computeDarkness(input: {
       }
       continue
     }
-    const stale = nowMs - latestMs > DARKNESS_THRESHOLD_MS
+    const stale = nowMs - latestMs > thresholdMs
     const owed = pushedMs > latestMs
-    if (stale && owed) {
+    // Cron-known lanes owe runs by cadence alone; unknown-cadence lanes keep
+    // the conservative stale-AND-owed rule.
+    const dark = cadenceKnown ? stale || owed : stale && owed
+    if (dark) {
       darkWorkflows.push({
         name: workflow.name,
         path: workflow.path,
         lastRun: new Date(latestMs).toISOString(),
         ageDays: Math.round(((nowMs - latestMs) / (24 * 60 * 60 * 1000)) * 10) / 10,
+        ...(cadenceKnown
+          ? {thresholdDays: Math.round((thresholdMs / (24 * 60 * 60 * 1000)) * 10) / 10}
+          : {}),
       })
     }
   }
+  const verdict =
+    darkWorkflows.length > 0 ? 'DARK' : unknownWorkflows.length > 0 ? 'UNKNOWN' : 'GREEN'
   return {
-    verdict: darkWorkflows.length > 0 ? 'DARK' : 'GREEN',
+    verdict,
     candidates: candidates.length,
     darkWorkflows,
+    unknownWorkflows,
   }
 }
 
 function repoRoot(): string {
-  return fileURLToPath(new URL('..', import.meta.url))
+  const here = fileURLToPath(new URL('.', import.meta.url))
+  return `${here.split('/scripts/')[0]}/`
 }
 
-/** Read local workflow files and parse their trigger classes. */
-export function readLocalTriggers(): TriggerIndex {
+function readLocalWorkflowFiles(): Record<string, string> {
   const dir = `${repoRoot()}.github/workflows`
   const files: Record<string, string> = {}
   for (const entry of readdirSync(dir)) {
     if (!entry.endsWith('.yaml') && !entry.endsWith('.yml')) continue
     files[entry] = readFileSync(`${dir}/${entry}`, 'utf8')
   }
-  const index = classifyWorkflows(files)
-  // Index keys are bare filenames; API paths are .github/workflows/<name>.
+  return files
+}
+
+export function readLocalTriggers(): TriggerIndex {
+  const index = classifyWorkflows(readLocalWorkflowFiles())
   const reindexed: TriggerIndex = {}
   for (const [name, triggers] of Object.entries(index)) {
     reindexed[`.github/workflows/${name}`] = triggers
+  }
+  return reindexed
+}
+
+export function readLocalSchedules(): Record<string, string[]> {
+  const schedules = extractSchedules(readLocalWorkflowFiles())
+  const reindexed: Record<string, string[]> = {}
+  for (const [name, crons] of Object.entries(schedules)) {
+    reindexed[`.github/workflows/${name}`] = crons
   }
   return reindexed
 }
@@ -196,7 +327,7 @@ interface ApiRuns {
 async function fetchJson<T>(url: string, token: string | undefined): Promise<T> {
   const headers: Record<string, string> = {Accept: 'application/vnd.github+json'}
   if (token !== undefined && token.length > 0) headers.Authorization = `Bearer ${token}`
-  const response = await fetch(url, {headers})
+  const response = await fetch(url, {headers, signal: AbortSignal.timeout(15_000)})
   if (!response.ok) {
     throw new Error(`GET ${url} -> HTTP ${response.status}`)
   }
@@ -209,36 +340,57 @@ async function main(): Promise<number> {
   const token = process.env.ACTIONS_DARKNESS_TOKEN ?? process.env.GITHUB_TOKEN
   try {
     const triggers = readLocalTriggers()
-    const [apiWorkflows, apiRuns, repoInfo] = await Promise.all([
-      fetchJson<ApiWorkflows>(
-        `https://api.github.com/repos/${repo}/actions/workflows?per_page=100`,
+    const schedules = readLocalSchedules()
+    const apiWorkflows = await fetchJson<ApiWorkflows>(
+      `https://api.github.com/repos/${repo}/actions/workflows?per_page=100`,
+      token,
+    )
+    const candidates = apiWorkflows.workflows.filter(w =>
+      (triggers[w.path] ?? []).some(t => PUSH_SCHEDULE_TRIGGERS.has(t)),
+    )
+    // Per-lane latest-run reads: a busy lane can no longer push another
+    // lane's true last run out of a shared fetch window. The owed proxy is
+    // the main head commit date (branch-filtered), not repo-wide pushed_at.
+    const [laneRuns, mainHead] = await Promise.all([
+      Promise.all(
+        candidates.map(async w => {
+          const r = await fetchJson<ApiRuns>(
+            `https://api.github.com/repos/${repo}/actions/workflows/${w.id}/runs?per_page=1`,
+            token,
+          )
+          return r.workflow_runs.map(run => ({workflowId: w.id, createdAt: run.created_at}))
+        }),
+      ),
+      fetchJson<{commit: {committer?: {date?: string}; author?: {date?: string}}}[]>(
+        `https://api.github.com/repos/${repo}/commits?sha=main&per_page=1`,
         token,
       ),
-      fetchJson<ApiRuns>(
-        `https://api.github.com/repos/${repo}/actions/runs?per_page=100`,
-        token,
-      ),
-      fetchJson<{pushed_at: string}>(`https://api.github.com/repos/${repo}`, token),
     ])
+    const runs = laneRuns.flat()
+    const head = mainHead[0]?.commit
+    const pushedAt = head?.committer?.date ?? head?.author?.date ?? '1970-01-01T00:00:00Z'
     const verdict = computeDarkness({
       workflows: apiWorkflows.workflows.map(w => ({id: w.id, path: w.path, name: w.name})),
-      runs: apiRuns.workflow_runs.map(r => ({
-        workflowId: r.workflow_id,
-        createdAt: r.created_at,
-      })),
+      runs,
       triggers,
-      pushedAt: repoInfo.pushed_at,
+      pushedAt,
       now,
+      schedules,
     })
-    const pushedAt = repoInfo.pushed_at
     console.log(
-      `actions-darkness: verdict=${verdict.verdict} repo=${repo} now=${now} pushed_at=${pushedAt} candidates=${verdict.candidates}`,
+      `actions-darkness: verdict=${verdict.verdict} repo=${repo} now=${now} main_head=${pushedAt} candidates=${verdict.candidates}`,
     )
     for (const dark of verdict.darkWorkflows) {
       const age = Number.isFinite(dark.ageDays) ? `${dark.ageDays}d` : 'never-ran'
-      console.log(`  dark: ${dark.name} (${dark.path}) last_run=${dark.lastRun} age=${age}`)
+      const threshold = dark.thresholdDays === undefined ? '' : ` threshold=${dark.thresholdDays}d`
+      console.log(`  dark: ${dark.name} (${dark.path}) last_run=${dark.lastRun} age=${age}${threshold}`)
     }
-    return verdict.verdict === 'DARK' ? 3 : 0
+    for (const unknown of verdict.unknownWorkflows) {
+      console.log(`  unknown: ${unknown.name} (${unknown.path}) last_run=${unknown.lastRun}`)
+    }
+    if (verdict.verdict === 'DARK') return 3
+    if (verdict.verdict === 'UNKNOWN') return 4
+    return 0
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     console.error(`actions-darkness: verdict=UNKNOWN repo=${repo} error=${message}`)

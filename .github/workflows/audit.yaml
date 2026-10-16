@@ -2,9 +2,10 @@
 # run 23d39aa7467e).
 #
 # Why this exists: nothing else watches TRANSITIVE dev dependencies.
-# - Dependabot version updates (.github/dependabot.yml) track direct
-#   dependencies only, so fast-uri (via ajv@8 in the eslint chain) and
-#   undici (via jsdom) have no PR path.
+# - Direct dependencies get audited only at maintenance-cycle pace since the
+#   Dependabot retirement (2026-10-16, rm-1480), and it tracked direct
+#   dependencies only anyway, so fast-uri (via ajv@8 in the eslint chain) and
+#   undici (via jsdom) never had a PR path.
 # - Dependabot SECURITY updates cannot cure a transitive override floor: a
 #   floor the vulnerable version already satisfies pins the advisory open —
 #   proven live 2026-09-30 by fast-uri alerts #29/#30 (both high) staying
