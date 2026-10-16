@@ -1357,12 +1357,21 @@ describe('parseRunSummary', () => {
     }
   })
 
-  it('rejects stream-only status: waiting_for_approval', () => {
+  it('accepts waiting overlay status: waiting_for_approval (1.10+ additive feed)', () => {
     const input = {runId: 'run-1', repo: 'fro-bot/agent', status: 'waiting_for_approval', createdAt: '2026-06-01T00:00:00.000Z'}
     const result = parseRunSummary(input)
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.message).toBe('invalid run summary shape')
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.status).toBe('waiting_for_approval')
+    }
+  })
+
+  it('accepts waiting overlay status: waiting_for_question (1.10+ additive feed)', () => {
+    const input = {runId: 'run-1', repo: 'fro-bot/agent', status: 'waiting_for_question', createdAt: '2026-06-01T00:00:00.000Z'}
+    const result = parseRunSummary(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.status).toBe('waiting_for_question')
     }
   })
 
@@ -1640,12 +1649,26 @@ describe('parseRunSummaryList', () => {
   it('returns empty array when all items are invalid', () => {
     const input = [
       {runId: 'run-1', repo: 'fro-bot/agent', status: 'blocked', createdAt: '2026-06-01T00:00:00.000Z'},
-      {runId: 'run-2', repo: 'fro-bot/agent', status: 'waiting_for_approval', createdAt: '2026-06-01T00:00:00.000Z'},
+      {runId: 'run-2', repo: 'fro-bot/agent', status: 'unknown_status', createdAt: '2026-06-01T00:00:00.000Z'},
     ]
     const result = parseRunSummaryList(input)
     expect(result.success).toBe(true)
     if (result.success) {
       expect(result.data).toHaveLength(0)
+    }
+  })
+
+  it('keeps a waiting overlay run through the list parse (1.10+ additive feed)', () => {
+    const input = [
+      {runId: 'run-1', repo: 'fro-bot/agent', status: 'waiting_for_approval', createdAt: '2026-06-01T00:00:00.000Z'},
+      {runId: 'run-2', repo: 'fro-bot/agent', status: 'waiting_for_question', createdAt: '2026-06-01T01:00:00.000Z'},
+    ]
+    const result = parseRunSummaryList(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data).toHaveLength(2)
+      expect(result.data[0]?.status).toBe('waiting_for_approval')
+      expect(result.data[1]?.status).toBe('waiting_for_question')
     }
   })
 

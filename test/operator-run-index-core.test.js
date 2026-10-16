@@ -106,9 +106,20 @@ describe('parseRunSummaryItem — error paths', () => {
     expect(result.success).toBe(false)
   })
 
-  it('rejects stream-only status: waiting_for_approval', () => {
+  it('keeps a waiting overlay as a run summary: waiting_for_approval (1.10+ additive feed)', () => {
     const result = parseRunSummaryItem(makeValidSummary({status: 'waiting_for_approval'}))
-    expect(result.success).toBe(false)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.status).toBe('waiting_for_approval')
+    }
+  })
+
+  it('keeps a waiting overlay as a run summary: waiting_for_question (1.10+ additive feed)', () => {
+    const result = parseRunSummaryItem(makeValidSummary({status: 'waiting_for_question'}))
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.status).toBe('waiting_for_question')
+    }
   })
 
   it('rejects stream-only status: blocked', () => {
@@ -200,14 +211,21 @@ describe('parseRunSummaryList — cap and dedupe', () => {
   })
 })
 
-describe('VALID_RUN_SUMMARY_STATUSES — exact index-only set', () => {
-  it('contains exactly the five index-only statuses', () => {
-    const expected = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled'])
+describe('VALID_RUN_SUMMARY_STATUSES — exact run-summary set', () => {
+  it('contains exactly the seven run-summary statuses, waiting overlays included (additive 1.10+ feed)', () => {
+    const expected = new Set([
+      'queued',
+      'running',
+      'waiting_for_approval',
+      'waiting_for_question',
+      'succeeded',
+      'failed',
+      'cancelled',
+    ])
     expect(VALID_RUN_SUMMARY_STATUSES).toEqual(expected)
   })
 
   it('does not contain stream-only statuses', () => {
-    expect(VALID_RUN_SUMMARY_STATUSES.has('waiting_for_approval')).toBe(false)
     expect(VALID_RUN_SUMMARY_STATUSES.has('blocked')).toBe(false)
   })
 })
@@ -724,10 +742,18 @@ describe('parser parity — JS parser mirrors vendored TS parser behavior', () =
   })
 
   it('invalid status: JS parser rejects same invalid statuses as TS parser', () => {
-    const invalidStatuses = ['waiting_for_approval', 'blocked', 'unknown', 'RUNNING', '']
+    const invalidStatuses = ['blocked', 'unknown', 'RUNNING', '']
     for (const status of invalidStatuses) {
       const result = parseRunSummaryItem(makeValidSummary({status}))
       expect(result.success, `status "${status}" should be rejected`).toBe(false)
+    }
+  })
+
+  it('waiting overlays: JS parser keeps the same waiting statuses as the TS parser', () => {
+    for (const status of ['waiting_for_approval', 'waiting_for_question']) {
+      const result = parseRunSummaryItem(makeValidSummary({status}))
+      expect(result.success, `status "${status}" should be kept`).toBe(true)
+      if (result.success) expect(result.data.status).toBe(status)
     }
   })
 
@@ -3237,12 +3263,14 @@ describe('question region — fetched cards (renderRunCard)', () => {
     expect(list).toContain('QUESTIONS_ROLE')
   })
 
-  it('regression: the run-summary parser still rejects waiting statuses', () => {
-    for (const status of ['waiting_for_question', 'waiting_for_approval', 'blocked']) {
+  it('regression: the run-summary parser keeps waiting statuses, still rejects blocked', () => {
+    for (const status of ['waiting_for_question', 'waiting_for_approval']) {
       const parsed = parseRunSummaryItem(makeValidSummary({runId: 'run-q-reject-001', status}))
-      expect(parsed.success).toBe(false)
+      expect(parsed.success).toBe(true)
+      if (parsed.success) expect(parsed.data.status).toBe(status)
     }
-    expect(VALID_RUN_SUMMARY_STATUSES.has('waiting_for_question')).toBe(false)
+    expect(parseRunSummaryItem(makeValidSummary({runId: 'run-q-reject-001', status: 'blocked'})).success).toBe(false)
+    expect(VALID_RUN_SUMMARY_STATUSES.has('waiting_for_question')).toBe(true)
   })
 })
 
