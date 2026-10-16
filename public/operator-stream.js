@@ -128,8 +128,12 @@ const VALID_RESET_REASONS = new Set([
   'overflow',
 ])
 
-/** Allowlisted status values — out-of-set values are parse failures. */
-const VALID_STATUSES = new Set([
+/**
+ * Allowlisted status values — out-of-set values are parse failures. Mirrors the
+ * stream vocabulary authority src/gateway/operator-contract/run-status.ts
+ * STREAM_RUN_STATUSES (bound by test/run-status-allowlist-parity.test.ts).
+ */
+export const VALID_STATUSES = new Set([
   'queued',
   'blocked',
   'running',

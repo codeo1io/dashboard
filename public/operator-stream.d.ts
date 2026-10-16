@@ -22,6 +22,8 @@ export declare const RETRY_BASE_MS: number
 export declare const RETRY_FACTOR: number
 export declare const RETRY_MAX_COUNT: number
 export declare const MAX_SSE_BUFFER_BYTES: number
+/** Stream status vocabulary — mirrors run-status.ts STREAM_RUN_STATUSES (see parity test). */
+export declare const VALID_STATUSES: ReadonlySet<string>
 
 /**
  * rm-477: append one decoded read() chunk to the stream buffer, holding a
