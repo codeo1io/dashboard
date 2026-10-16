@@ -99,10 +99,33 @@ function isExcluded(relPath: string): boolean {
   return false
 }
 
+/**
+ * Directory-level exclusion (rm-880 traversal prune). A directory is pruned
+ * only when EVERY file beneath it is excluded by `isExcluded`: any segment
+ * in EXCLUDED_DIRS, the directory's own name in EXCLUDED_DIR_SUFFIXES
+ * (everything below a `dist`/`node_modules`/`coverage` dir is excluded as a
+ * parent suffix), or a prefix rule that matches the directory itself once a
+ * trailing separator is appended (`web/dist/` covers the `web/dist` entry).
+ * Result: the surviving file set is IDENTICAL to the unpruned walk — but
+ * excluded subtrees (`.git/`, `node_modules/`, `.slim/`, `web/dist/`) are
+ * never enumerated, which is what keeps this suite off the cold-suite
+ * 30s-timeout class (rm-879 deferral proved the timeout cost is real).
+ */
+function isExcludedDir(relDir: string): boolean {
+  const segments = relDir.split('/')
+  if (segments.some(s => EXCLUDED_DIRS.has(s))) return true
+  if (segments.some(s => EXCLUDED_DIR_SUFFIXES.includes(s))) return true
+  if (EXCLUDED_PREFIXES.some(p => `${relDir}/`.startsWith(p))) return true
+  return false
+}
+
 function walk(dir: string, files: string[] = []): string[] {
   for (const entry of readdirSync(dir, {withFileTypes: true})) {
     const full = join(dir, entry.name)
     if (entry.isDirectory()) {
+      // rm-880 traversal prune: skip excluded subtrees BEFORE descending —
+      // per-file `isExcluded` stays the authority for surviving files.
+      if (isExcludedDir(relative(repoRoot, full))) continue
       walk(full, files)
     } else if (entry.isFile()) {
       files.push(full)

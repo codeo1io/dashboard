@@ -67,7 +67,7 @@
 
 ### Land fork dependency automation — first-PR proof
 - id: `rm-102` | track: reliability | priority: 90.0 | status: in_progress
-- acceptance: first dependabot-authored PR visible within 14 days of 2026-09-19; grouped updates honored (npm, docker digests, github-actions; `open-pull-requests-limit: 3` for the single serialized runner); `pnpm test` green after the first merged automated bump
+- acceptance: first dependabot-authored PR visible within 14 days of 2026-09-19; grouped updates honored (npm, docker digests, github-actions; `open-pull-requests-limit: 3` for the single serialized runner); `pnpm test` green after the first merged automated bump ; 2026-10-16 truth: Actions suspended repo-scoped since 2026-10-09T01:59Z — zero runs for any event while `/actions/permissions` reads enabled — the 14-day dependabot clause is unmeetable while suspended; day-7 posture re-verified via `gh run list`
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Merge-residue guard test: assert the wiki-writer and renovate exclusions
@@ -107,7 +107,7 @@
 
 ### Gateway contract forward-support: 1.7.0/1.8.0 fields, v0.116.0 401 semantics, and the v0.117.0 absorb riders (grows rm-157)
 - id: `rm-252` | track: reliability | priority: 80.0 | status: in_progress
-- acceptance: the operator contract version accepted extends additively to 1.8.0 (1.6.0/1.7.0/1.8.0); run-status renders checkout-advance provenance and distinguishes workspace-preparation failures from run failures and incomplete invocation (rm-157's acceptance rides here); 401 from a gateway at v0.116.0+ maps to an operator-actionable workspace-unavailable state rather than auth-required; BOTH parsers (src/gateway/operator-sse-reader.ts and public/operator-stream.js — see rm-253's wire-or-fold decision) grow the new fields exactly once; the workflow pin bumps to the absorbed agent version with the riders above
+- acceptance: the operator contract version accepted extends additively to 1.8.0 (1.6.0/1.7.0/1.8.0); run-status renders checkout-advance provenance and distinguishes workspace-preparation failures from run failures and incomplete invocation (rm-157's acceptance rides here); 401 from a gateway at v0.116.0+ maps to an operator-actionable workspace-unavailable state rather than auth-required; BOTH parsers (src/gateway/operator-sse-reader.ts and public/operator-stream.js — see rm-253's wire-or-fold decision) grow the new fields exactly once; the workflow pin bumps to the absorbed agent version with the riders above ; window re-sized 2026-10-16: merge-base 1bcd98a through upstream b16d061 (releases 2026.10.25 through 2026.10.38, 22 commits beyond cf4c9a7) — one execution matrix at rm-876; live-bug cures carried at rm-873/rm-874/rm-875
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Transitive override floors sit below every patched line — fast-uri carries two live high alerts
@@ -122,7 +122,7 @@
 
 ### Tool/security pin refresh (codeql-action digest, pnpm, agent pin)
 - id: `rm-191` | track: reliability | priority: 78.0 | status: in_progress
-- acceptance: all codeql-action refs across .github/workflows equal 2892aa5; package.json packageManager pnpm@11.27.1 with `pnpm install --frozen-lockfile` clean; adopted by cherry-picking upstream commit content with fork exclusions preserved (never a wholesale merge — invariants #3206/#3210), no renovate/wiki-writer paths reintroduced (fork-exclusion-guard test green)
+- acceptance: all codeql-action refs across .github/workflows equal 2892aa5; package.json packageManager pnpm@11.27.1 with `pnpm install --frozen-lockfile` clean; adopted by cherry-picking upstream commit content with fork exclusions preserved (never a wholesale merge — invariants #3206/#3210), no renovate/wiki-writer paths reintroduced (fork-exclusion-guard test green) ; 2026-10-16 digest truth: codeql 24c54180 stale — v4.39.0 = 6f2ac81 (= upstream #635); also stale: setup-node v7.1.0, pnpm/action-setup v6.1.0, setup-qemu v4.4.0, upload-artifact split pin unifies at v7.0.2
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Release pipeline unfreeze — early-exit-awk digest readback SIGPIPEs the producer under pipefail
@@ -722,7 +722,7 @@
 
 ### Toolchain majors window: vitest 5, jsdom 30, pnpm 12 (TS 7 rides rm-133's re-eval); in-range refreshes and the impeccable@4 decision
 - id: `rm-271` | track: reliability | priority: 34.0 | status: in_progress
-- acceptance: one deliberate pass — vitest 5 evaluated on the full suite (46 server files + web) with breaking changes named or the bump declined in the entry; jsdom 30 and pnpm 12 evaluated with their migration notes; impeccable@4 tried against .impeccable/config.json (bump both or record why not); the in-range trio lands as a lockfile refresh rider; no bundled mega-PR — each major is its own landing
+- acceptance: one deliberate pass — vitest 5 evaluated on the full suite (46 server files + web) with breaking changes named or the bump declined in the entry; jsdom 30 and pnpm 12 evaluated with their migration notes; impeccable@4 tried against .impeccable/config.json (bump both or record why not); the in-range trio lands as a lockfile refresh rider; no bundled mega-PR — each major is its own landing ; 2026-10-16 npm truth: vitest 5.0.5, jsdom 30.1.3, pnpm 12.11.2, impeccable 4.5.2, typescript 7.0.2; vite-plugin-pwa 2.0.0 needs a real disposition — `web/vite.config.ts:17-31` injectManifest ships the kill-switch SW
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Pre-gate base-digest and tool-pin sweep ahead of the Monday 2026-10-12 layer
@@ -990,9 +990,52 @@
 - acceptance: one web build per test job (drop the redundant step; pretest stays the single build path) with job time measured before/after; metadata skip counting extended to object-shape failures with a test; the CSRF-400 retry either re-fetches a fresh token via the existing seam before retrying or does not retry token rejections, with a test pinning the chosen behavior; all gates green
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
+<!-- run a103fa90619e (repository-maintenance 7ff5e8b cycle:1) roadmap extension 2026-10-16, attempt 3adc7018: minted rm-873..rm-880, deliberately above all unlanded spool families rm-857..861 / rm-862..865 / rm-866..872 (runs 9d5c156d, fd02ba675b, 75ed4efe, 48f621e31d — overlapping semantics on the #631/#636/#619 ports); first-landed wins: a landing commit gate re-derives id occupancy from origin/main ROADMAP before re-minting and renumbers losers -->
+
+### Push-subscription list wire: port upstream #631 before any v0.122.x gateway faces the fork
+- id: `rm-873` | track: reliability | priority: 95.0 | status: candidate
+- acceptance: GET `/operator/push/subscriptions` parses the gateway's actual wire — a `subscriptions` array with epoch-ms numeric `createdAt`/`updatedAt` behind `isTimestamp`-style guards — replacing the single flat string-date record at `src/gateway/operator-contract/push.ts:156-174` and the `operator-client.ts:761-775` call site; the client picks its own entry by endpoint hash; `web/src/push/reconcile.ts` and `web/src/push/subscribe.ts` consumers see the active subscription instead of a protocol error; the fixture flips from flat record to list wire with the old shape negative-tested; ported against upstream 8470f86 content (PR #631, merged 2026-10-15T08:13Z), never a wholesale merge — cross-family: spool rm-863 and rm-867 claim the same port, first landed wins
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Operator contract 1.11.0: waiting overlays must not silently vanish runs from the index
+- id: `rm-874` | track: reliability | priority: 92.0 | status: candidate
+- acceptance: `src/gateway/operator-contract/run-summary.ts` status union extends with `waiting_for_approval` and `waiting_for_question` (upstream #619 semantics — overlays applied by the gateway on running runs) and a surviving-parse test proves a running run carrying an overlay survives `parseRunSummaryList` instead of the per-item `continue` skip; `version.ts` single-pin flips to 1.11.0 only as one coordinated landing with the gateway deploy (exact-match gate on both sides); upstream `sw.ts`/`sw-notification.ts` hunks excluded per the kill-switch invariant; fork-only modules upstream deleted are reconciled by content, not wholesale
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Approval-click containment: port #636 so prompt clicks stop collapsing the run card
+- id: `rm-875` | track: reliability | priority: 90.0 | status: candidate
+- acceptance: the two `public/operator-stream.js` containers that swallow clicks (approval prompt ~:2626, run-cancel-control ~:2895) receive the containment treatment from upstream 5581a49 (#636) ported over the fork's divergence — port, not cherry-pick; the approval-click test rides; approval and cancel clicks still reach their handlers (click-through tests green); no other operator card lifecycle change
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Absorb-window batch 2026.10.25 through 2026.10.38: one execution matrix, twenty-two dispositions
+- id: `rm-876` | track: reliability | priority: 85.0 | status: candidate
+- acceptance: the 22-commit window (merge-base 1bcd98a through upstream b16d061, releases 2026.10.25 through 2026.10.38) lands as one disposition-matrix landing: live-bug cures #631/#636/#630/#634/#629; contract core #619 with gateway riders #616/#621/#625 and feature #623; chore riders #632/#618/#635/#620/#604; docs #626/#627; #633 and #637 paired (fork lacks `sign-in-recovery.ts` — adopt the end-state in one step or neither); #622 N/A (fork runs no bfra-me renovate); #638 and #619's SW hunks skipped per the kill-switch invariant; open PR #639 (head bbb79d3, `operator-run-index.js` family) re-checked at cut time and folded in if merged; rm-252's window append records the closed frontier
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Landing-pipeline anti-drop tripwire: HEAD must carry everything the batch docs claim
+- id: `rm-877` | track: reliability | priority: 70.0 | status: candidate
+- acceptance: restored `test/roadmap-integrity-guard.test.ts` plus restored `scripts/roadmap-census.ts` assert that every file the current batch docs' gate records claim as delivered exists in HEAD — proven necessary 2026-10-15: tip merge 3e3664c itself dropped 53 files its own batch commit 06396b4 carried (eight guard/test files, `cve-tripwire.yaml`, `lockfile-guard.yaml`, `docs/runbooks/release.md`, ~40 docs) while the rm-678 acceptance at ROADMAP.md:780 still demands the guard green; the census guard re-pins def count and max id so ledger drift fails loud; content-hunk restore rides the rm-857 spool family, first landed wins
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Branch-protection fill re-mint: rm-116 orphaned while the shell persists
+- id: `rm-878` | track: reliability | priority: 66.0 | status: candidate
+- acceptance: the live protection object is filled — required checks = Main job conclusions + CodeQL, strict contexts, admin-enforced — re-probed at implement time (2026-10-16: `required_status_checks.checks` empty, `enforce_admins` false, no reviews); AGENTS.md's two rm-116 references and ROADMAP prose reconcile to this id; the protection object is mutated in place, never deleted and recreated (check-list loss trap)
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Fro Bot workflow state reconciliation: active workflow, empty PAT, stale docs
+- id: `rm-879` | track: reliability | priority: 64.0 | status: candidate
+- acceptance: exactly one of two states holds and is proven live — the workflow is disabled again (via `gh api actions/workflows`, not comments) OR `FRO_BOT_PAT` is provisioned and the non-schedule trigger path is guarded the way `fro-bot.yaml:315-318` guards schedule (the empty-token checkout at :338 fails otherwise — failure spam on every PR/comment the moment Actions resume); `fro-bot.yaml:272` comment and AGENTS.md truthed to the chosen state; cross-family: spool rm-872 claims the same fact, first landed wins
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Reliability micro-batch: prose-residue traversal prune, snapshot-store key-shadow guard, lint-census truth
+- id: `rm-880` | track: reliability | priority: 55.0 | status: candidate
+- acceptance: `test/prose-residue-guard.test.ts` walk() prunes excluded directories during traversal (identical semantics; kills the cold-suite 30s-timeout class); snapshot-store `logPersistProblem` guards its context keys against payload shadowing (`path`/`error` inside `detail`) with a spy test covering the shadow path; lint census truthed to 50 with the two new bracket-group trips at ROADMAP.md:878/:880 backtick-wrapped (rider also carried by the rm-857 spool family — first landed wins); idempotency fallbacks stay owned by the rm-482 rider, not minted here
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+
 ### Node 26 LTS adoption gate (time-gated)
 - id: `rm-139` | track: reliability | priority: 24.0 | status: in_progress
-- acceptance: when 26 promotes to LTS (~late 2026-10): a go/no-go recorded in rm-108's matrix covering engines >=24, the node:24-slim tag choice, the @types/node major, and runner tool-cache impact; adoption, if approved, lands as one reviewed change with all gates green
+- acceptance: when 26 promotes to LTS (~late 2026-10): a go/no-go recorded in rm-108's matrix covering engines >=24, the node:24-slim tag choice, the @types/node major, and runner tool-cache impact; adoption, if approved, lands as one reviewed change with all gates green ; 2026-10-16 schedule truth: v24 maintenance start 2026-10-20, v26 LTS promotion 2026-10-28 (schedule.json); `.slim/clonedeps.json` still pins v0.78.0 (2026-06-26) while adopted behavior runs through v0.122.x and `clonedeps/repos/` is absent from this checkout — clonedeps refresh rides this gate
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Origin validation-residue sweep: cycle-1 batch landing rider
