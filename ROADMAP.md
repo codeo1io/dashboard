@@ -378,7 +378,7 @@
 ### Document the Fro Bot workflow disable state
 - id: `rm-109` | track: reliability | priority: 50.0 | status: implemented 2026-10-16, pending landing (run 40bcd47ae79f4b8497d017757b9d6c4b cycle:1 implement a5865424; AGENTS.md fro-bot paragraph rewritten from live probes — workflow active, repo secrets empty, last run objects 2026-09-17/18 both failure, no run objects since, enablement state declared not-stable-truth with a verify-live recipe; PAT decision recorded-not-mutated (do not provision FRO_BOT_PAT); the 2026-10-09 run-creation silence disclosed with its rm-891 escalation; fro-bot.yaml cron moved off-hour 00:00 -> 02:37 UTC, away from the 04:13 / 05:17 Monday maintenance windows)
 - acceptance: recorded from dashboard ROADMAP.md by campaign ingest
-- evidence: campaign-recorded in dashboard ROADMAP.md
+- evidence: campaign-recorded in dashboard ROADMAP.md; validation closure 2026-10-16 (run 40bcd47ae79f): truth-up landed on the batch tree with dated probes (workflow active, last run 2026-09-18, secret list empty); cron now 02:37 UTC off-hour with a one-line rationale; the provision-or-disable decision is recorded as owner action, not mutated; full-suite mirror green as above; sibling landings on origin/main also touched the fro-bot workflow comment region and the AGENTS paragraph — the landing reconciles by content per the compound record
 
 ### Property-based tests for the SSE parsers and listener ingest
 - id: `rm-144` | track: reliability | priority: 50.0 | status: in_progress
@@ -492,7 +492,7 @@
   - externally blocked on GitHub Support: the evidence line of this def records the escalation reference and, on recovery, the first post-restore run objects with timestamps
   - on recovery the unvalidated-commit backlog is validated per the dark-Actions runbook (rm-1452) before any red-check merge relies on the window
   - no repo-side workaround mints a second validation channel; the runbook stays the interim evidence form
-- evidence: gh run list plus gh api commits since 2026-10-09T02:00:00Z (57 commits, newest run 2026-10-09T01:59:31Z); zero check-runs on HEAD; the Support escalation record (this run's campaign) to be appended on verdict
+- evidence: gh run list plus gh api commits since 2026-10-09T02:00:00Z (57 commits, newest run 2026-10-09T01:59:31Z); zero check-runs on HEAD; the Support escalation record (this run's campaign) to be appended on verdict; 2026-10-16 cycle close (run 40bcd47ae79f compound): outage window still open at the full_tests probe (newest run object 2026-10-09T01:59:31Z; dispatch 422 vs permissions enabled:true, both re-probed this cycle); the cycle's batch validated through the dark-Actions runbook mirror (six Main jobs green, dispatch digest bookends equal); the unvalidated-backlog count is unchanged; recovery-probe recipe and the hosted github_ci_validate debt are recorded in docs/prioritization/2026-10-16-repository-maintenance-cycle-1-compound-run-40bcd47ae79f.md
 
 ### Release-pipeline failure triage: promote-readback exhaustion and build-and-push
 - id: `rm-691` | track: reliability | priority: 45.0 | status: in_progress
@@ -999,7 +999,7 @@
 ### No root ErrorBoundary: a render-time exception unmounts the whole SPA
 - id: `rm-514` | track: reliability | priority: 26.0 | status: implemented 2026-10-16, pending landing (run 40bcd47ae79f4b8497d017757b9d6c4b cycle:1 implement a5865424; NEW web/src/ErrorBoundary.tsx + web/src/ErrorBoundary.test.tsx, boundary wired at web/src/main.tsx wrapping App inside React.StrictMode; digest+reload fallback with zero sensitive detail — the fallback renders a sha256 digest prefix only, the underlying error goes to console diagnostics, never the DOM; 5 focused tests: render-through, fallback shape, no-leak of URLs/repo names/messages, digest stability+distinctness, reload click — RED proven at base 06095e9 in a throwaway worktree (suite fails to resolve the component), GREEN 5/5 on the batch tree; sibling runs 1a261b63dce7 (06396b4 restore) and 83e235f3 carry rival rm-514 shapes — first-landed-wins, losers re-derive at the gate)
 - acceptance: a root ErrorBoundary renders a minimal fallback (error digest + reload affordance, no sensitive detail — server URLs, run ids, repo names stay out of the fallback); a component test pins a throwing view to the fallback instead of a blank document; pnpm test + pnpm check-types green.
-- evidence: campaign-recorded in dashboard ROADMAP.md
+- evidence: campaign-recorded in dashboard ROADMAP.md; validation closure 2026-10-16 (run 40bcd47ae79f): targeted suites green (web pair 16/16, guards 67/67) and full-suite mirror green at the salvage commit — 95 files / 4314 tests, lint rc=0, impeccable detect returned an empty array, actionlint rc=0, dispatch digest ef42d0a7 bookends equal; status moves to Completed only after landing verification on origin/main
 
 ### Server-side GitHub fetches refuse redirects at the transport seam
 - id: `rm-528` | track: reliability | priority: 26.0 | status: in_progress
