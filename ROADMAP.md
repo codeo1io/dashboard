@@ -168,7 +168,7 @@
 ### Absorb fro-bot/agent v0.115.0 (operator-contract drift)
 - id: `rm-157` | track: reliability | priority: 72.0 | status: in_progress
 - acceptance: pin bump to v0.115.0 or later rides a gateway-verified change — GATEWAY_OPERATOR_TRUSTED_PROXIES documented in docs/runbooks/gateway-access.md alongside the proxy topology it assumes, local mirror surfaces (operator-client, sse-reader conformance tests) re-checked against the v0.115.0 contract, full suite plus a live gateway login regression before merge; concrete 1.7.0 surface work (added 2026-09-24, run 41c7d471 roadmap): PINNED_CONTRACT_VERSION -> 1.7.0, parser/Dto plumbing for checkoutProvenance (commit / branch-or-detached / dirty / mid-git-op) and the two new failureKinds, fixture-harness parity fixtures for both new shapes, and the operator run detail rendering the provenance — the release's own payoff: readers see which code a persistent workspace actually ran; the pnpm 11.27.1 rider lands in the same batch
-- evidence: campaign-recorded in dashboard ROADMAP.md
+- evidence: campaign-recorded in dashboard ROADMAP.md; 2026-10-16 rider (run 40bcd47ae79f4b8497d017757b9d6c4b cycle:1 implement a5865424): CI-side slice landed — the fro-bot.yaml workflow agent pin bumped v0.122.1 -> v0.122.3 digest-pinned 7d273ac643c8f9c0dc8615222677693dc337adef (v0.122.3, released 2026-10-15T03:28Z, agent PR #1828 security release: bounds indexed source-map processing, rejects injected URI authority components, patches a Sharp/librsvg vulnerability; tag digest verified first-hand via gh api git/ref/tags/v0.122.3); the deployed-gateway absorb half of this def stays gated on the rm-252 estate verdict
 
 ### Restore client push delivery via a minimal push-only service worker
 - id: `rm-249` | track: reliability | priority: 72.0 | status: in_progress
@@ -376,7 +376,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Document the Fro Bot workflow disable state
-- id: `rm-109` | track: reliability | priority: 50.0 | status: in_progress
+- id: `rm-109` | track: reliability | priority: 50.0 | status: implemented 2026-10-16, pending landing (run 40bcd47ae79f4b8497d017757b9d6c4b cycle:1 implement a5865424; AGENTS.md fro-bot paragraph rewritten from live probes — workflow active, repo secrets empty, last run objects 2026-09-17/18 both failure, no run objects since, enablement state declared not-stable-truth with a verify-live recipe; PAT decision recorded-not-mutated (do not provision FRO_BOT_PAT); the 2026-10-09 run-creation silence disclosed with its rm-891 escalation; fro-bot.yaml cron moved off-hour 00:00 -> 02:37 UTC, away from the 04:13 / 05:17 Monday maintenance windows)
 - acceptance: recorded from dashboard ROADMAP.md by campaign ingest
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -484,6 +484,15 @@
 - id: `rm-842` | track: reliability | priority: 46.0 | status: in_progress
 - acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Actions run-creation silence: fleet-wide GitHub Actions outage, escalated to GitHub Support
+- id: `rm-891` | track: reliability | priority: 46.0 | status: candidate (added 2026-10-16, repository-maintenance cycle:1 run 40bcd47ae79f4b8497d017757b9d6c4b roadmap 441120e5 from assess c11d4899 F1, re-derived at base 06095e9 by implement a5865424; minted clear of the unlanded spool frontier — 2026-10-16 re-probe: wall def max rm-1452 at base, rm-891 unoccupied on both 06095e9 and origin/main 7042635; verified unowned — no def covers Actions run-creation silence)
+- signals: first-hand 2026-10-16 — last repo run object 2026-10-09T01:59:31Z, zero check-runs on HEAD, main.yaml:4-11 triggers intact, 57 commits since 2026-10-09T02:00:00Z landed with no validation runs, the whole scheduled fleet silent (audit / codeql / scorecard weekly + fro-bot daily); workflow-level probes are contradictory, not explanatory — run listing is empty while run-adjacent APIs still answer (the 422 contradiction recorded in rm-1450's status datum), and the fro-bot workflow's own last objects predate the window (2026-09-17/18, both failure)
+- acceptance:
+  - externally blocked on GitHub Support: the evidence line of this def records the escalation reference and, on recovery, the first post-restore run objects with timestamps
+  - on recovery the unvalidated-commit backlog is validated per the dark-Actions runbook (rm-1452) before any red-check merge relies on the window
+  - no repo-side workaround mints a second validation channel; the runbook stays the interim evidence form
+- evidence: gh run list plus gh api commits since 2026-10-09T02:00:00Z (57 commits, newest run 2026-10-09T01:59:31Z); zero check-runs on HEAD; the Support escalation record (this run's campaign) to be appended on verdict
 
 ### Release-pipeline failure triage: promote-readback exhaustion and build-and-push
 - id: `rm-691` | track: reliability | priority: 45.0 | status: in_progress
@@ -988,7 +997,7 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### No root ErrorBoundary: a render-time exception unmounts the whole SPA
-- id: `rm-514` | track: reliability | priority: 26.0 | status: in_progress
+- id: `rm-514` | track: reliability | priority: 26.0 | status: implemented 2026-10-16, pending landing (run 40bcd47ae79f4b8497d017757b9d6c4b cycle:1 implement a5865424; NEW web/src/ErrorBoundary.tsx + web/src/ErrorBoundary.test.tsx, boundary wired at web/src/main.tsx wrapping App inside React.StrictMode; digest+reload fallback with zero sensitive detail — the fallback renders a sha256 digest prefix only, the underlying error goes to console diagnostics, never the DOM; 5 focused tests: render-through, fallback shape, no-leak of URLs/repo names/messages, digest stability+distinctness, reload click — RED proven at base 06095e9 in a throwaway worktree (suite fails to resolve the component), GREEN 5/5 on the batch tree; sibling runs 1a261b63dce7 (06396b4 restore) and 83e235f3 carry rival rm-514 shapes — first-landed-wins, losers re-derive at the gate)
 - acceptance: a root ErrorBoundary renders a minimal fallback (error digest + reload affordance, no sensitive detail — server URLs, run ids, repo names stay out of the fallback); a component test pins a throwing view to the fallback instead of a blank document; pnpm test + pnpm check-types green.
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
