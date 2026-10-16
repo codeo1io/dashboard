@@ -56,7 +56,11 @@ overrides:
   # @opencode-ai/plugin>effect; >=4.2.0 is the patched line
   # (rescued by content from run b4aac9ba / PR #82 via cycle-13;
   # the batch's internal rm-171 numbering collided with landed ids).
-  toml: '>=4.2.0'
+  # Floor raised to 4.3.0 by rm-841 (run 1c814809d084, 2026-10-09) for
+  # upstream #582 parity — the lockfile already resolves toml 4.3.0
+  # (landed with the 2026-10-17 upstream adoption), so this is floor ==
+  # resolution, zero movement.
+  toml: '>=4.3.0'
   # All ten npm-DB undici advisories patch at >=7.29.1 (highs
   # GHSA-rfgv-xxqx-mfg5 + GHSA-w293-vg96-wgc3); the floor deliberately takes
   # the published 7.x tip 7.30.0, not the bare minimum. 7.29.1 itself sits in
@@ -67,7 +71,44 @@ overrides:
   # NEWLY indexed advisory BY DESIGN and the undici 8 + jsdom 30 migration
   # rides rm-271's majors window. undici is dev-transitive via jsdom.
   undici@7: '>=7.30.0 <8.0.0'
-  # upstream 2026.10.17: new advisory floor
+  # 2026-10-06 — both floors below were minted by converging lineages
+  # after the advisory DB moved overnight (the L3 time-varying-DB class the
+  # trivy perl-base wave proved the same cycle): landed run 5e661558's review
+  # repair fccd4229 (review eb452afd finding), run 73d35a6ca2bd's review
+  # f83fb832, and run cfa9f94b's review_fix 8319b391 (independent review
+  # finding 1 fold) independently recorded the same floors, and run
+  # cc4339fe's cycle-1 adoption re-derived the same pair live as its
+  # time-defeat rider (PR #389's audit-0 had already expired once these
+  # advisories hit the DB — audit rc=1 on the adopted cure tree until
+  # exactly these two floors ride; landed 2026-10-07, conflict case
+  # e836a18d); rm-276 convention — floor + GHSA rationale + re-resolve in
+  # the same change. Standing lesson: audit greens expire with the
+  # advisory DB — re-derive at every fold.
+  # RESTORED at the 2026-10-16 integrate of run 1c814809d084 (conflict case
+  # 7a2d16e3): the 2026-10-10 upstream-2026.10.17 adoption merge dropped this
+  # floor while its own resolution note claimed "kept fork's documented
+  # advisory floors" — the candidate lineage still carried it, so the floor
+  # rides back. Resolution 1.2.2 (patched) already satisfies it: zero lock
+  # movement, the override only re-arms the drift guard.
+  # source-map-js is dev-transitive along ~16 paths (@eslint/css-tree, the
+  # @tailwindcss/* chain, vite > postcss); GHSA-68fv-2mgg-jv7q is HIGH
+  # (event-loop DoS; published 2026-09-18, vulnerable >=1.0.0 <1.2.2 — the
+  # patched 1.2.2, published 2026-09-30T14:08Z, is the minimumReleaseAge-mature
+  # tip), indexed into the audit DB only between 2026-10-05 and 2026-10-06 —
+  # AFTER every recorded audit-0 of the 2026-10-05 era.
+  source-map-js: '>=1.2.2 <2.0.0'
+  # katex is dev-transitive via @bfra.me/eslint-config > @eslint/markdown >
+  # micromark-extension-math@3.1.0, which declares ^0.16.0 with no
+  # ^0.18-capable successor; GHSA-238p-pmpm-9mq7 is LOW (vulnerable
+  # >=0.11.0 <0.18.2, patched 0.18.2; the advisory published
+  # 2026-10-05T23:41:05Z — 19 min before run cfa9f94b's full_tests launch).
+  # Cap history: '>=0.18.2 <0.19.0' minted 2026-10-06 as an out-of-range force
+  # (verified inert at lint time — this repo renders no math fences; the
+  # markdown plugin never evaluates them); lifted to <1.0.0 by rm-841 (run
+  # 1c814809d084, 2026-10-09) for upstream #581 parity admitting the patched
+  # katex 0.19.0 — the same cap the 2026-10-10 upstream-2026.10.17 adoption
+  # landed as `katex@0` (upstream's scoped selector form; kept here). The
+  # 0.19.0 resolution is dev-chain only, pnpm audit clean.
   katex@0: '>=0.18.2 <1.0.0'
 
 shamefullyHoist: true
