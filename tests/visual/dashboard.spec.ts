@@ -9,11 +9,19 @@ import AxeBuilder from '@axe-core/playwright'
  *
  * Baseline provenance (rm-142): all three dark baselines are regenerated
  * inside the same pinned container image the visual job runs in —
- * mcr.microsoft.com/playwright:v1.63.0-noble (digest sha256:eff16c30…,
- * 2026-09-22) — so baseline capture and comparison share one deterministic
+ * mcr.microsoft.com/playwright:v1.64.0-noble (digest sha256:06a9939e…,
+ * 2026-10-18) — so baseline capture and comparison share one deterministic
  * render environment. Regen procedure: delete the baseline PNGs, then run
  * `pnpm exec playwright test --update-snapshots` inside that image (the
- * container block in .github/workflows/visual.yaml documents the same).
+ * container block in .github/workflows/visual.yaml documents the same;
+ * equivalently dispatch the visual workflow with `update-baselines` on a
+ * ref carrying this tree and harvest the `visual-baselines` artifact).
+ * 2026-10-18 regen (run 6f9b600f full_tests): the operator dark baseline
+ * went stale on two axes — the 1.63→1.64 image bump (rm-142 lockstep
+ * repair on main, which regenerates baselines our base predates) and this
+ * candidate's footer release-version element — and was re-captured via
+ * that dispatch route on the validation tree (runner-captured, not
+ * workstation-captured, per the rm-142 cloud-font-stack lesson).
  * Axe: fails only on `critical`/`serious` impact violations (moderate/minor are
  * logged for visibility). Any pre-existing fixture-page violations are scoped
  * or disabled inline with a justification — see `axeCommon()` below.

@@ -13,7 +13,7 @@
 # --platform flag and COPY cannot express deletions, so this is the minimal
 # target-executed step the design allows — see the rm-558 CI-time note in
 # .github/workflows/release.yaml).
-ARG NODE_IMAGE=node:24-trixie-slim@sha256:173f125896c3087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6
+ARG NODE_IMAGE=node:24-trixie-slim@sha256:7f486cabe892bff8fef04c0f7da8dba84a560be3e4e2740b7a86afc57ebec315
 
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS builder
 
@@ -32,6 +32,19 @@ RUN pnpm install --frozen-lockfile
 COPY web/ ./web/
 
 # Build the SPA — emits hashed assets to web/dist/
+# #641 absorb (rm-1467): bake the release version into the client at build
+# time (footer display). Fork note (independent_review fix 2026-10-18): the
+# release job computes the next calver BEFORE this build (upstream-identical
+# Compute step) and selects what gets baked by publication provisioning —
+# the calver when the release App is provisioned (the tag is minted right
+# after the build, so the footer's release-notes deep link resolves),
+# sha-<short> otherwise (no App: create-tag is skipped while :latest still
+# promotes, so a calver would never be minted — the footer link would 404
+# and builds between tags would share one version string; the sha renders
+# as plain text with no link). See the bake-version step in
+# .github/workflows/release.yaml. Local/pnpm builds default to 'dev'.
+ARG DASHBOARD_VERSION=dev
+ENV VITE_DASHBOARD_VERSION=$DASHBOARD_VERSION
 RUN pnpm build:web
 
 # ── Production dependency stage ───────────────────────────────────────────────
