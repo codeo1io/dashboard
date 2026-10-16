@@ -12,6 +12,7 @@ import {
   INITIAL_RECONCILE_SWEEP_CACHE,
   resubscribeStaleKey,
   runReconcileSweep,
+  selectSubscriptionMetadataFromWire,
   subscribeOptIn,
   unsubscribeOptOut,
 } from './subscribe.ts'
@@ -1350,5 +1351,69 @@ describe('rm-264: abort windows unsubscribe the local subscription', () => {
     expect(outcome).toEqual({kind: 'aborted'})
     expect(newSubscription.unsubscribeMock).toHaveBeenCalledTimes(1)
     expect(pushClient.subscribePush).not.toHaveBeenCalled()
+  })
+})
+
+describe('selectSubscriptionMetadataFromWire (#631 dual-shape defense)', () => {
+  const FLAT: PushSubscriptionMetadata = {
+    endpointHash: 'a'.repeat(64),
+    keyVersion: 'v1',
+    active: true,
+    createdAt: '2026-07-01T10:00:00.000Z',
+    updatedAt: '2026-07-01T10:00:00.000Z',
+  }
+
+  it('parses the list envelope and normalizes epoch-ms dates to ISO strings', () => {
+    const out = selectSubscriptionMetadataFromWire(
+      {
+        subscriptions: [
+          {
+            endpointHash: 'b'.repeat(64),
+            keyVersion: 'v1',
+            active: true,
+            createdAt: 1_767_261_600_000,
+            updatedAt: 1_767_261_700_000,
+          },
+        ],
+      },
+      undefined,
+    )
+    expect(out?.endpointHash).toBe('b'.repeat(64))
+    expect(out?.createdAt).toBe(new Date(1_767_261_600_000).toISOString())
+    expect(out?.updatedAt).toBe(new Date(1_767_261_700_000).toISOString())
+  })
+
+  it('selects the entry matching the local endpoint hash', () => {
+    const local = 'b'.repeat(64)
+    const out = selectSubscriptionMetadataFromWire(
+      {
+        subscriptions: [FLAT, {...FLAT, endpointHash: local, keyVersion: 'v2'}],
+      },
+      local,
+    )
+    expect(out?.endpointHash).toBe(local)
+    expect(out?.keyVersion).toBe('v2')
+  })
+
+  it('falls back to the first valid entry on hash mismatch so derivePushHandoffState keeps its authoritative join', () => {
+    const out = selectSubscriptionMetadataFromWire({subscriptions: [FLAT]}, 'ff'.repeat(32))
+    expect(out?.endpointHash).toBe(FLAT.endpointHash)
+  })
+
+  it('drops invalid entries and returns undefined when nothing valid remains', () => {
+    const out = selectSubscriptionMetadataFromWire(
+      {subscriptions: [{nope: true}, null, 7]},
+      undefined,
+    )
+    expect(out).toBeUndefined()
+  })
+
+  it('passes the legacy flat record through unchanged (hash join stays downstream)', () => {
+    const out = selectSubscriptionMetadataFromWire(FLAT, 'mismatch-hash')
+    expect(out).toStrictEqual(FLAT)
+  })
+
+  it('yields undefined for the legacy empty-object body', () => {
+    expect(selectSubscriptionMetadataFromWire({}, undefined)).toBeUndefined()
   })
 })

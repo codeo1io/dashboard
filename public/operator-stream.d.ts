@@ -874,7 +874,7 @@ export declare function resetBootstrapState(): void
 // ---------------------------------------------------------------------------
 
 /** Browser-direct approval client factory. Returns refreshCsrf/decideRunApproval/listRunApprovals. */
-export declare function buildApprovalClient(opts?: {readonly endpointBase?: string; readonly fixtureSessionId?: string}): ApprovalClient
+export declare function buildApprovalClient(opts?: {readonly endpointBase?: string; readonly fixtureSessionId?: string; readonly timeoutMs?: number}): ApprovalClient
 
 /**
  * Browser-direct question client factory. Shares the approval client's CSRF fetch, but classifies a 400
@@ -968,6 +968,7 @@ export declare function buildCancelClient(opts?: {
   readonly endpointBase?: string
   readonly fixtureSessionId?: string
   readonly logger?: CancelClientLogger
+  readonly timeoutMs?: number
 }): CancelControlClient
 
 /**

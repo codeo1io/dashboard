@@ -101,6 +101,17 @@ function MonitoringBoard({data}: {data: MonitoringData}) {
         </div>
       )}
 
+      {/* rm-156/rm-863: surface the server's refresh-watchdog signal — the
+          last refresh exceeded its ceiling, so the grid may lag even though
+          it is not formally stale yet. */}
+      {data.refreshDegraded && (
+        <div data-testid="monitoring-refresh-degraded-banner" className="operator-warning-panel" role="status">
+          Data refresh is degraded
+          {data.refreshDurationMs === null ? '' : ` — the last refresh took ${(data.refreshDurationMs / 1000).toFixed(1)}s`}
+          . Recent changes may be delayed.
+        </div>
+      )}
+
       {redRepos.length === 0 ? (
         <div data-testid="monitoring-all-clear" className="operator-empty-state">
           <div className="operator-empty-icon" aria-hidden="true" style={{opacity: 0.2}}>✓</div>

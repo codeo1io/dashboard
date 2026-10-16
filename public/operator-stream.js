@@ -2022,8 +2022,12 @@ export const APPROVAL_FETCH_TIMEOUT_MS = 10_000
 export function buildApprovalClient(opts) {
   const endpointBase = opts?.endpointBase ?? '/operator'
   const fixtureSessionId = opts?.fixtureSessionId
+  // Test seam (rm-594 flake rider): callers may shrink the per-fetch timeout
+  // so wall-clock bound tests stop sleeping the real 10s budget; production
+  // callers omit it and get APPROVAL_FETCH_TIMEOUT_MS unchanged.
+  const fetchTimeoutMs = opts?.timeoutMs ?? APPROVAL_FETCH_TIMEOUT_MS
   const withFixture = url => withFixtureParam(fixtureSessionId, url)
-  const getCsrf = async () => refreshCsrf(endpointBase, fixtureSessionId, APPROVAL_FETCH_TIMEOUT_MS)
+  const getCsrf = async () => refreshCsrf(endpointBase, fixtureSessionId, fetchTimeoutMs)
 
   /**
    * POST a decision for a pending approval.
@@ -2063,7 +2067,7 @@ export function buildApprovalClient(opts) {
 
     let res
     try {
-      res = await browserFetch(path, makeInit(csrfToken), APPROVAL_FETCH_TIMEOUT_MS)
+      res = await browserFetch(path, makeInit(csrfToken), fetchTimeoutMs)
     } catch {
       return {success: false, error: {kind: 'network'}}
     }
@@ -2077,7 +2081,7 @@ export function buildApprovalClient(opts) {
           : {success: false, error: {kind: 'network'}}
       }
       try {
-        res = await browserFetch(path, makeInit(retrycsrfResult.data.csrfToken), APPROVAL_FETCH_TIMEOUT_MS)
+        res = await browserFetch(path, makeInit(retrycsrfResult.data.csrfToken), fetchTimeoutMs)
       } catch {
         return {success: false, error: {kind: 'network'}}
       }
@@ -2114,7 +2118,7 @@ export function buildApprovalClient(opts) {
       const res = await browserFetch(
         withFixture(`${endpointBase}/runs/${encodeURIComponent(runId)}/approvals`),
         {headers: {'content-type': 'application/json'}},
-        APPROVAL_FETCH_TIMEOUT_MS,
+        fetchTimeoutMs,
       )
       if (!res.ok) return {success: false, error: {kind: 'http', status: res.status}}
       const data = await res.json()
@@ -2488,9 +2492,13 @@ export function buildCancelClient(opts) {
   const endpointBase = opts?.endpointBase ?? '/operator'
   const fixtureSessionId = opts?.fixtureSessionId
   const logger = opts?.logger
+  // Test seam (rm-594 flake rider, mirrors buildApprovalClient): shrink the
+  // per-fetch timeout in wall-clock bound tests; production keeps
+  // CANCEL_FETCH_TIMEOUT_MS.
+  const fetchTimeoutMs = opts?.timeoutMs ?? CANCEL_FETCH_TIMEOUT_MS
 
   const withFixture = url => withFixtureParam(fixtureSessionId, url)
-  const timedFetch = async (input, init) => browserFetch(input, init, CANCEL_FETCH_TIMEOUT_MS)
+  const timedFetch = async (input, init) => browserFetch(input, init, fetchTimeoutMs)
 
   const ROUTE_TEMPLATE = '/operator/runs/:runId/cancel'
   const CSRF_ROUTE_TEMPLATE = '/operator/session/csrf'
@@ -2500,7 +2508,7 @@ export function buildCancelClient(opts) {
    * CANCEL_FETCH_TIMEOUT_MS, with each failure logged by static route template only.
    */
   async function getCsrf() {
-    const result = await refreshCsrf(endpointBase, fixtureSessionId, CANCEL_FETCH_TIMEOUT_MS)
+    const result = await refreshCsrf(endpointBase, fixtureSessionId, fetchTimeoutMs)
     if (!result.success) {
       const {error} = result
       if (error.kind === 'http') {

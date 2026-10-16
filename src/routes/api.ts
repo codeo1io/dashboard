@@ -90,8 +90,15 @@ function toMonitoringDto(snapshot: AggregatorSnapshot): MonitoringDto {
 export function buildApiRouter(getSnapshot?: SnapshotProvider): Hono {
   const api = new Hono()
 
+  // rm-599: liveness only — {ok:true} is the whole contract (the legacy
+  // always-null lastFetch/rateLimit fields are dropped; they were never
+  // populated). no-store so a shared/CDN cache can never serve a stale
+  // health verdict. The acceptance's "degraded (503) shape" does not exist
+  // for healthz: the route is an unconditional 200 liveness probe — snapshot
+  // freshness is /api/monitoring's concern — so only the 200 shape is pinned.
   api.get('/healthz', c => {
-    return c.json({ok: true, lastFetch: null, rateLimit: null})
+    c.header('Cache-Control', 'no-store')
+    return c.json({ok: true})
   })
 
   /**

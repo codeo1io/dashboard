@@ -170,3 +170,68 @@ export function parsePushSubscriptionMetadata(input: unknown): Result<PushSubscr
 
   return ok(metadata)
 }
+
+/** Known coarse inactive reasons on the list wire; unknown values are dropped from an otherwise-valid entry, never fatal. */
+const PUSH_INACTIVE_REASONS: ReadonlySet<string> = new Set(['unsubscribed', 'dead', 'revoked', 'session-revoked'])
+
+/** Normalize a wire date to the canonical ISO-string form; undefined marks the entry invalid. */
+function toIsoDateString(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString()
+}
+
+/** Normalize one list entry (epoch-ms tolerant); invalid entries yield undefined and are dropped. */
+function normalizePushSubscriptionEntry(input: unknown): PushSubscriptionMetadata | undefined {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) return undefined
+  const record: Record<string, unknown> = {...(input as Record<string, unknown>)}
+
+  const createdAt = toIsoDateString(record.createdAt)
+  if (createdAt !== undefined) record.createdAt = createdAt
+  const updatedAt = toIsoDateString(record.updatedAt)
+  if (updatedAt !== undefined) record.updatedAt = updatedAt
+
+  if (
+    typeof record.inactiveReason === 'string' &&
+    !PUSH_INACTIVE_REASONS.has(record.inactiveReason)
+  ) {
+    delete record.inactiveReason
+  }
+
+  if (hasValidPushSubscriptionMetadataShape(record) === false) return undefined
+  const metadata: PushSubscriptionMetadata = {
+    endpointHash: record.endpointHash,
+    keyVersion: record.keyVersion,
+    active: record.active,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    ...('inactiveReason' in record ? {inactiveReason: record.inactiveReason} : {}),
+  }
+  return metadata
+}
+
+/**
+ * Dual-shape parse defense for GET /operator/push/subscriptions (gateway
+ * wire drift, upstream #631): the current gateway returns a
+ * `{subscriptions:[...]}` envelope whose createdAt/updatedAt are epoch
+ * milliseconds; older gateways return the flat metadata record (ISO date
+ * strings) or an empty object. Both shapes are accepted and every entry is
+ * normalized to the canonical `PushSubscriptionMetadata` (ISO date strings)
+ * so consumers stay wire-agnostic. Invalid entries are dropped, never
+ * fatal; a non-list body falls back to the flat-record parse (yielding an
+ * empty array for the legacy empty-object "no subscription" response).
+ */
+export function parsePushSubscriptionListResponse(input: unknown): readonly PushSubscriptionMetadata[] {
+  const entries: readonly unknown[] =
+    typeof input === 'object' && input !== null && Array.isArray((input as {subscriptions?: unknown}).subscriptions)
+      ? (input as {subscriptions: readonly unknown[]}).subscriptions
+      : [input]
+
+  const parsed: PushSubscriptionMetadata[] = []
+  for (const entry of entries) {
+    const metadata = normalizePushSubscriptionEntry(entry)
+    if (metadata !== undefined) parsed.push(metadata)
+  }
+  return parsed
+}

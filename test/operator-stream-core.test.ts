@@ -3544,7 +3544,8 @@ describe('buildCancelClient — cancelRun', () => {
         reject(err)
       })
     }))
-    const client = buildCancelClient()
+    // rm-594 flake rider: injected small timeout instead of the real 10s cancel budget.
+    const client = buildCancelClient({timeoutMs: 50})
     const resultPromise = client.cancelRun('run-001', 'idem-key-abc', 'csrf-token-abc')
     // Simulate the timeout firing by aborting via a real AbortController the
     // fake fetch listens to — buildCancelClient itself wires AbortSignal.timeout,
@@ -3554,7 +3555,7 @@ describe('buildCancelClient — cancelRun', () => {
     if (!result.success) {
       expect(result.error.kind).toBe('network')
     }
-  }, 15_000)
+  })
 
   it('error: HTTP 400 triggers exactly ONE retry with the SAME idempotency key', async () => {
     const fetchCalls: {url: string; init: RequestInit}[] = []
@@ -11581,13 +11582,16 @@ describe('buildApprovalClient — wall-clock fetch bound (rm-594)', () => {
         reject(err)
       })
     }))
-    const client = buildApprovalClient()
+    // rm-594 flake rider: injected small timeout instead of sleeping the
+    // real 10s budget (the 15s vitest cap is what flaked red under load at
+    // 15.584s on 2026-10-15).
+    const client = buildApprovalClient({timeoutMs: 50})
     const result = await client.refreshCsrf()
     expect(result.success).toBe(false)
     if (!result.success) {
       expect(result.error?.kind).toBe('network')
     }
-  }, 15_000)
+  })
 
   it('a never-resolving decide POST (csrf fetch healthy) hits the bound and maps to a network error — the operator is not stranded with every control disabled', async () => {
     vi.stubGlobal('fetch', async (input: string, init?: RequestInit) => {
@@ -11602,13 +11606,13 @@ describe('buildApprovalClient — wall-clock fetch bound (rm-594)', () => {
         })
       })
     })
-    const client = buildApprovalClient()
+    const client = buildApprovalClient({timeoutMs: 50})
     const result = await client.decideRunApproval('run-001', 'req-001', 'once', 'idem-key-abc')
     expect(result.success).toBe(false)
     if (!result.success) {
       expect(result.error?.kind).toBe('network')
     }
-  }, 15_000)
+  })
 })
 
 describe('connection lifecycle — stranded connections abort (rm-261)', () => {

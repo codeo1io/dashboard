@@ -650,7 +650,10 @@ describe('/api/healthz remains public', () => {
     const res = await app.request('/api/healthz')
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body).toEqual({ok: true, lastFetch: null, rateLimit: null})
+    // rm-599: {ok:true} only — the dead always-null lastFetch/rateLimit DTO
+    // fields are dropped; the body is never cacheable.
+    expect(body).toEqual({ok: true})
+    expect(res.headers.get('cache-control')).toBe('no-store')
   })
 })
 
