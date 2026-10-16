@@ -162,6 +162,13 @@ it. Identifiers you may see in `src/server.ts` such as `RATE_LIMIT_MAX`, `RATE_L
 `RATE_LIMIT_MAX_PER_CLASS`, and `RATE_LIMIT_WINDOW_MS` are code constants (the per-class defaults
 the three `RATE_LIMIT_MAX_*` variables override), not environment variables.
 
+Every 429 the shared limiter emits carries a `Retry-After` response header: the integer number of
+seconds (ceiling) until the client's fixed window resets, clamped to at least 1 and never more
+than the full 60s window (rm-741). The budgets are per class but the window is shared across the
+three classes per client, so the reset time is a property of the client key, not of the class that
+tripped. A capacity fail-closed denial under `RATE_LIMIT_MAX_KEYS` admission (no window state for
+the denied key) answers the minimal 1 second.
+
 ## Development
 
 ```sh
