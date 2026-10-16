@@ -20,6 +20,7 @@ import type {
   QuestionListResult,
   QuestionReconcileEvent,
   RunEntry,
+  RunSummaryStatus,
   StreamHandle,
   StreamState,
 } from '../public/operator-stream.js'
@@ -38,6 +39,7 @@ import {
   CHECKOUT_PROVENANCE_LABELS,
   CHECKOUT_REFUSAL_REASON_LABELS,
   CHECKOUT_UPDATE_FAILURE_REASON_LABELS,
+  clearFinishedRuns,
   FAILURE_REASON_LABELS,
   fillLabelTemplate,
   FIRST_FRAME_TIMEOUT_MS,
@@ -49,6 +51,7 @@ import {
   getQuestionPageStore,
   hasOpenApprovals,
   hasOpenQuestions,
+  hasUsableFinishedRun,
   initOperatorStream,
   MAX_APPROVAL_TOMBSTONES,
   MAX_OPEN_APPROVALS,
@@ -59,6 +62,7 @@ import {
   parseSseFrame,
   PHASE_TO_WEB_STATUS,
   PINNED_CONTRACT_VERSION,
+  pruneFinishedRuns,
   QUESTION_CLAIM_RECHECK_DELAYS_MS,
   QUESTION_DECISION_STATES,
   QUESTION_FETCH_TIMEOUT_MS,
@@ -71,6 +75,7 @@ import {
   RETRY_FACTOR,
   RETRY_MAX_COUNT,
   sanitizeCheckoutText,
+  takeUsableFinishedRun,
   toSafeRunView,
 } from '../public/operator-stream.js'
 import {
@@ -11944,5 +11949,902 @@ describe('initOperatorStream — start time on a launch-seeded card', () => {
     expect(b.timeEl.getAttribute('datetime')).toBe(bStartedAt)
     expect(a.timeEl.getAttribute('datetime')).toBe(aStartedAt)
     expect(a.timeEl.textContent).toBe('2 hours ago')
+  })
+})
+
+// ===========================================================================
+// Finished-run store — a terminal card's displayed result, kept in memory
+// ===========================================================================
+
+const FC_READY = `event: ready\ndata: ${JSON.stringify({contractVersion: PINNED_CONTRACT_VERSION})}\n\n`
+const FC_PHASES = {running: 'EXECUTING', succeeded: 'COMPLETED', failed: 'FAILED', cancelled: 'CANCELLED'} as const
+const FC_MAX_OUTPUT = 256_000
+
+const fcHandles: StreamHandle[] = []
+
+const fcStatus = (runId: string, status: keyof typeof FC_PHASES, extra: Record<string, unknown> = {}) =>
+  `event: status\ndata: ${JSON.stringify(ckStatusPayload({runId, status, phase: FC_PHASES[status], ...extra}))}\n\n`
+
+const fcOutput = (runId: string, text: string, opts: {final?: boolean; seq?: number; droppedCount?: number} = {}) =>
+  `event: output\ndata: ${JSON.stringify({runId, text, final: opts.final ?? true, seq: opts.seq ?? 1, ...(opts.droppedCount === undefined ? {} : {droppedCount: opts.droppedCount})})}\n\n`
+
+const fcReset = (runId: string, reason: string) =>
+  `event: reset\ndata: ${JSON.stringify({runId, reason})}\n\n`
+
+/** Open a stream on fake timers; `push` feeds the live connection and lets the frames settle. */
+async function fcOpen(runId: string, opts: {summaryStatus?: RunSummaryStatus; fixtureSessionId?: string; elements?: Record<string, unknown>} = {}) {
+  const controllers: ReadableStreamDefaultController<Uint8Array>[] = []
+  const encoder = new TextEncoder()
+  vi.stubGlobal('fetch', async () => ({
+    ok: true,
+    status: 200,
+    headers: {get: () => 'text/event-stream'},
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        controllers.push(controller)
+        controller.enqueue(encoder.encode(FC_READY))
+      },
+    }),
+  }))
+  const handle = initOperatorStream({
+    runId,
+    statusEl: makeFakeEl('span') as never,
+    noticeEl: makeFakeEl('div') as never,
+    ...(opts.summaryStatus === undefined ? {} : {summaryStatus: opts.summaryStatus}),
+    ...(opts.fixtureSessionId === undefined ? {} : {fixtureSessionId: opts.fixtureSessionId}),
+    ...opts.elements,
+  })
+  fcHandles.push(handle)
+  await vi.advanceTimersByTimeAsync(0)
+  return {
+    handle,
+    push: async (...chunks: string[]) => {
+      controllers.at(-1)?.enqueue(encoder.encode(chunks.join('')))
+      await vi.advanceTimersByTimeAsync(0)
+    },
+    end: async () => {
+      controllers.at(-1)?.close()
+      await vi.advanceTimersByTimeAsync(0)
+    },
+  }
+}
+
+/** Stream a run to a terminal status after a final output frame, then leave it open. */
+async function fcFinish(
+  runId: string,
+  opts: {text?: string; status?: 'succeeded' | 'failed' | 'cancelled'; fixtureSessionId?: string; extra?: Record<string, unknown>} = {},
+) {
+  const h = await fcOpen(runId, opts.fixtureSessionId === undefined ? {} : {fixtureSessionId: opts.fixtureSessionId})
+  await h.push(fcOutput(runId, opts.text ?? 'done'), fcStatus(runId, opts.status ?? 'succeeded', opts.extra))
+  return h
+}
+
+const fcRunId = (index: number) => `run-fc-${String(index).padStart(3, '0')}`
+
+/**
+ * The stored record for the run, whatever terminal status it holds, or undefined. It goes through
+ * `takeUsableFinishedRun`, so a hit bumps recency exactly as the runtime's own take does.
+ */
+function fcRecord(runId: string, fixtureSessionId?: string) {
+  for (const status of ['succeeded', 'failed', 'cancelled']) {
+    const record = takeUsableFinishedRun(runId, status, fixtureSessionId)
+    if (record !== undefined) return record
+  }
+  return undefined
+}
+
+describe('finished-run store — recording', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    clearFinishedRuns()
+  })
+  afterEach(() => {
+    for (const handle of fcHandles.splice(0)) handle.close()
+    clearFinishedRuns()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('records a succeeded run with exactly the displayed-result keys', async () => {
+    await fcFinish('run-fc-ok', {text: 'all good'})
+
+    const record = fcRecord('run-fc-ok')
+    expect(record).toEqual({
+      runId: 'run-fc-ok',
+      status: 'succeeded',
+      terminal: true,
+      phase: 'COMPLETED',
+      stale: false,
+      startedAt: '2026-10-06T10:00:00Z',
+      outputText: 'all good',
+      outputTruncated: false,
+      outputCoalesced: false,
+    })
+    expect(Object.keys(record ?? {}).toSorted()).toEqual(
+      ['outputCoalesced', 'outputText', 'outputTruncated', 'phase', 'runId', 'stale', 'startedAt', 'status', 'terminal'],
+    )
+  })
+
+  it('records a failed run with its known reason label', async () => {
+    await fcFinish('run-fc-bad', {status: 'failed', extra: {failureKind: 'session-error'}})
+
+    const record = fcRecord('run-fc-bad')
+    expect(record?.status).toBe('failed')
+    expect(record?.terminal).toBe(true)
+    expect(record?.reasonLabel).toBe(FAILURE_REASON_LABELS['session-error'])
+    expect(Object.keys(record ?? {}).toSorted()).toEqual(
+      ['outputCoalesced', 'outputText', 'outputTruncated', 'phase', 'reasonLabel', 'runId', 'stale', 'startedAt', 'status', 'terminal'],
+    )
+  })
+
+  it('records a failed run without a reason when the frame carried none', async () => {
+    await fcFinish('run-fc-bad2', {status: 'failed'})
+
+    expect(Object.keys(fcRecord('run-fc-bad2') ?? {})).not.toContain('reasonLabel')
+  })
+
+  it('records a cancelled run as terminal', async () => {
+    await fcFinish('run-fc-stop', {status: 'cancelled'})
+
+    const record = fcRecord('run-fc-stop')
+    expect(record?.status).toBe('cancelled')
+    expect(record?.terminal).toBe(true)
+    expect(record?.phase).toBe('CANCELLED')
+  })
+
+  it('records the coalesced flag from the output frames', async () => {
+    const h = await fcOpen('run-fc-co')
+    await h.push(fcOutput('run-fc-co', 'part', {final: false, seq: 1, droppedCount: 2}), fcOutput('run-fc-co', 'whole', {seq: 4}), fcStatus('run-fc-co', 'succeeded'))
+
+    expect(fcRecord('run-fc-co')).toMatchObject({outputText: 'whole', outputCoalesced: true, outputTruncated: false})
+  })
+
+  it('records the checkout provenance a terminal run displayed, as a frozen copy', async () => {
+    await fcFinish('run-fc-ck', {extra: {checkoutProvenance: ckObserved()}})
+
+    const record = fcRecord('run-fc-ck')
+    expect(record?.checkoutProvenance).toMatchObject({kind: 'observed', head: {kind: 'attached', branch: 'fixture-main'}, worktree: {kind: 'clean'}})
+    expect(Object.keys(record ?? {})).not.toContain('checkoutPreparation')
+    const provenance = record?.checkoutProvenance as unknown as {head: object; worktree: object; remote: object}
+    for (const part of [provenance, provenance.head, provenance.worktree, provenance.remote]) expect(Object.isFrozen(part)).toBe(true)
+  })
+
+  it('records the checkout preparation a failed run displayed, as a frozen copy', async () => {
+    await fcFinish('run-fc-prep', {
+      status: 'failed',
+      extra: {checkoutPreparation: {outcome: 'refused', reason: 'obstructed', obstructions: [{path: 'fixture-path', kind: 'exact-conflict'}]}},
+    })
+
+    const record = fcRecord('run-fc-prep')
+    expect(record?.checkoutPreparation).toMatchObject({outcome: 'refused', reason: 'obstructed'})
+    expect(Object.keys(record ?? {})).not.toContain('checkoutProvenance')
+    const preparation = record?.checkoutPreparation as unknown as {obstructions: object[]}
+    expect(Object.isFrozen(preparation)).toBe(true)
+    expect(Object.isFrozen(preparation.obstructions)).toBe(true)
+    expect(Object.isFrozen(preparation.obstructions[0])).toBe(true)
+  })
+
+  it('freezes the record and never carries approval, question, sequence or cancel state', async () => {
+    const h = await fcOpen('run-fc-fz')
+    await h.push(
+      `event: approval\ndata: ${JSON.stringify({runId: 'run-fc-fz', requestID: 'req-1', permission: 'bash', settled: false})}\n\n`,
+      fcOutput('run-fc-fz', 'x'),
+      fcStatus('run-fc-fz', 'succeeded'),
+    )
+
+    const record = fcRecord('run-fc-fz')
+    expect(Object.isFrozen(record)).toBe(true)
+    for (const key of ['approvalOpenPrompts', 'approvalTombstones', 'questionOpen', 'questionClaimedExempt', 'cancelInFlight', 'outputSeq', 'outputFinal']) {
+      expect(Object.keys(record ?? {})).not.toContain(key)
+    }
+  })
+
+  it('records the "output no longer available" result for a no-snapshot reset with a terminal summary', async () => {
+    const h = await fcOpen('run-fc-gone', {summaryStatus: 'succeeded'})
+    await h.push(fcReset('run-fc-gone', 'no-snapshot'))
+
+    const record = fcRecord('run-fc-gone')
+    expect(record).toEqual({
+      runId: 'run-fc-gone',
+      status: 'succeeded',
+      terminal: true,
+      phase: '',
+      stale: false,
+      startedAt: '',
+      outputUnavailable: true,
+      outputTruncated: false,
+      outputCoalesced: false,
+    })
+  })
+
+  it('records the unavailable result for a terminal status after a no-snapshot reset with no output', async () => {
+    const h = await fcOpen('run-fc-late')
+    await h.push(fcReset('run-fc-late', 'no-snapshot'), fcStatus('run-fc-late', 'failed'))
+
+    expect(fcRecord('run-fc-late')).toMatchObject({status: 'failed', outputUnavailable: true})
+  })
+
+  it('records nothing for a no-snapshot reset on a run of unknown state', async () => {
+    const h = await fcOpen('run-fc-unk')
+    await h.push(fcReset('run-fc-unk', 'no-snapshot'))
+
+    expect(fcRecord('run-fc-unk')).toBeUndefined()
+  })
+
+  it('records nothing for a no-snapshot reset when the summary status is not terminal', async () => {
+    const h = await fcOpen('run-fc-run', {summaryStatus: 'running'})
+    await h.push(fcReset('run-fc-run', 'no-snapshot'))
+
+    expect(fcRecord('run-fc-run')).toBeUndefined()
+  })
+
+  it('records nothing for a terminal reset with no status frame', async () => {
+    const h = await fcOpen('run-fc-rst')
+    await h.push(fcReset('run-fc-rst', 'terminal'))
+
+    expect(fcRecord('run-fc-rst')).toBeUndefined()
+  })
+
+  it('records nothing when the stream closes while the run is still running', async () => {
+    const h = await fcOpen('run-fc-live')
+    await h.push(fcStatus('run-fc-live', 'running'), fcOutput('run-fc-live', 'partial', {final: false, seq: 1}))
+    await h.end()
+
+    expect(fcRecord('run-fc-live')).toBeUndefined()
+  })
+
+  it('records nothing when the handle is closed while the run is still running', async () => {
+    const h = await fcOpen('run-fc-closed')
+    await h.push(fcStatus('run-fc-closed', 'running'))
+    h.handle.close()
+    await vi.advanceTimersByTimeAsync(10_000)
+
+    expect(fcRecord('run-fc-closed')).toBeUndefined()
+  })
+
+  it('records nothing for deltas at seq 1 and 3 followed by a terminal status with no final frame', async () => {
+    const h = await fcOpen('run-fc-gap')
+    await h.push(
+      fcOutput('run-fc-gap', 'one', {final: false, seq: 1}),
+      fcOutput('run-fc-gap', 'three', {final: false, seq: 3}),
+      fcStatus('run-fc-gap', 'succeeded'),
+    )
+
+    expect(fcRecord('run-fc-gap')).toBeUndefined()
+  })
+
+  it('records nothing for a terminal status with no output at all', async () => {
+    const h = await fcOpen('run-fc-none')
+    await h.push(fcStatus('run-fc-none', 'succeeded'))
+
+    expect(fcRecord('run-fc-none')).toBeUndefined()
+  })
+
+  it('records the authoritative output when a final frame precedes the terminal status', async () => {
+    const h = await fcOpen('run-fc-fin')
+    await h.push(
+      fcOutput('run-fc-fin', 'one', {final: false, seq: 1}),
+      fcOutput('run-fc-fin', 'three', {final: false, seq: 3}),
+      fcOutput('run-fc-fin', 'the whole answer', {final: true, seq: 4}),
+      fcStatus('run-fc-fin', 'succeeded'),
+    )
+
+    expect(fcRecord('run-fc-fin')?.outputText).toBe('the whole answer')
+  })
+
+  it('records an authoritative empty final output', async () => {
+    await fcFinish('run-fc-empty', {text: ''})
+
+    expect(fcRecord('run-fc-empty')).toMatchObject({outputText: '', terminal: true})
+  })
+
+  it('records truncated final output with its flag', async () => {
+    await fcFinish('run-fc-big', {text: 'x'.repeat(FC_MAX_OUTPUT + 1)})
+
+    const record = fcRecord('run-fc-big')
+    expect(record?.outputText).toHaveLength(FC_MAX_OUTPUT)
+    expect(record?.outputTruncated).toBe(true)
+  })
+
+  it('records nothing when the terminal frame arrives after close()', async () => {
+    const h = await fcOpen('run-fc-late-close', {summaryStatus: 'succeeded'})
+    h.handle.close()
+    await h.push(fcOutput('run-fc-late-close', 'late'), fcStatus('run-fc-late-close', 'succeeded'))
+
+    expect(fcRecord('run-fc-late-close')).toBeUndefined()
+  })
+
+  it('records nothing when a no-snapshot terminal result arrives after close()', async () => {
+    const h = await fcOpen('run-fc-late-reset', {summaryStatus: 'succeeded'})
+    h.handle.close()
+    await h.push(fcReset('run-fc-late-reset', 'no-snapshot'))
+
+    expect(fcRecord('run-fc-late-reset')).toBeUndefined()
+  })
+
+  it('drops a write from an attachment older than a clear', async () => {
+    const h = await fcOpen('run-fc-gen')
+    await h.push(fcStatus('run-fc-gen', 'running'))
+    clearFinishedRuns()
+    await h.push(fcOutput('run-fc-gen', 'late'), fcStatus('run-fc-gen', 'succeeded'))
+
+    expect(fcRecord('run-fc-gen')).toBeUndefined()
+  })
+
+  it('records from an attachment opened after a clear', async () => {
+    clearFinishedRuns()
+    await fcFinish('run-fc-after')
+
+    expect(fcRecord('run-fc-after')?.status).toBe('succeeded')
+  })
+
+  it('does not collide fixture keys from two sessions that share a run ID', async () => {
+    await fcFinish('run-fc-shared', {text: 'from A', fixtureSessionId: 'session-a'})
+    await fcFinish('run-fc-shared', {text: 'from B', fixtureSessionId: 'session-b'})
+
+    expect(fcRecord('run-fc-shared', 'session-a')?.outputText).toBe('from A')
+    expect(fcRecord('run-fc-shared', 'session-b')?.outputText).toBe('from B')
+    expect(fcRecord('run-fc-shared')).toBeUndefined()
+    expect(hasUsableFinishedRun('run-fc-shared', 'succeeded', 'session-c')).toBe(false)
+  })
+
+  it('keys a production run by its run ID alone', async () => {
+    await fcFinish('run-fc-prod')
+
+    expect(fcRecord('run-fc-prod')).toBeDefined()
+    expect(fcRecord('run-fc-prod', 'session-a')).toBeUndefined()
+  })
+})
+
+describe('finished-run store — usable check, prune and clear', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    clearFinishedRuns()
+  })
+  afterEach(() => {
+    for (const handle of fcHandles.splice(0)) handle.close()
+    clearFinishedRuns()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('is usable only when a record exists and its status equals the list status', async () => {
+    await fcFinish('run-fc-use', {status: 'failed'})
+
+    expect(hasUsableFinishedRun('run-fc-use', 'failed')).toBe(true)
+    expect(hasUsableFinishedRun('run-fc-use', 'succeeded')).toBe(false)
+    expect(hasUsableFinishedRun('run-fc-use', 'running')).toBe(false)
+    expect(hasUsableFinishedRun('run-fc-use', undefined)).toBe(false)
+    expect(hasUsableFinishedRun('run-fc-other', 'failed')).toBe(false)
+  })
+
+  it('prunes to a set of run IDs and drops every other record', async () => {
+    for (const id of ['run-fc-a', 'run-fc-b', 'run-fc-c']) await fcFinish(id)
+
+    pruneFinishedRuns(['run-fc-b', 'run-fc-not-recorded'])
+
+    expect(hasUsableFinishedRun('run-fc-a', 'succeeded')).toBe(false)
+    expect(hasUsableFinishedRun('run-fc-b', 'succeeded')).toBe(true)
+    expect(hasUsableFinishedRun('run-fc-c', 'succeeded')).toBe(false)
+  })
+
+  it('prunes with an empty set to an empty store', async () => {
+    await fcFinish('run-fc-a')
+
+    pruneFinishedRuns([])
+
+    expect(fcRecord('run-fc-a')).toBeUndefined()
+  })
+
+  it('prunes a fixture session by that session’s keys', async () => {
+    await fcFinish('run-fc-p', {fixtureSessionId: 'session-a'})
+    await fcFinish('run-fc-p', {fixtureSessionId: 'session-b'})
+    await fcFinish('run-fc-q', {fixtureSessionId: 'session-a'})
+
+    pruneFinishedRuns(['run-fc-p'], 'session-a')
+
+    expect(hasUsableFinishedRun('run-fc-p', 'succeeded', 'session-a')).toBe(true)
+    expect(hasUsableFinishedRun('run-fc-q', 'succeeded', 'session-a')).toBe(false)
+    expect(hasUsableFinishedRun('run-fc-p', 'succeeded', 'session-b')).toBe(false)
+  })
+
+  it('frees the character budget of pruned records', async () => {
+    for (let i = 0; i < 7; i++) await fcFinish(fcRunId(i), {text: 'x'.repeat(FC_MAX_OUTPUT)})
+    pruneFinishedRuns([fcRunId(0)])
+
+    for (let i = 7; i < 13; i++) await fcFinish(fcRunId(i), {text: 'x'.repeat(FC_MAX_OUTPUT)})
+
+    for (const i of [0, 7, 8, 9, 10, 11, 12]) expect(hasUsableFinishedRun(fcRunId(i), 'succeeded')).toBe(true)
+  })
+
+  it('empties the store on clear', async () => {
+    await fcFinish('run-fc-a')
+    await fcFinish('run-fc-b')
+
+    clearFinishedRuns()
+
+    expect(fcRecord('run-fc-a')).toBeUndefined()
+    expect(fcRecord('run-fc-b')).toBeUndefined()
+  })
+})
+
+describe('finished-run store — bounds', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    clearFinishedRuns()
+  })
+  afterEach(() => {
+    for (const handle of fcHandles.splice(0)) handle.close()
+    clearFinishedRuns()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  const fillEntries = async (count: number) => {
+    for (let i = 0; i < count; i++) await fcFinish(fcRunId(i))
+  }
+
+  it('keeps 100 entries and evicts the least recently used on the 101st', async () => {
+    await fillEntries(100)
+    for (let i = 0; i < 100; i++) expect(hasUsableFinishedRun(fcRunId(i), 'succeeded')).toBe(true)
+
+    await fcFinish(fcRunId(100))
+
+    expect(hasUsableFinishedRun(fcRunId(0), 'succeeded')).toBe(false)
+    for (let i = 1; i <= 100; i++) expect(hasUsableFinishedRun(fcRunId(i), 'succeeded')).toBe(true)
+  })
+
+  it('a read refreshes recency', async () => {
+    await fillEntries(100)
+    expect(fcRecord(fcRunId(0))).toBeDefined()
+
+    await fcFinish(fcRunId(100))
+
+    expect(hasUsableFinishedRun(fcRunId(0), 'succeeded')).toBe(true)
+    expect(hasUsableFinishedRun(fcRunId(1), 'succeeded')).toBe(false)
+  })
+
+  it('the usable check does not refresh recency', async () => {
+    await fillEntries(100)
+    expect(hasUsableFinishedRun(fcRunId(0), 'succeeded')).toBe(true)
+
+    await fcFinish(fcRunId(100))
+
+    expect(hasUsableFinishedRun(fcRunId(0), 'succeeded')).toBe(false)
+  })
+
+  it('an overwrite is not counted twice and becomes the newest entry', async () => {
+    await fillEntries(100)
+
+    await fcFinish(fcRunId(50), {text: 'replaced'})
+    for (let i = 0; i < 100; i++) expect(hasUsableFinishedRun(fcRunId(i), 'succeeded')).toBe(true)
+    expect(fcRecord(fcRunId(50))?.outputText).toBe('replaced')
+
+    await fcFinish(fcRunId(100))
+    expect(hasUsableFinishedRun(fcRunId(0), 'succeeded')).toBe(false)
+    expect(hasUsableFinishedRun(fcRunId(50), 'succeeded')).toBe(true)
+  })
+
+  it('an overwrite subtracts the old size from the character budget', async () => {
+    for (let i = 0; i < 7; i++) await fcFinish(fcRunId(i), {text: 'x'.repeat(FC_MAX_OUTPUT)})
+
+    // A middle entry: double counting would push the total over budget and evict the oldest.
+    await fcFinish(fcRunId(3), {text: 'x'.repeat(FC_MAX_OUTPUT)})
+
+    for (let i = 0; i < 7; i++) expect(hasUsableFinishedRun(fcRunId(i), 'succeeded')).toBe(true)
+  })
+
+  it('evicts the oldest entry when the 2,000,000-character budget would be exceeded', async () => {
+    for (let i = 0; i < 7; i++) await fcFinish(fcRunId(i), {text: 'x'.repeat(FC_MAX_OUTPUT)})
+    for (let i = 0; i < 7; i++) expect(hasUsableFinishedRun(fcRunId(i), 'succeeded')).toBe(true)
+
+    await fcFinish(fcRunId(7), {text: 'x'.repeat(FC_MAX_OUTPUT)})
+
+    expect(hasUsableFinishedRun(fcRunId(0), 'succeeded')).toBe(false)
+    for (let i = 1; i <= 7; i++) expect(hasUsableFinishedRun(fcRunId(i), 'succeeded')).toBe(true)
+  })
+
+  it('evicts oldest entries until the new one fits the character budget', async () => {
+    for (let i = 0; i < 20; i++) await fcFinish(fcRunId(i), {text: 'x'.repeat(100_000)})
+    for (let i = 0; i < 20; i++) expect(hasUsableFinishedRun(fcRunId(i), 'succeeded')).toBe(true)
+
+    await fcFinish(fcRunId(20), {text: 'x'.repeat(FC_MAX_OUTPUT)})
+
+    for (const i of [0, 1, 2]) expect(hasUsableFinishedRun(fcRunId(i), 'succeeded')).toBe(false)
+    for (let i = 3; i <= 20; i++) expect(hasUsableFinishedRun(fcRunId(i), 'succeeded')).toBe(true)
+  })
+
+  it('counts unavailable and empty records as zero characters', async () => {
+    for (let i = 0; i < 7; i++) await fcFinish(fcRunId(i), {text: 'x'.repeat(FC_MAX_OUTPUT)})
+    const gone = await fcOpen('run-fc-gone', {summaryStatus: 'failed'})
+    await gone.push(fcReset('run-fc-gone', 'no-snapshot'))
+    await fcFinish('run-fc-empty', {text: ''})
+
+    for (let i = 0; i < 7; i++) expect(hasUsableFinishedRun(fcRunId(i), 'succeeded')).toBe(true)
+    expect(hasUsableFinishedRun('run-fc-gone', 'failed')).toBe(true)
+    expect(hasUsableFinishedRun('run-fc-empty', 'succeeded')).toBe(true)
+  })
+})
+
+describe('finished-run store — privacy', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    clearFinishedRuns()
+  })
+  afterEach(() => {
+    for (const handle of fcHandles.splice(0)) handle.close()
+    clearFinishedRuns()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('terminal, record, recorded init and clear touch no console, storage, cache, history or location, and write no sentinel outside text', async () => {
+    const consoleSpies = (['log', 'info', 'warn', 'error', 'debug', 'trace'] as const).map(method => vi.spyOn(console, method).mockImplementation(() => {}))
+    const storageCalls: string[] = []
+    const storage = ckAccessRecorder(storageCalls)
+    vi.stubGlobal('localStorage', storage)
+    vi.stubGlobal('sessionStorage', storage)
+    const idbCalls: string[] = []
+    vi.stubGlobal('indexedDB', ckAccessRecorder(idbCalls))
+    const cacheCalls: string[] = []
+    vi.stubGlobal('caches', ckAccessRecorder(cacheCalls))
+    const historyCalls: string[] = []
+    vi.stubGlobal('history', ckAccessRecorder(historyCalls))
+    const locationWrites: string[] = []
+    vi.stubGlobal('location', ckAccessRecorder(locationWrites))
+
+    const writes: string[] = []
+    vi.stubGlobal('document', {
+      createElement: () => ckRecordingElement(writes),
+      createTextNode: (text: string) => {
+        const node = ckRecordingElement(writes)
+        node.textContent = text
+        return node
+      },
+    })
+
+    const h = await fcOpen('run-fc-priv', {
+      elements: {
+        statusEl: ckRecordingElement(writes),
+        noticeEl: ckRecordingElement(writes),
+        reasonEl: ckRecordingElement(writes),
+        outputEl: ckRecordingElement(writes),
+      },
+    })
+    await h.push(
+      fcOutput('run-fc-priv', 'fixture-out-sentinel <img src=x onerror=alert(1)>'),
+      fcStatus('run-fc-priv', 'failed', {failureKind: 'session-error', checkoutProvenance: ckSentinelStatus().checkoutProvenance}),
+    )
+
+    expect(hasUsableFinishedRun('run-fc-priv', 'failed')).toBe(true)
+    const recordedBeforePrune = fcRecord('run-fc-priv')
+    expect(recordedBeforePrune?.outputText).toContain('fixture-out-sentinel')
+    pruneFinishedRuns(['run-fc-priv'])
+
+    // A recorded init paints the same sentinel result onto fresh elements, with no stream.
+    const recordedOutput = ckRecordingElement(writes)
+    const recorded = initOperatorStream({
+      runId: 'run-fc-priv',
+      finishedRecord: recordedBeforePrune,
+      statusEl: ckRecordingElement(writes) as never,
+      noticeEl: ckRecordingElement(writes) as never,
+      reasonEl: ckRecordingElement(writes) as never,
+      outputEl: recordedOutput as never,
+    })
+    fcHandles.push(recorded)
+    expect(recordedOutput.textContent).toContain('fixture-out-sentinel')
+    expect(recorded.getConnectionStatus()).toBe('terminal')
+    recorded.close()
+
+    clearFinishedRuns()
+    expect(fcRecord('run-fc-priv')).toBeUndefined()
+    h.handle.close()
+
+    for (const spy of consoleSpies) expect(spy).not.toHaveBeenCalled()
+    expect(storageCalls).toEqual([])
+    expect(idbCalls).toEqual([])
+    expect(cacheCalls).toEqual([])
+    expect(historyCalls).toEqual([])
+    expect(locationWrites).toEqual([])
+    expect(writes.length).toBeGreaterThan(0)
+    // The sentinel text reaches only a text node; no attribute, dataset, class or style carries it.
+    expect(writes.filter(write => write.includes('fixture-out-sentinel') && !write.startsWith('textContent='))).toEqual([])
+    expect(writes.filter(write => write.includes('onerror') && !write.startsWith('textContent='))).toEqual([])
+  })
+})
+
+// ===========================================================================
+// Recorded init — paint a finished run from its record, with no stream
+// ===========================================================================
+
+const FC_REGION_KEYS = [
+  'statusEl', 'noticeEl', 'reasonEl', 'outputEl', 'coalescedEl', 'checkoutEl', 'timeEl',
+  'waitingEl', 'approvalsEl', 'badgeEl', 'cancelEl', 'questionsEl',
+] as const
+
+type FcRegions = Record<(typeof FC_REGION_KEYS)[number], FakeElement>
+
+function fcRegions(): FcRegions {
+  return Object.fromEntries(FC_REGION_KEYS.map(key => [key, makeFakeEl(key === 'statusEl' || key === 'badgeEl' ? 'span' : 'div')])) as FcRegions
+}
+
+/**
+ * What a paint shows on the card's regions, for comparing two paints. A hidden region counts only as
+ * hidden: a live attach can leave unseen residue in one (an emptied cancel control, stale waiting
+ * copy, a bare `status-` class from its pre-status paint), and none of it is displayed.
+ */
+function fcPaint(regions: FcRegions) {
+  return Object.fromEntries(FC_REGION_KEYS.map(key => {
+    const el = regions[key]
+    if (el.hidden) return [key, {hidden: true}]
+    const className = el.className.split(/\s+/).filter(token => token !== '' && token !== 'status-').join(' ')
+    return [key, {hidden: false, text: el.textContent, className, dataset: {...el.dataset}, attributes: {...el.attributes}, children: el.children.length}]
+  }))
+}
+
+function fcStubDocument() {
+  vi.stubGlobal('document', {
+    createElement: (tag: string) => makeFakeEl(tag),
+    createTextNode: (text: string) => {
+      const node = makeFakeEl('#text')
+      node.textContent = text
+      return node
+    },
+  })
+}
+
+const fcStubClients = () => ({
+  approvalClient: {decideRunApproval: vi.fn(), listRunApprovals: vi.fn(async () => new Promise<never>(() => {}))},
+  cancelClient: {cancelRun: vi.fn(), refreshCsrf: vi.fn()},
+  questionClient: {listRunQuestions: vi.fn(async () => new Promise<never>(() => {})), decideRunQuestion: vi.fn()},
+})
+
+/**
+ * Init a handle on fresh regions from the run's stored record, taken the way the runtime takes it (one
+ * read). With no record for the run (or none for `extra.fixtureSessionId`) it attaches normally.
+ */
+function fcInitRecorded(runId: string, regions: FcRegions, extra: Record<string, unknown> = {}) {
+  const finishedRecord = fcRecord(runId, extra.fixtureSessionId as string | undefined)
+  const handle = initOperatorStream({runId, ...(finishedRecord === undefined ? {} : {finishedRecord}), ...regions, ...extra})
+  fcHandles.push(handle)
+  return handle
+}
+
+describe('finished-run store — recorded init', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-06T12:00:00Z'))
+    clearFinishedRuns()
+    fcStubDocument()
+  })
+  afterEach(() => {
+    for (const handle of fcHandles.splice(0)) handle.close()
+    clearFinishedRuns()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('makes no fetch, shows the status label rather than "Unavailable", and leaves the closed-stream notice empty', async () => {
+    await fcFinish('run-fc-r1', {text: 'all good'})
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const regions = fcRegions()
+
+    const handle = fcInitRecorded('run-fc-r1', regions)
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(regions.statusEl.textContent).toBe('Succeeded')
+    expect(regions.statusEl.className).toContain('status-succeeded')
+    expect(regions.statusEl.textContent).not.toBe('Unavailable')
+    expect(regions.noticeEl.textContent).toBe('')
+    expect(regions.noticeEl.hidden).toBe(true)
+    expect(handle.getConnectionStatus()).toBe('terminal')
+  })
+
+  it('paints exactly what the live terminal paint showed: reason, output, hints, checkout, start time and failure notice', async () => {
+    const live = fcRegions()
+    const h = await fcOpen('run-fc-r2', {elements: {...live, ...fcStubClients()}})
+    await h.push(
+      fcOutput('run-fc-r2', 'the whole answer', {seq: 2, droppedCount: 3}),
+      fcStatus('run-fc-r2', 'failed', {
+        failureKind: 'session-error',
+        checkoutProvenance: ckObserved(),
+        checkoutPreparation: {outcome: 'refused', reason: 'obstructed', obstructions: [{path: 'fixture-path', kind: 'exact-conflict'}]},
+      }),
+    )
+    const livePaint = fcPaint(live)
+    expect(live.noticeEl.textContent).toBe(`Run failed: ${FAILURE_REASON_LABELS['session-error']}`)
+    expect(live.coalescedEl.hidden).toBe(false)
+    expect(live.checkoutEl.hidden).toBe(false)
+    expect(live.timeEl.getAttribute('datetime')).toBe('2026-10-06T10:00:00.000Z')
+    h.handle.close()
+
+    const recordedRegions = fcRegions()
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    fcInitRecorded('run-fc-r2', recordedRegions)
+
+    expect(fcPaint(recordedRegions)).toEqual(livePaint)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('paints the truncated hint and a cancelled run like the live paint', async () => {
+    const live = fcRegions()
+    const h = await fcOpen('run-fc-r3', {elements: {...live, ...fcStubClients()}})
+    await h.push(fcOutput('run-fc-r3', 'x'.repeat(FC_MAX_OUTPUT + 1)), fcStatus('run-fc-r3', 'cancelled'))
+    const livePaint = fcPaint(live)
+    expect(live.coalescedEl.hidden).toBe(false)
+    h.handle.close()
+
+    const recordedRegions = fcRegions()
+    fcInitRecorded('run-fc-r3', recordedRegions)
+
+    expect(fcPaint(recordedRegions)).toEqual(livePaint)
+  })
+
+  it('reports "terminal", and close() is safe and idempotent', async () => {
+    await fcFinish('run-fc-r4')
+    const handle = fcInitRecorded('run-fc-r4', fcRegions())
+
+    expect(handle.getConnectionStatus()).toBe('terminal')
+    handle.close()
+    expect(() => handle.close()).not.toThrow()
+    expect(handle.getConnectionStatus()).toBe('inactive')
+  })
+
+  it('never reaches "submitted-unobservable" after the first-frame timeout would have fired', async () => {
+    await fcFinish('run-fc-r5')
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const regions = fcRegions()
+    const handle = fcInitRecorded('run-fc-r5', regions)
+    const before = fcPaint(regions)
+
+    await vi.advanceTimersByTimeAsync(FIRST_FRAME_TIMEOUT_MS * 2)
+
+    expect(regions.noticeEl.dataset.connectionState).toBe('closed')
+    expect(regions.statusEl.textContent).toBe('Succeeded')
+    expect(fcPaint(regions)).toEqual(before)
+    expect(handle.getConnectionStatus()).toBe('terminal')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('repaints "Output no longer available" for a recorded expired run', async () => {
+    const h = await fcOpen('run-fc-r6', {summaryStatus: 'succeeded'})
+    await h.push(fcReset('run-fc-r6', 'no-snapshot'))
+    const regions = fcRegions()
+
+    fcInitRecorded('run-fc-r6', regions)
+
+    expect(regions.outputEl.textContent).toBe('Output no longer available.')
+    expect(regions.outputEl.hidden).toBe(false)
+    expect(regions.outputEl.className).toContain('run-output-unavailable')
+    expect(regions.statusEl.textContent).toBe('Succeeded')
+  })
+
+  it('keeps the cancel, approval, question, badge and waiting regions hidden and empty, and builds no clients', async () => {
+    await fcFinish('run-fc-r7')
+    const regions = fcRegions()
+    const clients = fcStubClients()
+    for (const key of ['approvalsEl', 'cancelEl', 'questionsEl', 'waitingEl', 'badgeEl'] as const) {
+      regions[key].textContent = 'leftover'
+      regions[key].hidden = false
+    }
+
+    fcInitRecorded('run-fc-r7', regions, clients)
+    await vi.advanceTimersByTimeAsync(0)
+
+    for (const key of ['approvalsEl', 'cancelEl', 'questionsEl', 'waitingEl', 'badgeEl'] as const) {
+      expect(regions[key].hidden).toBe(true)
+      expect(regions[key].textContent).toBe('')
+      expect(regions[key].children).toHaveLength(0)
+    }
+    expect(clients.approvalClient.listRunApprovals).not.toHaveBeenCalled()
+    expect(clients.questionClient.listRunQuestions).not.toHaveBeenCalled()
+    expect(clients.cancelClient.cancelRun).not.toHaveBeenCalled()
+    expect(clients.cancelClient.refreshCsrf).not.toHaveBeenCalled()
+  })
+
+  it('leaves the stored record frozen, untouched and not re-recorded', async () => {
+    await fcFinish('run-fc-r8', {text: 'once'})
+    await fcFinish('run-fc-other')
+    const before = fcRecord('run-fc-r8')
+    const snapshot = structuredClone(before)
+
+    const handle = fcInitRecorded('run-fc-r8', fcRegions())
+    handle.close()
+
+    expect(fcRecord('run-fc-r8')).toBe(before)
+    expect(Object.isFrozen(before)).toBe(true)
+    expect(before).toEqual(snapshot)
+  })
+
+  it('does not bump recency through the paint beyond the one read', async () => {
+    for (let i = 0; i < 100; i++) await fcFinish(fcRunId(i))
+    // Reading run 0 once (the init's read) makes it newest; run 1 is then the least recently used.
+    const handle = fcInitRecorded(fcRunId(0), fcRegions())
+    handle.close()
+
+    await fcFinish(fcRunId(100))
+
+    expect(hasUsableFinishedRun(fcRunId(0), 'succeeded')).toBe(true)
+    expect(hasUsableFinishedRun(fcRunId(1), 'succeeded')).toBe(false)
+  })
+
+  it('reads nothing from the store when given a record: recency order is unchanged by the init', async () => {
+    for (let i = 0; i < 100; i++) await fcFinish(fcRunId(i))
+    // Take run 0's record, then take every other run in order: run 0 is now the least recently used.
+    const record = fcRecord(fcRunId(0))
+    for (let i = 1; i < 100; i++) fcRecord(fcRunId(i))
+    expect(record).toBeDefined()
+
+    const handle = initOperatorStream({runId: fcRunId(0), finishedRecord: record, ...fcRegions()})
+    fcHandles.push(handle)
+    handle.close()
+    await fcFinish(fcRunId(100))
+
+    // An init that read run 0 would have made it newest and evicted run 1 instead.
+    expect(hasUsableFinishedRun(fcRunId(0), 'succeeded')).toBe(false)
+    expect(hasUsableFinishedRun(fcRunId(1), 'succeeded')).toBe(true)
+  })
+
+  it('paints a given record even when the store holds nothing for the run', async () => {
+    await fcFinish('run-fc-solo', {text: 'kept by the caller'})
+    const record = fcRecord('run-fc-solo')
+    clearFinishedRuns()
+    const regions = fcRegions()
+    const fetchSpy = vi.fn(async () => new Promise<never>(() => {}))
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const handle = initOperatorStream({runId: 'run-fc-solo', finishedRecord: record, ...regions})
+    fcHandles.push(handle)
+
+    expect(regions.outputEl.textContent).toBe('kept by the caller')
+    expect(handle.getConnectionStatus()).toBe('terminal')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('keys by the fixture session: another session attaches normally', async () => {
+    await fcFinish('run-fc-r9', {text: 'from A', fixtureSessionId: 'session-a'})
+    const fetchSpy = vi.fn(async () => new Promise<never>(() => {}))
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const hit = fcRegions()
+    fcInitRecorded('run-fc-r9', hit, {fixtureSessionId: 'session-a'})
+    expect(hit.outputEl.textContent).toBe('from A')
+    expect(fetchSpy).not.toHaveBeenCalled()
+
+    const miss = fcRegions()
+    fcInitRecorded('run-fc-r9', miss, {fixtureSessionId: 'session-b'})
+    expect(miss.noticeEl.textContent).toBe('Connecting to run stream\u2026')
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('attaches normally when the option is set but no record exists', async () => {
+    const fetchSpy = vi.fn(async () => new Promise<never>(() => {}))
+    vi.stubGlobal('fetch', fetchSpy)
+    const regions = fcRegions()
+
+    const handle = fcInitRecorded('run-fc-none', regions)
+
+    expect(regions.noticeEl.textContent).toBe('Connecting to run stream\u2026')
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(handle.getConnectionStatus()).toBe('active')
+  })
+
+  it('ignores the record without the option: a plain init still attaches', async () => {
+    await fcFinish('run-fc-plain')
+    const fetchSpy = vi.fn(async () => new Promise<never>(() => {}))
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const handle = initOperatorStream({runId: 'run-fc-plain', statusEl: makeFakeEl() as never, noticeEl: makeFakeEl() as never})
+    fcHandles.push(handle)
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(handle.getConnectionStatus()).toBe('active')
   })
 })

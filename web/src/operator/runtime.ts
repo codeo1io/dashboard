@@ -29,7 +29,7 @@ import {validateDynamicId} from './validate-dynamic-id.ts'
 import type * as LaunchModule from '../../../public/operator-launch.js'
 import type * as RunIndexModule from '../../../public/operator-run-index.js'
 import type * as StreamModule from '../../../public/operator-stream.js'
-import type {RunSummaryStatus, StreamHandle} from '../../../public/operator-stream.js'
+import type {FinishedRunRecord, RunSummaryStatus, StreamHandle} from '../../../public/operator-stream.js'
 import type {OperatorState} from './state.ts'
 import {clearGatewaySignInRedirectGuard, maybeAutoRedirectToGatewaySignIn} from './sign-in-recovery.ts'
 
@@ -267,6 +267,21 @@ let _activeStreamHandle: Pick<StreamHandle, 'close' | 'getConnectionStatus'> | n
 // already-expanded run again" (collapse) — the single-open accordion's decision point.
 let _activeStreamRunId: string | null = null
 
+// The finished-run store lives in the stream module, which is loaded at runtime from /static and must
+// not be bundled a second time (that would be a second, empty store). The loader keeps the one clear
+// the rest of the client needs; it stays null until the module has loaded, and nothing is recorded
+// before then.
+let _clearFinishedRuns: (() => void) | null = null
+
+/**
+ * Drop every finished-run record. For a change the store's keys cannot see: in fixture mode the
+ * scenario is not part of a record's key, so switching it must clear the store. A no-op until the
+ * stream module has loaded.
+ */
+export function clearFinishedRunCache(): void {
+  _clearFinishedRuns?.()
+}
+
 /** How often the visible window refreshes the run list. Well inside the gateway's 20/min limit on GET /operator/runs. */
 export const RUN_LIST_REFRESH_INTERVAL_MS = 30_000
 
@@ -452,8 +467,9 @@ async function defaultRuntimeLoader(opts?: {
   // check-types instead of surfacing as a silently skipped call. Only the members listed are read.
   const streamMod = await import(/* @vite-ignore */ _streamSpecifier) as Pick<
     typeof StreamModule,
-    'initOperatorStream'
+    'initOperatorStream' | 'takeUsableFinishedRun' | 'pruneFinishedRuns' | 'clearFinishedRuns'
   >
+  _clearFinishedRuns = () => streamMod.clearFinishedRuns()
   // Streams attach on expand, launch, restore and jump only; the stream module's own bootstrap is not run here.
 
   const runIndexMod = await import(/* @vite-ignore */ _runIndexSpecifier) as Pick<
@@ -466,7 +482,14 @@ async function defaultRuntimeLoader(opts?: {
     'initOperatorLaunch' | 'resetLaunchState'
   >
 
-  function _attachStream(runId: string, statusEl: Element | null, noticeEl: Element | null): void {
+  // `takenRecord` is a record the caller already took for this attach (onSelectRun's hit); otherwise the
+  // record is taken here. Either way the store is read once per attach, so recency bumps once.
+  function _attachStream(
+    runId: string,
+    statusEl: Element | null,
+    noticeEl: Element | null,
+    takenRecord?: FinishedRunRecord,
+  ): void {
     // Any attach supersedes an expand still waiting on the refresh.
     _cancelPendingExpand()
     _closeActiveStream()
@@ -475,6 +498,9 @@ async function defaultRuntimeLoader(opts?: {
     // approval prompts, and the approval badge all render — not just status.
     const {outputEl, coalescedEl, approvalsEl, badgeEl, reasonEl, cancelEl, checkoutEl, questionsEl, timeEl, waitingEl} = discoverCardStreamTargets(runId)
     const summaryStatus = discoverCardSummaryStatus(runId)
+    // A run the page already saw finish paints from its record, with no stream. Every other run, and
+    // a record that no longer matches what the list shows for the card, attaches live as before.
+    const finishedRecord = takenRecord ?? streamMod.takeUsableFinishedRun(runId, summaryStatus, opts?.fixtureSessionId)
 
     // A re-expanded card must never keep question DOM from a previous attach: the stream and
     // page store rebuild this region from scratch.
@@ -496,6 +522,7 @@ async function defaultRuntimeLoader(opts?: {
         checkoutEl,
         questionsEl,
         ...(summaryStatus === undefined ? {} : {summaryStatus}),
+        ...(finishedRecord === undefined ? {} : {finishedRecord}),
         endpointBase: opts?.endpointBase,
         fixtureSessionId: opts?.fixtureSessionId,
       })
@@ -656,6 +683,10 @@ async function defaultRuntimeLoader(opts?: {
   // card's summary status only after the refresh has landed. If the refresh fails the card keeps the
   // status it already shows, and the expand proceeds. The whole wait is cancelable: a collapse
   // never waits, and supersedes an expand that is still waiting.
+  //
+  // The exception is a run whose finished result the page already holds, with the same status the
+  // list last showed on the card: it paints from that record at once, with no refresh and no stream.
+  // _attachStream makes the same check, so the record is also used after a refresh lands.
   const onSelectRun = (runId: string): Promise<void> | void => {
     cancelPendingCardReveal()
     if (_activeStreamRunId === runId) {
@@ -674,7 +705,7 @@ async function defaultRuntimeLoader(opts?: {
     // From here the card is being expanded: a jump's notice is stale.
     clearJumpNotice()
 
-    const attachExpanded = () => {
+    const attachExpanded = (takenRecord?: FinishedRunRecord) => {
       // Find the card element for this runId to get its statusEl and noticeEl.
       const card = typeof document !== 'undefined'
         ? document.querySelector(`[data-run-id="${CSS.escape(runId)}"]`)
@@ -683,7 +714,7 @@ async function defaultRuntimeLoader(opts?: {
       const noticeEl = typeof document !== 'undefined'
         ? document.querySelector('[data-role="stream-status"]')
         : null
-      _attachStream(runId, statusEl, noticeEl)
+      _attachStream(runId, statusEl, noticeEl, takenRecord)
     }
 
     // Expanding another card ends the open stream now; only the new attach waits, for the refresh
@@ -691,6 +722,12 @@ async function defaultRuntimeLoader(opts?: {
     _cancelPendingExpand()
     _closeActiveStream()
     _writeRunHash(runId)
+    // A run the page already saw finish attaches at once from its record, with no refresh to wait for.
+    const finishedRecord = streamMod.takeUsableFinishedRun(runId, discoverCardSummaryStatus(runId), opts?.fixtureSessionId)
+    if (finishedRecord !== undefined) {
+      attachExpanded(finishedRecord)
+      return
+    }
     const wait = _waitForRefreshOrCap(refreshRunList())
     const pending = {runId, release: wait.release}
     _pendingExpand = pending
@@ -763,8 +800,12 @@ async function defaultRuntimeLoader(opts?: {
     }, RUN_LIST_REFRESH_INTERVAL_MS)
   }
 
+  // The one place the page learns its session is gone, from either the first load or a refresh. The
+  // store is dropped here so a finished result cannot outlive the sign-in it was shown under, and
+  // attachments that started earlier can no longer record.
   const onAuthRequired = () => {
     authRequired = true
+    streamMod.clearFinishedRuns()
     stopRefreshTimer()
     // No session: a pending or arriving jump has nothing to open.
     _setJumpSlot(epoch, {mode: 'refuse'})
@@ -883,9 +924,12 @@ async function defaultRuntimeLoader(opts?: {
   // different run before honoring the restore (see initOperatorRunIndex). The
   // raw hash is sanitized above — length cap before validateDynamicId — before it
   // crosses into the run-index module at all.
+  // A record stays only while its run is in the latest list the page applied: the run index reports
+  // the fetched IDs (not the cards left in the DOM, which include protected ones the list dropped).
+  const onListApplied = (runIds: readonly string[]) => streamMod.pruneFinishedRuns(runIds, opts?.fixtureSessionId)
   const runIndexOpts = opts?.endpointBase !== undefined
-    ? {endpointBase: opts.endpointBase, fixtureSessionId: opts.fixtureSessionId, onSelectRun, restoreRunId, onRestoreRun, onRestoreMiss, onAuthRequired}
-    : {onSelectRun, restoreRunId, onRestoreRun, onRestoreMiss, onAuthRequired}
+    ? {endpointBase: opts.endpointBase, fixtureSessionId: opts.fixtureSessionId, onSelectRun, restoreRunId, onRestoreRun, onRestoreMiss, onAuthRequired, onListApplied}
+    : {onSelectRun, restoreRunId, onRestoreRun, onRestoreMiss, onAuthRequired, onListApplied}
   // How the load ended comes back as the init's own outcome. 'loaded'/'empty' mean the list is there;
   // 'unavailable' is a non-auth failure; 'auth-required' and 'stale' (a reset or a newer init
   // replaced this one) have nowhere to open a run.
