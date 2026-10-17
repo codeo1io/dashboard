@@ -40,18 +40,33 @@ function utf8ByteLength(value: string): number {
   return Buffer.byteLength(value, 'utf8')
 }
 
-function logPersistProblem(message: string, path: string, detail: unknown): void {
-  // rm-802: log the detail faithfully. Error instances contribute their
-  // message (real I/O failures stay a scalar `error` field); plain-object
-  // payloads are spread as structured fields — the size-bound call sites pass
-  // `{bytes}`, and the byte count that tripped the bound must land as a
-  // field (the persist-side shape), never as `'[object Object]'`. Anything
-  // else stringifies (same as the pre-rm-802 scalar path).
+/**
+ * Structured persist/load problem logger. rm-802: log the detail faithfully.
+ * Error instances contribute their message (real I/O failures stay a scalar
+ * `error` field); plain-object payloads are spread as structured fields —
+ * the size-bound call sites pass `{bytes}`, and the byte count that tripped
+ * the bound must land as a field (the persist-side shape), never as
+ * `'[object Object]'`. Anything else stringifies (same as the pre-rm-802
+ * scalar path).
+ *
+ * rm-880: context keys win. A plain-object payload carrying `path` or
+ * `error` must never shadow the record's `path` provenance or the context
+ * `error` field — colliding payload keys are dropped at the seam instead of
+ * overwriting the context fields.
+ *
+ * Exported for the rm-880 key-shadow guard test: today's only object-payload
+ * call sites pass `{bytes}`, so the shadow path is otherwise unreachable
+ * through `createFileSnapshotStore` alone.
+ */
+export function logPersistProblem(message: string, path: string, detail: unknown): void {
   const fields: Record<string, unknown> = {path}
   if (detail instanceof Error) {
     fields.error = detail.message
   } else if (typeof detail === 'object' && detail !== null) {
-    Object.assign(fields, detail)
+    for (const [key, value] of Object.entries(detail)) {
+      if (key === 'path' || key === 'error') continue
+      fields[key] = value
+    }
   } else {
     fields.error = String(detail)
   }
