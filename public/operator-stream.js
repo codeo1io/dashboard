@@ -29,8 +29,25 @@
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Contract version this client expects on the ready frame. */
-export const PINNED_CONTRACT_VERSION = '1.9.0'
+/** Contract version this client pins (current member of ACCEPTED_CONTRACT_VERSIONS). */
+export const PINNED_CONTRACT_VERSION = '1.11.0'
+
+/**
+ * Contract versions whose wire this parser accepts (rm-873, extending rm-252's additive
+ * acceptance): the whole 1.6.0…1.11.0 series the gateway has served, pin included. The ready
+ * frame gate checks set membership, not an exact match, so an old deployment serving 1.9.0 and
+ * a current one serving 1.11.0 both pass. Unknown versions (a future 1.12.0 or any other value)
+ * still fail closed into the absorbing drift state. Mirrors ACCEPTED_OPERATOR_CONTRACT_VERSIONS
+ * in src/gateway/operator-contract/version.ts.
+ */
+export const ACCEPTED_CONTRACT_VERSIONS = new Set([
+  '1.6.0',
+  '1.7.0',
+  '1.8.0',
+  '1.9.0',
+  '1.10.0',
+  '1.11.0',
+])
 
 /** Base delay in milliseconds for exponential backoff. */
 export const RETRY_BASE_MS = 1000
@@ -113,7 +130,15 @@ const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled'])
  * Statuses a run-list summary can carry (the run index parser keeps only these). The optional
  * `summaryStatus` init option is accepted only from this set; anything else is dropped.
  */
-const SUMMARY_STATUSES = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled'])
+const SUMMARY_STATUSES = new Set([
+  'queued',
+  'running',
+  'waiting_for_approval',
+  'waiting_for_question',
+  'succeeded',
+  'failed',
+  'cancelled',
+])
 
 /** In-card copy for an expired run snapshot. Dashboard-owned; never wire text. */
 const OUTPUT_UNAVAILABLE_COPY = 'Output no longer available.'
@@ -1019,7 +1044,7 @@ export function nextStreamState(current, event) {
       if (current.connection === 'drift') {
         return current
       }
-      if (event.data.contractVersion !== PINNED_CONTRACT_VERSION) {
+      if (!ACCEPTED_CONTRACT_VERSIONS.has(event.data.contractVersion)) {
         // Contract version mismatch — fail closed, clear all run state
         return {
           connection: 'drift',

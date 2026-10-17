@@ -18,6 +18,8 @@
 export declare function validateDynamicId(id: string): boolean
 
 export declare const PINNED_CONTRACT_VERSION: string
+/** Contract versions whose wire the parser accepts (additive set; mirrors ACCEPTED_OPERATOR_CONTRACT_VERSIONS in src/gateway/operator-contract/version.ts). */
+export declare const ACCEPTED_CONTRACT_VERSIONS: ReadonlySet<string>
 export declare const RETRY_BASE_MS: number
 export declare const RETRY_FACTOR: number
 export declare const RETRY_MAX_COUNT: number
@@ -464,7 +466,15 @@ export interface CancelActionEvent {
 }
 
 /** Statuses a run-list summary can carry. */
-export type RunSummaryStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+/** Statuses a run-list summary can carry. */
+export type RunSummaryStatus =
+  | 'queued'
+  | 'running'
+  | 'waiting_for_approval'
+  | 'waiting_for_question'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
 
 export interface StreamState {
   readonly connection: ConnectionStatus

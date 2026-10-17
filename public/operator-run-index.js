@@ -16,10 +16,12 @@ export const FETCH_TIMEOUT_MS = 10_000
 const MAX_ID_LENGTH = 512
 const MAX_DATE_LENGTH = 128
 
-/** 'blocked' and 'waiting_for_approval' are stream-only — never produced by the run-summary projector. */
+/** 'blocked' is stream-only — a run summary never carries it. The waiting statuses are gateway overlays on a running run. */
 export const VALID_RUN_SUMMARY_STATUSES = new Set([
   'queued',
   'running',
+  'waiting_for_approval',
+  'waiting_for_question',
   'succeeded',
   'failed',
   'cancelled',
@@ -29,10 +31,31 @@ export const VALID_RUN_SUMMARY_STATUSES = new Set([
 const STATUS_LABELS = {
   queued: 'Queued',
   running: 'Running',
+  waiting_for_approval: 'Waiting for approval',
+  waiting_for_question: 'Waiting for answer',
   succeeded: 'Succeeded',
   failed: 'Failed',
   cancelled: 'Cancelled',
 }
+
+/**
+ * Run-summary status ↔ CSS class token, the single two-way map for the run-list card badge.
+ *
+ * Tokens are hyphenated (`waiting_for_question` → `status-waiting-for-question`), matching the
+ * stream emitter (operator-stream.js) and the rules in web/src/index.css. The card emitter below
+ * writes through this map, and web/src/operator/runtime.ts reads a card's class back through its
+ * mirror (STATUS_CLASS_TOKENS; a parity test pins the two together). Underscore tokens are not
+ * in the map, so they never read back as a status.
+ */
+export const RUN_STATUS_CLASS_TOKENS = Object.freeze({
+  queued: 'status-queued',
+  running: 'status-running',
+  waiting_for_approval: 'status-waiting-for-approval',
+  waiting_for_question: 'status-waiting-for-question',
+  succeeded: 'status-succeeded',
+  failed: 'status-failed',
+  cancelled: 'status-cancelled',
+})
 
 /**
  * data-role of the hidden checkout-detail region (provenance / preparation). Unit-3 anatomy
@@ -593,7 +616,7 @@ function cardShowsTerminalStatus(card) {
   if (statusEl === null || statusEl === undefined) return false
   const className = typeof statusEl.className === 'string' ? statusEl.className : ''
   for (const status of TERMINAL_RUN_STATUSES) {
-    if (className.includes(`status-${status}`)) return true
+    if (className.includes(RUN_STATUS_CLASS_TOKENS[status])) return true
   }
   return false
 }
@@ -614,7 +637,7 @@ function updateCardInPlace(card, view) {
   if (typeof card.querySelector === 'function') {
     const statusEl = card.querySelector('[data-role="run-status"]')
     if (statusEl !== null && statusEl !== undefined) {
-      statusEl.className = `run-status status-${view.status}`
+      statusEl.className = `run-status ${RUN_STATUS_CLASS_TOKENS[view.status]}`
       statusEl.textContent = view.statusLabel
     }
 
@@ -667,7 +690,7 @@ function renderRunCard(view, onSelectRun) {
   statusGroup.dataset.role = 'run-status-group'
 
   const statusSpan = document.createElement('span')
-  statusSpan.className = `run-status status-${view.status}`
+  statusSpan.className = `run-status ${RUN_STATUS_CLASS_TOKENS[view.status]}`
   statusSpan.dataset.role = 'run-status'
   statusSpan.textContent = view.statusLabel
   statusGroup.append(statusSpan)

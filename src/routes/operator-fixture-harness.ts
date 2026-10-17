@@ -239,9 +239,9 @@ interface FixturePushRecord {
   endpoint: string
   keyVersion: string
   active: boolean
-  createdAt: string
-  updatedAt: string
-  inactiveReason?: string
+  createdAt: number
+  updatedAt: number
+  inactiveReason?: 'unsubscribed'
 }
 
 // Idempotency scoping mirrors POST /runs: `${sessionId}:${idemKey}` → record.
@@ -250,7 +250,7 @@ const pushIdempotencyMap = new Map<string, FixturePushRecord>()
 // session's browser. Overwritten on subscribe, marked inactive on unsubscribe.
 const pushSessionRecordMap = new Map<string, FixturePushRecord>()
 
-// Synthetic, never a real sha256 — deterministic per-endpoint fixture hash.
+// Hex sha256 of the endpoint, matching the gateway's opaque `endpointHash`.
 function fixtureEndpointHash(endpoint: string): string {
   return createHash('sha256').update(endpoint).digest('hex')
 }
@@ -773,7 +773,7 @@ export function buildFixtureHarnessRouter(): Hono {
       return res
     }
 
-    const now = new Date().toISOString()
+    const now = Date.now()
     const record: FixturePushRecord = {
       endpoint: body.endpoint,
       keyVersion: FIXTURE_VAPID_KEY_VERSION,
@@ -834,7 +834,7 @@ export function buildFixtureHarnessRouter(): Hono {
     const record = pushSessionRecordMap.get(requestSessionId)
     if (record !== undefined) {
       record.active = false
-      record.updatedAt = new Date().toISOString()
+      record.updatedAt = Date.now()
       record.inactiveReason = 'unsubscribed'
     }
 
@@ -844,8 +844,9 @@ export function buildFixtureHarnessRouter(): Hono {
     return res
   })
 
-  // GET /push/subscriptions — safe metadata only for the current fixture
-  // session's active record. Never the raw endpoint/keys.
+  // GET /push/subscriptions — the gateway list shape, `{subscriptions: [...]}`,
+  // holding safe metadata for the current fixture session's record. Never the
+  // raw endpoint/keys.
   router.get('/push/subscriptions', c => {
     const requestSessionId = extractRequestSessionId(c)
     if (requestSessionId === undefined) {
@@ -857,20 +858,28 @@ export function buildFixtureHarnessRouter(): Hono {
 
     const record = pushSessionRecordMap.get(requestSessionId)
     if (record === undefined) {
-      logger.debug('fixture-harness: GET /push/subscriptions', {status: 200, errorClass: 'not-subscribed'})
-      const res = c.json({})
+      // Mirrors the gateway wire: an unknown session on the real service is a
+      // 404 with `{error: 'not_subscribed'}` (see operator-contract/push.ts),
+      // so client code paths are exercised against the shape they meet in
+      // production rather than a synthetic 200-with-empty-list.
+      logger.debug('fixture-harness: GET /push/subscriptions', {status: 404, errorClass: 'not-subscribed'})
+      const res = c.json({error: 'not_subscribed'}, 404)
       setNoStore(res.headers)
       return res
     }
 
     logger.debug('fixture-harness: GET /push/subscriptions', {status: 200})
     const res = c.json({
-      endpointHash: fixtureEndpointHash(record.endpoint),
-      keyVersion: record.keyVersion,
-      active: record.active,
-      createdAt: record.createdAt,
-      updatedAt: record.updatedAt,
-      ...(record.inactiveReason === undefined ? {} : {inactiveReason: record.inactiveReason}),
+      subscriptions: [
+        {
+          endpointHash: fixtureEndpointHash(record.endpoint),
+          keyVersion: record.keyVersion,
+          active: record.active,
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+          ...(record.inactiveReason === undefined ? {} : {inactiveReason: record.inactiveReason}),
+        },
+      ],
     })
     setNoStore(res.headers)
     return res
