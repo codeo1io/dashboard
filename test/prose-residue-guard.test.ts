@@ -38,6 +38,8 @@ const EXCLUDED_FILES = new Set([
   'pnpm-lock.yaml', // generated lockfile
   'ROADMAP.md', // living ledger; items carry dated historical signals
   'test/fork-exclusion-guard.test.ts', // guard machinery names its own terms
+  'test/read-only-invariant-guard.test.ts', // guard machinery names its own terms (rm-649 wiki-writer family)
+  'test/landing-merge-union-guard.test.ts', // guard machinery names its own terms (wiki-writer lane-drop paths)
   'test/prose-residue-guard.test.ts', // this file
 ])
 const EXCLUDED_DIR_SUFFIXES = ['node_modules', 'dist', 'coverage']

@@ -18,6 +18,10 @@ describe('ListenerChannel', () => {
   afterEach(() => {
     vi.runOnlyPendingTimers()
     vi.useRealTimers()
+    // rm-501 hygiene: automocked module functions keep their call history
+    // across tests (restoreAllMocks only unwraps spies), so later
+    // toHaveBeenCalledTimes assertions would see earlier tests' calls.
+    vi.clearAllMocks()
     vi.restoreAllMocks()
   })
 
@@ -202,6 +206,101 @@ describe('ListenerChannel', () => {
     })
 
     expect(listenerApi.ackAllListenerMessages).toHaveBeenCalled()
+  })
+
+  it('rm-501: a failed per-message ack shows visible feedback, releases the ackingId gate, and a retry clears it', async () => {
+    const mockMessages = {
+      ok: true,
+      data: {
+        messages: [
+          {
+            id: 'msg-1',
+            source: 'infra' as const,
+            kind: 'deploy-health',
+            severity: 'warning' as const,
+            title: 'Gateway issue',
+            body: 'Body text',
+            createdAt: '2026-07-11T12:00:00Z',
+            receivedAt: '2026-07-11T12:00:01Z',
+            read: false,
+            links: []
+          }
+        ],
+        unreadCount: 1, prunedCount: 0, droppedCount: 0
+      }
+    } as const
+
+    vi.mocked(listenerApi.fetchListenerMessages).mockResolvedValue(mockMessages)
+    // First attempt fails (bounded timeout / non-202 all read as false), retry succeeds.
+    vi.mocked(listenerApi.ackListenerMessage).mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+
+    render(<ListenerChannel />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    const ackBtn = screen.getByText('Mark read')
+    await act(async () => {
+      fireEvent.click(ackBtn)
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    // Failure is surfaced, not swallowed.
+    expect(screen.getByTestId('listener-ack-failure')).toBeInTheDocument()
+    // The gate is released — the same button doubles as the retry affordance.
+    expect(screen.getByText('Mark read')).toBeEnabled()
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Mark read'))
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    // Retry succeeded: the failure banner is cleared by the retry's own
+    // entry-state reset and both ack attempts were made. (Synchronous
+    // assertion after the act/advance pair — waitFor would hang on the frozen
+    // fake clock, never observing the already-committed unmount.)
+    expect(screen.queryByTestId('listener-ack-failure')).not.toBeInTheDocument()
+    expect(listenerApi.ackListenerMessage).toHaveBeenCalledTimes(2)
+  })
+
+  it('rm-501: a failed ack-all shows the same visible failure feedback', async () => {
+    const mockMessages = {
+      ok: true,
+      data: {
+        messages: [
+          {
+            id: 'msg-1',
+            source: 'infra' as const,
+            kind: 'deploy-health',
+            severity: 'warning' as const,
+            title: 'Gateway issue',
+            body: 'Body',
+            createdAt: '2026-07-11T12:00:00Z',
+            receivedAt: '2026-07-11T12:00:01Z',
+            read: false,
+            links: []
+          }
+        ],
+        unreadCount: 1, prunedCount: 0, droppedCount: 0
+      }
+    } as const
+
+    vi.mocked(listenerApi.fetchListenerMessages).mockResolvedValue(mockMessages)
+    vi.mocked(listenerApi.ackAllListenerMessages).mockResolvedValueOnce(false)
+
+    render(<ListenerChannel />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('Mark all read'))
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.getByTestId('listener-ack-failure')).toBeInTheDocument()
+    // Gate released for a retry.
+    expect(screen.getByText('Mark all read')).toBeEnabled()
   })
 
   it('polls on interval', async () => {

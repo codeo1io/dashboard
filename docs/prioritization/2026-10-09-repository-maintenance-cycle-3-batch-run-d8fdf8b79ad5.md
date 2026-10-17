@@ -44,6 +44,10 @@ system leaves behind (operator log fields, docs conventions) must be faithful.
   hardening); dead-lane history rm-755 (89ebbf49) and rm-781 (32f33f1b, 'pre-Monday
   tripwire parity'). The active claim wins; if d1a0b216 dies before Monday, the fix
   is re-implementable by content with a fold note in the rider — no new mint.
+  (Superseded 2026-10-17, run 9d5c156d cycle-4 compound rm-857 docs-truth rider:
+  the Monday 2026-10-12 fire never happened — the workflow had been dropped as
+  landing-merge adoption collateral before it could fire; restored 2026-10-16 by
+  the cycle-4 batch.)
 - rm-116 (branch-protection fill) + rm-792: 438dea88 (running implement).
 - rm-117 + rm-162: 91776e25 (running implement).
 - rm-279: f510a33e (running implement).
@@ -160,7 +164,9 @@ execution.
 - **Cycle:4 entry points** (recorded in the compound #41 header comment too):
   rm-674 (five Monday crons) unblocks once sibling workflow churn lands; the
   cve-tripwire NODE_IMAGE cure rides d1a0b216 against the Monday 2026-10-12
-  06:53Z first fire (dead-claim path = fold note, no new mint); rm-108's two
+  06:53Z first fire (dead-claim path = fold note, no new mint; superseded 2026-10-17 rm-857
+  docs-truth rider: the fire never happened — adoption-collateral drop, restored
+  by run 9d5c156d cycle-4); rm-108's two
   ungated soak windows may execute at the next refresh; rm-252's 2026-10-13
   absorb decision diffs against the residual at upstream tip 22e2e46 (25
   ahead/206 behind); rm-659 stays stewardship-shaped. This batch's

@@ -273,15 +273,36 @@ describe('submitLaunch — refreshCsrf failure', () => {
 // ---------------------------------------------------------------------------
 
 describe('mintIdempotencyKey', () => {
-  it('returns a non-empty string', () => {
+  it('returns a non-empty string when a secure generator exists (node test env)', () => {
     const key = mintIdempotencyKey()
-    expect(typeof key).toBe('string')
-    expect(key.length).toBeGreaterThan(0)
+    expect(key).not.toBeNull()
+    if (key !== null) {
+      expect(typeof key).toBe('string')
+      expect(key.length).toBeGreaterThan(0)
+    }
   })
 
   it('returns unique values on successive calls', () => {
-    const keys = new Set(Array.from({length: 20}, () => mintIdempotencyKey()))
+    const keys = new Set(
+      Array.from({length: 20}, () => mintIdempotencyKey()).filter((k): k is string => k !== null),
+    )
     expect(keys.size).toBe(20)
+  })
+
+  it('returns null when no secure generator exists — never a Date/Math fallback (rm-482)', () => {
+    if ('crypto' in globalThis && globalThis.crypto !== undefined) {
+      // jsdom/node expose crypto as a getter on globalThis; swap it out for the
+      // duration of the assertion.
+      const g = globalThis as {crypto?: unknown}
+      const had = 'crypto' in g
+      const original = g.crypto
+      delete g.crypto
+      try {
+        expect(mintIdempotencyKey()).toBeNull()
+      } finally {
+        if (had) g.crypto = original
+      }
+    }
   })
 })
 

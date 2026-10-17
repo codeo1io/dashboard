@@ -6999,6 +6999,58 @@ describe('renderCancelControl — two-step confirm interaction', () => {
     expect(cancelCalls).toHaveLength(1)
   })
 
+  it('rm-482 fail-closed (review F2): a null mint renders transport failure without wedging the retry path', async () => {
+    stubCancelRenderEnv()
+    vi.stubGlobal('crypto', {}) // no randomUUID — mintSecureIdempotencyKey returns null
+    const {client, cancelCalls} = makeFakeCancelClient()
+    const dispatchCalls: string[] = []
+    const {el} = renderCancelControl('run-001', client, runId => {
+      dispatchCalls.push(runId)
+    }) as unknown as {el: FakeElement}
+
+    findVisibleButtons(el).find(b => b.textContent === 'Cancel run')?.dispatchEvent({type: 'click'})
+    findVisibleButtons(el).find(b => b.textContent === 'Confirm cancel')?.dispatchEvent({type: 'click'})
+    await new Promise(resolve => setTimeout(resolve, 10))
+
+    expect(el.dataset.state).toBe('transport-failure')
+    expect(cancelCalls).toHaveLength(0)
+    expect(dispatchCalls).toHaveLength(0)
+
+    // The rendered "Try again" must re-enter handleCancel: the pre-review bug
+    // took the canceling/cancelInitiated mutex BEFORE minting, so the null-key
+    // early return left the mutex set and the retry button no-op'd forever.
+    vi.stubGlobal('crypto', {randomUUID: () => 'recovered-key'})
+    findVisibleButtons(el).find(b => b.textContent === 'Try again')?.dispatchEvent({type: 'click'})
+    await new Promise(resolve => setTimeout(resolve, 10))
+
+    expect(cancelCalls).toHaveLength(1)
+    expect(cancelCalls[0]?.idempotencyKey).toBe('recovered-key')
+    expect(dispatchCalls).toEqual(['run-001'])
+    expect(el.dataset.state).toBe('cancelled')
+  })
+
+  it('rm-482 fail-closed (review F2): a terminal frame after a null mint renders neutral copy — no cancel was dispatched', async () => {
+    stubCancelRenderEnv()
+    vi.stubGlobal('crypto', {})
+    const {client} = makeFakeCancelClient()
+    const {el, notifyTerminal} = renderCancelControl('run-001', client, () => {}) as unknown as {
+      el: FakeElement
+      notifyTerminal: () => void
+    }
+
+    findVisibleButtons(el).find(b => b.textContent === 'Cancel run')?.dispatchEvent({type: 'click'})
+    findVisibleButtons(el).find(b => b.textContent === 'Confirm cancel')?.dispatchEvent({type: 'click'})
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(el.dataset.state).toBe('transport-failure')
+
+    notifyTerminal()
+    // Neutral terminal: no "Run stopped." cancel-outcome copy may render —
+    // the pre-review bug left cancelInitiated set on the null-mint path.
+    const statusEl = findStatusElement(el)
+    expect(statusEl?.textContent ?? '').toBe('')
+    expect(findVisibleButtons(el)).toHaveLength(0)
+  })
+
   it('error: 404 renders the unavailable state', async () => {
     stubCancelRenderEnv()
     const {client} = makeFakeCancelClient({

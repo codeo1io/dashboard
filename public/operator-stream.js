@@ -312,6 +312,19 @@ export const CHECKOUT_PROVENANCE_LABELS = {
  * re-scanned, and the replacement is applied through a function so `$&`-style patterns in
  * a value stay literal. A token with no value is left as written.
  */
+/**
+ * Mint a cryptographically secure idempotency key for decision/cancel posts
+ * (rm-482: fail closed). Returns null when no secure generator exists —
+ * callers must refuse the side effect rather than fall back to a predictable
+ * Date/Math-derived key.
+ * @returns {string | null}
+ */
+export function mintSecureIdempotencyKey() {
+  const g = globalThis.crypto
+  if (g !== undefined && typeof g.randomUUID === 'function') return g.randomUUID()
+  return null
+}
+
 export function fillLabelTemplate(template, values) {
   return template.replaceAll(/\{(\w+)\}/g, (token, name) =>
     Object.prototype.hasOwnProperty.call(values, name) ? String(values[name]) : token,
@@ -2741,11 +2754,12 @@ export function renderApprovalPrompt(prompt, runId, approvalClient, _onSettle) {
     if (promptState === 'in-flight') return
     setInFlight()
 
-    const idempotencyKey = (
-      globalThis.crypto !== undefined && typeof globalThis.crypto.randomUUID === 'function'
-        ? globalThis.crypto.randomUUID()
-        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-    )
+    const idempotencyKey = mintSecureIdempotencyKey()
+    if (idempotencyKey === null) {
+      // rm-482: fail closed — never send a decision with a predictable key.
+      setTransportFailure()
+      return
+    }
 
     const result = await approvalClient.decideRunApproval(runId, requestID, decision, idempotencyKey)
 
@@ -3071,17 +3085,21 @@ export function renderCancelControl(runId, cancelClient, onCancelDispatch) {
   async function handleCancel() {
     // In-flight mutex — guards the handler itself, not just `disabled`.
     if (canceling) return
+    // Mint BEFORE taking the mutex (independent_review F2 fix, 2026-10-17):
+    // the null-key fail-closed return must leave `canceling`/`cancelInitiated`
+    // untouched — otherwise the rendered "Try again" dead-ends on the mutex
+    // above and a later terminal frame misattributes the cancelled copy.
+    const idempotencyKey = mintSecureIdempotencyKey()
+    if (idempotencyKey === null) {
+      // rm-482: fail closed — never send a cancel with a predictable key.
+      setTransportFailure()
+      return
+    }
     canceling = true
     cancelInitiated = true
     clearRetryTimer()
     retryAttempt = 0
     setPending()
-
-    const idempotencyKey = (
-      globalThis.crypto !== undefined && typeof globalThis.crypto.randomUUID === 'function'
-        ? globalThis.crypto.randomUUID()
-        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-    )
 
     if (typeof onCancelDispatch === 'function') onCancelDispatch(runId)
 
