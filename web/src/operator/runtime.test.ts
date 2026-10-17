@@ -24,7 +24,7 @@
  */
 
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
-import {PINNED_CONTRACT_VERSION, type RunSummaryStatus} from '../../../public/operator-stream.js'
+import {PINNED_CONTRACT_VERSION} from '../../../public/operator-stream.js'
 import {VALID_RUN_SUMMARY_STATUSES} from '../../../public/operator-run-index.js'
 import {
   createOperatorRuntime,
@@ -866,7 +866,7 @@ describe('defaultRuntimeLoader — question region and summary status wiring', (
     // same three-way lock — no surface can move alone.
     expect(Object.keys(STATUS_CLASS_TOKENS).toSorted()).toEqual([...VALID_RUN_SUMMARY_STATUSES].toSorted())
     expect(Object.keys(STATUS_CLASS_TOKENS)).toHaveLength(VALID_RUN_SUMMARY_STATUSES.size)
-    expect(Object.values(STATUS_CLASS_TOKENS).includes('status-blocked')).toBe(false)
+    expect((Object.values(STATUS_CLASS_TOKENS) as string[]).includes('status-blocked')).toBe(false)
   })
 
   it('card switch A → B → A clears A’s stale question DOM on re-attach', async () => {
