@@ -158,6 +158,10 @@ describe('AppShell', () => {
     expect(screen.getByRole('link', {name: 'Privacy'})).toHaveAttribute('href', '/privacy')
   })
 
+  // rm-882 (absorb of upstream #641, fork-adapted): the footer version chip.
+  // Calver builds link to THIS fork's release notes (codeo1io, not upstream's
+  // fro-bot URL); dev/undefined/malformed values render as plain text with no
+  // link — nothing may link anywhere without a real release behind it.
   it('links a valid release version to its release notes', () => {
     vi.stubEnv('VITE_DASHBOARD_VERSION', '2026.10.33')
 

@@ -107,6 +107,10 @@ const CLAIM_PATH_TOKEN = /(?<!\w)(?:test|src|web|scripts|docs|public|\.github)\/
 
 const TOLERATED_MISSING = new Map([
   [
+    'test/visual-parity-guard.test.ts',
+    'deliberately dropped by run 47f9aaefa379 full_tests supersession — a sibling lane landed the richer test/visual-playwright-image-lockstep.test.ts triple guard on main first (single-source rule); drop recorded in docs/prioritization/2026-10-17-repository-maintenance-cycle-1-compound-run-47f9aaefa379.md Supersession record',
+  ],
+  [
     'test/operator-contract-window.test.ts',
     'dropped by the 2026-10-15 tip merge (06396b4 -> 3e3664c); restoration is owned by the 60-file drop-residue item (rm-887 band)',
   ],

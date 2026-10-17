@@ -582,6 +582,10 @@ export function AppShell({
           >
             Restore notifications
           </button>
+          {/* rm-882 (absorb of upstream #641, fork-adapted): version chip.
+              Calver builds link to this fork's release notes for the exact
+              tag; dev/malformed values stay plain text so nothing links
+              anywhere without a real release behind it. */}
           {releaseNotesUrl ? (
             <a
               href={releaseNotesUrl}
