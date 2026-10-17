@@ -25,7 +25,7 @@ import type {Result} from '../result.ts'
 import type {PermissionReply} from './operator-contract/approval.ts'
 import type {OperatorCsrfToken, OperatorDecisionState, OperatorSessionInfo, OperatorWebStatus, PushSubscriptionMetadata, RepoSummary, RunStreamFrame, VapidKeyResponse} from './operator-contract/index.ts'
 import {err, ok} from '../result.ts'
-import {parseLaunchRunResponse, parseOperatorCsrfToken, parseOperatorSessionInfo, parsePushSubscriptionMetadata, parseRepoSummaryList, parseRunApprovalDecisionResponse, parseRunApprovalsResponse, parseRunSnapshotResponse, parseVapidKeyResponse} from './operator-contract/index.ts'
+import {parseLaunchRunResponse, parseOperatorCsrfToken, parseOperatorSessionInfo, parsePushSubscriptionListResponse, parseRepoSummaryList, parseRunApprovalDecisionResponse, parseRunApprovalsResponse, parseRunSnapshotResponse, parseVapidKeyResponse} from './operator-contract/index.ts'
 
 // ---------------------------------------------------------------------------
 // Run status union
@@ -135,9 +135,9 @@ export type VapidKeyResult =
   | {readonly pushDisabled: false; readonly vapidKey: VapidKeyResponse}
   | {readonly pushDisabled: true}
 
-/** Result of GET /operator/push/subscriptions: safe metadata or a push_disabled signal. */
+/** Result of GET /operator/push/subscriptions: safe metadata or a push_disabled signal (undefined metadata = no subscription on either wire shape). */
 export type PushSubscriptionMetadataResult =
-  | {readonly pushDisabled: false; readonly metadata: PushSubscriptionMetadata}
+  | {readonly pushDisabled: false; readonly metadata: PushSubscriptionMetadata | undefined}
   | {readonly pushDisabled: true}
 
 /**
@@ -766,13 +766,17 @@ export function createOperatorClient(options: OperatorClientOptions): OperatorCl
       }
       return raw
     }
-    const parsed = parsePushSubscriptionMetadata(raw.data)
-    if (!parsed.success) {
-      const protocolErr: GatewayProtocolError = {kind: 'protocol', message: 'Failed to parse push subscription metadata'}
-      logger?.error('operator-client: push subscription metadata parse error', {route: '/operator/push/subscriptions'})
-      return err(protocolErr)
+    // Dual-shape defense (#631): the current gateway returns the
+    // `{subscriptions:[...]}` envelope (epoch-ms dates); older gateways
+    // return the flat record or an empty object. Both normalize to entries;
+    // the server-side selection prefers an active entry (the authoritative
+    // endpoint-hash join lives web-side in derivePushHandoffState).
+    const entries = parsePushSubscriptionListResponse(raw.data)
+    const selected = entries.find(entry => entry.active) ?? entries[0]
+    if (selected === undefined) {
+      return ok({pushDisabled: false, metadata: undefined})
     }
-    return ok({pushDisabled: false, metadata: parsed.data})
+    return ok({pushDisabled: false, metadata: selected})
   }
 
   async function subscribePush(

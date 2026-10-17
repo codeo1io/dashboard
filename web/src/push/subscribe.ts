@@ -43,7 +43,10 @@ export interface PushClient {
    * 404 — the synthetic push_disabled signal driven by status alone, never
    * response-body shape. A non-404 error stays a normal `PushClientError`.
    */
-  getPushSubscriptionMetadata(): Promise<
+  getPushSubscriptionMetadata(input?: {
+    readonly signal?: AbortSignal
+    readonly localEndpointHash?: string
+  }): Promise<
     Result<{readonly pushDisabled: boolean; readonly metadata: PushSubscriptionMetadata | undefined}, PushClientError>
   >
   subscribePush(
@@ -70,6 +73,68 @@ function hasValidSubscriptionMetadataShape(value: unknown): value is PushSubscri
     typeof c.createdAt === 'string' &&
     typeof c.updatedAt === 'string'
   )
+}
+
+/** Normalize a wire date (epoch-ms on the list wire, ISO on the flat wire) to the local ISO-string form; undefined marks the entry invalid. */
+function toIsoDateString(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString()
+}
+
+/** Normalize one subscription entry (list or flat); invalid input yields undefined and is dropped, never fatal. */
+function normalizeSubscriptionMetadataEntry(input: unknown): PushSubscriptionMetadata | undefined {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) return undefined
+  const record: Record<string, unknown> = {...(input as Record<string, unknown>)}
+
+  const createdAt = toIsoDateString(record.createdAt)
+  if (createdAt !== undefined) record.createdAt = createdAt
+  const updatedAt = toIsoDateString(record.updatedAt)
+  if (updatedAt !== undefined) record.updatedAt = updatedAt
+
+  if (hasValidSubscriptionMetadataShape(record) === false) return undefined
+  return record
+}
+
+/**
+ * Dual-shape defense against gateway wire drift (#631): the Gateway's
+ * GET /operator/push/subscriptions currently returns a
+ * `{subscriptions:[...]}` envelope (epoch-millisecond createdAt/updatedAt);
+ * older gateways return the flat metadata record (ISO dates) or an empty
+ * object. Both shapes are accepted and normalized to the web-local
+ * `PushSubscriptionMetadata` (ISO date strings).
+ *
+ * List selection mirrors `derivePushHandoffState`'s join rule: the entry
+ * whose `endpointHash` equals the caller's local hash is "the" subscription
+ * (another hash belongs to another device). When none matches, the first
+ * valid entry is still returned so the authoritative mismatch join in
+ * `derivePushHandoffState` — and the caller's `notSubscribedConfirmed`
+ * cleanup — keep working unchanged; the join itself can never surface a
+ * false `subscribed`.
+ */
+export function selectSubscriptionMetadataFromWire(
+  data: unknown,
+  localEndpointHash: string | undefined,
+): PushSubscriptionMetadata | undefined {
+  if (
+    typeof data === 'object' &&
+    data !== null &&
+    Array.isArray((data as {subscriptions?: unknown}).subscriptions)
+  ) {
+    const entries = (data as {subscriptions: readonly unknown[]}).subscriptions as readonly unknown[]
+    let first: PushSubscriptionMetadata | undefined
+    for (const raw of entries) {
+      const entry = normalizeSubscriptionMetadataEntry(raw)
+      if (entry === undefined) continue
+      if (first === undefined) first = entry
+      if (localEndpointHash !== undefined && entry.endpointHash === localEndpointHash) return entry
+    }
+    return first
+  }
+  // Legacy flat record (ISO dates) or empty object — the hash join stays
+  // downstream, exactly as before.
+  return normalizeSubscriptionMetadataEntry(data)
 }
 
 /**
@@ -142,10 +207,11 @@ export function buildPushClient(opts?: BuildPushClientOptions): PushClient {
       }
     },
 
-    async getPushSubscriptionMetadata() {
+    async getPushSubscriptionMetadata(input) {
       try {
         const res = await browserFetch(withFixtureSessionId(`${endpointBase}/subscriptions`), {
           headers: {'content-type': 'application/json'},
+          signal: input?.signal,
         })
         if (res.status === 404) return ok({pushDisabled: true, metadata: undefined})
         if (!res.ok) return err({kind: 'http', status: res.status})
@@ -153,11 +219,12 @@ export function buildPushClient(opts?: BuildPushClientOptions): PushClient {
         if (data === null || typeof data !== 'object') {
           return ok({pushDisabled: false, metadata: undefined})
         }
-        // Gateway returns either an empty object (no subscription) or the metadata shape.
-        if (hasValidSubscriptionMetadataShape(data) === false) {
-          return ok({pushDisabled: false, metadata: undefined})
-        }
-        return ok({pushDisabled: false, metadata: data})
+        // Dual-shape (#631): list envelope (epoch-ms) or legacy flat record
+        // both normalize here — see selectSubscriptionMetadataFromWire.
+        return ok({
+          pushDisabled: false,
+          metadata: selectSubscriptionMetadataFromWire(data, input?.localEndpointHash),
+        })
       } catch {
         return err({kind: 'network'})
       }
@@ -734,16 +801,11 @@ export async function runReconcileSweep(
     return {skipped: true, action: undefined, uiState: undefined, nextCache: cache}
   }
 
-  const metadataResult = await deps.pushClient.getPushSubscriptionMetadata()
-  if (!metadataResult.success) {
-    // Transport/protocol error — do not mutate state on an inconclusive read.
-    return {skipped: true, action: undefined, uiState: undefined, nextCache: cache}
-  }
-
   // A thrown/rejected hash computation (e.g. a transient crypto.subtle
   // failure) must be treated the same as "unavailable" — not silently
   // dropped into a false not_subscribed/cleanup. Never let it crash the
-  // sweep either.
+  // sweep either. Computed BEFORE the metadata read so the local hash can
+  // ride the request and drive list-wire entry selection (#631).
   let localHash: string | undefined
   if (subscriptionPresent && localSubscription !== null) {
     try {
@@ -752,6 +814,13 @@ export async function runReconcileSweep(
       localHash = undefined
     }
   }
+
+  const metadataResult = await deps.pushClient.getPushSubscriptionMetadata({localEndpointHash: localHash})
+  if (!metadataResult.success) {
+    // Transport/protocol error — do not mutate state on an inconclusive read.
+    return {skipped: true, action: undefined, uiState: undefined, nextCache: cache}
+  }
+
   const currentKeyVersion = deps.getCurrentKeyVersion?.()
 
   const handoffState = derivePushHandoffState(localHash, currentKeyVersion, metadataResult.data)

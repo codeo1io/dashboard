@@ -23,6 +23,13 @@ export interface VapidKeyResponse {
  * Safe subscription metadata, mirroring the Gateway's
  * `GET /operator/push/subscriptions` response. Opaque endpoint hash only —
  * NEVER the raw endpoint, p256dh, or auth subscription keys.
+ *
+ * Canonical normalized form (single source of truth for both wire shapes —
+ * #631 defense): `createdAt`/`updatedAt` are ALWAYS ISO date strings. The
+ * gateway may send epoch milliseconds (list envelope) or ISO strings (flat
+ * legacy record); both server (`parsePushSubscriptionListResponse`) and
+ * client (`normalizeSubscriptionMetadataEntry` in subscribe.ts) normalize
+ * to this shape before anything consumes it.
  */
 export interface PushSubscriptionMetadata {
   readonly endpointHash: string

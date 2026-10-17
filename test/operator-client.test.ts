@@ -3017,12 +3017,57 @@ describe('getPushSubscriptionMetadata', () => {
     const result = await client.getPushSubscriptionMetadata()
     expect(result.success).toBe(true)
     if (result.success && !result.data.pushDisabled) {
-      expect(result.data.metadata.endpointHash).toBe(FIXTURE_METADATA.endpointHash)
-      expect(result.data.metadata.keyVersion).toBe('v1')
-      expect(result.data.metadata.active).toBe(true)
+      expect(result.data.metadata?.endpointHash).toBe(FIXTURE_METADATA.endpointHash)
+      expect(result.data.metadata?.keyVersion).toBe('v1')
+      expect(result.data.metadata?.active).toBe(true)
       expect(result.data.metadata).not.toHaveProperty('endpoint')
       expect(result.data.metadata).not.toHaveProperty('p256dh')
       expect(result.data.metadata).not.toHaveProperty('auth')
+    }
+  })
+
+  it('parses the current list envelope (epoch-ms dates) and prefers an active entry (#631 dual-shape)', async () => {
+    const LIST_WIRE = {
+      subscriptions: [
+        {
+          endpointHash: 'b'.repeat(64),
+          keyVersion: 'v1',
+          active: false,
+          createdAt: 1_767_261_600_000,
+          updatedAt: 1_767_261_600_000,
+          inactiveReason: 'unsubscribed',
+        },
+        {
+          endpointHash: 'c'.repeat(64),
+          keyVersion: 'v2',
+          active: true,
+          createdAt: 1_767_261_600_000,
+          updatedAt: 1_767_261_700_000,
+        },
+      ],
+    }
+    const client = createOperatorClient({
+      fetch: makeOkFetch(LIST_WIRE),
+      createEventStream: makeEventStream([]),
+    })
+    const result = await client.getPushSubscriptionMetadata()
+    expect(result.success).toBe(true)
+    if (result.success && !result.data.pushDisabled) {
+      expect(result.data.metadata?.endpointHash).toBe('c'.repeat(64))
+      expect(result.data.metadata?.createdAt).toBe(new Date(1_767_261_600_000).toISOString())
+      expect(result.data.metadata?.updatedAt).toBe(new Date(1_767_261_700_000).toISOString())
+    }
+  })
+
+  it('treats an unparseable body as no-subscription, not a protocol error (graceful dual-shape)', async () => {
+    const client = createOperatorClient({
+      fetch: makeOkFetch({unexpected: 'shape'}),
+      createEventStream: makeEventStream([]),
+    })
+    const result = await client.getPushSubscriptionMetadata()
+    expect(result.success).toBe(true)
+    if (result.success && !result.data.pushDisabled) {
+      expect(result.data.metadata).toBeUndefined()
     }
   })
 
