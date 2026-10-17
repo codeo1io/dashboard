@@ -2785,6 +2785,13 @@ export function renderApprovalPrompt(prompt, runId, approvalClient, _onSettle) {
     event.stopPropagation()
   })
 
+  // The approval prompt sits inside the run card, which toggles expansion on
+  // click. Contain clicks inside the prompt so a decision does not collapse
+  // the card mid-action.
+  el.addEventListener('click', event => {
+    event.stopPropagation()
+  })
+
   // Permission label
   const permEl = document.createElement('div')
   permEl.className = 'approval-prompt-permission'
@@ -3063,6 +3070,12 @@ export function renderCancelControl(runId, cancelClient, onCancelDispatch) {
   // Same containment as the approval prompt: nothing inside the Cancel control toggles the run card.
   // Each button already stops its own click; this also covers the status text and padding, which
   // used to bubble and collapse the card (and close the stream) mid-cancel.
+  el.addEventListener('click', event => {
+    event.stopPropagation()
+  })
+
+  // The Cancel control sits inside the run card as well; contain its clicks
+  // for the same reason.
   el.addEventListener('click', event => {
     event.stopPropagation()
   })
