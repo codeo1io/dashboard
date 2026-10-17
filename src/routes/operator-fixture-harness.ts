@@ -220,6 +220,74 @@ interface QuestionRunState {
 }
 const questionRunState = new Map<string, QuestionRunState>()
 
+// Cancel idempotency — scoped by `${sessionId}:${idemKey}` → the cached response body.
+// Declared with the other session-scoped state so evictOldestFixtureSessions can purge it.
+const cancelIdempotencyMap = new Map<string, {ok: true; runId: string; phase: 'COMPLETED' | 'FAILED' | 'CANCELLED'}>()
+
+// Push subscription fixture record. `endpoint` is kept internally ONLY to match
+// unsubscribe requests and compute the synthetic hash — it is never returned
+// in any response.
+interface FixturePushRecord {
+  endpoint: string
+  keyVersion: string
+  active: boolean
+  createdAt: string
+  updatedAt: string
+  inactiveReason?: string
+}
+
+// Idempotency scoping mirrors POST /runs: `${sessionId}:${idemKey}` → record.
+const pushIdempotencyMap = new Map<string, FixturePushRecord>()
+// Current record per fixtureSessionId — the "active subscription" for that
+// session's browser. Overwritten on subscribe, marked inactive on unsubscribe.
+const pushSessionRecordMap = new Map<string, FixturePushRecord>()
+
+// rm-1489 (2026-10-17): bounded retention for the in-memory session-scoped state. Without a
+// bound the maps/sets grew for process lifetime — restart was the only clear. Sessions are capped
+// at FIXTURE_SESSION_CAP; when a new mint pushes past the cap the OLDEST sessions (by mint time,
+// insertion order breaking ties) are evicted together with every state entry they own — run,
+// launch/cancel idempotency and push state alike (review hardening 2026-10-17: the cancel and
+// push maps are session-scoped too and initially escaped the purge). The session that just
+// minted (the caller of the eviction) is never evicted, so a live operator tab always keeps
+// its scenario playback. The bound is deliberately generous: this is a dev/demo surface gated
+// behind DASHBOARD_FIXTURE_HARNESS_ENABLED, and eviction exists so a long-lived process cannot
+// accumulate unbounded stale sessions, not to ration normal fixture use. Exported so the
+// bounds tests derive their eviction drives from the cap instead of hardcoding it.
+export const FIXTURE_SESSION_CAP = 50
+
+function evictOldestFixtureSessions(keepSessionId: string): void {
+  // Map/Set insertion order is deterministic, so oldest-by-mint-time is a stable sort here.
+  const sessionsByAge = [...sessionStartedAtMs.keys()]
+  let excess = sessionsByAge.length - FIXTURE_SESSION_CAP
+  for (const sessionId of sessionsByAge) {
+    if (excess <= 0) break
+    if (sessionId === keepSessionId) continue
+    validFixtureSessionIds.delete(sessionId)
+    sessionStartedAtMs.delete(sessionId)
+    for (const key of [...idempotencyMap.keys()]) {
+      if (key.startsWith(`${sessionId}:`)) idempotencyMap.delete(key)
+    }
+    // Review hardening (2026-10-17, independent review of cycle 2): the cancel and push
+    // idempotency maps are session-scoped like the launch map — purge them with the session
+    // too, or their entries outlive eviction for process lifetime. The push record map is
+    // keyed by the session id directly.
+    for (const key of [...cancelIdempotencyMap.keys()]) {
+      if (key.startsWith(`${sessionId}:`)) cancelIdempotencyMap.delete(key)
+    }
+    for (const key of [...pushIdempotencyMap.keys()]) {
+      if (key.startsWith(`${sessionId}:`)) pushIdempotencyMap.delete(key)
+    }
+    pushSessionRecordMap.delete(sessionId)
+    for (const [runId, ownerSessionId] of [...runSessionMap.entries()]) {
+      if (ownerSessionId !== sessionId) continue
+      runSessionMap.delete(runId)
+      runScenarioMap.delete(runId)
+      questionRunState.delete(runId)
+    }
+    excess--
+  }
+}
+
 // A held-open stream ends after this long if the browser never closes it (the gateway's own cap is 30 minutes).
 const FIXTURE_HELD_OPEN_MS = 30 * 60 * 1000
 
@@ -257,9 +325,6 @@ function nthOrLast<T>(sequence: readonly T[], index: number): T | undefined {
   return sequence[Math.min(index, sequence.length - 1)]
 }
 
-// Cancel idempotency — scoped by `${sessionId}:${idemKey}` → the cached response body.
-const cancelIdempotencyMap = new Map<string, {ok: true; runId: string; phase: 'COMPLETED' | 'FAILED' | 'CANCELLED'}>()
-
 // Documented sentinel: an `idempotency-key` header value of exactly 'force-503' forces
 // a 503 {error:'unavailable'} response on POST /runs/:runId/cancel, so the dashboard's
 // bounded-retry UI state is exercisable against the fixture harness.
@@ -280,24 +345,6 @@ function cancelPhaseForRunId(runId: string): 'COMPLETED' | 'FAILED' | 'CANCELLED
   if (summary.status === 'failed') return 'FAILED'
   return 'CANCELLED'
 }
-
-// Push subscription fixture record. `endpoint` is kept internally ONLY to match
-// unsubscribe requests and compute the synthetic hash — it is never returned
-// in any response.
-interface FixturePushRecord {
-  endpoint: string
-  keyVersion: string
-  active: boolean
-  createdAt: string
-  updatedAt: string
-  inactiveReason?: string
-}
-
-// Idempotency scoping mirrors POST /runs: `${sessionId}:${idemKey}` → record.
-const pushIdempotencyMap = new Map<string, FixturePushRecord>()
-// Current record per fixtureSessionId — the "active subscription" for that
-// session's browser. Overwritten on subscribe, marked inactive on unsubscribe.
-const pushSessionRecordMap = new Map<string, FixturePushRecord>()
 
 // Synthetic, never a real sha256 — deterministic per-endpoint fixture hash.
 function fixtureEndpointHash(endpoint: string): string {
@@ -393,6 +440,10 @@ export function buildFixtureHarnessRouter(): Hono {
     const fixtureSessionId = generateFixtureSessionId()
     validFixtureSessionIds.add(fixtureSessionId)
     sessionStartedAtMs.set(fixtureSessionId, Date.now())
+    // rm-1489: enforce the session cap at mint time. With the review-hardened live-session
+    // gates (push/cancel writes and the GET /runs touch accept only minted sessions), minting
+    // is the ONLY growth path for session-scoped state — so the cap bounds all of it.
+    evictOldestFixtureSessions(fixtureSessionId)
     const res = c.json({...FIXTURE_SESSION, fixtureMode: true, fixtureSessionId})
     setNoStore(res.headers)
     return res
@@ -416,8 +467,16 @@ export function buildFixtureHarnessRouter(): Hono {
 
   router.get('/runs', c => {
     const requestSessionId = extractRequestSessionId(c)
+    // Review hardening (2026-10-17): only LIVE sessions get session-scoped behavior. An
+    // unminted or evicted shape-valid id must not touch sessionStartedAtMs — that touch was
+    // an unbounded growth path and planted phantom entries that displaced real sessions from
+    // the cap window at the next eviction pass. Read-only degradation, same shape as no session.
+    const liveSessionId =
+      requestSessionId !== undefined && validFixtureSessionIds.has(requestSessionId)
+        ? requestSessionId
+        : undefined
 
-    if (requestSessionId !== undefined) {
+    if (liveSessionId !== undefined) {
       for (const summary of FIXTURE_RUN_SUMMARIES) {
         if (!runScenarioMap.has(summary.runId)) {
           const reasonScenario = RUN_ID_TO_SCENARIO.get(summary.runId)
@@ -433,9 +492,10 @@ export function buildFixtureHarnessRouter(): Hono {
 
     // The transition row reports the phase this session has reached; a request with no session sees the first.
     let runs = FIXTURE_RUN_SUMMARIES
-    if (requestSessionId !== undefined) {
-      const startedAt = sessionStartedAtMs.get(requestSessionId) ?? Date.now()
-      sessionStartedAtMs.set(requestSessionId, startedAt)
+    if (liveSessionId !== undefined) {
+      // The entry always exists for a live session (mint sets it, eviction removes both in
+      // lockstep); the fallback is defense-in-depth and, critically, never WRITES state.
+      const startedAt = sessionStartedAtMs.get(liveSessionId) ?? Date.now()
       const phase = transitionPhaseFor(Date.now() - startedAt)
       runScenarioMap.set(FIXTURE_TRANSITION_RUN_ID, phase.scenario)
       runs = FIXTURE_RUN_SUMMARIES.map(summary =>
@@ -485,7 +545,11 @@ export function buildFixtureHarnessRouter(): Hono {
       return res
     }
 
-    if (!isValidFixtureSessionId(req.fixtureSessionId)) {
+    // rm-1489: a well-formed fixtureSessionId is not enough at launch time — the session must
+    // still be live. Without the membership half, a session evicted by the cap could keep minting
+    // runs whose state nothing would ever reclaim (its owner is no longer in
+    // sessionStartedAtMs, so session-cap eviction would skip those entries forever).
+    if (!isValidFixtureSessionId(req.fixtureSessionId) || !validFixtureSessionIds.has(req.fixtureSessionId)) {
       logger.debug('fixture-harness: POST /runs', {status: 400, errorClass: 'invalid-fixture-session'})
       const res = c.json({error: 'invalid-fixture-session'}, 400)
       setNoStore(res.headers)
@@ -786,7 +850,10 @@ export function buildFixtureHarnessRouter(): Hono {
   // CSRF header + idempotency key. Idempotent per `${fixtureSessionId}:${idemKey}`.
   router.post('/push/subscriptions', async c => {
     const requestSessionId = extractRequestSessionId(c)
-    if (requestSessionId === undefined) {
+    // Review hardening (2026-10-17): shape-valid is not enough — the session must be live
+    // (mirrors the POST /runs rm-1489 gate), else push idempotency and record state grow per
+    // distinct unminted session string for process lifetime.
+    if (requestSessionId === undefined || !validFixtureSessionIds.has(requestSessionId)) {
       logger.debug('fixture-harness: POST /push/subscriptions', {status: 400, errorClass: 'invalid-fixture-session'})
       const res = c.json({error: 'invalid-fixture-session'}, 400)
       setNoStore(res.headers)
@@ -856,7 +923,9 @@ export function buildFixtureHarnessRouter(): Hono {
   // fixture session + CSRF header. Marks the session's record inactive.
   router.post('/push/subscriptions/unsubscribe', async c => {
     const requestSessionId = extractRequestSessionId(c)
-    if (requestSessionId === undefined) {
+    // Review hardening (2026-10-17): same live-session gate as subscribe — an unminted id
+    // must not reach the record map on any write path.
+    if (requestSessionId === undefined || !validFixtureSessionIds.has(requestSessionId)) {
       logger.debug('fixture-harness: POST /push/subscriptions/unsubscribe', {status: 400, errorClass: 'invalid-fixture-session'})
       const res = c.json({error: 'invalid-fixture-session'}, 400)
       setNoStore(res.headers)
@@ -910,7 +979,9 @@ export function buildFixtureHarnessRouter(): Hono {
   // session's active record. Never the raw endpoint/keys.
   router.get('/push/subscriptions', c => {
     const requestSessionId = extractRequestSessionId(c)
-    if (requestSessionId === undefined) {
+    // Review hardening (2026-10-17): same live-session gate as subscribe — a read with an
+    // unminted id is a probe, not a subscription check.
+    if (requestSessionId === undefined || !validFixtureSessionIds.has(requestSessionId)) {
       logger.debug('fixture-harness: GET /push/subscriptions', {status: 400, errorClass: 'invalid-fixture-session'})
       const res = c.json({error: 'invalid-fixture-session'}, 400)
       setNoStore(res.headers)
@@ -954,4 +1025,24 @@ export function resetFixtureHarnessForTesting(): void {
   questionRunState.clear()
   sessionIdCounter = 0
   runIdCounter = 0
+}
+
+/**
+ * Sizes of the session-scoped in-memory state. Tests only — the rm-1489 bounds tests assert
+ * that eviction actually reclaims every session-scoped map, not just the session set.
+ */
+export function fixtureHarnessStateCountsForTesting(): {
+  sessions: number
+  launchIdempotency: number
+  cancelIdempotency: number
+  pushIdempotency: number
+  pushSessionRecords: number
+} {
+  return {
+    sessions: validFixtureSessionIds.size,
+    launchIdempotency: idempotencyMap.size,
+    cancelIdempotency: cancelIdempotencyMap.size,
+    pushIdempotency: pushIdempotencyMap.size,
+    pushSessionRecords: pushSessionRecordMap.size,
+  }
 }

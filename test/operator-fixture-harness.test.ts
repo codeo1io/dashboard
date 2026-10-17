@@ -33,7 +33,7 @@ import {
   serializeScenarioToSse,
 } from '../src/gateway/operator-fixture-sse.ts'
 import {parseSseChunk as serverParseSseChunk} from '../src/gateway/operator-sse-reader.ts'
-import {resetFixtureHarnessForTesting} from '../src/routes/operator-fixture-harness.ts'
+import {FIXTURE_SESSION_CAP, fixtureHarnessStateCountsForTesting, resetFixtureHarnessForTesting} from '../src/routes/operator-fixture-harness.ts'
 import {buildDashboardApp, resetRateLimitForTesting} from '../src/server.ts'
 import {SessionManager} from '../src/session.ts'
 
@@ -3437,5 +3437,196 @@ describe('waiting summary fixtures — a run ID that is valid but not in the lis
     expect(runs.map(run => run.runId)).not.toContain(MISSING_RUN_ID)
     const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs/${MISSING_RUN_ID}/stream?fixtureSessionId=${fixtureSessionId}`)
     expect(res.status).toBe(404)
+  })
+})
+
+describe('fixture harness in-memory state bounds (rm-1489)', () => {
+  it('evicts the oldest sessions past FIXTURE_SESSION_CAP together with the state they own, and never evicts the active session', async () => {
+    const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
+
+    const launchFor = async (fixtureSessionId: string, idempotencyKey: string) =>
+      app.request(`${FIXTURE_OPERATOR_PREFIX}/runs`, {
+        method: 'POST',
+        headers: {'content-type': 'application/json'},
+        body: JSON.stringify({
+          scenario: FIXTURE_SCENARIO_NAMES.success,
+          idempotencyKey,
+          fixtureSessionId,
+          csrfToken: 'fixture-csrf',
+          repo: 'fixture-org/fixture-repo',
+          prompt: '[Fixture prompt]',
+        }),
+      })
+
+    // The oldest session is minted first and owns a launched run plus an idempotency entry.
+    const oldestSessionRes = await app.request(`${FIXTURE_OPERATOR_PREFIX}/session`)
+    expect(oldestSessionRes.status).toBe(200)
+    const {fixtureSessionId: oldestSessionId} = await oldestSessionRes.json() as {fixtureSessionId: string}
+    const oldestLaunch = await launchFor(oldestSessionId, 'fixture-idem-key-rm-1489-001')
+    expect(oldestLaunch.status).toBe(200)
+    const {runId: oldestRunId} = await oldestLaunch.json() as {runId: string}
+
+    // Drive the session set past 2x FIXTURE_SESSION_CAP — the drive derives from the cap
+    // so a future cap change cannot silently strand the eviction assertions.
+    for (let i = 0; i < FIXTURE_SESSION_CAP * 2; i++) {
+      const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/session`)
+      expect(res.status).toBe(200)
+    }
+
+    // Evicted with its session: the launch is rejected as an invalid session …
+    const evictedLaunch = await launchFor(oldestSessionId, 'fixture-idem-key-rm-1489-002')
+    expect(evictedLaunch.status).toBe(400)
+    expect(await evictedLaunch.json()).toEqual({error: 'invalid-fixture-session'})
+
+    // … its run's stream is unknown …
+    const evictedStream = await app.request(
+      `${FIXTURE_OPERATOR_PREFIX}/runs/${oldestRunId}/stream?fixtureSessionId=${oldestSessionId}`,
+    )
+    expect(evictedStream.status).toBe(404)
+
+    // … and the most recently minted session still launches — the active session is never the one evicted.
+    const latestSessionRes = await app.request(`${FIXTURE_OPERATOR_PREFIX}/session`)
+    expect(latestSessionRes.status).toBe(200)
+    const {fixtureSessionId: latestSessionId} = await latestSessionRes.json() as {fixtureSessionId: string}
+    const activeLaunch = await launchFor(latestSessionId, 'fixture-idem-key-rm-1489-003')
+    expect(activeLaunch.status).toBe(200)
+  })
+
+  it('reports idempotent replays of an evicted session as a fresh invalid session, not a replay', async () => {
+    const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
+
+    const sessionRes = await app.request(`${FIXTURE_OPERATOR_PREFIX}/session`)
+    const {fixtureSessionId} = await sessionRes.json() as {fixtureSessionId: string}
+    const launch = async () =>
+      app.request(`${FIXTURE_OPERATOR_PREFIX}/runs`, {
+        method: 'POST',
+        headers: {'content-type': 'application/json'},
+        body: JSON.stringify({
+          scenario: FIXTURE_SCENARIO_NAMES.success,
+          idempotencyKey: 'fixture-idem-key-rm-1489-replay',
+          fixtureSessionId,
+          csrfToken: 'fixture-csrf',
+          repo: 'fixture-org/fixture-repo',
+          prompt: '[Fixture prompt]',
+        }),
+      })
+    const first = await launch()
+    expect(first.status).toBe(200)
+
+    // Push the session out of the retained window, then replay the SAME idempotency key:
+    // the idempotency entry was owned by the evicted session and must not resurrect it.
+    for (let i = 0; i < FIXTURE_SESSION_CAP * 2; i++) {
+      await app.request(`${FIXTURE_OPERATOR_PREFIX}/session`)
+    }
+    const replay = await launch()
+    expect(replay.status).toBe(400)
+    expect(await replay.json()).toEqual({error: 'invalid-fixture-session'})
+  })
+
+  it('review hardening: unminted shape-valid sessions cannot create push state', async () => {
+    const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
+    const unminted = 'fixture-session-999999'
+
+    const subscribe = await app.request(`${FIXTURE_OPERATOR_PREFIX}/push/subscriptions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-fixture-session-id': unminted,
+        'x-csrf-token': 'fixture-csrf',
+        'idempotency-key': 'fixture-idem-key-rm-1489-review-001',
+      },
+      body: JSON.stringify(PUSH_SUBSCRIPTION_BODY),
+    })
+    expect(subscribe.status).toBe(400)
+    expect(await subscribe.json()).toEqual({error: 'invalid-fixture-session'})
+
+    const unsubscribe = await app.request(`${FIXTURE_OPERATOR_PREFIX}/push/subscriptions/unsubscribe`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-fixture-session-id': unminted,
+        'x-csrf-token': 'fixture-csrf',
+      },
+      body: JSON.stringify({endpoint: PUSH_SUBSCRIPTION_BODY.endpoint}),
+    })
+    expect(unsubscribe.status).toBe(400)
+    expect(await unsubscribe.json()).toEqual({error: 'invalid-fixture-session'})
+
+    const metadata = await app.request(`${FIXTURE_OPERATOR_PREFIX}/push/subscriptions?fixtureSessionId=${unminted}`)
+    expect(metadata.status).toBe(400)
+    expect(await metadata.json()).toEqual({error: 'invalid-fixture-session'})
+
+    // No session-scoped state was created by any of the probes.
+    expect(fixtureHarnessStateCountsForTesting()).toEqual({
+      sessions: 0,
+      launchIdempotency: 0,
+      cancelIdempotency: 0,
+      pushIdempotency: 0,
+      pushSessionRecords: 0,
+    })
+  })
+
+  it('review hardening: GET /runs with an unminted session neither personalizes nor grows state', async () => {
+    const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
+    const unminted = 'fixture-session-888888'
+
+    const before = fixtureHarnessStateCountsForTesting()
+    const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs?fixtureSessionId=${unminted}`)
+    expect(res.status).toBe(200)
+    const {runs} = await res.json() as {runs: {runId: string; status: string}[]}
+    // No session personalization — the transition row reports its static first phase.
+    expect(runs.find(run => run.runId === 'run-fixture-index-transition-question')?.status).toBe('running')
+    // The phantom sessionStartedAtMs touch is gone: the probe leaves state untouched.
+    expect(fixtureHarnessStateCountsForTesting()).toEqual(before)
+  })
+
+  it('review hardening: eviction reclaims cancel and push state with the session', async () => {
+    const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
+
+    const sessionRes = await app.request(`${FIXTURE_OPERATOR_PREFIX}/session`)
+    expect(sessionRes.status).toBe(200)
+    const {fixtureSessionId} = await sessionRes.json() as {fixtureSessionId: string}
+
+    // Bind an indexed run, then leave cancel and push state behind for the session.
+    await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs?fixtureSessionId=${fixtureSessionId}`)
+    const cancelRes = await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs/run-fixture-index-running-002/cancel`, {
+      method: 'POST',
+      headers: {
+        'x-fixture-session-id': fixtureSessionId,
+        'x-csrf-token': 'fixture-csrf',
+        'idempotency-key': 'fixture-idem-key-rm-1489-review-cancel',
+      },
+    })
+    expect(cancelRes.status).toBe(200)
+    const subscribeRes = await app.request(`${FIXTURE_OPERATOR_PREFIX}/push/subscriptions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-fixture-session-id': fixtureSessionId,
+        'x-csrf-token': 'fixture-csrf',
+        'idempotency-key': 'fixture-idem-key-rm-1489-review-push',
+      },
+      body: JSON.stringify(PUSH_SUBSCRIPTION_BODY),
+    })
+    expect(subscribeRes.status).toBe(200)
+    expect(fixtureHarnessStateCountsForTesting()).toEqual({
+      sessions: 1,
+      launchIdempotency: 0,
+      cancelIdempotency: 1,
+      pushIdempotency: 1,
+      pushSessionRecords: 1,
+    })
+
+    // Drive the mint set past the cap so the oldest session — this one — is evicted.
+    for (let i = 0; i < FIXTURE_SESSION_CAP; i++) {
+      await app.request(`${FIXTURE_OPERATOR_PREFIX}/session`)
+    }
+
+    const counts = fixtureHarnessStateCountsForTesting()
+    expect(counts.sessions).toBe(FIXTURE_SESSION_CAP)
+    // The evicted session's cancel/push idempotency and record state went with it.
+    expect(counts.cancelIdempotency).toBe(0)
+    expect(counts.pushIdempotency).toBe(0)
+    expect(counts.pushSessionRecords).toBe(0)
   })
 })
