@@ -136,6 +136,7 @@ describe('operator sign-in redirect recovery', () => {
       takeUsableFinishedRun: vi.fn(() => undefined),
       pruneFinishedRuns: vi.fn(),
       clearFinishedRuns: vi.fn(),
+      resetOutputView: vi.fn(),
     }))
     vi.doMock('/static/operator-run-index.js?manual=1', () => ({
       initOperatorRunIndex: vi.fn(async () => outcome),
@@ -161,14 +162,16 @@ describe('operator sign-in redirect recovery', () => {
   it.each(['auth-required', 'unavailable'] as const)('preserves the tab redirect guard after an %s run-list outcome', async outcome => {
     const guardValue = '1'
     sessionStorage.setItem(SIGN_IN_GUARD_KEY, guardValue)
+    const initOperatorRunIndex = vi.fn(async () => outcome)
     vi.doMock('/static/operator-stream.js?manual=1', () => ({
       initOperatorStream: vi.fn(),
       takeUsableFinishedRun: vi.fn(() => undefined),
       pruneFinishedRuns: vi.fn(),
       clearFinishedRuns: vi.fn(),
+      resetOutputView: vi.fn(),
     }))
     vi.doMock('/static/operator-run-index.js?manual=1', () => ({
-      initOperatorRunIndex: vi.fn(async () => outcome),
+      initOperatorRunIndex,
       refreshOperatorRunIndex: vi.fn(async () => false),
       resetRunIndexState: vi.fn(),
       markRunStreamAttached: vi.fn(),
@@ -181,7 +184,11 @@ describe('operator sign-in redirect recovery', () => {
 
     const runtime = createOperatorRuntime({container: document.createElement('div'), onStateChange: vi.fn()})
 
-    await vi.waitFor(() => expect(sessionStorage.getItem(SIGN_IN_GUARD_KEY)).toBe(guardValue))
+    // The guard starts set, so asserting it right away would pass before the loader had done anything:
+    // wait for the run list's outcome to be handled, then check the guard survived it.
+    await vi.waitFor(() => expect(initOperatorRunIndex).toHaveBeenCalled())
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(sessionStorage.getItem(SIGN_IN_GUARD_KEY)).toBe(guardValue)
     runtime.cleanup()
   })
 })
