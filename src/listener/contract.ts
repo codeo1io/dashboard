@@ -7,6 +7,7 @@
  */
 import type {Result} from '../result.ts'
 import {Buffer} from 'node:buffer'
+import {createHash} from 'node:crypto'
 import {err, ok} from '../result.ts'
 
 export type ListenerSource = 'infra' | 'agent'
@@ -25,6 +26,12 @@ export interface IngestMessage {
   readonly title: string
   readonly body: string
   readonly links: readonly ListenerLink[]
+  /**
+   * Producer-supplied redelivery key. rm-1982: when the producer omits it,
+   * `parseIngestBody` derives a deterministic fallback (sha256 over the
+   * canonical validated content) so the store's dedupe index always binds —
+   * the null escape hatch only remains in the type for pre-rm-1982 rows.
+   */
   readonly dedupeKey: string | null
   readonly createdAt: string
 }
@@ -136,6 +143,17 @@ export function parseIngestBody(raw: unknown): Result<IngestMessage, Error> {
     return err(new Error('invalid createdAt'))
   }
 
+  // rm-1982: absent producer key → derive one from the canonical validated
+  // content (fixed field order, trimmed values, normalized links) so a
+  // redelivered webhook maps to the SAME key and the store's partial unique
+  // index cannot be bypassed. sha256 hex is 64 chars — under the 128 cap —
+  // and depends on no producer-side serialization detail.
+  const fallbackDedupeKey = createHash('sha256')
+    .update(
+      JSON.stringify([source, kind, severity, trimmedTitle, trimmedBody, linksResult.data, createdAt]),
+    )
+    .digest('hex')
+
   return ok({
     source,
     kind,
@@ -143,7 +161,7 @@ export function parseIngestBody(raw: unknown): Result<IngestMessage, Error> {
     title: trimmedTitle,
     body: trimmedBody,
     links: linksResult.data,
-    dedupeKey: parsedDedupeKey,
+    dedupeKey: parsedDedupeKey ?? fallbackDedupeKey,
     createdAt,
   })
 }

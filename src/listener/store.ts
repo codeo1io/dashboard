@@ -116,7 +116,9 @@ export function createListenerStore(dbPath: string): ListenerStore {
       WHERE dedupe_key IS NOT NULL
   `)
 
-  const findByDedupeStmt = db.prepare('SELECT id FROM messages WHERE source = ? AND dedupe_key = ?')
+  const findByDedupeStmt = db.prepare(
+    'SELECT id, received_at FROM messages WHERE source = ? AND dedupe_key = ?',
+  )
   const insertStmt = db.prepare(`
     INSERT INTO messages (id, source, kind, severity, title, body, links, dedupe_key, created_at, received_at, read_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
@@ -153,11 +155,17 @@ export function createListenerStore(dbPath: string): ListenerStore {
     const linksJson = JSON.stringify(input.links)
 
     if (input.dedupeKey !== null) {
-      const existing = findByDedupeStmt.get(input.source, input.dedupeKey) as unknown as {id: string} | undefined
+      const existing = findByDedupeStmt.get(input.source, input.dedupeKey) as unknown as {
+        id: string
+        received_at: string
+      } | undefined
       if (existing !== undefined) {
         // rm-169: replay (dedupe hit) refreshes content but PRESERVES read_at —
         // a redelivered webhook must not silently un-ack an operator-read
         // message. The SQL sets read_at = messages.read_at (no-op on itself).
+        // rm-1982 (2026-10-18): a replay must ALSO preserve received_at — the
+        // fresh `receivedAt` above is discarded so a redelivery can neither
+        // queue-jump the operator feed nor reset the 30-day retention age.
         updateByIdStmt.run(
           input.kind,
           input.severity,
@@ -165,11 +173,11 @@ export function createListenerStore(dbPath: string): ListenerStore {
           input.body,
           linksJson,
           input.createdAt,
-          receivedAt,
+          existing.received_at,
           existing.id,
         )
         prune()
-        return {id: existing.id, receivedAt}
+        return {id: existing.id, receivedAt: existing.received_at}
       }
     }
 
