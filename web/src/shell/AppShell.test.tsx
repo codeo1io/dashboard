@@ -125,6 +125,7 @@ describe('AppShell', () => {
   afterEach(() => {
     document.documentElement.removeAttribute('data-theme')
     vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
     vi.restoreAllMocks()
   })
 
@@ -155,6 +156,40 @@ describe('AppShell', () => {
     render(<AppShell>content</AppShell>)
 
     expect(screen.getByRole('link', {name: 'Privacy'})).toHaveAttribute('href', '/privacy')
+  })
+
+  // #641 absorb (rm-1467): release version in the footer. Fork adaptation:
+  // the release-notes link targets codeo1io/dashboard — this deployment's
+  // own releases — not upstream fro-bot/dashboard.
+  it('links a valid release version to its release notes', () => {
+    vi.stubEnv('VITE_DASHBOARD_VERSION', '2026.10.33')
+
+    render(<AppShell>content</AppShell>)
+
+    expect(screen.getByRole('link', {name: 'Release notes for 2026.10.33'})).toHaveAttribute(
+      'href',
+      'https://github.com/codeo1io/dashboard/releases/tag/2026.10.33',
+    )
+    expect(screen.getByRole('link', {name: 'Release notes for 2026.10.33'})).toHaveAttribute('target', '_blank')
+    expect(screen.getByRole('link', {name: 'Release notes for 2026.10.33'})).toHaveAttribute('rel', 'noopener noreferrer')
+  })
+
+  it.each([['dev'], [undefined]])('renders %s as plain dev text without a link', version => {
+    vi.stubEnv('VITE_DASHBOARD_VERSION', version)
+
+    render(<AppShell>content</AppShell>)
+
+    expect(screen.getByText('dev')).toBeInTheDocument()
+    expect(screen.queryByRole('link', {name: /release notes/i})).not.toBeInTheDocument()
+  })
+
+  it('renders a malformed version as plain text without a link', () => {
+    vi.stubEnv('VITE_DASHBOARD_VERSION', 'not-a-version')
+
+    render(<AppShell>content</AppShell>)
+
+    expect(screen.getByText('not-a-version')).toBeInTheDocument()
+    expect(screen.queryByRole('link', {name: /release notes/i})).not.toBeInTheDocument()
   })
 
   it('renders the persistent privacy link after the notification card is dismissed', () => {

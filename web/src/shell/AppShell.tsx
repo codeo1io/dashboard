@@ -153,6 +153,14 @@ export function AppShell({
 }: AppShellProps) {
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
   const [loggingOut, setLoggingOut] = useState(false)
+  // #641 absorb (rm-1467): release version in the footer. Fork adaptation:
+  // the release-notes link targets THIS fork's releases (codeo1io/dashboard),
+  // not upstream fro-bot/dashboard — the version string is this deployment's
+  // own calver (set via VITE_DASHBOARD_VERSION at build time).
+  const dashboardVersion: string = import.meta.env.VITE_DASHBOARD_VERSION || 'dev'
+  const releaseNotesUrl = /^\d{4}\.\d{2}\.\d+$/.test(dashboardVersion)
+    ? `https://github.com/codeo1io/dashboard/releases/tag/${dashboardVersion}`
+    : undefined
   // rm-596 re-entry nonces: bumping one remounts that dismissable surface so
   // it re-reads its (now-cleared) localStorage latch and re-enters its state
   // machine at not-requested. Per-surface so restoring the notifications card
@@ -578,6 +586,21 @@ export function AppShell({
           >
             Restore notifications
           </button>
+          {releaseNotesUrl ? (
+            <a
+              href={releaseNotesUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={`Release notes for ${dashboardVersion}`}
+              className="inline-flex min-h-11 items-center text-label text-text-muted underline underline-offset-4 transition-colors duration-fast hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              {dashboardVersion}
+            </a>
+          ) : (
+            <span className="inline-flex min-h-11 items-center text-label text-text-muted">
+              {dashboardVersion}
+            </span>
+          )}
         </div>
       </footer>
 

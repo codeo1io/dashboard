@@ -65,6 +65,14 @@ export declare function buildRunSafeView(summary: ParsedRunSummary): RunSafeView
 
 export declare const FETCH_TIMEOUT_MS: number
 
+/**
+ * Format an ISO timestamp as a coarse relative time string
+ * ('just now', 'N minute(s) ago', 'N hour(s) ago', 'N day(s) ago');
+ * '' for empty/invalid input. rm-1468: was exported from the JS since the
+ * safe-view rewrite but never declared here (drift guard closes the class).
+ */
+export declare function formatRelativeTime(isoString: string, nowMs?: number): string
+
 export declare function fetchRunIndex(opts?: {endpointBase?: string; fixtureSessionId?: string}): Promise<RunIndexResult>
 
 /** Increment generation to invalidate pending inits. Called by the React runtime seam cleanup. */
@@ -78,6 +86,14 @@ export declare function resetRunIndexState(): void
  * runtime seam's onSelectRun callback decides attach vs collapse.
  */
 export declare function markRunStreamAttached(runId: string): void
+
+/**
+ * Idempotently expand one run card by runId (launch deep-link target).
+ * Safe-DOM only: toggles `hidden`/`dataset.expanded`, never innerHTML; does
+ * nothing when the card is already expanded or absent. rm-1468: exported from
+ * the JS since the launch-restore flow landed but never declared here.
+ */
+export declare function markCardExpandedForLaunch(runId: string): void
 
 export declare function initOperatorRunIndex(opts?: {
   endpointBase?: string
