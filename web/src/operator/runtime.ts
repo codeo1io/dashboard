@@ -25,8 +25,9 @@
  */
 
 import {validateDynamicId} from './validate-dynamic-id.ts'
-import type {RunSummaryStatus} from '../../../public/operator-stream.js'
+import {VALID_RUN_SUMMARY_STATUSES} from '../../../public/operator-run-index.js'
 import type {OperatorState} from './state.ts'
+import type {RunSummaryStatus} from '../../../public/operator-run-index.js'
 
 /**
  * Hard cap on a location.hash-sourced runId, matching the run-summary parser's
@@ -75,15 +76,12 @@ export function discoverCardStreamTargets(runId: string): {
 
 /**
  * The run-list summary statuses the run index parser keeps (public/operator-run-index.js
- * VALID_RUN_SUMMARY_STATUSES). Stream-only statuses (blocked, waiting_for_*) are not summaries.
+ * VALID_RUN_SUMMARY_STATUSES — value-imported, so this seam can never drift from the browser
+ * parser it gates for; the vocabulary authority is src/gateway/operator-contract/run-status.ts,
+ * bound by test/run-status-allowlist-parity.test.ts). Stream-only statuses (blocked,
+ * waiting_for_*) are not summaries.
  */
-const SUMMARY_STATUSES: ReadonlySet<RunSummaryStatus> = new Set<RunSummaryStatus>([
-  'queued',
-  'running',
-  'succeeded',
-  'failed',
-  'cancelled',
-])
+const SUMMARY_STATUSES: ReadonlySet<RunSummaryStatus> = VALID_RUN_SUMMARY_STATUSES as ReadonlySet<RunSummaryStatus>
 
 function isRunSummaryStatus(value: string): value is RunSummaryStatus {
   return (SUMMARY_STATUSES as ReadonlySet<string>).has(value)

@@ -113,8 +113,15 @@ const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled'])
  * Statuses a run-list summary can carry (the run index parser keeps only these). The optional
  * `summaryStatus` init option is accepted only from this set; anything else is dropped.
  */
-const SUMMARY_STATUSES = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled'])
-
+const SUMMARY_STATUSES = new Set([
+  'queued',
+  'running',
+  'waiting_for_approval',
+  'waiting_for_question',
+  'succeeded',
+  'failed',
+  'cancelled',
+])
 /** In-card copy for an expired run snapshot. Dashboard-owned; never wire text. */
 const OUTPUT_UNAVAILABLE_COPY = 'Output no longer available.'
 
@@ -128,8 +135,12 @@ const VALID_RESET_REASONS = new Set([
   'overflow',
 ])
 
-/** Allowlisted status values — out-of-set values are parse failures. */
-const VALID_STATUSES = new Set([
+/**
+ * Allowlisted status values — out-of-set values are parse failures. Mirrors the
+ * stream vocabulary authority src/gateway/operator-contract/run-status.ts
+ * STREAM_RUN_STATUSES (bound by test/run-status-allowlist-parity.test.ts).
+ */
+export const VALID_STATUSES = new Set([
   'queued',
   'blocked',
   'running',

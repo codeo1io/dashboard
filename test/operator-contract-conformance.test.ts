@@ -78,7 +78,7 @@ import {
   RUN_INDEX_CAP,
   UPDATE_FAILURE_REASONS,
 } from '../src/gateway/operator-contract/index.ts'
-import {isOperatorFailureKind, OPERATOR_FAILURE_KINDS} from '../src/gateway/operator-contract/run-status.ts'
+import {isOperatorFailureKind, OPERATOR_FAILURE_KINDS, RUN_SUMMARY_STATUSES} from '../src/gateway/operator-contract/run-status.ts'
 
 // ---------------------------------------------------------------------------
 // Type-level assignability: dashboard types ↔ canonical contract types
@@ -1357,11 +1357,12 @@ describe('parseRunSummary', () => {
     }
   })
 
-  it('rejects stream-only status: waiting_for_approval', () => {
+  it('derives waiting_for_approval acceptance from the canonical summary vocabulary', () => {
     const input = {runId: 'run-1', repo: 'fro-bot/agent', status: 'waiting_for_approval', createdAt: '2026-06-01T00:00:00.000Z'}
     const result = parseRunSummary(input)
-    expect(result.success).toBe(false)
-    if (!result.success) {
+    const isSummaryStatus = (RUN_SUMMARY_STATUSES as readonly string[]).includes('waiting_for_approval')
+    expect(result.success).toBe(isSummaryStatus)
+    if (!result.success && !isSummaryStatus) {
       expect(result.error.message).toBe('invalid run summary shape')
     }
   })
@@ -1640,7 +1641,7 @@ describe('parseRunSummaryList', () => {
   it('returns empty array when all items are invalid', () => {
     const input = [
       {runId: 'run-1', repo: 'fro-bot/agent', status: 'blocked', createdAt: '2026-06-01T00:00:00.000Z'},
-      {runId: 'run-2', repo: 'fro-bot/agent', status: 'waiting_for_approval', createdAt: '2026-06-01T00:00:00.000Z'},
+      {runId: 'run-2', repo: 'fro-bot/agent', status: 'blocked', createdAt: '2026-06-01T00:00:00.000Z'},
     ]
     const result = parseRunSummaryList(input)
     expect(result.success).toBe(true)
