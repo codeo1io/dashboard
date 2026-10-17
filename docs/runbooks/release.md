@@ -59,6 +59,51 @@ overriding `DASHBOARD_PORT` must override the `HEALTHCHECK` (or the
 orchestrator's equivalent liveness command) to match, or the container will
 report unhealthy against the wrong port.
 
+## Tag-channel truth (rm-1481)
+
+`scripts/compute-release-tag.ts` mints from CHANNEL truth, not the raw local
+store. A `2026.*` tag counts toward the fork channel when it is:
+
+1. visible on `origin` (`git ls-remote --tags origin`), or
+2. anchored to a commit merged into `origin/main`, or
+3. anchored to a commit inside the absorb window
+   (`merge-base origin/main upstream/main` .. `upstream/main`).
+
+Anything else is foreign (leaked or mirror-minted) and is excluded from the
+max-patch computation. When none of the three probes can run (no
+`origin`/`upstream` wiring), the script degrades to the pre-filter unfiltered
+local scan and says so on stderr — minting is therefore store-independent.
+
+Why this matters: a local store that ever fetched `'+refs/tags/*:refs/tags/*'`
+unscoped carries the UPSTREAM channel's calver tags too. Census recipe
+(2026-10-16, this repo's shared conductor store):
+
+```sh
+# tags local-only (not on origin)
+comm -23 <(git tag -l '2026.*' | sort) \
+  <(git ls-remote --tags origin 'refs/tags/2026.*' | grep -v '\^{}' \
+    | awk '{print $2}' | sed 's|refs/tags/||' | sort)
+# then classify each: merged (ancestor of origin/main) / window / foreign
+```
+
+Result: 195 local vs 109 origin tags; all 86 local-only tags anchored INSIDE
+the fork lineage (68 merged into `origin/main`'s history, 18 inside the absorb
+window) — they are upstream-channel tags on absorbed commits, i.e. channel-
+occupying, NOT foreign. Foreign count: 0, so no purge was executed; deleting
+them would have been wrong (they occupy real calver names the next mint must
+clear). If a future census finds non-zero foreign tags, quarantine first
+(record tag + peeled SHA) before `git tag -d`, and never push tag deletions
+without an explicit operator decision.
+
+House convention: never fetch tags unscoped from an upstream mirror
+remote — the spellings seen in this estate are `upstream` (this repo's
+worktrees) and `autonomy-upstream` (the shared conductor store the census
+above ran in); the rule keys on the remote's role, not its name. Scoped
+fetches (`'+refs/heads/main:refs/remotes/upstream/main'` with `--no-tags`)
+keep the local store fork-only; release-channel probes that need upstream
+tags fetch them into a THROWAWAY store and classify whatever lands with the
+census recipe above before trusting it.
+
 ## Maintenance of this document
 
 When a new failure class is root-caused (not just a one-off), add a row with
