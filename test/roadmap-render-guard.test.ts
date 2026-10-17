@@ -78,6 +78,22 @@ const FOG_MARKED_RE = /fog[ (]*rm-\d+(?:\s*\/\s*rm-\d+)*/gi
 const RM_REF_RE = /rm-(\d+)/g
 
 describe('ROADMAP.md render-guard census (rm-1454)', () => {
+  it('no line exceeds the 4000-char ledger line ceiling (rm-1460)', () => {
+    const offenders = roadmapLines()
+      .map((text, index) => ({line: index + 1, length: text.length}))
+      .filter(entry => entry.length > 4000)
+      .map(entry => `ROADMAP.md:${entry.line} (${entry.length} chars)`)
+
+    expect(
+      offenders,
+      'Lines over the 4000-char ledger ceiling (rm-1460) — graft/cycle ' +
+      'comments and riders must wrap at sentence boundaries instead of ' +
+      'growing unbounded single lines: they break diff review, blame, and ' +
+      'every editorless consumer of the ledger. Wrap the content (never ' +
+      'rewrite it) and keep the wrap change in the same batch.',
+    ).toEqual([])
+  })
+
   it('no line carries trailing whitespace', () => {
     const offenders = roadmapLines()
       .map((text, index) => ({line: index + 1, text}))
@@ -97,9 +113,18 @@ describe('ROADMAP.md render-guard census (rm-1454)', () => {
     const lines = roadmapLines()
     const resolvable = new Set<number>([...defLineIds(lines), ...closedItemIds(lines)])
     const offenders: string[] = []
+    // rm-1460: long graft/cycle notes now wrap as multi-line <!-- --> comments
+    // (the 4000-char ceiling), so "line contains '<!'" no longer identifies
+    // comment content — track open-comment state across lines instead. A
+    // single-line <!-- x --> comment still matches the contains check and
+    // leaves the state untouched.
+    let inComment = false
     lines.forEach((text, index) => {
       if (text.startsWith('- id: `rm-')) return
-      if (text.includes('<!--')) return
+      const wasInComment = inComment
+      if (text.includes('<!--') && !text.includes('-->')) inComment = true
+      else if (inComment && text.includes('-->')) inComment = false
+      if (text.includes('<!--') || wasInComment) return
       const unmarked = text.replaceAll(FOG_MARKED_RE, '')
       for (const match of unmarked.matchAll(RM_REF_RE)) {
         if (!resolvable.has(Number(match[1]))) {
