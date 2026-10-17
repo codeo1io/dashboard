@@ -15,9 +15,10 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
-      // injectManifest ships our hand-written SW (web/src/sw.ts) — a
-      // kill-switch that purges caches and unregisters itself. It performs no
-      // fetch routing and no caching; the emitted precache manifest is inert.
+      // injectManifest ships the full Workbox SW (web/src/sw.ts): push
+      // handlers, NetworkOnly API/auth routes, and prompt-gated activation
+      // (registration restored 2026-10-18, rm-1985 — see
+      // web/src/pwa/ReloadPrompt.tsx and test/sw-posture-guard.test.ts).
       strategies: 'injectManifest',
       srcDir: 'src',
       filename: 'sw.ts',
@@ -40,10 +41,9 @@ export default defineConfig({
 
         // Rewrite the precache manifest entry for index.html → '/' so the
         // generated workbox manifest stays consistent with the server's '/'
-        // route (GET /index.html has no route and 404s). The deployed SW is a
-        // kill-switch (web/src/sw.ts) that purges caches, unregisters itself,
-        // and never precaches or serves — this transform only shapes the
-        // manifest the build emits.
+        // route (GET /index.html has no route and 404s). The deployed SW uses
+        // this as its precache entry for hashed build assets; navigation is
+        // network-always (the shell cache is write-only).
         manifestTransforms: [
           (entries) => {
             const manifest = entries.map((entry) =>

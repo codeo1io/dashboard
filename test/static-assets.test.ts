@@ -1763,10 +1763,14 @@ describe('rm-690 — Cache-Control policy for static surfaces', () => {
     expect(res.headers.get('cache-control')).toBe('no-cache, no-store, must-revalidate')
   })
 
-  it('GET /registerSW.js keeps its no-cache,no-store policy (pinned pre-rm-690 behavior)', async () => {
+  it('GET /registerSW.js 404s under the rm-1985 posture (vite-plugin-pwa 2.0.0 emits no registerSW.js)', async () => {
+    // c51597a's 1.3.0-era build auto-injected <script src="/registerSW.js"> that
+    // self-registered the SW. Under the restored posture (rm-1985,
+    // test/sw-posture-guard.test.ts) registration flows through workbox-window
+    // bundled via virtual:pwa-register/react, so the file is no longer emitted.
+    // The server route stays as compat for stale cached HTML; pin the truth.
     const app = await buildTestApp(false)
     const res = await app.request('/registerSW.js')
-    expect(res.status).toBe(200)
-    expect(res.headers.get('cache-control')).toBe('no-cache, no-store, must-revalidate')
+    expect(res.status).toBe(404)
   })
 })
