@@ -30,7 +30,7 @@
 // ---------------------------------------------------------------------------
 
 /** Contract version this client expects on the ready frame. */
-export const PINNED_CONTRACT_VERSION = '1.9.0'
+export const PINNED_CONTRACT_VERSION = '1.11.0'
 
 /** Base delay in milliseconds for exponential backoff. */
 export const RETRY_BASE_MS = 1000
@@ -113,7 +113,15 @@ const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled'])
  * Statuses a run-list summary can carry (the run index parser keeps only these). The optional
  * `summaryStatus` init option is accepted only from this set; anything else is dropped.
  */
-const SUMMARY_STATUSES = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled'])
+const SUMMARY_STATUSES = new Set([
+  'queued',
+  'running',
+  'waiting_for_approval',
+  'waiting_for_question',
+  'succeeded',
+  'failed',
+  'cancelled',
+])
 
 /** In-card copy for an expired run snapshot. Dashboard-owned; never wire text. */
 const OUTPUT_UNAVAILABLE_COPY = 'Output no longer available.'
@@ -1882,9 +1890,11 @@ export function hasOpenQuestions(runEntry) {
  *
  *   1. Terminal wins.
  *   2. Wire `waiting_for_approval` stays.
- *   3. A `running` or `waiting_for_question` run with any open approval prompt is
- *      `waiting_for_approval`. The gateway does not re-send status when an approval opens, so
- *      the wire value alone cannot show it.
+ *   3. A `running` run with any open approval prompt is `waiting_for_approval`. The gateway does
+ *      not re-send status when an approval opens, so the wire value alone cannot show it. Only a
+ *      wire `running` is overlaid, matching the gateway's `overlayWaitingStatus`
+ *      (fro-bot/agent packages/gateway/src/web/sse/projection.ts): a wire `waiting_for_question`
+ *      is never turned into `waiting_for_approval`.
  *   4. A `running` run with any open question is `waiting_for_question`.
  *   5. A wire `waiting_for_question` with an open question stays; with none, once a question
  *      reconcile has completed in the current connection cycle, it is really `running`. (Before
@@ -1900,10 +1910,10 @@ export function getEffectiveStatus(runEntry) {
   const wire = runEntry.status
   if (runEntry.terminal === true) return wire
   if (wire === 'waiting_for_approval') return wire
-  if ((wire === 'running' || wire === 'waiting_for_question') && hasOpenApprovals(runEntry)) {
-    return 'waiting_for_approval'
+  if (wire === 'running') {
+    if (hasOpenApprovals(runEntry)) return 'waiting_for_approval'
+    return hasOpenQuestions(runEntry) ? 'waiting_for_question' : wire
   }
-  if (wire === 'running') return hasOpenQuestions(runEntry) ? 'waiting_for_question' : wire
   if (wire === 'waiting_for_question') {
     if (hasOpenQuestions(runEntry)) return wire
     return runEntry.questionReconcileDone === true ? 'running' : wire
@@ -2627,6 +2637,13 @@ export function renderApprovalPrompt(prompt, runId, approvalClient, _onSettle) {
   el.setAttribute('role', 'region')
   el.setAttribute('aria-label', 'Approval prompt')
 
+  // The approval prompt sits inside the run card, which toggles expansion on
+  // click. Contain clicks inside the prompt so a decision does not collapse
+  // the card mid-action.
+  el.addEventListener('click', event => {
+    event.stopPropagation()
+  })
+
   // Permission label
   const permEl = document.createElement('div')
   permEl.className = 'approval-prompt-permission'
@@ -2895,6 +2912,12 @@ export function renderCancelControl(runId, cancelClient, onCancelDispatch) {
   el.className = 'run-cancel-control'
   el.setAttribute('role', 'group')
   el.setAttribute('aria-label', 'Cancel run')
+
+  // The Cancel control sits inside the run card as well; contain its clicks
+  // for the same reason.
+  el.addEventListener('click', event => {
+    event.stopPropagation()
+  })
 
   const statusEl = document.createElement('div')
   statusEl.className = 'run-cancel-status'
@@ -4694,11 +4717,27 @@ export function initOperatorStream(opts) {
     reconnectTimer = setTimeout(connect, delay)
   }
 
+  /**
+   * Whether this handle still serves its card, as a three-way read of the lifecycle state:
+   *   'terminal' — the run reached a terminal status (its card is complete; nothing more to stream);
+   *   'active'   — connecting, live, or reconnecting (it is, or will be, receiving frames);
+   *   'inactive' — closed without a terminal status, failed, not found, rate-limited, drifted, or
+   *                close()d: nothing will arrive without a new attach.
+   * Read-only: it never writes the DOM or the state.
+   */
+  function getConnectionStatus() {
+    if (aborted) return 'inactive'
+    if (state.runs[runId]?.terminal === true) return 'terminal'
+    const {connection} = state
+    return connection === 'connecting' || connection === 'live' || connection === 'reconnecting' ? 'active' : 'inactive'
+  }
+
   // Start the connection
   connect()
 
   // Return a handle to allow external abort (e.g. page unload)
   return {
+    getConnectionStatus,
     decideQuestion,
     checkQuestions,
     getQuestions,
