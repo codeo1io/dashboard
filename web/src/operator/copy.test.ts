@@ -44,10 +44,13 @@ describe('getStateDetail', () => {
 })
 
 describe('getStateActionReason', () => {
-  it('returns a non-empty reason for auth-required', () => {
-    const reason = getStateActionReason('auth-required')
-    expect(reason).not.toBeNull()
-    expect((reason as string).length).toBeGreaterThan(0)
+  it('keeps a non-null reason for auth-required (fork accessibility invariant holds alongside the #633 sign-in action)', () => {
+    expect(getStateActionReason('auth-required')).not.toBeNull()
+  })
+
+  it('keeps session framing in the signed-out detail with an empty recovery hint (recovery lives on the button)', () => {
+    expect(getStateDetail('auth-required')).toMatch(/session/i)
+    expect(getStateRecoveryHint('auth-required')).toBe('')
   })
 
   it('returns a non-empty reason for rate-limited', () => {
@@ -87,8 +90,8 @@ describe('getStateRecoveryHint', () => {
     })
   }
 
-  it('returns a non-empty recovery hint for auth-required', () => {
-    expect(getStateRecoveryHint('auth-required').length).toBeGreaterThan(0)
+  it('returns no state hint for auth-required (recovery lives on the sign-in button, upstream #633)', () => {
+    expect(getStateRecoveryHint('auth-required')).toBe('')
   })
 
   it('returns a non-empty recovery hint for offline', () => {
