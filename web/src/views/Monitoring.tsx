@@ -131,6 +131,27 @@ function MonitoringBoard({data, viewStale}: {data: MonitoringData; viewStale: bo
         </div>
       )}
 
+      {/* rm-848: enumeration-integrity truth — the server already reports how
+          complete the board is (routes/api.ts emits `enumerationIncomplete` /
+          `driftCount`, strictly validated in api/monitoring.ts) but nothing
+          rendered it, so a board whose enumeration failed mid-way or drifted
+          presented as complete. Distinct slot from the stale banner above:
+          stale is freshness truth, this is completeness truth (conflating
+          them hides which guarantee broke). testid is intentionally distinct
+          from the unlanded rm-751/rm-835 block — see the batch doc. */}
+      {(data.enumerationIncomplete !== null && data.enumerationIncomplete > 0) || data.driftCount > 0 ? (
+        <div data-testid="monitoring-enumeration-integrity-banner" className="operator-warning-panel" role="status">
+          {data.enumerationIncomplete !== null && data.enumerationIncomplete > 0
+            ? `Enumeration incomplete — ${data.enumerationIncomplete} ${
+                data.enumerationIncomplete === 1 ? 'repository' : 'repositories'
+              } failed to enumerate and are missing from this board.`
+            : 'Enumeration completed for every tracked repository.'}
+          {data.driftCount > 0
+            ? ` ${data.driftCount} ${data.driftCount === 1 ? 'repository' : 'repositories'} drifted since enumeration and may be stale.`
+            : ''}
+        </div>
+      ) : null}
+
       {data.refreshDegraded && (
         <div data-testid="monitoring-refresh-degraded-banner" className="operator-warning-panel" role="status">
           Refresh is degraded — the last refresh took{' '}

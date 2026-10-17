@@ -430,3 +430,117 @@ describe('Monitoring rm-780 (stale-state surfacing: invisible rows, false all-cl
     expect(screen.queryByTestId('monitoring-stale-count')).not.toBeInTheDocument()
   })
 })
+
+describe('Monitoring (rm-848 enumeration-integrity truth)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValue({
+      ok: true,
+      data: makeData()
+    })
+  })
+
+  afterEach(() => {
+    vi.runOnlyPendingTimers()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  // Fixtures are strict-shape-valid MonitoringData (the api module's own
+  // suite pins the fail-closed validation); these tests pin the RENDER half
+  // — the fields the server already emits must reach the operator.
+
+  it('renders the enumeration-integrity banner when enumerationIncomplete > 0, with the count', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({enumerationIncomplete: 3})
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    const banner = screen.getByTestId('monitoring-enumeration-integrity-banner')
+    expect(banner).toBeInTheDocument()
+    expect(banner).toHaveAttribute('role', 'status')
+    expect(banner.textContent).toContain('Enumeration incomplete — 3 repositories failed to enumerate')
+  })
+
+  it('singularizes the count copy for one repository', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({enumerationIncomplete: 1})
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.getByTestId('monitoring-enumeration-integrity-banner').textContent).toContain(
+      'Enumeration incomplete — 1 repository failed to enumerate'
+    )
+  })
+
+  it('carries the drift count alongside the incomplete count when both are set', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({enumerationIncomplete: 2, driftCount: 5})
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    const banner = screen.getByTestId('monitoring-enumeration-integrity-banner')
+    expect(banner.textContent).toContain('2 repositories failed to enumerate')
+    expect(banner.textContent).toContain('5 repositories drifted since enumeration')
+  })
+
+  it('drift-only boards render the banner with the drift count and no incomplete claim', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({driftCount: 4})
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    const banner = screen.getByTestId('monitoring-enumeration-integrity-banner')
+    expect(banner.textContent).toContain('Enumeration completed for every tracked repository.')
+    expect(banner.textContent).toContain('4 repositories drifted since enumeration')
+    expect(banner.textContent).not.toContain('failed to enumerate')
+  })
+
+  it('renders no enumeration banner on a clean board (0/0)', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({enumerationIncomplete: 0, driftCount: 0})
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.queryByTestId('monitoring-enumeration-integrity-banner')).not.toBeInTheDocument()
+  })
+
+  it('null enumerationIncomplete (unknown) with no drift renders no banner — unknown never masquerades as incomplete', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({enumerationIncomplete: null, driftCount: 0})
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.queryByTestId('monitoring-enumeration-integrity-banner')).not.toBeInTheDocument()
+  })
+})

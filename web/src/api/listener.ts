@@ -95,12 +95,22 @@ export async function fetchListenerMessages(opts: {
     // rm-780: the seam carries its own wall-clock bound (see fetch-timeout.ts)
     // — the view-level `useBoundedPoll` bound only protects poll callers
     // (App's rm-487 focus re-probe calls this directly, unbounded before).
+    // rm-847: the seam also OWNS the transport abort now — the controller is
+    // composed with the caller's poll signal (either side aborting cancels
+    // the request), so a bound fire releases the connection instead of
+    // racing 'timeout' over a live request.
+    const controller = new AbortController()
+    const signal =
+      opts.abortSignal === undefined
+        ? controller.signal
+        : AbortSignal.any([opts.abortSignal, controller.signal])
     const res = await withGetSeamTimeout(
       fetch(url.toString(), {
         method: 'GET',
         credentials: 'same-origin',
-        signal: opts.abortSignal,
+        signal,
       }),
+      controller,
     )
     if (res === 'timeout') return {ok: false, reason: 'timeout'}
 
@@ -125,7 +135,7 @@ export async function fetchListenerMessages(opts: {
       return { ok: false, reason: 'unauthenticated' }
     }
 
-    const data = await withGetSeamTimeout(res.json())
+    const data = await withGetSeamTimeout(res.json(), controller)
     if (data === 'timeout') return {ok: false, reason: 'timeout'}
     if (!isPlainObject(data) || !Array.isArray(data.messages) || typeof data.unreadCount !== 'number') {
       return { ok: false, reason: 'contract-drift' }

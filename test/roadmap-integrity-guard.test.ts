@@ -148,7 +148,25 @@ describe('rm-678 schema half: live ledger', () => {
     // 778 -> 780 atomically with this landing: union census
     // 245 + 2 = 247 defs / 0 dups / max rm-780, next free
     // rm-781.
-    expect(live.max).toBe(780)
+    //
+    // 2026-10-10 extension (repository-maintenance cycle:3 run
+    // 6a2d5fbe7f7c4879bf252c4577f9368f roadmap
+    // 6203a475c6e74c3d8da2d762b83c910e at base 88e423a): two mints
+    // above the re-probed all-lineage dashboard-family ceiling rm-846
+    // (run-20cf2f7b wall 2026-10-09T15:11Z; spool bands 855+/869+/9xx
+    // are agenttrace-foreign by def-subject attribution) — rm-847
+    // (reliability 52: equal-duration GET-seam/poll race disarms the
+    // poll's transport abort, rm-780 regression) + rm-848
+    // (operator-experience 46: enumerationIncomplete/driftCount
+    // validated client-side, rendered nowhere); dated riders on rm-143
+    // (Scorecard 7.4 @2026-10-09T01:56:03Z first-hand, down from 7.8)
+    // and rm-252 (upstream window 0 at 88e423a; agent v0.118.3
+    // supersedes v0.118.2; node-server 2.1.3 security fix already
+    // locked). Delivered by patch per the no-tracked-drift convention;
+    // worktree restored pristine after export. Census 247 + 2 = 249
+    // defs / 0 dups / max rm-848 (the newest census claim rides the
+    // extension comment in ROADMAP.md). Pin 780 -> 848.
+    expect(live.max).toBe(848)
   })
 
   it('status tokens stay inside the ledger vocabulary', () => {

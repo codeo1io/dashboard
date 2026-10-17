@@ -18,12 +18,32 @@
  *
  * Both fetch and the body read go inside the bound — a response whose stream
  * never ends is the same hang as a request that never settles.
+ *
+ * rm-847: the bound now KILLS the transport, not just the await. Callers
+ * hand in the AbortController whose signal the fetch (and body read) run
+ * on; when the bound fires the wrapper aborts it, so a wedged request
+ * releases its browser connection instead of outliving the race. This
+ * re-arms the abort the rm-780 race disarmed: the view-level poll bound
+ * (useBoundedPoll) registers its abort timer after this one inside the same
+ * Promise.race, so at equal durations the poll's clearTimeout-in-finally
+ * always cancelled it before it ran — the seam must own the abort for
+ * non-poll callers (App's rm-487 focus re-probe) too. The controller is
+ * optional so non-HTTP uses of the seam keep compiling, but every fetch
+ * call site passes one.
  */
 export const GET_SEAM_TIMEOUT_MS = 15_000
 
-export function withGetSeamTimeout<T>(promise: Promise<T>): Promise<T | 'timeout'> {
+export function withGetSeamTimeout<T>(
+  promise: Promise<T>,
+  controller?: AbortController,
+): Promise<T | 'timeout'> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => resolve('timeout'), GET_SEAM_TIMEOUT_MS)
+    const timer = setTimeout(() => {
+      // rm-847: abort the transport FIRST — resolving 'timeout' over a live
+      // request is exactly the connection leak this seam now prevents.
+      controller?.abort()
+      resolve('timeout')
+    }, GET_SEAM_TIMEOUT_MS)
     promise.then(
       value => {
         clearTimeout(timer)
