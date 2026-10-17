@@ -1,4 +1,5 @@
-import {readdirSync, readFileSync} from 'node:fs'
+import {mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync} from 'node:fs'
+import {tmpdir} from 'node:os'
 import {join, relative} from 'node:path'
 import process from 'node:process'
 import {describe, expect, it} from 'vitest'
@@ -27,6 +28,11 @@ const repoRoot = process.cwd()
 const EXCLUDED_DIRS = new Set([
   '.git',
   'node_modules',
+  // fallback store pnpm creates inside the repo whenever an install runs
+  // under an engine-mismatched environment (`.gitignore` documents the
+  // mechanism; review F5 2026-10-17 — without this the guard red-flags the
+  // store's cached package strings as residue)
+  '.pnpm-store',
   '.slim',
   '.agents',
   '.conductor',
@@ -99,10 +105,39 @@ function isExcluded(relPath: string): boolean {
   return false
 }
 
-function walk(dir: string, files: string[] = []): string[] {
+// rm-865 (main) + rm-880 (run a103fa90619e) — merged traversal prune: walk()
+// prunes at readdir time instead of enumerating every file under
+// node_modules/.slim/dist/coverage and filtering afterwards.
+//
+// Directory-level exclusion. A directory is pruned only when EVERY file
+// beneath it is excluded by `isExcluded`: any segment in EXCLUDED_DIRS, the
+// directory's own name in EXCLUDED_DIR_SUFFIXES (everything below a
+// `dist`/`node_modules`/`coverage` dir is excluded as a parent suffix), or a
+// prefix rule that matches the directory itself once a trailing separator is
+// appended (`web/dist/` covers the `web/dist` entry).
+// Result: the surviving file set is IDENTICAL to the unpruned walk — but
+// excluded subtrees (`.git/`, `node_modules/`, `.slim/`, `web/dist/`) are
+// never enumerated, which is what keeps this suite off the cold-suite
+// 30s-timeout class (rm-879 deferral proved the timeout cost is real).
+// isExcluded() still runs on every collected file (file-level and
+// prefix-level exclusions are untouched), so behavior is unchanged for
+// every non-excluded path — the guard just never pays to enumerate trees it
+// will never read. The rm-865 parity describe below pins the equivalence.
+function isExcludedDir(relDir: string): boolean {
+  const segments = relDir.split('/')
+  if (segments.some(s => EXCLUDED_DIRS.has(s))) return true
+  if (segments.some(s => EXCLUDED_DIR_SUFFIXES.includes(s))) return true
+  if (EXCLUDED_PREFIXES.some(p => `${relDir}/`.startsWith(p))) return true
+  return false
+}
+
+export function walk(dir: string, files: string[] = []): string[] {
   for (const entry of readdirSync(dir, {withFileTypes: true})) {
     const full = join(dir, entry.name)
     if (entry.isDirectory()) {
+      // rm-880 traversal prune: skip excluded subtrees BEFORE descending —
+      // per-file `isExcluded` stays the authority for surviving files.
+      if (isExcludedDir(relative(repoRoot, full))) continue
       walk(full, files)
     } else if (entry.isFile()) {
       files.push(full)
@@ -150,5 +185,61 @@ describe('prose-residue guard (rm-164)', () => {
       }
     }
     expect(stale, 'Stale allowlist entries — remove them with their mentions.').toEqual([])
+  })
+})
+
+describe('walk() readdir-time prune parity (rm-865)', () => {
+  it('walk() output equals a full enumeration filtered by the dir exclusions — excluded trees are never surfaced', () => {
+    // Deterministic fixture tree in a temp dir (no reliance on repo state or
+    // readdir ordering): kept files at two depths plus one excluded directory
+    // per exclusion class, each holding bait files that must never surface.
+    const tmp = mkdtempSync(join(tmpdir(), 'rm865-parity-'))
+    try {
+      const bait = (rel: string) => {
+        const full = join(tmp, rel)
+        mkdirSync(join(full, '..'), {recursive: true})
+        writeFileSync(full, 'bait\n')
+      }
+      bait('keep-root.txt')
+      bait('nested/keep-nested.txt')
+      bait('nested/deeper/keep-deep.txt')
+      bait('node_modules/pkg/index.js')
+      bait('nested/node_modules/pkg/index.js')
+      bait('.git/HEAD')
+      bait('.slim/clonedeps/repos/x/README')
+      bait('nested/dist/bundle.js')
+      bait('coverage/lcov.info')
+
+      const walked = walk(tmp)
+        .map(f => relative(tmp, f))
+        .sort()
+
+      // Independent oracle: naive full enumeration (the pre-rm-865 behavior)
+      // filtered afterwards by the same dir-level exclusion semantics that
+      // isExcluded() applies to path segments.
+      const oracle: string[] = []
+      const enumerate = (dir: string) => {
+        for (const entry of readdirSync(dir, {withFileTypes: true})) {
+          const full = join(dir, entry.name)
+          if (entry.isDirectory()) enumerate(full)
+          else if (entry.isFile()) oracle.push(relative(tmp, full))
+        }
+      }
+      enumerate(tmp)
+      const filtered = oracle
+        .filter(rel => {
+          const segments = rel.split('/')
+          if (segments.some(s => [...EXCLUDED_DIRS].includes(s))) return false
+          if (segments.slice(0, -1).some(s => EXCLUDED_DIR_SUFFIXES.includes(s))) return false
+          return true
+        })
+        .sort()
+
+      expect(walked).toEqual(filtered)
+      expect(walked).toEqual(['keep-root.txt', 'nested/deeper/keep-deep.txt', 'nested/keep-nested.txt'])
+      expect(walked.some(rel => rel.includes('node_modules') || rel.includes('.git/') || rel.includes('.slim') || rel.includes('dist/') || rel.includes('coverage/'))).toBe(false)
+    } finally {
+      rmSync(tmp, {recursive: true, force: true})
+    }
   })
 })

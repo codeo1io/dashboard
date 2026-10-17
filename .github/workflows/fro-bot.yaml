@@ -125,12 +125,12 @@ env:
     detail for an LLM agent to act on later (see AGENT NOTES).
 
     DEPENDENCY OWNERSHIP
-    Dependabot owns routine dependency and version bumps on this fork (weekly
-    grouped PRs per .github/dependabot.yml; first window opened 2026-09-19).
+    Dependabot owns routine dependency and Actions pin bumps on this fork
+    (`.github/dependabot.yml` groups them: npm, docker, github-actions).
     Renovate does not run here — its workflow was retired during CI migration
     and its config deleted 2026-09-22. Change dependency
-    versions only to remediate a confirmed critical/high security advisory or
-    to repair an existing security-update PR. Never open a non-security
+    versions only to remediate a confirmed critical/high security advisory
+    or to repair an existing security-update PR. Never open a non-security
     version-bump PR and never batch unrelated dependency changes into a
     security fix.
 
@@ -265,6 +265,8 @@ jobs:
     # rm-188 (cycle 13, 2026-09-25): pinned ubuntu-24.04 — ubuntu-26.04 images are
     # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
     # at the rm-139 Node-26 window (2026-10-28).
+    # 2026-10-18 (run 5723bb0a, repository-maintenance cycle:2): re-pinned after
+    # the 2026.10.43 absorb reverted this block to ubuntu-latest.
     runs-on: ubuntu-24.04
     # rm-603 (2026-10-04): bounded so a wedged agent run can never hold a runner
     # indefinitely. The cap was sized while this workflow was disabled_manually
@@ -286,6 +288,9 @@ jobs:
     # the secrets nor env context is available there — actionlint rejects the
     # whole workflow file) to job-level env + per-step if, mirroring release.yaml's
     # HAS_RELEASE_APP contract.
+    # 2026-10-18 (run 5723bb0a): the 2026.10.43 absorb (64cd2f6a) deleted this
+    # gate while keeping the cron '0 0 * * *' armed — every scheduled fire
+    # failed until this restoration. Pinned by test/workflow-hardening-guard.test.ts.
     env:
       HAS_FRO_BOT_PAT: ${{ secrets.FRO_BOT_PAT != '' }}
     if: >-
@@ -349,7 +354,7 @@ jobs:
       - name: Run Fro Bot
         if: github.event_name != 'schedule' || env.HAS_FRO_BOT_PAT == 'true'
         id: fro-bot-agent
-        uses: fro-bot/agent@06469674e6671f36c7f22b87f136d34d6d69f060 # v0.122.2
+        uses: fro-bot/agent@7d273ac643c8f9c0dc8615222677693dc337adef # v0.122.3
         env:
           OPENCODE_PROMPT_ARTIFACT: 'true'
           TASK_PROMPT: >-

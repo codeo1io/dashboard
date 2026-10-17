@@ -29,8 +29,9 @@ import {validateDynamicId} from './validate-dynamic-id.ts'
 import type * as LaunchModule from '../../../public/operator-launch.js'
 import type * as RunIndexModule from '../../../public/operator-run-index.js'
 import type * as StreamModule from '../../../public/operator-stream.js'
-import type {RunSummaryStatus, StreamHandle} from '../../../public/operator-stream.js'
+import type {FinishedRunRecord, RunSummaryStatus, StreamHandle} from '../../../public/operator-stream.js'
 import type {OperatorState} from './state.ts'
+import {clearGatewaySignInRedirectGuard, maybeAutoRedirectToGatewaySignIn} from './sign-in-recovery.ts'
 
 /**
  * Hard cap on a location.hash-sourced runId, matching the run-summary parser's
@@ -59,13 +60,17 @@ type StreamTargetEl = HTMLElement & {hidden: boolean}
 export function discoverCardStreamTargets(runId: string): {
   outputEl: StreamTargetEl | null
   coalescedEl: StreamTargetEl | null
-  gapEl: StreamTargetEl | null
   approvalsEl: StreamTargetEl | null
   badgeEl: StreamTargetEl | null
   reasonEl: StreamTargetEl | null
   cancelEl: StreamTargetEl | null
   checkoutEl: StreamTargetEl | null
   questionsEl: StreamTargetEl | null
+  /** The card's <time>, only while it is launch-seeded: the list takes it over on adoption. */
+  timeEl: HTMLElement | null
+  waitingEl: StreamTargetEl | null
+  /** Fork hardening (rm-853 gap reducer): the dropped-frames notice element. */
+  gapEl: StreamTargetEl | null
 } {
   const card = typeof document !== 'undefined'
     ? document.querySelector(`[data-run-id="${CSS.escape(runId)}"]`)
@@ -73,13 +78,15 @@ export function discoverCardStreamTargets(runId: string): {
   return {
     outputEl: card?.querySelector<StreamTargetEl>('[data-role="run-output"]') ?? null,
     coalescedEl: card?.querySelector<StreamTargetEl>('[data-role="run-output-coalesced"]') ?? null,
-    gapEl: card?.querySelector<StreamTargetEl>('[data-role="run-output-gap"]') ?? null,
     approvalsEl: card?.querySelector<StreamTargetEl>('[data-role="run-approvals"]') ?? null,
     badgeEl: card?.querySelector<StreamTargetEl>('[data-role="approval-badge"]') ?? null,
     reasonEl: card?.querySelector<StreamTargetEl>('[data-role="run-reason"]') ?? null,
     cancelEl: card?.querySelector<StreamTargetEl>('[data-role="run-cancel"]') ?? null,
     checkoutEl: card?.querySelector<StreamTargetEl>('[data-role="run-checkout-detail"]') ?? null,
     questionsEl: card?.querySelector<StreamTargetEl>('[data-role="run-questions"]') ?? null,
+    timeEl: card?.querySelector<HTMLElement>('[data-role="run-updated-at"][data-time-source="launch"]') ?? null,
+    waitingEl: card?.querySelector<StreamTargetEl>('[data-role="run-waiting"]') ?? null,
+    gapEl: card?.querySelector<StreamTargetEl>('[data-role="run-output-gap"]') ?? null,
   }
 }
 
@@ -255,7 +262,7 @@ const _launchSpecifier = '/static/operator-launch.js' + '?manual=1'
 const _runIndexSpecifier = '/static/operator-run-index.js' + '?manual=1'
 
 /**
- * Active-stream ownership, scoped to ONE runtime instance (rm-283).
+ * Active-stream ownership, scoped to ONE runtime instance (rm-283, fork hardening).
  *
  * Historically the handle and runId were module-level singletons shared by
  * every runtime instance. Under React StrictMode's double-mount, mount1's
@@ -321,6 +328,22 @@ export function createActiveStreamOwner(): {
       return _activeStreamRunId
     },
   }
+}
+
+
+// The finished-run store lives in the stream module, which is loaded at runtime from /static and must
+// not be bundled a second time (that would be a second, empty store). The loader keeps the one clear
+// the rest of the client needs; it stays null until the module has loaded, and nothing is recorded
+// before then.
+let _clearFinishedRuns: (() => void) | null = null
+
+/**
+ * Drop every finished-run record. For a change the store's keys cannot see: in fixture mode the
+ * scenario is not part of a record's key, so switching it must clear the store. A no-op until the
+ * stream module has loaded.
+ */
+export function clearFinishedRunCache(): void {
+  _clearFinishedRuns?.()
 }
 
 /** How often the visible window refreshes the run list. Well inside the gateway's 20/min limit on GET /operator/runs. */
@@ -414,6 +437,7 @@ export function requestRunJump(runId: string): void {
   else if (slot.mode === 'queue') _setJumpSlot(_loaderEpoch, {mode: 'queue', pending: runId})
 }
 
+
 /** Fixed copy: the run ID is never echoed. */
 const JUMP_MISS_COPY = "That run isn't in your recent runs."
 
@@ -478,8 +502,8 @@ async function defaultRuntimeLoader(opts?: {
   const epoch = ++_loaderEpoch
   _setJumpSlot(epoch, {mode: 'queue', pending: _pendingRunJump()})
 
-  // rm-283: active-stream ownership is INSTANCE-scoped — one owner per loader
-  // (see createActiveStreamOwner) — a late first-mount cleanup can never close
+  // rm-283 (fork hardening): active-stream ownership is INSTANCE-scoped — one owner per
+  // loader (see createActiveStreamOwner) — a late first-mount cleanup can never close
   // another instance's stream.
   const streamOwner = createActiveStreamOwner()
 
@@ -487,13 +511,10 @@ async function defaultRuntimeLoader(opts?: {
   // check-types instead of surfacing as a silently skipped call. Only the members listed are read.
   const streamMod = await import(/* @vite-ignore */ _streamSpecifier) as Pick<
     typeof StreamModule,
-    'bootstrapOperatorStreams' | 'resetBootstrapState' | 'initOperatorStream'
+    'initOperatorStream' | 'takeUsableFinishedRun' | 'pruneFinishedRuns' | 'clearFinishedRuns'
   >
-  streamMod.resetBootstrapState()
-  const streamOpts = opts?.endpointBase !== undefined || opts?.fixtureSessionId !== undefined
-    ? {endpointBase: opts.endpointBase, fixtureSessionId: opts.fixtureSessionId}
-    : undefined
-  streamMod.bootstrapOperatorStreams(streamOpts)
+  _clearFinishedRuns = () => streamMod.clearFinishedRuns()
+  // Streams attach on expand, launch, restore and jump only; the stream module's own bootstrap is not run here.
 
   const runIndexMod = await import(/* @vite-ignore */ _runIndexSpecifier) as Pick<
     typeof RunIndexModule,
@@ -505,15 +526,25 @@ async function defaultRuntimeLoader(opts?: {
     'initOperatorLaunch' | 'resetLaunchState'
   >
 
-  function _attachStream(runId: string, statusEl: Element | null, noticeEl: Element | null): void {
+  // `takenRecord` is a record the caller already took for this attach (onSelectRun's hit); otherwise the
+  // record is taken here. Either way the store is read once per attach, so recency bumps once.
+  function _attachStream(
+    runId: string,
+    statusEl: Element | null,
+    noticeEl: Element | null,
+    takenRecord?: FinishedRunRecord,
+  ): void {
     // Any attach supersedes an expand still waiting on the refresh.
     _cancelPendingExpand()
     streamOwner.close()
 
     // Discover the per-card render targets so live output, coalescing hints,
     // approval prompts, and the approval badge all render — not just status.
-    const {outputEl, coalescedEl, gapEl, approvalsEl, badgeEl, reasonEl, cancelEl, checkoutEl, questionsEl} = discoverCardStreamTargets(runId)
+    const {outputEl, coalescedEl, gapEl, approvalsEl, badgeEl, reasonEl, cancelEl, checkoutEl, questionsEl, timeEl, waitingEl} = discoverCardStreamTargets(runId)
     const summaryStatus = discoverCardSummaryStatus(runId)
+    // A run the page already saw finish paints from its record, with no stream. Every other run, and
+    // a record that no longer matches what the list shows for the card, attaches live as before.
+    const finishedRecord = takenRecord ?? streamMod.takeUsableFinishedRun(runId, summaryStatus, opts?.fixtureSessionId)
 
     // A re-expanded card must never keep question DOM from a previous attach: the stream and
     // page store rebuild this region from scratch.
@@ -530,10 +561,13 @@ async function defaultRuntimeLoader(opts?: {
         approvalsEl,
         badgeEl,
         reasonEl,
+        timeEl,
+        waitingEl,
         cancelEl,
         checkoutEl,
         questionsEl,
         ...(summaryStatus === undefined ? {} : {summaryStatus}),
+        ...(finishedRecord === undefined ? {} : {finishedRecord}),
         endpointBase: opts?.endpointBase,
         fixtureSessionId: opts?.fixtureSessionId,
       })
@@ -566,6 +600,72 @@ async function defaultRuntimeLoader(opts?: {
 
   const findCard = (runId: string): HTMLElement | null =>
     typeof document === 'undefined' ? null : document.querySelector<HTMLElement>(`[data-run-id="${CSS.escape(runId)}"]`)
+
+  let cancelPendingCardReveal = () => {}
+
+  const scrollRunCardIntoView = (card: HTMLElement): void => {
+    cancelPendingCardReveal()
+
+    const reduceMotion = typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const behavior: ScrollBehavior = reduceMotion ? 'auto' : 'smooth'
+    const scrollToStart = () => {
+      if (typeof card.scrollIntoView === 'function') card.scrollIntoView({block: 'start', behavior})
+    }
+    scrollToStart()
+
+    let cancelled = false
+    let firstFrame: number | undefined
+    let secondFrame: number | undefined
+    let revealTimeout: number | undefined
+    const observer = new MutationObserver(checkForRevealedContent)
+
+    const cleanup = () => {
+      cancelled = true
+      observer.disconnect()
+      if (firstFrame !== undefined) window.cancelAnimationFrame?.(firstFrame)
+      if (secondFrame !== undefined) window.cancelAnimationFrame?.(secondFrame)
+      if (revealTimeout !== undefined) window.clearTimeout(revealTimeout)
+      window.removeEventListener('wheel', onUserScroll)
+      window.removeEventListener('touchmove', onUserScroll)
+      window.removeEventListener('pointerdown', onUserScroll)
+      window.removeEventListener('keydown', onScrollKey)
+      if (cancelPendingCardReveal === cleanup) cancelPendingCardReveal = () => {}
+    }
+    const onUserScroll = () => cleanup()
+    const onScrollKey = (event: KeyboardEvent) => {
+      if (event.target instanceof Element
+        && event.target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])') !== null) return
+      if (['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp', ' '].includes(event.key)) cleanup()
+    }
+
+    const hasRevealedContent = () =>
+      Array.from(card.querySelectorAll<HTMLElement>('[data-role="run-questions"], [data-role="run-approvals"]'))
+        .some(region => !region.hidden && region.childNodes.length > 0)
+
+    function checkForRevealedContent() {
+      if (cancelled || card.dataset.expanded !== 'true' || !hasRevealedContent()) return
+      observer.disconnect()
+      firstFrame = window.requestAnimationFrame(() => {
+        firstFrame = undefined
+        secondFrame = window.requestAnimationFrame(() => {
+          secondFrame = undefined
+          if (cancelled || card.dataset.expanded !== 'true') return cleanup()
+          scrollToStart()
+          cleanup()
+        })
+      })
+    }
+
+    cancelPendingCardReveal = cleanup
+    window.addEventListener('wheel', onUserScroll, {passive: true})
+    window.addEventListener('touchmove', onUserScroll, {passive: true})
+    window.addEventListener('pointerdown', onUserScroll)
+    window.addEventListener('keydown', onScrollKey)
+    revealTimeout = window.setTimeout(cleanup, 10_000)
+    observer.observe(card, {attributes: true, childList: true, subtree: true, attributeFilter: ['hidden', 'data-expanded']})
+    checkForRevealedContent()
+  }
 
   // What the jump notice currently says, held in memory only so a refresh can tell when it is stale.
   // A miss keeps the run it could not find; it is never rendered, logged or written to an attribute,
@@ -627,7 +727,12 @@ async function defaultRuntimeLoader(opts?: {
   // card's summary status only after the refresh has landed. If the refresh fails the card keeps the
   // status it already shows, and the expand proceeds. The whole wait is cancelable: a collapse
   // never waits, and supersedes an expand that is still waiting.
+  //
+  // The exception is a run whose finished result the page already holds, with the same status the
+  // list last showed on the card: it paints from that record at once, with no refresh and no stream.
+  // _attachStream makes the same check, so the record is also used after a refresh lands.
   const onSelectRun = (runId: string): Promise<void> | void => {
+    cancelPendingCardReveal()
     if (streamOwner.activeRunId === runId) {
       _cancelPendingExpand()
       streamOwner.close()
@@ -644,7 +749,7 @@ async function defaultRuntimeLoader(opts?: {
     // From here the card is being expanded: a jump's notice is stale.
     clearJumpNotice()
 
-    const attachExpanded = () => {
+    const attachExpanded = (takenRecord?: FinishedRunRecord) => {
       // Find the card element for this runId to get its statusEl and noticeEl.
       const card = typeof document !== 'undefined'
         ? document.querySelector(`[data-run-id="${CSS.escape(runId)}"]`)
@@ -653,7 +758,7 @@ async function defaultRuntimeLoader(opts?: {
       const noticeEl = typeof document !== 'undefined'
         ? document.querySelector('[data-role="stream-status"]')
         : null
-      _attachStream(runId, statusEl, noticeEl)
+      _attachStream(runId, statusEl, noticeEl, takenRecord)
     }
 
     // Expanding another card ends the open stream now; only the new attach waits, for the refresh
@@ -661,6 +766,12 @@ async function defaultRuntimeLoader(opts?: {
     _cancelPendingExpand()
     streamOwner.close()
     _writeRunHash(runId)
+    // A run the page already saw finish attaches at once from its record, with no refresh to wait for.
+    const finishedRecord = streamMod.takeUsableFinishedRun(runId, discoverCardSummaryStatus(runId), opts?.fixtureSessionId)
+    if (finishedRecord !== undefined) {
+      attachExpanded(finishedRecord)
+      return
+    }
     const wait = _waitForRefreshOrCap(refreshRunList())
     const pending = {runId, release: wait.release}
     _pendingExpand = pending
@@ -697,6 +808,7 @@ async function defaultRuntimeLoader(opts?: {
     const noticeEl = typeof document !== 'undefined'
       ? document.querySelector('[data-role="stream-status"]')
       : null
+    if (card instanceof HTMLElement) scrollRunCardIntoView(card)
     _attachStream(runId, statusEl, noticeEl)
   }
 
@@ -732,8 +844,12 @@ async function defaultRuntimeLoader(opts?: {
     }, RUN_LIST_REFRESH_INTERVAL_MS)
   }
 
+  // The one place the page learns its session is gone, from either the first load or a refresh. The
+  // store is dropped here so a finished result cannot outlive the sign-in it was shown under, and
+  // attachments that started earlier can no longer record.
   const onAuthRequired = () => {
     authRequired = true
+    streamMod.clearFinishedRuns()
     stopRefreshTimer()
     // No session: a pending or arriving jump has nothing to open.
     _setJumpSlot(epoch, {mode: 'refuse'})
@@ -799,6 +915,7 @@ async function defaultRuntimeLoader(opts?: {
     const statusEl = card.querySelector('[data-role="run-status"]') ?? null
     const noticeEl = document.querySelector('[data-role="stream-status"]')
     const wasExpanded = card.dataset.expanded === 'true'
+    scrollRunCardIntoView(card)
 
     if (!wasExpanded) {
       // The shared non-toggling expand, used for launches and jumps alike.
@@ -809,7 +926,6 @@ async function defaultRuntimeLoader(opts?: {
       _attachStream(runId, statusEl, noticeEl)
     }
 
-    if (typeof card.scrollIntoView === 'function') card.scrollIntoView({block: 'nearest'})
     if (typeof card.focus === 'function') card.focus({preventScroll: true})
 
     // Every successful jump announces, whether it expanded the card, only revealed an open one, or
@@ -852,14 +968,20 @@ async function defaultRuntimeLoader(opts?: {
   // different run before honoring the restore (see initOperatorRunIndex). The
   // raw hash is sanitized above — length cap before validateDynamicId — before it
   // crosses into the run-index module at all.
+  // A record stays only while its run is in the latest list the page applied: the run index reports
+  // the fetched IDs (not the cards left in the DOM, which include protected ones the list dropped).
+  const onListApplied = (runIds: readonly string[]) => streamMod.pruneFinishedRuns(runIds, opts?.fixtureSessionId)
   const runIndexOpts = opts?.endpointBase !== undefined
-    ? {endpointBase: opts.endpointBase, fixtureSessionId: opts.fixtureSessionId, onSelectRun, restoreRunId, onRestoreRun, onRestoreMiss, onAuthRequired}
-    : {onSelectRun, restoreRunId, onRestoreRun, onRestoreMiss, onAuthRequired}
+    ? {endpointBase: opts.endpointBase, fixtureSessionId: opts.fixtureSessionId, onSelectRun, restoreRunId, onRestoreRun, onRestoreMiss, onAuthRequired, onListApplied}
+    : {onSelectRun, restoreRunId, onRestoreRun, onRestoreMiss, onAuthRequired, onListApplied}
   // How the load ended comes back as the init's own outcome. 'loaded'/'empty' mean the list is there;
   // 'unavailable' is a non-auth failure; 'auth-required' and 'stale' (a reset or a newer init
   // replaced this one) have nowhere to open a run.
   const initOutcome = await runIndexMod.initOperatorRunIndex(runIndexOpts)
   const runIndexLoaded = initOutcome === 'loaded' || initOutcome === 'empty'
+  // The fixture harness has no gateway sign-in route, so it never redirects.
+  if (initOutcome === 'auth-required' && opts?.endpointBase === undefined) maybeAutoRedirectToGatewaySignIn('auth-required')
+  if (runIndexLoaded) clearGatewaySignInRedirectGuard()
 
   launchMod.resetLaunchState()
   const launchOpts = opts?.endpointBase !== undefined
@@ -888,15 +1010,15 @@ async function defaultRuntimeLoader(opts?: {
 
   return () => {
     disposed = true
+    cancelPendingCardReveal()
     jumpsRecoverable = false
     _setJumpSlot(epoch, {mode: 'queue', pending: null})
     stopRefreshTimer()
     if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibilityChange)
     dismissJumpNoticeButton?.removeEventListener('click', onDismissJumpNotice)
     _cancelPendingExpand()
-    // Close the active stream handle on cleanup (this instance's owner only — rm-283).
+    // Close the active stream handle on cleanup.
     streamOwner.close()
-    streamMod.resetBootstrapState()
     launchMod.resetLaunchState()
     runIndexMod.resetRunIndexState()
   }
