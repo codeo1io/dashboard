@@ -91,10 +91,15 @@ view of Fro Bot's cross-repo footprint.
   workflow now sets `branch-pr` for those triggers; verify delivery by confirming a
   fro-bot-authored PR exists, not by reading run status. See
   `docs/solutions/workflow-issues/workflow-output-mode-auto-discarded-agent-fixes-2026-08-31.md`.
-- The `Fro Bot` workflow on this fork is `disabled_manually` (verified 2026-09-19):
-  codeo1io/dashboard has no `FRO_BOT_PAT` secret, so the daily cron would fail on
-  every run. Re-enabling it without provisioning that secret resurrects the failing
-  cron — check `gh workflow list` state and secret presence before flipping it back on.
+- The `Fro Bot` workflow on this fork is **active** (live-verified 2026-10-17;
+  it was `disabled_manually` as of 2026-09-19 and has since been re-enabled).
+  codeo1io/dashboard still has no `FRO_BOT_PAT` secret, so every scheduled run
+  short-circuits via the PAT-presence gate and concludes `skipped` — no
+  failing cron, but also no Fro Bot work. The enable/disable disposition is
+  rm-1450's lane (ROADMAP). Before flipping the state (either direction)
+  check `gh workflow list` AND secret presence together: re-enabling without
+  provisioning `FRO_BOT_PAT` resurrects the failing cron; disabling hides the
+  skip noise but abandons the daily maintenance intent.
 
 ## Cloned Dependency Source
 
@@ -110,6 +115,14 @@ Read-only dependency source repositories are available under
 
 ## Landing-pipeline traps
 
+- Pinned digests are addresses, not text: a conflict-repair/union merge can
+  silently FABRICATE a Docker digest that never existed on the registry (this
+  broke the Release channel for ~8 days, 2026-10-09→16). Resolve digest
+  conflicts by choosing ONE side's entire value and re-verifying it against a
+  named source (upstream diff / live tag digest) before landing — never
+  byte-union competing pins. Full forensics + detection tricks:
+  `docs/solutions/workflow-issues/union-repair-digest-chimera-2026-10-17.md`
+  (rm-1499); the scheduled pullability alarm is rm-1478's lane.
 - A landing merge can itself re-track `.conductor/` engine state on main (landing
   commits may carry breadcrumbs) — after EVERY merge, `git ls-files .conductor`
   must end empty; staged untracks do NOT ride candidate-delta merges (the

@@ -320,3 +320,117 @@ describe('createFileSnapshotStore — size gate fires before the read (rm-759)',
     }
   })
 })
+
+/**
+ * rm-1500 (cycle:3): write a state file carrying the given annotation so
+ * the loader sees exactly the mangled/well-formed shape under test.
+ */
+function writeCache(file: string, annotation: unknown): void {
+  writeFileSync(file, JSON.stringify({...makeSnapshot(), platformStatus: annotation}), 'utf8')
+}
+
+describe('createFileSnapshotStore — platformStatus shape validation (rm-1500)', () => {
+  const dirs: string[] = []
+
+  function makeStore(): {store: SnapshotStore; file: string} {
+    const dir = mkdtempSync(join(tmpdir(), 'snapshot-store-rm1500-'))
+    dirs.push(dir)
+    const file = join(dir, 'snapshot.json')
+    return {store: createFileSnapshotStore(file) as SnapshotStore, file}
+  }
+
+  // The rm-1447 annotation is serve-time only — persist() never writes it —
+  // but the field rides AggregatorSnapshot, so a cache that carries it (a
+  // future writer, a hand-repaired state file) is shape-checked: mangled →
+  // null (fail closed, like every other shape rejection here), well-formed →
+  // loads. Absence stays valid — that is the only shape the current persist
+  // path produces, covered by every round-trip test above.
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, {recursive: true, force: true})
+  })
+
+  it('a well-formed annotation loads (boundary: overall may be the fallback \'unknown\', actions null, empty description)', () => {
+    const {store, file} = makeStore()
+    const snapshot: AggregatorSnapshot = {
+      ...makeSnapshot(),
+      platformStatus: {overall: 'unknown', overallDescription: '', actions: null, fetchedAt: 1_761_234_567_890},
+    }
+    writeFileSync(file, JSON.stringify(snapshot), 'utf8')
+    expect(store.load()).toEqual(snapshot)
+  })
+
+  it('a well-formed annotation with a real indicator + component status loads', () => {
+    const {store, file} = makeStore()
+    const snapshot: AggregatorSnapshot = {
+      ...makeSnapshot(),
+      platformStatus: {
+        overall: 'major',
+        overallDescription: 'Elevated error rates across Actions',
+        actions: 'major_outage',
+        fetchedAt: 123.5,
+      },
+    }
+    writeFileSync(file, JSON.stringify(snapshot), 'utf8')
+    expect(store.load()).toEqual(snapshot)
+  })
+
+  it('annotation with a non-string overall → null (fail closed)', () => {
+    const {store, file} = makeStore()
+    writeCache(file, {overall: 3, overallDescription: 'x', actions: null, fetchedAt: 1})
+    expect(store.load()).toBeNull()
+  })
+
+  it('annotation with an empty-string overall → null', () => {
+    const {store, file} = makeStore()
+    writeCache(file, {overall: '', overallDescription: 'x', actions: null, fetchedAt: 1})
+    expect(store.load()).toBeNull()
+  })
+
+  it('annotation missing overallDescription → null', () => {
+    const {store, file} = makeStore()
+    writeCache(file, {overall: 'minor', actions: null, fetchedAt: 1})
+    expect(store.load()).toBeNull()
+  })
+
+  it('annotation with a component status outside the vocabulary → null', () => {
+    const {store, file} = makeStore()
+    // 'on_fire' looks plausible but platform-status.ts can never emit it
+    writeCache(file, {overall: 'minor', overallDescription: 'x', actions: 'on_fire', fetchedAt: 1})
+    expect(store.load()).toBeNull()
+  })
+
+  it('annotation with a non-null non-string actions → null', () => {
+    const {store, file} = makeStore()
+    writeCache(file, {overall: 'minor', overallDescription: 'x', actions: 42, fetchedAt: 1})
+    expect(store.load()).toBeNull()
+  })
+
+  it('annotation with a non-number fetchedAt → null', () => {
+    const {store, file} = makeStore()
+    writeCache(file, {overall: 'minor', overallDescription: 'x', actions: null, fetchedAt: 'now'})
+    expect(store.load()).toBeNull()
+  })
+
+  it('annotation with a non-finite fetchedAt (JSON 1e999 → Infinity) → null', () => {
+    const {store, file} = makeStore()
+    writeFileSync(
+      file,
+      `${JSON.stringify(makeSnapshot()).slice(0, -1)},"platformStatus":{"overall":"minor","overallDescription":"x","actions":null,"fetchedAt":1e999}}`,
+      'utf8',
+    )
+    expect(store.load()).toBeNull()
+  })
+
+  it('annotation null is off-type → null (the API DTO coalesces null itself; persisted null is corruption)', () => {
+    const {store, file} = makeStore()
+    writeCache(file, null)
+    expect(store.load()).toBeNull()
+  })
+
+  it('annotation not an object → null', () => {
+    const {store, file} = makeStore()
+    writeCache(file, 'major')
+    expect(store.load()).toBeNull()
+  })
+})
