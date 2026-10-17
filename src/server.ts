@@ -21,10 +21,11 @@ import type {MetadataReader} from './github/metadata.ts'
 import type {ListenerStore} from './listener/store.ts'
 import {Buffer} from 'node:buffer'
 import {createHash} from 'node:crypto'
-import {existsSync, readFileSync, statSync} from 'node:fs'
+import {existsSync, readFileSync, realpathSync, statSync} from 'node:fs'
 import {readFile} from 'node:fs/promises'
 import {join} from 'node:path'
 import process from 'node:process'
+import {pathToFileURL} from 'node:url'
 import {serve} from '@hono/node-server'
 import {getConnInfo} from '@hono/node-server/conninfo'
 import {serveStatic} from '@hono/node-server/serve-static'
@@ -119,6 +120,16 @@ const SECURITY_TXT = `Contact: https://github.com/codeo1io/dashboard/security/ad
 Contact: https://github.com/fro-bot/dashboard/issues
 Expires: 2026-12-24T00:00:00.000Z
 Preferred-Languages: en
+`
+
+/**
+ * RFC 9309 robots.txt — read-only dashboard, nothing to crawl. Served inline
+ * (no SPA-build dependency). Public via isPublicPath in both auth branches;
+ * rm-713 (fork-added vs upstream #387 disposition). Restored 2026-10-16 after
+ * the 3e3664c integrate merge dropped the route (run 1a261b63, rm-887).
+ */
+const ROBOTS_TXT = `User-agent: *
+Disallow: /
 `
 
 /** Simple fixed-window in-memory rate limiter */
@@ -863,6 +874,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     // /.well-known/* sibling silently inherits public access.
     path === '/.well-known/security.txt' ||
     path === '/.well-known/security.txt/' ||
+    // RFC 9309 robots.txt — same public-exact-match treatment as security.txt
+    // (rm-713, restored 2026-10-16, run 1a261b63 rm-887).
+    path === '/robots.txt' ||
+    path === '/robots.txt/' ||
     // Listener machine-write path — public-before-session; HMAC-gated by the
     // route itself (see routes/listener.ts). The read/ack paths
     // (/api/listener/messages*, /api/listener/ack-all) are intentionally NOT
@@ -1314,6 +1329,17 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     c.text(SECURITY_TXT, 200, {'Content-Type': 'text/plain; charset=utf-8'}),
   )
 
+  // RFC 9309 robots.txt: read-only single-operator dashboard, nothing to
+  // crawl. Inline (not serveStatic) so it has no SPA-build dependency;
+  // public via isPublicPath in both auth branches (rm-713; restored
+  // 2026-10-16 after the 3e3664c integrate drop, run 1a261b63 rm-887).
+  app.get('/robots.txt', c =>
+    c.text(ROBOTS_TXT, 200, {'Content-Type': 'text/plain; charset=utf-8'}),
+  )
+  app.get('/robots.txt/', c =>
+    c.text(ROBOTS_TXT, 200, {'Content-Type': 'text/plain; charset=utf-8'}),
+  )
+
   // Warn early if the SPA build artifact is missing (GET / will 404 silently).
   if (!existsSync(`${webDistRoot}/index.html`)) {
     logger.warning(
@@ -1659,8 +1685,40 @@ async function createDashboardServer(): Promise<ServerType> {
   return server
 }
 
-// Only start the server when this module is the entry point
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Only start the server when this module is the entry point. Compares file
+// URLs, not a naive `file://${process.argv[1]}` template: the template breaks
+// whenever the entry path URL-encodes (import.meta.url percent-encodes while
+// argv[1] does not), and a bare pathToFileURL comparison still goes false for
+// symlinked entries because Node resolves the ESM main entry through realpath
+// while argv[1] keeps the symlinked spelling — silent headless boots both
+// ways. rm-702 + symlinked-entry cure (run 788aa489c1d5, rm-759 rider);
+// restored 2026-10-16 after the 3e3664c integrate merge dropped it (run
+// 1a261b63, rm-887).
+export function isMainEntryPoint(metaUrl: string, argv1: string | undefined): boolean {
+  if (argv1 === undefined || argv1 === '') return false
+  let rawMatch = false
+  try {
+    rawMatch = pathToFileURL(argv1).href === metaUrl
+  } catch {
+    // Unencodable argv (e.g. invalid path characters) — never autostart.
+    return false
+  }
+  if (rawMatch) return true
+  try {
+    // Realpath argv[1] and compare again — Node resolves the ESM main entry
+    // through realpath (unless --preserve-symlinks-main) while argv[1] keeps
+    // the symlinked spelling. The raw comparison already ran, so
+    // --preserve-symlinks-main invocations still match; this branch only ever
+    // WIDENS autostart to genuine entries.
+    return pathToFileURL(realpathSync(argv1)).href === metaUrl
+  } catch {
+    // Nonexistent argv (realpath ENOENT) or unresolvable path — never
+    // autostart.
+    return false
+  }
+}
+
+if (isMainEntryPoint(import.meta.url, process.argv[1])) {
   createDashboardServer().catch((error: unknown) => {
     logger.error('Failed to start dashboard server', {
       error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
