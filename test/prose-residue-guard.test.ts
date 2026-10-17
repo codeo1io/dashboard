@@ -74,10 +74,6 @@ const ALLOWED_MENTIONS: Record<string, string[]> = {
   '.github/workflows/base-drift.yaml': [
     '# — this file was authored under the retired self-hosted-only policy.',
   ],
-  '.github/dependabot.yml': [
-    '# .github/workflows/renovate.yaml under the self-hosted-runners-only CI',
-    "#   the fork's single self-hosted runner — became historical when PR #11/#12",
-  ],
   '.github/actions/setup/action.yaml': [
     '# off the single self-hosted runner by PR #11/#12), so nothing persists on',
     '# self-hosted era got for free. It keys on the pnpm-lockfile hash + node',

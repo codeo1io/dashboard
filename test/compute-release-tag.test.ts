@@ -335,3 +335,61 @@ describe('compute-release-tag — output format', () => {
     expect(stderr).toContain('invalid month')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Foreign-tag filter (rm-1481): channel truth vs polluted local stores
+// ---------------------------------------------------------------------------
+
+describe('compute-release-tag foreign-tag filter', () => {
+  it('drops local-only foreign tags when origin and channel probes work', () => {
+    const dir = makeTempRepo()
+    // Bare origin holding main; wiring origin creates refs/remotes/origin/main.
+    execFileSync('git', ['clone', '--bare', '.', join(dir, '..', 'origin.git')], {cwd: dir})
+    execFileSync('git', ['remote', 'add', 'origin', join(dir, '..', 'origin.git')], {cwd: dir})
+    execFileSync('git', ['push', 'origin', 'main'], {cwd: dir})
+    execFileSync('git', ['fetch', 'origin'], {cwd: dir})
+    // Channel tag on merged main; foreign tag on an unmerged side commit.
+    addTag(dir, '2026.11.3')
+    execFileSync('git', ['checkout', '-b', 'side'], {cwd: dir})
+    writeFileSync(join(dir, 'README.md'), 'side\n')
+    execFileSync('git', ['commit', '-am', 'side'], {cwd: dir})
+    addTag(dir, '2026.11.12')
+    execFileSync('git', ['checkout', 'main'], {cwd: dir})
+    const {stdout, stderr, exitCode} = runScript(dir, '2026.11')
+    expect(exitCode).toBe(0)
+    expect(stdout).toBe('2026.11.4')
+    expect(stderr).toContain('filtered 1 foreign tag(s) for 2026.11')
+    rmSync(dir, {recursive: true, force: true})
+    rmSync(join(dir, '..', 'origin.git'), {recursive: true, force: true})
+  })
+
+  it('keeps absorb-window tags on the upstream side while dropping non-channel ones', () => {
+    const dir = makeTempRepo()
+    // Origin holds main at c1; upstream holds main at c1+c2 (the window).
+    execFileSync('git', ['clone', '--bare', '.', join(dir, '..', 'origin.git')], {cwd: dir})
+    execFileSync('git', ['remote', 'add', 'origin', join(dir, '..', 'origin.git')], {cwd: dir})
+    execFileSync('git', ['push', 'origin', 'main'], {cwd: dir})
+    execFileSync('git', ['fetch', 'origin'], {cwd: dir})
+    execFileSync('git', ['clone', '--bare', '.', join(dir, '..', 'upstream.git')], {cwd: dir})
+    execFileSync('git', ['remote', 'add', 'upstream', join(dir, '..', 'upstream.git')], {cwd: dir})
+    writeFileSync(join(dir, 'README.md'), 'upstream-work\n')
+    execFileSync('git', ['commit', '-am', 'upstream work'], {cwd: dir})
+    execFileSync('git', ['push', 'upstream', 'main'], {cwd: dir})
+    execFileSync('git', ['fetch', 'upstream'], {cwd: dir})
+    // Window tag on the upstream-side commit (kept); foreign tag on an
+    // unrelated side branch commit (dropped).
+    addTag(dir, '2026.11.9')
+    execFileSync('git', ['checkout', '-b', 'foreign'], {cwd: dir})
+    writeFileSync(join(dir, 'README.md'), 'foreign\n')
+    execFileSync('git', ['commit', '-am', 'foreign'], {cwd: dir})
+    addTag(dir, '2026.11.20')
+    execFileSync('git', ['checkout', 'main'], {cwd: dir})
+    const {stdout, stderr, exitCode} = runScript(dir, '2026.11')
+    expect(exitCode).toBe(0)
+    expect(stdout).toBe('2026.11.10')
+    expect(stderr).toContain('filtered 1 foreign tag(s) for 2026.11')
+    rmSync(dir, {recursive: true, force: true})
+    rmSync(join(dir, '..', 'origin.git'), {recursive: true, force: true})
+    rmSync(join(dir, '..', 'upstream.git'), {recursive: true, force: true})
+  })
+})
