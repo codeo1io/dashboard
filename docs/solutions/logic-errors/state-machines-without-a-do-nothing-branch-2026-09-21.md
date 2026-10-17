@@ -67,6 +67,8 @@ if (handoffState === 'not_subscribed' && localSubscriptionPresent && options?.no
 }
 ```
 
+The `notSubscribedConfirmed` option was later removed: the gateway's subscription list can't confirm a mismatch, so that guard is now unconditional.
+
 With no local subscription, control fell through to `action: 'register'` and minted an endpoint with no user action. That reached production and was caught minutes after deploy — a hard reload with no button press emitted `push.subscribed`. Fixed in #511.
 
 The guard looked complete. It was complete for the case being fixed, and silently partial for its mirror.
@@ -87,6 +89,8 @@ Each fix added the missing non-action.
 
 - **Known terminal** (from the stream, or from the run-list `summaryStatus` that `web/src/operator/runtime.ts` passes in): render the terminal status, plus "Output no longer available." when the run never delivered output, clear the run's drafts, close, no reconnect.
 - **Otherwise** (state unknown, which is not evidence of terminal): stay live, spend no retry, and mark `snapshotMissing` so a later terminal status with no output since can show the unavailable state.
+
+Re-expanding a run the page already recorded as finished skips the stream entirely: it opens no connection, so there is no `no-snapshot` to handle, and it paints the recorded result. The `no-snapshot` handling above still applies to every run the page hasn't recorded, including after a reload.
 
 The gateway keeps the subscription open after `no-snapshot`. A client that merely stops reading holds the subscriber until the gateway's max stream duration (fro-bot/agent#1639: replay is in-memory, and a stream with no terminal frame stays open until that duration), so the stream must abort its own fetch: a per-connection `AbortController`, plus an `abortedByUs` flag so that self-abort never dispatches `unexpected-close` or schedules a reconnect.
 

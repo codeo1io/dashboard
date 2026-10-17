@@ -403,7 +403,7 @@ describe('fixture no-leak guard — question scenarios', () => {
   }
 
   it('every question request ID is req-fixture- prefixed, and every frame carries the bound run ID', () => {
-    expect(QUESTION_KEYS.length).toBe(13)
+    expect(QUESTION_KEYS.length).toBe(15)
     for (const key of QUESTION_KEYS) {
       const runId = `run-fixture-index-${key.replaceAll('_', '-')}`
       for (const record of questionRecords(serializeScenarioToSse(key, runId))) {
@@ -471,6 +471,31 @@ describe('fixture no-leak guard — waiting summary rows', () => {
     for (const filePath of FIXTURE_FILES) {
       const source = readFileSync(resolve(process.cwd(), filePath), 'utf8')
       expect(source, filePath).not.toMatch(/do(es)? not model|not modeled/i)
+    }
+  })
+})
+
+describe('fixture no-leak guard — waiting scenarios', () => {
+  const FIXTURE_WAITING_SCENARIO_ROWS = FIXTURE_QUESTION_SCENARIO_ROWS.filter(row => row.scenario.startsWith('waiting_'))
+  const runIdFor = (scenario: string): string => `run-fixture-index-${scenario.replaceAll('_', '-')}`
+
+  it('carry only the bound run ID and synthetic status fields, and no free-form text or request IDs', () => {
+    expect(FIXTURE_WAITING_SCENARIO_ROWS).toHaveLength(2)
+    for (const row of FIXTURE_WAITING_SCENARIO_ROWS) {
+      const sse = serializeScenarioToSse(row.scenario, runIdFor(row.scenario))
+      const records = sse.split('\n\n').filter(record => record.trim() !== '')
+      expect(records, row.scenario).toHaveLength(2)
+      const status = JSON.parse(records[1]?.split('data: ')[1] ?? '{}') as Record<string, unknown>
+      expect(Object.keys(status).toSorted(), row.scenario).toEqual(['entityRef', 'phase', 'runId', 'stale', 'startedAt', 'status', 'surface'])
+      expect(status.runId).toBe(runIdFor(row.scenario))
+      expect(String(status.entityRef)).toMatch(/^fixture-/)
+      expect(sse, row.scenario).not.toMatch(/req-/)
+    }
+  })
+
+  it('their run IDs derive to the fixture-prefixed waiting row IDs', () => {
+    for (const row of FIXTURE_WAITING_SCENARIO_ROWS) {
+      expect(runIdFor(row.scenario)).toMatch(/^run-fixture-index-waiting-/)
     }
   })
 })

@@ -676,6 +676,55 @@ export declare function getQuestionPageStore(runId: string): QuestionPageRecord
 /** Drop every run's tombstones and drafts (tests; page teardown). */
 export declare function resetQuestionPageStore(): void
 
+/**
+ * What a card displayed when its run turned terminal: a deeply frozen whitelist copy of the run entry.
+ * Never carries approval or question state, sequence numbers, or cancel bookkeeping. The checkout
+ * objects are frozen copies. `outputText` is absent for an "output no longer available" result.
+ */
+export interface FinishedRunRecord {
+  readonly runId: string
+  readonly status: string
+  readonly terminal: true
+  readonly phase: string
+  readonly stale: boolean
+  readonly startedAt: string
+  readonly reasonLabel?: string
+  readonly outputText?: string
+  readonly outputTruncated: boolean
+  readonly outputCoalesced: boolean
+  readonly outputUnavailable?: true
+  readonly checkoutProvenance?: CheckoutProvenance
+  readonly checkoutPreparation?: CheckoutPreparation
+}
+
+/**
+ * True when a record exists for the run and its status equals `listStatus`, the status the run list
+ * last applied to the card. Pure: it neither reads the record out nor changes recency. In fixture
+ * mode pass the fixture session, which scopes the key.
+ */
+export declare function hasUsableFinishedRun(
+  runId: string,
+  listStatus: string | undefined,
+  fixtureSessionId?: string,
+): boolean
+
+/**
+ * The frozen record for the run when its status equals `listStatus` (the rule of `hasUsableFinishedRun`),
+ * else undefined. A hit moves the entry to most recently used; a miss changes nothing. This is the one
+ * read of the store: pass the record to `initOperatorStream` as `finishedRecord`.
+ */
+export declare function takeUsableFinishedRun(
+  runId: string,
+  listStatus: string | undefined,
+  fixtureSessionId?: string,
+): FinishedRunRecord | undefined
+
+/** Keep only the records whose run IDs are in `runIds`; drop every other one. */
+export declare function pruneFinishedRuns(runIds: Iterable<string>, fixtureSessionId?: string): void
+
+/** Drop every record and retire every attachment started before now, so none can write again. Production calls it when auth is required and when the fixture scenario changes; tests also call it between cases. */
+export declare function clearFinishedRuns(): void
+
 // ---------------------------------------------------------------------------
 // DOM shell (browser-only — never called at module top-level)
 // ---------------------------------------------------------------------------
@@ -845,6 +894,16 @@ export interface InitOptions {
   readonly fixtureSessionId?: string
   /** Secondary status metadata element (data-role="run-reason"). */
   readonly reasonEl?: Element | null
+  /**
+   * Time element (data-role="run-updated-at") of a launch-seeded card. While attached, the stream
+   * writes the run's start time into it (`datetime` and relative text), and never blanks it.
+   */
+  readonly timeEl?: Element | null
+  /**
+   * Waiting-line element (data-role="run-waiting"). The stream shows it, with fixed copy, only while
+   * it is live, the run is not terminal, and no output, open approval or open question is showing.
+   */
+  readonly waitingEl?: (HTMLElement & {hidden: boolean}) | null
   /** Cancel control container element (data-role="run-cancel"). */
   readonly cancelEl?: (HTMLElement & {hidden: boolean}) | null
   /**
@@ -868,6 +927,13 @@ export interface InitOptions {
    * without a status frame. Unknown values are ignored.
    */
   readonly summaryStatus?: RunSummaryStatus
+  /**
+   * Paint this finished record (from `takeUsableFinishedRun`) instead of attaching. The handle opens
+   * no stream, arms no first-frame timer and builds no cancel, approval or question client;
+   * `getConnectionStatus()` returns `'terminal'`. It never reads the store. Without a record this
+   * attaches normally.
+   */
+  readonly finishedRecord?: FinishedRunRecord
 }
 
 export declare function initOperatorStream(opts: InitOptions): StreamHandle

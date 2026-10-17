@@ -7,6 +7,7 @@ import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 
 import {buildRunSafeView, FETCH_TIMEOUT_MS, fetchRunIndex, formatRelativeTime, initOperatorRunIndex, markCardExpandedForLaunch, markRunStreamAttached, parseRunSummaryItem, parseRunSummaryList, refreshOperatorRunIndex, resetRunIndexState, RUN_INDEX_CAP, FAILURE_REASON_LABELS as RUN_INDEX_FAILURE_REASON_LABELS, RUN_STATUS_CLASS_TOKENS, VALID_RUN_SUMMARY_STATUSES} from '../public/operator-run-index.js'
 import {FAILURE_REASON_LABELS as STREAM_FAILURE_REASON_LABELS} from '../public/operator-stream.js'
+import {formatRelativeTime as sharedFormatRelativeTime} from '../public/operator-time.js'
 import {isOperatorFailureKind, OPERATOR_FAILURE_KINDS} from '../src/gateway/operator-contract/run-status.ts'
 import {parseRunSummary as parseServerRunSummary} from '../src/gateway/operator-contract/run-summary.ts'
 
@@ -1137,6 +1138,9 @@ function makeMockListUsing(children) {
     get firstChild() { return children[0] ?? null },
     append(el) {
       el._parentList = list
+      // Like the DOM, appending a node already in the list moves it.
+      const existingIdx = children.indexOf(el)
+      if (existingIdx !== -1) children.splice(existingIdx, 1)
       children.push(el)
     },
     contains(el) {
@@ -1613,6 +1617,11 @@ function makeSubstructureElStub() {
         const idx = this._parentList.children.indexOf(this)
         if (idx !== -1) this._parentList.children.splice(idx, 1)
       }
+      if (this._parentEl !== null) {
+        const idx = this._parentEl._children.indexOf(this)
+        if (idx !== -1) this._parentEl._children.splice(idx, 1)
+        this._parentEl = null
+      }
     },
     get nextSibling() {
       if (this._parentList === null) return null
@@ -1787,16 +1796,37 @@ describe('renderRunCard — unified per-card substructure', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Expansion toggles data-expanded and reveals per-card substructure
+// Expansion toggles data-expanded; the stream, not expand, reveals regions
 // ---------------------------------------------------------------------------
 
-describe('renderRunCard — expand/collapse toggles data-expanded and substructure visibility', () => {
+const ALL_STREAM_REGION_ROLES = [
+  'run-checkout-detail',
+  'run-waiting',
+  'run-output',
+  'run-output-coalesced',
+  'run-output-gap',
+  'run-approvals',
+  'run-questions',
+  'approval-badge',
+  'run-cancel',
+]
+
+/** Stand in for the stream's updateDOM, the only unhider: show every region on a card. */
+function streamRevealsRegions(card) {
+  for (const role of ALL_STREAM_REGION_ROLES) card.querySelector(`[data-role="${role}"]`).hidden = false
+}
+
+const regionsHidden = card => ALL_STREAM_REGION_ROLES.map(role => card.querySelector(`[data-role="${role}"]`).hidden)
+const ALL_HIDDEN = ALL_STREAM_REGION_ROLES.map(() => true)
+const ALL_SHOWN = ALL_STREAM_REGION_ROLES.map(() => false)
+
+describe('renderRunCard — expand/collapse toggles data-expanded; collapse hides the substructure', () => {
   afterEach(() => {
     resetRunIndexState()
     vi.restoreAllMocks()
   })
 
-  it('clicking a collapsed card sets data-expanded="true", reveals substructure, and calls onSelectRun', async () => {
+  it('clicking a collapsed card sets data-expanded="true" and calls onSelectRun, revealing no region itself', async () => {
     const onSelectRun = vi.fn()
     const runId = 'run-expand-001'
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
@@ -1814,10 +1844,8 @@ describe('renderRunCard — expand/collapse toggles data-expanded and substructu
     expect(card.dataset.expanded).toBe('true')
     expect(onSelectRun).toHaveBeenCalledTimes(1)
     expect(onSelectRun).toHaveBeenCalledWith(runId)
-    for (const role of ['run-output', 'run-output-coalesced', 'run-approvals', 'approval-badge']) {
-      const el = card.querySelector(`[data-role="${role}"]`)
-      expect(el.hidden).toBe(false)
-    }
+    // The stream's first paint is the only thing that shows a region.
+    expect(regionsHidden(card)).toEqual(ALL_HIDDEN)
   })
 
   it('clicking an already-expanded card collapses it, hides substructure, and calls onSelectRun again (caller closes the stream)', async () => {
@@ -1834,16 +1862,15 @@ describe('renderRunCard — expand/collapse toggles data-expanded and substructu
 
     card.dispatchEvent({type: 'click'})
     expect(card.dataset.expanded).toBe('true')
+    streamRevealsRegions(card)
+    expect(regionsHidden(card)).toEqual(ALL_SHOWN)
 
     card.dispatchEvent({type: 'click'})
 
     expect(card.dataset.expanded).toBe('false')
     expect(onSelectRun).toHaveBeenCalledTimes(2)
     expect(onSelectRun).toHaveBeenNthCalledWith(2, runId)
-    for (const role of ['run-output', 'run-output-coalesced', 'run-approvals', 'approval-badge']) {
-      const el = card.querySelector(`[data-role="${role}"]`)
-      expect(el.hidden).toBe(true)
-    }
+    expect(regionsHidden(card)).toEqual(ALL_HIDDEN)
   })
 
   it('expanding run A then run B collapses A (hides its substructure) and expands B', async () => {
@@ -1863,15 +1890,14 @@ describe('renderRunCard — expand/collapse toggles data-expanded and substructu
 
     cardA.dispatchEvent({type: 'click'})
     expect(cardA.dataset.expanded).toBe('true')
+    streamRevealsRegions(cardA)
 
     cardB.dispatchEvent({type: 'click'})
 
     expect(cardA.dataset.expanded).toBe('false')
     expect(cardB.dataset.expanded).toBe('true')
-    for (const role of ['run-output', 'run-output-coalesced', 'run-approvals', 'approval-badge']) {
-      expect(cardA.querySelector(`[data-role="${role}"]`).hidden).toBe(true)
-      expect(cardB.querySelector(`[data-role="${role}"]`).hidden).toBe(false)
-    }
+    expect(regionsHidden(cardA)).toEqual(ALL_HIDDEN)
+    expect(regionsHidden(cardB)).toEqual(ALL_HIDDEN)
     expect(onSelectRun).toHaveBeenCalledTimes(2)
     expect(onSelectRun).toHaveBeenNthCalledWith(1, runIdA)
     expect(onSelectRun).toHaveBeenNthCalledWith(2, runIdB)
@@ -1906,7 +1932,7 @@ describe('markCardExpandedForLaunch — launch handoff marks a card expanded (no
     vi.restoreAllMocks()
   })
 
-  it('marks a launch-created card expanded and reveals its substructure, and the FIRST subsequent click collapses it (not a silent double-close)', async () => {
+  it('marks a launch-created card expanded without revealing a region, and the FIRST subsequent click collapses it (not a silent double-close)', async () => {
     const onSelectRun = vi.fn()
     const runId = 'run-launch-expand-001'
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
@@ -1929,9 +1955,8 @@ describe('markCardExpandedForLaunch — launch handoff marks a card expanded (no
     markCardExpandedForLaunch(runId)
 
     expect(card.dataset.expanded).toBe('true')
-    for (const role of ['run-output', 'run-output-coalesced', 'run-approvals', 'approval-badge']) {
-      expect(card.querySelector(`[data-role="${role}"]`).hidden).toBe(false)
-    }
+    expect(regionsHidden(card)).toEqual(ALL_HIDDEN)
+    streamRevealsRegions(card)
     // markCardExpandedForLaunch itself never calls onSelectRun — it's not a click.
     expect(onSelectRun).not.toHaveBeenCalled()
 
@@ -1943,9 +1968,7 @@ describe('markCardExpandedForLaunch — launch handoff marks a card expanded (no
     expect(card.dataset.expanded).toBe('false')
     expect(onSelectRun).toHaveBeenCalledTimes(1)
     expect(onSelectRun).toHaveBeenCalledWith(runId)
-    for (const role of ['run-output', 'run-output-coalesced', 'run-approvals', 'approval-badge']) {
-      expect(card.querySelector(`[data-role="${role}"]`).hidden).toBe(true)
-    }
+    expect(regionsHidden(card)).toEqual(ALL_HIDDEN)
   })
 
   it('is idempotent — calling it twice on an already-expanded card is a no-op', async () => {
@@ -2096,6 +2119,83 @@ describe('initOperatorRunIndex — reload-restore does not override an in-flight
     const restoreCard = cards.find(c => c.dataset.runId === restoreRunId)
     expect(restoreCard?.dataset.expanded).toBe('true')
     expect(onRestoreRun).toHaveBeenCalledTimes(1)
+    // Restore expands the card but shows no region: the stream's first paint does.
+    expect(regionsHidden(restoreCard)).toEqual(ALL_HIDDEN)
+  })
+})
+
+async function setupExpandCards(runIds) {
+  const cards = []
+  stubDOMWithSubstructureCards(cards)
+  stubFetchRuns(runIds.map(runId => makeValidSummary({runId, status: 'running'})))
+  await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
+  return cards
+}
+
+describe('expand paths reveal no stream-owned region (the stream is the only unhider)', () => {
+  afterEach(() => {
+    resetRunIndexState()
+    vi.restoreAllMocks()
+  })
+
+  it.each([
+    ['click', cards => cards[0].dispatchEvent({type: 'click'})],
+    ['Enter', cards => cards[0].dispatchEvent({type: 'keydown', key: 'Enter', preventDefault: vi.fn()})],
+    ['launch handoff', () => markCardExpandedForLaunch('run-noreveal-001')],
+  ])('%s leaves every region hidden on a card that has never attached', async (_label, expand) => {
+    const cards = await setupExpandCards(['run-noreveal-001'])
+
+    expand(cards)
+
+    expect(cards[0].dataset.expanded).toBe('true')
+    expect(regionsHidden(cards[0])).toEqual(ALL_HIDDEN)
+  })
+
+  it('restore leaves every region hidden', async () => {
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    stubFetchRuns([makeValidSummary({runId: 'run-noreveal-restore', status: 'running'})])
+    const onRestoreRun = vi.fn()
+
+    await initOperatorRunIndex({endpointBase: '/operator', restoreRunId: 'run-noreveal-restore', onRestoreRun})
+
+    expect(onRestoreRun).toHaveBeenCalledTimes(1)
+    expect(cards[0].dataset.expanded).toBe('true')
+    expect(regionsHidden(cards[0])).toEqual(ALL_HIDDEN)
+  })
+
+  it('switching cards hides what the stream showed on the first, and shows nothing on the second', async () => {
+    const cards = await setupExpandCards(['run-noreveal-a', 'run-noreveal-b'])
+    markCardExpandedForLaunch('run-noreveal-a')
+    streamRevealsRegions(cards[0])
+
+    markCardExpandedForLaunch('run-noreveal-b')
+
+    expect(regionsHidden(cards[0])).toEqual(ALL_HIDDEN)
+    expect(regionsHidden(cards[1])).toEqual(ALL_HIDDEN)
+  })
+
+  it('re-expanding a collapsed card starts hidden again until the stream paints', async () => {
+    const cards = await setupExpandCards(['run-noreveal-re'])
+    cards[0].dispatchEvent({type: 'click'})
+    streamRevealsRegions(cards[0])
+    cards[0].dispatchEvent({type: 'click'})
+    expect(regionsHidden(cards[0])).toEqual(ALL_HIDDEN)
+
+    cards[0].dispatchEvent({type: 'click'})
+
+    expect(cards[0].dataset.expanded).toBe('true')
+    expect(regionsHidden(cards[0])).toEqual(ALL_HIDDEN)
+  })
+
+  it('a refresh diff while expanded does not reveal a region either', async () => {
+    const cards = await setupExpandCards(['run-noreveal-diff'])
+    cards[0].dispatchEvent({type: 'click'})
+
+    stubFetchRuns([makeValidSummary({runId: 'run-noreveal-diff', status: 'running', updatedAt: '2026-06-26T13:00:00.000Z'})])
+    await refreshOperatorRunIndex()
+
+    expect(regionsHidden(cards[0])).toEqual(ALL_HIDDEN)
   })
 })
 
@@ -2251,58 +2351,6 @@ describe('initOperatorRunIndex — in-place diff reconciliation (background refr
 
     // No longer protected — removed rather than left as a perpetual ghost.
     expect(cards).toHaveLength(0)
-  })
-
-  it('CRITICAL: an expanded active run that receives a terminal status update does NOT change list position (re-sort lock); re-sorts only after collapse', async () => {
-    const runIdA = 'run-diff-lock-A'
-    const runIdB = 'run-diff-lock-B'
-
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true, status: 200,
-      json: async () => ({runs: [
-        makeValidSummary({runId: runIdA, status: 'running'}),
-        makeValidSummary({runId: runIdB, status: 'running'}),
-      ]}),
-    }))
-    const cards = []
-    stubDOMWithSubstructureCards(cards)
-
-    const onSelectRun = vi.fn()
-    await initOperatorRunIndex({endpointBase: '/operator', onSelectRun})
-
-    // Expand A (single-open accordion — sets _expandedRunId to A).
-    const cardA = cards.find(c => c.dataset.runId === runIdA)
-    cardA.dispatchEvent({type: 'click'})
-    markRunStreamAttached(runIdA)
-    expect(cardA.dataset.expanded).toBe('true')
-
-    // Refresh reports A as terminal now, and reorders A after B in the fetch
-    // (mirroring "terminal sorts below active" resting-order logic upstream).
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true, status: 200,
-      json: async () => ({runs: [
-        makeValidSummary({runId: runIdB, status: 'running'}),
-        makeValidSummary({runId: runIdA, status: 'succeeded'}),
-      ]}),
-    }))
-
-    await initOperatorRunIndex({endpointBase: '/operator'})
-
-    // Position lock: A must still be BEFORE B in DOM order (frozen), not moved to
-    // the back to match the fetched order, because A is the expanded/active card.
-    const idxA = cards.indexOf(cardA)
-    const idxB = cards.findIndex(c => c.dataset.runId === runIdB)
-    expect(idxA).toBeLessThan(idxB)
-
-    // Collapse A — releases the re-sort lock.
-    cardA.dispatchEvent({type: 'click'})
-    expect(cardA.dataset.expanded).toBe('false')
-
-    // Next refresh may now reposition freely.
-    await initOperatorRunIndex({endpointBase: '/operator'})
-    const idxA2 = cards.indexOf(cardA)
-    const idxB2 = cards.findIndex(c => c.dataset.runId === runIdB)
-    expect(idxB2).toBeLessThan(idxA2)
   })
 
   it('happy path: launch prepends a Pending card and hands off — exactly one stream opens, no duplicate', async () => {
@@ -2683,6 +2731,28 @@ describe('CSS selector ↔ status emitter agreement', () => {
       : warning.map((v, channel) => (v * Number(mix[1]) + text[channel] * Number(mix[2])) / 100)
 
     expect(contrastRatio(fg, badgeBg)).toBeGreaterThanOrEqual(4.5)
+  })
+})
+
+describe('run-updated-at text comes from the shared time module', () => {
+  afterEach(() => {
+    resetRunIndexState()
+    vi.restoreAllMocks()
+  })
+
+  it('a fetched card shows exactly what operator-time formats, and the run index re-exports that formatter', async () => {
+    const updatedAt = new Date(Date.now() - 3 * 3_600_000).toISOString()
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    stubFetchRuns([makeValidSummary({runId: 'run-time-shared-001', updatedAt})])
+
+    await initOperatorRunIndex({endpointBase: '/operator'})
+
+    const timeEl = cards[0].querySelector('[data-role="run-updated-at"]')
+    expect(timeEl.textContent).toBe('3 hours ago')
+    expect(timeEl.textContent).toBe(sharedFormatRelativeTime(updatedAt))
+    expect(timeEl.attributes.datetime).toBe(updatedAt)
+    expect(formatRelativeTime).toBe(sharedFormatRelativeTime)
   })
 })
 
@@ -3099,7 +3169,7 @@ describe('optimistic launch card — adoption by a fetch gains full fetched-card
     expect(onSelectRun).toHaveBeenCalledWith(runId)
   })
 
-  it('an expanded (position-frozen) optimistic card is upgraded in place without being repositioned', async () => {
+  it('an expanded optimistic card is upgraded in place: same node, still expanded, still first', async () => {
     const runId = 'run-adopt-frozen-001'
     const otherId = 'run-adopt-frozen-other-001'
     const onSelectRun = vi.fn()
@@ -3114,17 +3184,18 @@ describe('optimistic launch card — adoption by a fetch gains full fetched-card
     cards.splice(cards.indexOf(optimistic), 1)
     cards.unshift(optimistic)
 
-    markCardExpandedForLaunch(runId) // expanded -> re-sort lock
+    markCardExpandedForLaunch(runId)
     expect(optimistic.dataset.expanded).toBe('true')
 
-    // The fetch ranks the optimistic run after the other one; the lock must hold it first.
+    // The fetch lists the launched run first (newest), the other one after it.
     stubFetchRuns([
-      makeValidSummary({runId: otherId, status: 'running'}),
       makeValidSummary({runId, status: 'succeeded', repo: 'fro-bot/agent', updatedAt: UPDATED_AT}),
+      makeValidSummary({runId: otherId, status: 'running'}),
     ])
     await initOperatorRunIndex({endpointBase: '/operator', onSelectRun})
 
     expect(cards.indexOf(optimistic)).toBeLessThan(cards.indexOf(other))
+    expect(cards.find(c => c.dataset.runId === runId)).toBe(optimistic)
     expect(optimistic.dataset.expanded).toBe('true')
     expect(optimistic.querySelector('[data-role="run-repo"]').textContent).toBe('fro-bot/agent')
     expect(optimistic.querySelector('[data-role="run-updated-at"]')).not.toBeNull()
@@ -3279,6 +3350,167 @@ describe('card keyboard activation — scoped to the card, not nested controls',
 })
 
 // ---------------------------------------------------------------------------
+// Launch-seeded <time> — adoption hands the card to the list's updatedAt
+// ---------------------------------------------------------------------------
+
+/** A launch-created card carrying the launch's seeded <time>, as the launch form builds it. */
+function makeLaunchSeededCard(cards, runId, {status = 'queued', seedDatetime = '2026-06-26T12:00:00.000Z'} = {}) {
+  const card = makeStatusOnlyOptimisticCard(cards, runId)
+  card.querySelector('[data-role="run-status"]').className = `run-status status-${status}`
+  const timeEl = document.createElement('time')
+  timeEl.className = 'run-updated-at'
+  timeEl.dataset.role = 'run-updated-at'
+  timeEl.dataset.timeSource = 'launch'
+  timeEl.setAttribute('datetime', seedDatetime)
+  timeEl.textContent = 'just now'
+  card.append(timeEl)
+  return card
+}
+
+describe('launch-seeded <time> — adoption by the run list', () => {
+  afterEach(() => {
+    resetRunIndexState()
+    vi.restoreAllMocks()
+  })
+
+  const LIST_UPDATED_AT = '2026-06-26T13:00:00.000Z'
+
+  it('writes the list updatedAt into the seeded <time> and removes the marker, with one <time> left', async () => {
+    const runId = 'run-seed-adopt-001'
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    const card = makeLaunchSeededCard(cards, runId)
+
+    stubFetchRuns([makeValidSummary({runId, status: 'running', updatedAt: LIST_UPDATED_AT})])
+    await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
+
+    const timeEl = card.querySelector('[data-role="run-updated-at"]')
+    expect(countRole(card, 'run-updated-at')).toBe(1)
+    expect(timeEl.attributes.datetime).toBe(LIST_UPDATED_AT)
+    expect(timeEl.textContent).toBe(formatRelativeTime(LIST_UPDATED_AT))
+    expect(timeEl.dataset.timeSource).toBeUndefined()
+    expect(card.dataset.optimistic).toBeUndefined()
+  })
+
+  it('adopts the time even when the terminal-sticky guard skips the rest of the update', async () => {
+    const runId = 'run-seed-sticky-001'
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    const card = makeLaunchSeededCard(cards, runId, {status: 'succeeded'})
+
+    stubFetchRuns([makeValidSummary({runId, status: 'running', updatedAt: LIST_UPDATED_AT})])
+    await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
+
+    // The stale non-terminal view changes nothing else on the card...
+    expect(card.querySelector('[data-role="run-status"]').className).toBe('run-status status-succeeded')
+    // ...but the seeded time still moves to the list's.
+    const timeEl = card.querySelector('[data-role="run-updated-at"]')
+    expect(timeEl.attributes.datetime).toBe(LIST_UPDATED_AT)
+    expect(timeEl.dataset.timeSource).toBeUndefined()
+    expect(countRole(card, 'run-updated-at')).toBe(1)
+  })
+
+  it('removes the seeded <time> and its marker when the adopting view has no updatedAt', async () => {
+    const runId = 'run-seed-no-updated-at-001'
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    const card = makeLaunchSeededCard(cards, runId)
+
+    stubFetchRuns([makeValidSummary({runId, status: 'running'})])
+    await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
+
+    expect(countRole(card, 'run-updated-at')).toBe(0)
+    expect(card.querySelector('[data-role="run-updated-at"]')).toBeNull()
+  })
+
+  it('removes the seeded <time> under the terminal-sticky guard too, when the view has no updatedAt', async () => {
+    const runId = 'run-seed-sticky-no-time-001'
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    const card = makeLaunchSeededCard(cards, runId, {status: 'failed'})
+
+    stubFetchRuns([makeValidSummary({runId, status: 'running'})])
+    await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
+
+    expect(countRole(card, 'run-updated-at')).toBe(0)
+  })
+
+  it('later list diffs keep updating the adopted <time> as an ordinary list card, with no duplicates', async () => {
+    const runId = 'run-seed-repeat-001'
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    const card = makeLaunchSeededCard(cards, runId)
+    const later = '2026-06-26T14:30:00.000Z'
+
+    stubFetchRuns([makeValidSummary({runId, status: 'running', updatedAt: LIST_UPDATED_AT})])
+    await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
+    stubFetchRuns([makeValidSummary({runId, status: 'running', updatedAt: later})])
+    await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
+
+    expect(countRole(card, 'run-updated-at')).toBe(1)
+    expect(card.querySelector('[data-role="run-updated-at"]').attributes.datetime).toBe(later)
+  })
+
+  it('an attached card is left alone: its seeded <time> and marker survive a diff while the stream owns it', async () => {
+    const runId = 'run-seed-attached-001'
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    const card = makeLaunchSeededCard(cards, runId)
+    card.dataset.streamAttached = 'true'
+    markRunStreamAttached(runId)
+
+    stubFetchRuns([makeValidSummary({runId, status: 'running', updatedAt: LIST_UPDATED_AT})])
+    await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
+
+    const timeEl = card.querySelector('[data-role="run-updated-at"]')
+    expect(timeEl.attributes.datetime).toBe('2026-06-26T12:00:00.000Z')
+    expect(timeEl.dataset.timeSource).toBe('launch')
+    expect(timeEl.textContent).toBe('just now')
+  })
+
+  it('a seeded card absent from the fetch keeps its <time> and marker: the stream keeps the start time', async () => {
+    const runId = 'run-seed-absent-001'
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    const card = makeLaunchSeededCard(cards, runId)
+
+    stubFetchRuns([makeValidSummary({runId: 'run-seed-other-001', status: 'running', updatedAt: LIST_UPDATED_AT})])
+    await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
+
+    const timeEl = card.querySelector('[data-role="run-updated-at"]')
+    expect(timeEl.dataset.timeSource).toBe('launch')
+    expect(timeEl.attributes.datetime).toBe('2026-06-26T12:00:00.000Z')
+  })
+
+  it('a <time> with any other source marker is not an adoption target', async () => {
+    const runId = 'run-seed-other-source-001'
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    const card = makeLaunchSeededCard(cards, runId)
+    card.querySelector('[data-role="run-updated-at"]').dataset.timeSource = 'other'
+
+    stubFetchRuns([makeValidSummary({runId, status: 'running'})])
+    await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
+
+    expect(countRole(card, 'run-updated-at')).toBe(1)
+    expect(card.querySelector('[data-role="run-updated-at"]').dataset.timeSource).toBe('other')
+  })
+
+  it('a card with no <time> at all gains one from the list as before', async () => {
+    const runId = 'run-seed-none-001'
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    const card = makeStatusOnlyOptimisticCard(cards, runId)
+
+    stubFetchRuns([makeValidSummary({runId, status: 'running', updatedAt: LIST_UPDATED_AT})])
+    await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
+
+    expect(countRole(card, 'run-updated-at')).toBe(1)
+    expect(card.querySelector('[data-role="run-updated-at"]').attributes.datetime).toBe(LIST_UPDATED_AT)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // A card without updatedAt gains its <time> later, once a view carries one
 // ---------------------------------------------------------------------------
 
@@ -3366,6 +3598,19 @@ describe('late <time> — a card first shown without updatedAt gains it when a l
 // ---------------------------------------------------------------------------
 
 const CHECKOUT_ROLE = 'run-checkout-detail'
+
+/** Every card shape's hidden regions, in DOM order: the waiting line sits right below checkout. */
+const ORDERED_REGION_ROLES = [
+  'run-checkout-detail',
+  'run-waiting',
+  'run-output',
+  'run-output-coalesced',
+  'run-output-gap',
+  'run-approvals',
+  'run-questions',
+  'approval-badge',
+  'run-cancel',
+]
 
 /** The roles of a card's direct children, in DOM order. */
 function childRoles(card) {
@@ -3458,7 +3703,7 @@ describe('checkout-detail region — fetched cards (renderRunCard)', () => {
     expectCheckoutSlot(cards[0])
   })
 
-  it('expanding reveals the region, collapsing hides it, and expanding another card hides the first one’s', async () => {
+  it('expanding leaves the region hidden, collapsing hides it, and expanding another card hides the first one’s', async () => {
     const onSelectRun = vi.fn()
     const cards = []
     stubDOMWithSubstructureCards(cards)
@@ -3468,18 +3713,20 @@ describe('checkout-detail region — fetched cards (renderRunCard)', () => {
     const region = card => card.querySelector(`[data-role="${CHECKOUT_ROLE}"]`)
 
     cardA.dispatchEvent({type: 'click'})
-    expect(region(cardA).hidden).toBe(false)
+    expect(region(cardA).hidden).toBe(true)
+    region(cardA).hidden = false // the stream's paint
     expect(region(cardB).hidden).toBe(true)
 
     cardB.dispatchEvent({type: 'click'})
     expect(region(cardA).hidden).toBe(true)
-    expect(region(cardB).hidden).toBe(false)
+    expect(region(cardB).hidden).toBe(true)
+    region(cardB).hidden = false
 
     cardB.dispatchEvent({type: 'click'})
     expect(region(cardB).hidden).toBe(true)
   })
 
-  it('a launch-marked card reveals its region on markCardExpandedForLaunch', async () => {
+  it('a launch-marked card leaves its region hidden on markCardExpandedForLaunch', async () => {
     const cards = []
     stubDOMWithSubstructureCards(cards)
     stubFetchRuns([makeValidSummary({runId: 'run-ck-launch-expand-001'})])
@@ -3487,7 +3734,8 @@ describe('checkout-detail region — fetched cards (renderRunCard)', () => {
 
     markCardExpandedForLaunch('run-ck-launch-expand-001')
 
-    expect(cards[0].querySelector(`[data-role="${CHECKOUT_ROLE}"]`).hidden).toBe(false)
+    expect(cards[0].dataset.expanded).toBe('true')
+    expect(cards[0].querySelector(`[data-role="${CHECKOUT_ROLE}"]`).hidden).toBe(true)
   })
 
   it('source: the region is created via createElement and never via innerHTML', async () => {
@@ -3572,7 +3820,8 @@ describe('checkout-detail region — adopted optimistic cards (ensureRunCardAnat
     const region = optimistic.querySelector(`[data-role="${CHECKOUT_ROLE}"]`)
 
     optimistic.dispatchEvent({type: 'click'})
-    expect(region.hidden).toBe(false)
+    expect(region.hidden).toBe(true)
+    region.hidden = false // the stream's paint
     optimistic.dispatchEvent({type: 'click'})
     expect(region.hidden).toBe(true)
   })
@@ -3593,6 +3842,7 @@ describe('checkout-detail region — adopted optimistic cards (ensureRunCardAnat
     const hiddenRoles = card => childRoles(card).filter(role => role !== undefined && !['run-status-group', 'run-repo', 'run-updated-at'].includes(role))
     expect(hiddenRoles(optimistic)).toEqual(hiddenRoles(fetched))
     expect(hiddenRoles(fetched)[0]).toBe(CHECKOUT_ROLE)
+    expect(hiddenRoles(fetched)).toEqual(ORDERED_REGION_ROLES)
   })
 })
 
@@ -3632,7 +3882,7 @@ describe('question region — fetched cards (renderRunCard)', () => {
     }
   })
 
-  it('is part of the auto-hidden substructure: expand reveals it, collapse hides it, switching hides the first card’s', async () => {
+  it('is part of the auto-hidden substructure: expand leaves it hidden, collapse hides it, switching hides the first card’s', async () => {
     const cards = []
     stubDOMWithSubstructureCards(cards)
     stubFetchRuns([makeValidSummary({runId: 'run-q-accordion-a'}), makeValidSummary({runId: 'run-q-accordion-b'})])
@@ -3641,12 +3891,14 @@ describe('question region — fetched cards (renderRunCard)', () => {
     const region = card => card.querySelector(`[data-role="${QUESTIONS_ROLE}"]`)
 
     cardA.dispatchEvent({type: 'click'})
-    expect(region(cardA).hidden).toBe(false)
+    expect(region(cardA).hidden).toBe(true)
+    region(cardA).hidden = false // the stream's paint
     expect(region(cardB).hidden).toBe(true)
 
     cardB.dispatchEvent({type: 'click'})
     expect(region(cardA).hidden).toBe(true)
-    expect(region(cardB).hidden).toBe(false)
+    expect(region(cardB).hidden).toBe(true)
+    region(cardB).hidden = false
 
     cardB.dispatchEvent({type: 'click'})
     expect(region(cardB).hidden).toBe(true)
@@ -3733,6 +3985,117 @@ describe('question region — adopted optimistic cards (ensureRunCardAnatomy)', 
     const hiddenRoles = card => childRoles(card).filter(role => role !== undefined && !['run-status-group', 'run-repo', 'run-updated-at'].includes(role))
     expect(hiddenRoles(optimistic)).toEqual(hiddenRoles(fetched))
     expect(hiddenRoles(fetched)).toContain(QUESTIONS_ROLE)
+    expect(hiddenRoles(fetched)).toEqual(ORDERED_REGION_ROLES)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Waiting-line region — one hidden region per card, right below checkout, on every card shape
+// ---------------------------------------------------------------------------
+
+const WAITING_ROLE = 'run-waiting'
+
+describe('waiting-line region — every card shape', () => {
+  afterEach(() => {
+    resetRunIndexState()
+    vi.restoreAllMocks()
+  })
+
+  it('every fetched card has exactly one hidden, empty run-waiting div between checkout and output', async () => {
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    stubFetchRuns([
+      makeValidSummary({runId: 'run-w-fetched-1', updatedAt: '2026-06-26T13:00:00.000Z'}),
+      makeValidSummary({runId: 'run-w-fetched-2'}),
+    ])
+
+    await initOperatorRunIndex({endpointBase: '/operator'})
+
+    expect(cards).toHaveLength(2)
+    for (const card of cards) {
+      expect(countRole(card, WAITING_ROLE)).toBe(1)
+      const region = card.querySelector(`[data-role="${WAITING_ROLE}"]`)
+      expect(region.hidden).toBe(true)
+      expect(region.textContent).toBe('')
+      expect(region._children).toHaveLength(0)
+      // Closed attribute set: only the role marker and hidden — nothing run-derived.
+      expect(Object.keys(region.dataset)).toEqual(['role'])
+      expect(Object.keys(region.attributes)).toEqual([])
+      const roles = childRoles(card)
+      expect(roles.indexOf(WAITING_ROLE)).toBe(roles.indexOf(CHECKOUT_ROLE) + 1)
+      expect(roles.indexOf(WAITING_ROLE)).toBe(roles.indexOf('run-output') - 1)
+    }
+  })
+
+  it('an adopted status-only card gains exactly one waiting region below checkout, however often it is re-adopted', async () => {
+    const runId = 'run-w-adopt-001'
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    const optimistic = makeStatusOnlyOptimisticCard(cards, runId)
+    expect(optimistic.querySelector(`[data-role="${WAITING_ROLE}"]`)).toBeNull()
+
+    for (let i = 0; i < 3; i++) {
+      stubFetchRuns([makeValidSummary({runId, status: 'running'})])
+      await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
+    }
+
+    expect(countRole(optimistic, WAITING_ROLE)).toBe(1)
+    expect(optimistic.querySelector(`[data-role="${WAITING_ROLE}"]`).hidden).toBe(true)
+    const roles = childRoles(optimistic)
+    expect(roles.indexOf(WAITING_ROLE)).toBe(roles.indexOf(CHECKOUT_ROLE) + 1)
+  })
+
+  it('an optimistic card that already has a waiting region (launch anatomy) is not given a duplicate', async () => {
+    const runId = 'run-w-launch-anatomy-001'
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    const optimistic = makeStatusOnlyOptimisticCard(cards, runId)
+    const existing = document.createElement('div')
+    existing.dataset.role = WAITING_ROLE
+    existing.hidden = true
+    optimistic.querySelector('[data-role="run-output"]').before(existing)
+
+    stubFetchRuns([makeValidSummary({runId, status: 'running'})])
+    await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
+
+    expect(countRole(optimistic, WAITING_ROLE)).toBe(1)
+    expect(optimistic.querySelector(`[data-role="${WAITING_ROLE}"]`)).toBe(existing)
+    const roles = childRoles(optimistic)
+    expect(roles.indexOf(CHECKOUT_ROLE)).toBe(roles.indexOf(WAITING_ROLE) - 1)
+  })
+
+  it('a <time> added late still lands ahead of the checkout and waiting regions', async () => {
+    const runId = 'run-w-late-time-001'
+    const cards = []
+    stubDOMWithSubstructureCards(cards)
+    const optimistic = makeStatusOnlyOptimisticCard(cards, runId)
+    stubFetchRuns([makeValidSummary({runId, status: 'running'})])
+    await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
+    expect(optimistic.querySelector('[data-role="run-updated-at"]')).toBeNull()
+
+    stubFetchRuns([makeValidSummary({runId, status: 'running', updatedAt: '2026-06-26T14:00:00.000Z'})])
+    await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
+
+    const roles = childRoles(optimistic)
+    expect(roles.indexOf('run-updated-at')).toBeLessThan(roles.indexOf(CHECKOUT_ROLE))
+    expect(roles.indexOf(CHECKOUT_ROLE)).toBe(roles.indexOf(WAITING_ROLE) - 1)
+  })
+
+  it('source: SUBSTRUCTURE_ROLES lists the waiting role right after the checkout role', async () => {
+    const fs = await import('node:fs/promises')
+    const src = await fs.readFile('public/operator-run-index.js', 'utf8')
+    const list = src.match(/const SUBSTRUCTURE_ROLES = \[([\s\S]*?)\]/)?.[1] ?? ''
+    const roles = list.split(',').map(entry => entry.trim().replaceAll("'", '')).filter(Boolean)
+    expect(src).toMatch(/const WAITING_ROLE = 'run-waiting'/)
+    expect(roles.indexOf('WAITING_ROLE')).toBe(roles.indexOf('CHECKOUT_DETAIL_ROLE') + 1)
+  })
+
+  it('source: the waiting text is never written by the run index, and no innerHTML is used', async () => {
+    const fs = await import('node:fs/promises')
+    const src = await fs.readFile('public/operator-run-index.js', 'utf8')
+    expect(src).not.toContain('Waiting for output')
+    expect(src).not.toContain('Waiting to start')
+    expect(src).not.toMatch(/\.innerHTML\s*=/)
   })
 })
 
@@ -4272,5 +4635,292 @@ describe('refreshOperatorRunIndex — single-flight in-place refresh', () => {
     const refreshSource = src.slice(src.indexOf('async function applyRefresh'), src.indexOf('export function refreshOperatorRunIndex')) + body
     expect(refreshSource).not.toContain('_runIndexGeneration++')
     expect(refreshSource).not.toContain('initOperatorRunIndex(')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// A run launched elsewhere must land above the run the operator has open.
+//
+// The Operator view stays mounted (display:none) on the Inbox tab, so its 30 s refresh keeps diffing
+// the live DOM. The expanded card is position-locked; a NEW card is not part of that lock and has to
+// take its fetch-order slot, which for a newest-first gateway is above an older expanded run.
+// ---------------------------------------------------------------------------
+
+const orderedRunIds = cards => cards.map(c => c.dataset.runId)
+
+async function initOrderedList(runIds, extraInit = {}) {
+  const net = stubControlledFetch()
+  const dom = stubDOMForRefresh()
+  const onSelectRun = vi.fn()
+  const init = initOperatorRunIndex({endpointBase: '/operator', onSelectRun, ...extraInit})
+  net.respond(0, runIds.map(runId => makeValidSummary({runId, status: 'succeeded'})))
+  await init
+  return {net, ...dom}
+}
+
+async function refreshOrderedList(net, index, runIds, statusOf = () => 'succeeded') {
+  const pending = refreshOperatorRunIndex()
+  net.respond(index, runIds.map(runId => makeValidSummary({runId, status: statusOf(runId)})))
+  await expect(pending).resolves.toBe(true)
+}
+
+describe('refreshOperatorRunIndex — a new run lands in fetch order around the position-locked expanded card', () => {
+  afterEach(() => {
+    resetRunIndexState()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  const ids = orderedRunIds
+  const initWith = initOrderedList
+  const refreshWith = refreshOrderedList
+
+  it('collapsed older run: the new run is above it', async () => {
+    const {net, cards} = await initWith(['run-ord-B'])
+    await refreshWith(net, 1, ['run-ord-A', 'run-ord-B'], id => (id === 'run-ord-A' ? 'waiting_for_approval' : 'succeeded'))
+    expect(ids(cards)).toEqual(['run-ord-A', 'run-ord-B'])
+  })
+
+  it('expanded older run (click, no stream yet): the new run is above it', async () => {
+    const {net, cards} = await initWith(['run-ord-B'])
+    cards[0].dispatchEvent({type: 'click'})
+    expect(cards[0].dataset.expanded).toBe('true')
+
+    await refreshWith(net, 1, ['run-ord-A', 'run-ord-B'])
+    expect(ids(cards)).toEqual(['run-ord-A', 'run-ord-B'])
+  })
+
+  it('expanded older run with its stream attached: the new run is above it, the card node is untouched', async () => {
+    const {net, cards} = await initWith(['run-ord-B'])
+    const cardB = cards[0]
+    cardB.dispatchEvent({type: 'click'})
+    markRunStreamAttached('run-ord-B')
+
+    await refreshWith(net, 1, ['run-ord-A', 'run-ord-B'])
+    expect(ids(cards)).toEqual(['run-ord-A', 'run-ord-B'])
+    expect(cards.find(c => c.dataset.runId === 'run-ord-B')).toBe(cardB)
+    expect(cardB.dataset.expanded).toBe('true')
+    expect(cardB.dataset.streamAttached).toBe('true')
+  })
+
+  it('hash-restored older run: the new run is above it', async () => {
+    const {net, cards} = await initWith(['run-ord-B'], {restoreRunId: 'run-ord-B', onRestoreRun: vi.fn()})
+    expect(cards[0].dataset.expanded).toBe('true')
+
+    await refreshWith(net, 1, ['run-ord-A', 'run-ord-B'])
+    expect(ids(cards)).toEqual(['run-ord-A', 'run-ord-B'])
+  })
+
+  it('several cards, expanded one in the middle: the new run goes on top and the rest keep their order', async () => {
+    const {net, cards} = await initWith(['run-ord-C', 'run-ord-B', 'run-ord-D'])
+    cards.find(c => c.dataset.runId === 'run-ord-B').dispatchEvent({type: 'click'})
+
+    await refreshWith(net, 1, ['run-ord-A', 'run-ord-C', 'run-ord-B', 'run-ord-D'])
+    expect(ids(cards)).toEqual(['run-ord-A', 'run-ord-C', 'run-ord-B', 'run-ord-D'])
+  })
+
+  it('several cards, expanded one last: the new run goes on top and the expanded run stays last', async () => {
+    const {net, cards} = await initWith(['run-ord-C', 'run-ord-B'])
+    cards.find(c => c.dataset.runId === 'run-ord-B').dispatchEvent({type: 'click'})
+
+    await refreshWith(net, 1, ['run-ord-A', 'run-ord-C', 'run-ord-B'])
+    expect(ids(cards)).toEqual(['run-ord-A', 'run-ord-C', 'run-ord-B'])
+  })
+
+  it('several new runs at once all land above the expanded run, newest first', async () => {
+    const {net, cards} = await initWith(['run-ord-B'])
+    cards[0].dispatchEvent({type: 'click'})
+
+    await refreshWith(net, 1, ['run-ord-A2', 'run-ord-A1', 'run-ord-B'])
+    expect(ids(cards)).toEqual(['run-ord-A2', 'run-ord-A1', 'run-ord-B'])
+  })
+
+  it('an older run the gateway lists below the expanded one stays below it', async () => {
+    const {net, cards} = await initWith(['run-ord-B'])
+    cards[0].dispatchEvent({type: 'click'})
+
+    await refreshWith(net, 1, ['run-ord-B', 'run-ord-Z'])
+    expect(ids(cards)).toEqual(['run-ord-B', 'run-ord-Z'])
+  })
+
+  it('an attached card the fetch no longer lists is kept, behind the fetched cards at the end of the list', async () => {
+    const {net, cards} = await initWith(['run-ord-B', 'run-ord-C'])
+    const cardB = cards.find(c => c.dataset.runId === 'run-ord-B')
+    cardB.dispatchEvent({type: 'click'})
+    markRunStreamAttached('run-ord-B')
+
+    // B aged off the end of the gateway's window while its stream is attached.
+    await refreshWith(net, 1, ['run-ord-A', 'run-ord-C'])
+    expect(ids(cards)).toEqual(['run-ord-A', 'run-ord-C', 'run-ord-B'])
+    expect(cards.find(c => c.dataset.runId === 'run-ord-B')).toBe(cardB)
+    expect(cardB.dataset.expanded).toBe('true')
+    expect(cardB.dataset.streamAttached).toBe('true')
+  })
+
+  // The launch card is inserted on top (newest run) and expanded; the expand triggers a refresh that
+  // can land before the gateway lists the run. It must stay on top, then be adopted in place.
+  async function initWithUnlistedOptimisticOnTop() {
+    const setup = await initWith(['run-ord-B', 'run-ord-C'])
+    const optimistic = makeStatusOnlyOptimisticCard(setup.cards, 'run-ord-A')
+    setup.cards.splice(setup.cards.indexOf(optimistic), 1)
+    setup.cards.unshift(optimistic)
+    markCardExpandedForLaunch('run-ord-A')
+    expect(optimistic.dataset.expanded).toBe('true')
+    return {...setup, optimistic}
+  }
+
+  it('an unlisted optimistic card stays on top of the fetched cards, same node, still expanded', async () => {
+    const {net, cards, optimistic} = await initWithUnlistedOptimisticOnTop()
+
+    await refreshWith(net, 1, ['run-ord-B', 'run-ord-C'])
+    expect(ids(cards)).toEqual(['run-ord-A', 'run-ord-B', 'run-ord-C'])
+    expect(cards[0]).toBe(optimistic)
+    expect(optimistic.dataset.expanded).toBe('true')
+    expect(optimistic.dataset.optimistic).toBe('true')
+  })
+
+  it('once the fetch lists the optimistic card it is adopted in place', async () => {
+    const {net, cards, optimistic} = await initWithUnlistedOptimisticOnTop()
+
+    await refreshWith(net, 1, ['run-ord-B', 'run-ord-C'])
+    expect(ids(cards)).toEqual(['run-ord-A', 'run-ord-B', 'run-ord-C'])
+
+    await refreshWith(net, 2, ['run-ord-A', 'run-ord-B', 'run-ord-C'])
+    expect(ids(cards)).toEqual(['run-ord-A', 'run-ord-B', 'run-ord-C'])
+    expect(cards[0]).toBe(optimistic)
+    expect(optimistic.dataset.expanded).toBe('true')
+    expect(optimistic.dataset.optimistic).toBeUndefined()
+  })
+
+  it('a focused card keeps focus when a new run is inserted above the expanded run', async () => {
+    const {net, cards, doc} = await initWith(['run-ord-B'])
+    const cardB = cards[0]
+    cardB.dispatchEvent({type: 'click'})
+    cardB.focus = vi.fn(() => {
+      doc.activeElement = cardB
+    })
+    doc.activeElement = cardB
+    // The mock list contains() answers by membership in the cards array.
+    await refreshWith(net, 1, ['run-ord-A', 'run-ord-B'])
+    expect(ids(cards)).toEqual(['run-ord-A', 'run-ord-B'])
+    expect(doc.activeElement).toBe(cardB)
+  })
+})
+
+describe('onListApplied — the run IDs of each applied list', () => {
+  afterEach(() => {
+    resetRunIndexState()
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('init reports the fetched run IDs after the list is applied', async () => {
+    const net = stubControlledFetch()
+    stubDOMForRefresh()
+    const onListApplied = vi.fn()
+    const init = initOperatorRunIndex({endpointBase: '/operator', onListApplied})
+    net.respond(0, [makeValidSummary({runId: 'run-la-001'}), makeValidSummary({runId: 'run-la-002'})])
+    await init
+
+    expect(onListApplied).toHaveBeenCalledTimes(1)
+    expect([...onListApplied.mock.calls[0][0]]).toEqual(['run-la-001', 'run-la-002'])
+  })
+
+  it('init reports an empty list as no IDs', async () => {
+    const net = stubControlledFetch()
+    stubDOMForRefresh()
+    const onListApplied = vi.fn()
+    const init = initOperatorRunIndex({endpointBase: '/operator', onListApplied})
+    net.respond(0, [])
+    await init
+
+    expect(onListApplied).toHaveBeenCalledTimes(1)
+    expect([...onListApplied.mock.calls[0][0]]).toEqual([])
+  })
+
+  it('a refresh reports the fetched IDs, not the cards left in the DOM (a protected card stays but is not listed)', async () => {
+    const net = stubControlledFetch()
+    const {cards} = stubDOMForRefresh()
+    const onListApplied = vi.fn()
+    const init = initOperatorRunIndex({endpointBase: '/operator', onListApplied})
+    net.respond(0, [makeValidSummary({runId: 'run-la-keep'}), makeValidSummary({runId: 'run-la-gone'})])
+    await init
+    markRunStreamAttached('run-la-gone')
+    onListApplied.mockClear()
+
+    const refresh = refreshOperatorRunIndex()
+    net.respond(1, [makeValidSummary({runId: 'run-la-keep'})])
+    await expect(refresh).resolves.toBe(true)
+
+    expect(cards.map(card => card.dataset.runId)).toContain('run-la-gone')
+    expect(onListApplied).toHaveBeenCalledTimes(1)
+    expect([...onListApplied.mock.calls[0][0]]).toEqual(['run-la-keep'])
+  })
+
+  it('reports nothing when the fetch fails, the body is rejected, or auth fails', async () => {
+    const net = stubControlledFetch()
+    stubDOMForRefresh()
+    const onListApplied = vi.fn()
+    const init = initOperatorRunIndex({endpointBase: '/operator', onListApplied, onAuthRequired: vi.fn()})
+    net.respond(0, [makeValidSummary({runId: 'run-la-fail'})])
+    await init
+    onListApplied.mockClear()
+
+    const failed = refreshOperatorRunIndex()
+    net.respondRaw(1, {ok: false, status: 500, json: async () => ({})})
+    await expect(failed).resolves.toBe(false)
+
+    const authFailed = refreshOperatorRunIndex()
+    net.respondRaw(2, {ok: false, status: 401, json: async () => ({})})
+    await expect(authFailed).resolves.toBe(false)
+
+    expect(onListApplied).not.toHaveBeenCalled()
+  })
+
+  it('init still resolves loaded with the card listed when onListApplied throws', async () => {
+    const net = stubControlledFetch()
+    const {cards} = stubDOMForRefresh()
+    const onListApplied = vi.fn(() => {
+      throw new Error('boom')
+    })
+    const init = initOperatorRunIndex({endpointBase: '/operator', onListApplied})
+    net.respond(0, [makeValidSummary({runId: 'run-la-throw'})])
+
+    await expect(init).resolves.toBe('loaded')
+    expect(onListApplied).toHaveBeenCalledTimes(1)
+    expect(cards.map(card => card.dataset.runId)).toEqual(['run-la-throw'])
+  })
+
+  it('a refresh still resolves true with the card listed when onListApplied throws', async () => {
+    const net = stubControlledFetch()
+    const {cards} = stubDOMForRefresh()
+    let shouldThrow = false
+    const onListApplied = vi.fn(() => {
+      if (shouldThrow) throw new Error('boom')
+    })
+    const init = initOperatorRunIndex({endpointBase: '/operator', onListApplied})
+    net.respond(0, [makeValidSummary({runId: 'run-la-first'})])
+    await init
+    shouldThrow = true
+    onListApplied.mockClear()
+
+    const refresh = refreshOperatorRunIndex()
+    net.respond(1, [makeValidSummary({runId: 'run-la-second'})])
+
+    await expect(refresh).resolves.toBe(true)
+    expect(onListApplied).toHaveBeenCalledTimes(1)
+    expect(cards.map(card => card.dataset.runId)).toEqual(['run-la-second'])
+  })
+
+  it('reports nothing when a reset replaces the init while it fetches', async () => {
+    const net = stubControlledFetch()
+    stubDOMForRefresh()
+    const onListApplied = vi.fn()
+    const init = initOperatorRunIndex({endpointBase: '/operator', onListApplied})
+    resetRunIndexState()
+    net.respond(0, [makeValidSummary({runId: 'run-la-stale'})])
+    await init
+
+    expect(onListApplied).not.toHaveBeenCalled()
   })
 })

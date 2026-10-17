@@ -542,6 +542,234 @@ describe('waiting-summary fixture rows stay out of production artifacts', () => 
   })
 })
 
+describe('/static/* revalidation — a deploy must not leave a stale operator module in the browser', () => {
+  const unconditionalModules = [
+    '/static/operator-stream.js',
+    '/static/operator-launch.js',
+    '/static/operator-run-index.js',
+    '/static/operator-time.js',
+  ] as const
+
+  it.each(unconditionalModules)('%s carries Cache-Control: no-cache and keeps Last-Modified (flag off)', async path => {
+    const app = await buildTestApp(false)
+    const res = await app.request(path)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-cache')
+    expect(res.headers.get('last-modified')).not.toBeNull()
+  })
+
+  it.each(unconditionalModules)('%s carries Cache-Control: no-cache with the ?manual=1 query the loader uses', async path => {
+    const app = await buildTestApp(true)
+    const res = await app.request(`${path}?manual=1`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-cache')
+    expect(res.headers.get('last-modified')).not.toBeNull()
+  })
+
+  it('a flag-gated /static asset (operator.css) carries Cache-Control: no-cache and keeps Last-Modified', async () => {
+    const app = await buildTestApp(true)
+    const res = await app.request('/static/operator.css')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-cache')
+    expect(res.headers.get('last-modified')).not.toBeNull()
+  })
+
+  it('never uses no-store: the browser may keep the file and revalidate it', async () => {
+    const app = await buildTestApp(true)
+    for (const path of [...unconditionalModules, '/static/operator.css']) {
+      const res = await app.request(path)
+      expect(res.headers.get('cache-control'), path).not.toContain('no-store')
+    }
+  })
+
+  it('a missing /static file is still a 404 with no cache header added', async () => {
+    const app = await buildTestApp(true)
+    const res = await app.request('/static/does-not-exist.js')
+    expect(res.status).toBe(404)
+    expect(res.headers.get('cache-control')).toBeNull()
+  })
+
+  it('a flag-gated /static asset is still not served with the flag off, and gets no cache header', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/static/operator.css')
+    expect(res.status).not.toBe(200)
+    expect(res.headers.get('cache-control')).toBeNull()
+  })
+
+  it('the auth flow on /static is unchanged: an unauthenticated flag-on request is public (200), and flag-off non-module paths never leak a file', async () => {
+    const on = await buildTestApp(true)
+    expect((await on.request('/static/operator.css')).status).toBe(200)
+    const off = await buildTestApp(false)
+    const gated = await off.request('/static/operator.css')
+    expect(gated.status).not.toBe(200)
+  })
+})
+
+describe('/static/* conditional GET — revalidation answers 304 instead of re-sending the file', () => {
+  const ETAG_PATTERN = /^"[\w-]{43}"$/
+  const paths = [
+    '/static/operator-stream.js',
+    '/static/operator-launch.js',
+    '/static/operator-run-index.js',
+    '/static/operator-time.js',
+    '/static/operator.css',
+  ] as const
+
+  it.each(paths)('GET %s returns 200 with a strong content-based ETag', async path => {
+    const app = await buildTestApp(true)
+    const res = await app.request(path)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('etag')).toMatch(ETAG_PATTERN)
+    expect(res.headers.get('last-modified')).not.toBeNull()
+    expect((await res.text()).length).toBeGreaterThan(0)
+  })
+
+  it.each(paths)('GET %s with its own ETag returns 304: no body, no-cache, validators kept', async path => {
+    const app = await buildTestApp(true)
+    const first = await app.request(path)
+    const etag = first.headers.get('etag') ?? ''
+    expect(etag).toMatch(ETAG_PATTERN)
+
+    const res = await app.request(path, {headers: {'if-none-match': etag}})
+
+    expect(res.status).toBe(304)
+    expect(await res.text()).toBe('')
+    expect(res.headers.get('cache-control')).toBe('no-cache')
+    expect(res.headers.get('etag')).toBe(etag)
+    expect(res.headers.get('last-modified')).toBe(first.headers.get('last-modified'))
+  })
+
+  it('a stale or mismatched validator returns 200 with the full body', async () => {
+    const app = await buildTestApp(true)
+    const first = await app.request('/static/operator-run-index.js')
+    const body = await first.text()
+    for (const validator of ['"stale"', '"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"', 'garbage', '']) {
+      const res = await app.request('/static/operator-run-index.js', {headers: {'if-none-match': validator}})
+      expect(res.status, validator).toBe(200)
+      expect(await res.text(), validator).toBe(body)
+      expect(res.headers.get('cache-control'), validator).toBe('no-cache')
+    }
+  })
+
+  it('matches the way If-None-Match is defined: weak form, a list, and *', async () => {
+    const app = await buildTestApp(true)
+    const etag = (await app.request('/static/operator-launch.js')).headers.get('etag') ?? ''
+    for (const validator of [`W/${etag}`, `"other", ${etag}`, '*']) {
+      const res = await app.request('/static/operator-launch.js', {headers: {'if-none-match': validator}})
+      expect(res.status, validator).toBe(304)
+    }
+  })
+
+  it('a HEAD revalidation returns 304 too', async () => {
+    const app = await buildTestApp(true)
+    const etag = (await app.request('/static/operator-launch.js')).headers.get('etag') ?? ''
+    const res = await app.request('/static/operator-launch.js', {method: 'HEAD', headers: {'if-none-match': etag}})
+    expect(res.status).toBe(304)
+  })
+
+  it('a ranged request is not turned into a 304', async () => {
+    const app = await buildTestApp(true)
+    const etag = (await app.request('/static/operator-launch.js')).headers.get('etag') ?? ''
+    const res = await app.request('/static/operator-launch.js', {headers: {'if-none-match': etag, range: 'bytes=0-9'}})
+    expect(res.status).toBe(206)
+  })
+
+  it('works for the unconditional modules with the flag off', async () => {
+    const app = await buildTestApp(false)
+    const etag = (await app.request('/static/operator-stream.js')).headers.get('etag') ?? ''
+    expect(etag).toMatch(ETAG_PATTERN)
+    expect((await app.request('/static/operator-stream.js', {headers: {'if-none-match': etag}})).status).toBe(304)
+  })
+
+  it('404s and the flag-gated paths are unchanged: no ETag, no cache header, never a 304', async () => {
+    const on = await buildTestApp(true)
+    const missing = await on.request('/static/does-not-exist.js', {headers: {'if-none-match': '*'}})
+    expect(missing.status).toBe(404)
+    expect(missing.headers.get('etag')).toBeNull()
+    expect(missing.headers.get('cache-control')).toBeNull()
+
+    const off = await buildTestApp(false)
+    const gated = await off.request('/static/operator.css', {headers: {'if-none-match': '*'}})
+    expect(gated.status).not.toBe(200)
+    expect(gated.status).not.toBe(304)
+    expect(gated.headers.get('etag')).toBeNull()
+  })
+
+  it('does not resolve outside public/: traversal paths are not served and never get a validator', async () => {
+    const app = await buildTestApp(true)
+    for (const path of ['/static/../package.json', '/static/%2e%2e/package.json', '/static/..%2fpackage.json']) {
+      const res = await app.request(path, {headers: {'if-none-match': '*'}})
+      expect(res.status, path).not.toBe(200)
+      expect(res.status, path).not.toBe(304)
+      expect(res.headers.get('etag'), path).toBeNull()
+    }
+  })
+})
+
+describe('/static/* validators follow the content, not the mtime', () => {
+  const dirs: string[] = []
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, {recursive: true, force: true})
+  })
+
+  function makeRoot(content: string) {
+    const root = mkdtempSync(join(tmpdir(), 'static-files-'))
+    dirs.push(root)
+    mkdirSync(root, {recursive: true})
+    const file = join(root, 'mod.js')
+    writeFileSync(file, content)
+    const publicStatic = createPublicStatic(root)
+    const app = new Hono()
+    app.use('/static/*', publicStatic.revalidate)
+    app.use('/static/*', publicStatic.serve)
+    return {app, file}
+  }
+
+  it('a same-size file with different content and an OLDER mtime gets a new ETag and no false 304', async () => {
+    const {app, file} = makeRoot('export const v = "aaaa"\n')
+    const first = await app.request('/static/mod.js')
+    const etag1 = first.headers.get('etag') ?? ''
+    expect(etag1).not.toBe('')
+    expect((await app.request('/static/mod.js', {headers: {'if-none-match': etag1}})).status).toBe(304)
+
+    writeFileSync(file, 'export const v = "bbbb"\n')
+    utimesSync(file, new Date(0), new Date(0))
+
+    const afterDeploy = await app.request('/static/mod.js', {headers: {'if-none-match': etag1}})
+    expect(afterDeploy.status).toBe(200)
+    expect(await afterDeploy.text()).toBe('export const v = "bbbb"\n')
+    expect(afterDeploy.headers.get('etag')).not.toBe(etag1)
+  })
+
+  it('a same-size file with different content and a NEWER mtime gets a new ETag and no false 304', async () => {
+    const {app, file} = makeRoot('export const v = "aaaa"\n')
+    const etag1 = (await app.request('/static/mod.js')).headers.get('etag') ?? ''
+
+    writeFileSync(file, 'export const v = "cccc"\n')
+    utimesSync(file, new Date(Date.now() + 60_000), new Date(Date.now() + 60_000))
+
+    const res = await app.request('/static/mod.js', {headers: {'if-none-match': etag1}})
+    expect(res.status).toBe(200)
+    expect(res.headers.get('etag')).not.toBe(etag1)
+  })
+
+  it('the same content with a newer mtime keeps its ETag, so the browser still gets a 304', async () => {
+    const {app, file} = makeRoot('export const v = "aaaa"\n')
+    const etag1 = (await app.request('/static/mod.js')).headers.get('etag') ?? ''
+
+    utimesSync(file, new Date(Date.now() + 60_000), new Date(Date.now() + 60_000))
+
+    expect((await app.request('/static/mod.js', {headers: {'if-none-match': etag1}})).status).toBe(304)
+  })
+
+  it('only files under the root are reachable: a traversal path is a 404 with no validator', async () => {
+    const {app} = makeRoot('export const v = 1\n')
+    const res = await app.request('/static/../mod.js', {headers: {'if-none-match': '*'}})
+    expect(res.status).toBe(404)
+    expect(res.headers.get('etag')).toBeNull()
+  })
+})
+
 describe('operator runtime JS assets — served regardless of operatorUiEnabled flag', () => {
   it('GET /static/operator-stream.js returns 200 when operatorUiEnabled=false', async () => {
     const app = await buildTestApp(false)
@@ -636,6 +864,37 @@ describe('operator runtime JS assets — served regardless of operatorUiEnabled 
     const app = await buildTestApp(false)
     const res = await app.request('/static/operator-run-index.js?manual=1')
     expect(res.status).toBe(200)
+  })
+
+  it('GET /static/operator-time.js returns 200 with the flag off and on, and without a session', async () => {
+    for (const flag of [false, true]) {
+      const app = await buildTestApp(flag)
+      const res = await app.request('/static/operator-time.js')
+      expect(res.status, `flag ${flag}`).toBe(200)
+      expect(res.headers.get('location'), `flag ${flag}`).toBeNull()
+      expect(res.headers.get('content-type') ?? '', `flag ${flag}`).toMatch(/(?:text|application)\/javascript/)
+      expect(await res.text(), `flag ${flag}`).toContain('formatRelativeTime')
+    }
+  })
+
+  it('every relative import in a served operator module is itself served with the flag off', async () => {
+    const fs = await import('node:fs/promises')
+    const app = await buildTestApp(false)
+    const importers = ['operator-stream.js', 'operator-launch.js', 'operator-run-index.js']
+    const imported = new Set<string>()
+    for (const file of importers) {
+      const src = await fs.readFile(`public/${file}`, 'utf8')
+      for (const match of src.matchAll(/^import\s[^'"]*from\s+'\.\/([\w-]+\.js)'/gm)) imported.add(match[1] ?? '')
+    }
+    expect([...imported].toSorted()).toEqual(['operator-time.js'])
+    for (const file of imported) expect((await app.request(`/static/${file}`)).status, file).toBe(200)
+  })
+
+  it('all four operator modules load together with the flag off', async () => {
+    const app = await buildTestApp(false)
+    for (const path of ['/static/operator-stream.js', '/static/operator-launch.js', '/static/operator-run-index.js', '/static/operator-time.js']) {
+      expect((await app.request(path)).status, path).toBe(200)
+    }
   })
 
   it('GET /static/operator-run-index.js returns 200 when operatorUiEnabled=true', async () => {
@@ -795,6 +1054,14 @@ describe('production static JS assets — no fixture strings', () => {
     expect(src).not.toContain('fixture-runtime-loader')
   })
 
+  it('operator-time.js source carries no fixture or endpoint strings', async () => {
+    const fs = await import('node:fs/promises')
+    const src = await fs.readFile('public/operator-time.js', 'utf8')
+    expect(src).not.toContain('/__fixture')
+    expect(src).not.toContain('fixtureMode')
+    expect(src).not.toContain('/operator/')
+  })
+
   it('operator-stream.js default endpoint base is /operator (not fixture prefix)', async () => {
     const fs = await import('node:fs/promises')
     const src = await fs.readFile('public/operator-stream.js', 'utf8')
@@ -895,6 +1162,7 @@ describe('production build artifacts — no fixture strings in web/dist JS', () 
       'public/operator-stream.js',
       'public/operator-launch.js',
       'public/operator-run-index.js',
+      'public/operator-time.js',
     ]
     for (const file of await fs.readdir('web/dist/assets')) {
       if (file.endsWith('.js') || file.endsWith('.css')) files.push(path.join('web/dist/assets', file))
@@ -909,6 +1177,39 @@ describe('production build artifacts — no fixture strings in web/dist JS', () 
     }
   })
 })
+
+describe('waiting-summary fixture rows stay out of production artifacts', () => {
+  it('no waiting-row, transition-row or missing-run fixture ID reaches web/dist or the shipped browser modules', async () => {
+    const fs = await import('node:fs/promises')
+    const path = await import('node:path')
+    const files = [
+      'web/dist/sw.js',
+      'web/dist/index.html',
+      'public/operator-stream.js',
+      'public/operator-launch.js',
+      'public/operator-run-index.js',
+      'public/operator-time.js',
+    ]
+    for (const file of await fs.readdir('web/dist/assets')) {
+      if (file.endsWith('.js') || file.endsWith('.css')) files.push(path.join('web/dist/assets', file))
+    }
+    for (const file of files) {
+      const src = await fs.readFile(file, 'utf8')
+      for (const id of ['run-fixture-index-approval-flow', 'run-fixture-index-transition-question', 'run-fixture-missing-001', 'req-fixture-approval-001']) {
+        expect(src, `${file} must not contain ${id}`).not.toContain(id)
+      }
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Service worker cache boundary — fixture routes are not intercepted
+//
+// The SW uses a deny-by-default NavigationRoute with an explicit denylist.
+// /__fixture/* paths are not in the SW route table, so they naturally pass
+// through to the server. These tests prove the SW source does not add fixture
+// route handling and does not precache or runtime-cache fixture paths.
+// ---------------------------------------------------------------------------
 
 describe('service worker cache boundary — fixture routes not intercepted', () => {
   it('web/dist/sw.js does not register a route for /__fixture paths', async () => {
@@ -1168,6 +1469,68 @@ describe('security — operator-stream.js contract pin and checkout-field bounda
     const fs = await import('node:fs/promises')
     const src = await fs.readFile('public/operator-run-index.js', 'utf8')
     expect(src).not.toMatch(/checkout(?:Provenance|Preparation)/)
+  })
+})
+
+describe('security — shipped-module HTML-sink ban (rm-1502)', () => {
+  /**
+   * The ban family covers every DOM API that parses an HTML string:
+   * property writes (innerHTML/outerHTML/srcdoc), HTML-string calls
+   * (insertAdjacentHTML/document.write(ln)/setHTMLUnsafe/
+   * createContextualFragment/parseFromString). Upstream PR #646 ("render run
+   * output as Markdown", shipped upstream 2026.10.44) is the live hazard this
+   * widened family is shaped against: a naive markdown adoption reaches for
+   * innerHTML; the safe shape is a token-walking renderer with html:false
+   * (rm-1501/rm-1503). Comments are stripped before matching so prose that
+   * DOCUMENTS a sink cannot hide one and prose that documents the ban is not
+   * itself a false positive; test files and test-setup are out of scope
+   * (jsdom fixtures legitimately build DOM from strings).
+   */
+  const SINK_BAN_FAMILY: readonly {pattern: RegExp; label: string}[] = [
+    {pattern: /\.innerHTML\s*=/, label: 'innerHTML write'},
+    {pattern: /\.outerHTML\s*=/, label: 'outerHTML write'},
+    {pattern: /\.insertAdjacentHTML\s*\(/, label: 'insertAdjacentHTML call'},
+    {pattern: /\bdocument\.write(?:ln)?\s*\(/, label: 'document.write call'},
+    {pattern: /\.setHTMLUnsafe\s*\(/, label: 'setHTMLUnsafe call'},
+    {pattern: /\.createContextualFragment\s*\(/, label: 'createContextualFragment call'},
+    {pattern: /\.parseFromString\s*\(/, label: 'parseFromString call'},
+    {pattern: /\.srcdoc\s*=/, label: 'srcdoc write'},
+    // href writes are allowed only site-relative: a literal (or template)
+    // starting '/' or '#', or the AUTH_LOGIN_PATH same-origin constant
+    // (AppShell's login redirect). Any absolute or computed href is the
+    // #646-class XSS adjacency this family exists for.
+    {pattern: /\.href\s*=(?!\s*(?:AUTH_LOGIN_PATH|['"`][/#]))/, label: 'href write to a non-site-relative value'},
+  ]
+
+  it('no shipped browser module touches any HTML-string DOM sink', async () => {
+    const fs = await import('node:fs/promises')
+    const files: string[] = []
+    for (const entry of await fs.readdir('public')) {
+      if (entry.endsWith('.js')) files.push(`public/${entry}`)
+    }
+    const walk = async (dir: string): Promise<void> => {
+      for (const entry of await fs.readdir(dir, {withFileTypes: true})) {
+        const path = `${dir}/${entry.name}`
+        if (entry.isDirectory()) await walk(path)
+        else if (/\.(?:ts|tsx|js)$/.test(entry.name) && !entry.name.includes('.test.')) files.push(path)
+      }
+    }
+    await walk('web/src')
+    expect(files.length).toBeGreaterThan(30)
+    for (const filePath of files) {
+      if (filePath === 'web/src/test-setup.ts') continue
+      const raw = await fs.readFile(filePath, 'utf8')
+      const code = raw
+        .replaceAll(/\/\*[\s\S]*?\*\//g, '')
+        .replaceAll(/(^|[^:])\/\/.*$/gm, '$1')
+      for (const {pattern, label} of SINK_BAN_FAMILY) {
+        const match = code.match(pattern)
+        expect(
+          match,
+          `${filePath}: shipped module uses HTML sink (${label})`,
+        ).toBeNull()
+      }
+    }
   })
 })
 
