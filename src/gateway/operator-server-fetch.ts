@@ -10,7 +10,9 @@
  *   fetchJson wrapper maps it to a GatewayNetworkError and the caller fails closed.
  * - Sets redirect:'error' so the forwarded cookie is never sent across a 3xx redirect.
  * - Applies a 10-second AbortSignal timeout so a hanging gateway maps to a network
- *   error → deny (fail-closed), never an indefinite hang.
+ *   error → deny (fail-closed), never an indefinite hang — combined with any
+ *   caller-supplied abort signal via AbortSignal.any so caller aborts are
+ *   honored, never dropped.
  *
  * Security invariants:
  * - Never logs the cookie value — only the resolved path template is safe to log.
@@ -70,7 +72,9 @@ export interface OperatorServerFetchOptions {
  * fails closed.
  *
  * Always sets redirect:'error' (cookie must never be forwarded across a redirect)
- * and applies a 10-second AbortSignal timeout (hanging gateway → deny).
+ * and applies a 10-second AbortSignal timeout (hanging gateway → deny). A
+ * caller-supplied init.signal is combined with that timeout via AbortSignal.any
+ * — aborting it cancels the forwarded fetch instead of being overwritten.
  */
 export function createOperatorServerFetch(
   options: OperatorServerFetchOptions,
@@ -127,6 +131,15 @@ export function createOperatorServerFetch(
       mergedHeaders[key] = value
     })
 
+    // Bound every outgoing request with its own timeout signal, COMBINED with
+    // any caller-supplied abort signal via AbortSignal.any — a caller abort
+    // (its own deadline, logout, teardown) must cancel the forwarded fetch
+    // instead of being silently overwritten by the standalone timeout below.
+    // Mirrors src/github/app-client.ts and the browser twin browserFetch
+    // (web/src/push/subscribe.ts).
+    const timeoutSignal = AbortSignal.timeout(GATEWAY_FETCH_TIMEOUT_MS)
+    const signal = init?.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal
+
     const mergedInit: RequestInit = {
       ...init,
       headers: mergedHeaders,
@@ -136,7 +149,7 @@ export function createOperatorServerFetch(
       redirect: 'error',
       // Abort after GATEWAY_FETCH_TIMEOUT_MS to prevent indefinite hangs.
       // A hanging gateway maps to an AbortError → GatewayNetworkError → deny.
-      signal: AbortSignal.timeout(GATEWAY_FETCH_TIMEOUT_MS),
+      signal,
     }
 
     return fetchImpl(absoluteUrl, mergedInit)
