@@ -12,7 +12,7 @@
   <body class="min-h-screen bg-bg font-body text-text antialiased">
     <main class="mx-auto max-w-3xl px-6 py-12 sm:px-8 sm:py-16 lg:py-24">
       <header class="mb-12 border-b border-border-muted pb-8 sm:mb-16 sm:pb-10">
-        <a class="mb-8 inline-flex min-h-11 items-center text-sm font-medium text-accent underline decoration-accent/50 underline-offset-4 transition-colors hover:text-accent-hover focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent" href="/">
+        <a class="mb-8 inline-flex min-h-11 items-center rounded-md border border-accent/50 bg-surface px-3 py-2 text-sm font-semibold text-accent transition-colors hover:border-accent hover:bg-surface-raised hover:text-accent-hover focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent" href="/">
           Back to dashboard
         </a>
         <h1 class="max-w-2xl text-4xl font-bold tracking-tight text-text sm:text-5xl sm:leading-tight">
@@ -47,7 +47,7 @@
 
         <section>
           <h2 class="mb-4 text-2xl font-semibold tracking-tight text-text sm:text-3xl">What notifications contain</h2>
-          <p class="text-pretty">Notification payloads use fixed, neutral copy plus a small set of allowlisted failure labels. They never include repository names, prompts, run output, endpoints, signing keys, tokens, cookies, or session data. A question notification carries the ID of the run that asked, used only to open that run.</p>
+          <p class="text-pretty">Notification payloads use fixed, neutral copy plus a small set of allowlisted failure labels. They never include repository names, prompts, run output, endpoints, signing keys, tokens, cookies, or session data. Question and approval notifications can carry the ID of the run they are about, used only to open that run.</p>
         </section>
 
         <section>
@@ -84,7 +84,7 @@
       </div>
 
       <footer class="mt-16 border-t border-border-muted pt-6 text-sm text-text-subtle sm:mt-24">
-        Last updated 13 October 2026.
+        Last updated 15 October 2026.
       </footer>
     </main>
   </body>

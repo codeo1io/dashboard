@@ -1,5 +1,7 @@
 import {useEffect, useState, useCallback, useRef} from 'react'
 import {flushSync} from 'react-dom'
+import {requestRunJump} from './operator/runtime.ts'
+import {parseOpenRunMessage} from './push/open-run-message.ts'
 import {AppShell} from './shell/AppShell.tsx'
 import {Operator} from './views/Operator.tsx'
 import {ListenerChannel} from './views/Listener.tsx'
@@ -7,8 +9,6 @@ import {Monitoring} from './views/Monitoring.tsx'
 import {fetchListenerMessages} from './api/listener.ts'
 import {useBoundedPoll} from './hooks/useBoundedPoll.ts'
 import type {OperatorState} from './operator/state.ts'
-import {requestRunJump} from './operator/runtime.ts'
-import {parseOpenRunMessage} from './push/open-run-message.ts'
 
 /** rm-155: poll cadence for the unread badge count. */
 const UNREAD_POLL_INTERVAL_MS = 30000
@@ -173,6 +173,7 @@ export default function App() {
     container.addEventListener('message', handleMessage)
     return () => container.removeEventListener('message', handleMessage)
   }, [])
+
 
   return (
     <AppShell

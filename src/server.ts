@@ -907,6 +907,7 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     path === '/static/operator-stream.js' ||
     path === '/static/operator-launch.js' ||
     path === '/static/operator-run-index.js' ||
+    path === '/static/operator-time.js' ||
     (operatorUiEnabled && path.startsWith('/static/')) ||
     // Fixture harness routes — public ONLY when the full fixture gate is active
     // (non-production + loopback bind + flag enabled). Otherwise not in public list.
@@ -1194,26 +1195,23 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   app.get('/operator', c => c.redirect('/', 302))
   app.get('/operator/', c => c.redirect('/', 302))
 
+  // /static files are un-hashed and not precached, so without this a browser can heuristically reuse a
+  // stale module next to a fresh bundle after a deploy. Registered before every /static mount below.
+  const publicStatic = createPublicStatic('./public')
+  app.use('/static/*', publicStatic.revalidate)
+
   // ── Operator runtime JS assets — always served (flag-independent) ────────────
   // Root / owns the operator shell and always depends on these modules.
   // Mounted unconditionally so they are available regardless of operatorUiEnabled.
   // isPublicPath already allows these paths so auth middleware passes them through.
-  //
-  // /static files are un-hashed and not precached, so without revalidation a
-  // browser can heuristically reuse a stale module next to a fresh bundle after
-  // a deploy. src/static-files.ts (absorbed from upstream #619) owns the policy:
-  // revalidate runs before every /static mount below, setting no-cache + a strong
-  // content-hash ETag and answering a matching If-None-Match with a bodyless 304.
-  const publicStatic = createPublicStatic('./public')
-  app.use('/static/*', publicStatic.revalidate)
-
-  // rm-478: the revalidation policy for these three unversioned assets used to
+  // rm-478: the revalidation policy for these unversioned assets used to
   // be a fork-inline middleware (operatorRuntimeCaching); the #619 absorb moved
   // it into src/static-files.ts — one implementation, upstream-owned. The mounts
   // stay here (flag-independent), and static-assets.test.ts pins the behavior.
   app.use('/static/operator-stream.js', publicStatic.serve)
   app.use('/static/operator-launch.js', publicStatic.serve)
   app.use('/static/operator-run-index.js', publicStatic.serve)
+  app.use('/static/operator-time.js', publicStatic.serve)
 
   // ── Operator UI skeleton route ────────────────────────────────────────────────
   // Only mounted when operatorUiEnabled is true (default: false).

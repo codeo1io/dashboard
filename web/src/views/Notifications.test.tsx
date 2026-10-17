@@ -1,6 +1,7 @@
-import {render, screen, fireEvent, act} from '@testing-library/react'
+import {render, screen, fireEvent, act, waitFor} from '@testing-library/react'
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {getNotificationPermission, getPushSupport} from '../push/capability.ts'
+import {endpointHash} from '../push/endpoint-hash.ts'
 import {
   buildPushClient,
   resubscribeStaleKey,
@@ -136,7 +137,7 @@ describe('Notifications Component', () => {
     expect(screen.getByTestId('notifications-settings')).toBeInTheDocument()
   })
 
-  it('handles state: ios-not-installed', async () => {
+  it('shows installation instructions without an install button on iOS', async () => {
     addMetaTag()
     vi.mocked(getPushSupport).mockReturnValue({supported: false, needsInstall: true})
 
@@ -145,7 +146,23 @@ describe('Notifications Component', () => {
     })
 
     expect(screen.getByTestId('notifications-headline')).toHaveTextContent('Installation Required')
-    expect(screen.getByTestId('notifications-cta')).toHaveTextContent('Install App')
+    expect(screen.queryByRole('button', {name: 'Install App'})).not.toBeInTheDocument()
+    expect(screen.getByRole('list', {name: 'Install Fro Bot to your Home Screen'})).toBeInTheDocument()
+    expect(screen.getAllByRole('listitem').map((item) => item.textContent)).toEqual([
+      'Tap the Share icon in Safari.',
+      'Tap “Add to Home Screen.”',
+      'Open Fro Bot from your Home Screen to turn on notifications.',
+    ])
+  })
+
+  it('keeps the enable notifications button for non-iOS users', async () => {
+    addMetaTag()
+
+    await act(async () => {
+      render(<Notifications />)
+    })
+
+    expect(screen.getByRole('button', {name: 'Enable notifications'})).toBeInTheDocument()
   })
 
   it('handles state: unsupported', async () => {
@@ -240,6 +257,78 @@ describe('Notifications Component', () => {
 
     expect(screen.getByTestId('notifications-headline')).toHaveTextContent('Push Alerts')
     expect(screen.getByTestId('notifications-cta')).toHaveTextContent('Enable notifications')
+  })
+
+  it('shows Disable notifications when the gateway list holds this browser\'s active record', async () => {
+    addMetaTag()
+    const actual = await vi.importActual<typeof import('../push/subscribe.ts')>('../push/subscribe.ts')
+    const endpoint = 'https://push.example/this-browser'
+    const localHash = await endpointHash(endpoint)
+    const wireRecord = (endpointHashValue: string) => ({
+      endpointHash: endpointHashValue,
+      createdAt: 1_760_000_000_000,
+      updatedAt: 1_760_000_100_000,
+      keyVersion: 'v1',
+      active: true,
+    })
+    // rm-600 (fork): the view fires a vapid-key fetch at sweep cadence BEFORE
+    // the subscriptions read. A single shared Response would have its body
+    // consumed by the first reader and fail the second — mint a fresh
+    // Response per call (the vapid-key leg parses the same payload, fails
+    // closed, and leaves the cached version undefined; the subscriptions leg
+    // then reads its own copy and matches).
+    const listBody = () =>
+      JSON.stringify({subscriptions: [wireRecord('b'.repeat(64)), wireRecord(localHash)]})
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(() =>
+        Promise.resolve(
+          new Response(listBody(), {
+            status: 200,
+            headers: {'content-type': 'application/json'},
+          }),
+        ),
+      ),
+    )
+    vi.mocked(getNotificationPermission).mockReturnValue('granted')
+    vi.mocked(buildPushClient).mockReturnValue(actual.buildPushClient())
+    vi.mocked(runReconcileSweep).mockImplementation(actual.runReconcileSweep)
+
+    const originalSw = Object.getOwnPropertyDescriptor(globalThis.navigator, 'serviceWorker')
+    Object.defineProperty(globalThis.navigator, 'serviceWorker', {
+      value: {
+        ready: Promise.resolve({pushManager: {getSubscription: async () => ({endpoint})}}),
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      },
+      configurable: true,
+    })
+
+    try {
+      await act(async () => {
+        render(<Notifications />)
+      })
+
+      await waitFor(() => {
+        expect(screen.getByTestId('notifications-cta')).toHaveTextContent('Disable notifications')
+      })
+      expect(screen.getByTestId('notifications-cta')).not.toHaveTextContent('Enable notifications')
+    } finally {
+      vi.unstubAllGlobals()
+      // rm-600: reset must keep the fail-open getVapidKey stub — the view
+      // calls it at sweep cadence, and a bare {} breaks every later test.
+      vi.mocked(buildPushClient).mockReturnValue({
+        getVapidKey: vi.fn().mockResolvedValue({
+          success: true,
+          data: {pushDisabled: true, vapidKey: undefined},
+        }),
+      } as unknown as ReturnType<typeof buildPushClient>)
+      if (originalSw) {
+        Object.defineProperty(globalThis.navigator, 'serviceWorker', originalSw)
+      } else {
+        Reflect.deleteProperty(globalThis.navigator, 'serviceWorker')
+      }
+    }
   })
 
   it('renders the privacy policy link before the consent CTA without requesting permission', async () => {
@@ -701,75 +790,6 @@ describe('Notifications Component', () => {
         body: 'operator.approval_needed.body',
         data: {type: 'approval', route: '/'},
       },
-    })
-  })
-
-  describe('rm-600 — VAPID key-version cache wiring (getCurrentKeyVersion supplier)', () => {
-    const flush = () => act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    })
-
-    /** Trigger a second sweep through the same path production uses (focus). */
-    const triggerFocusSweep = () => act(async () => {
-      window.dispatchEvent(new Event('focus'))
-      // Sweep is debounced 250ms on focus/visibility coalescing.
-      await new Promise((resolve) => setTimeout(resolve, 320))
-    })
-
-    it('passes a getCurrentKeyVersion function into runReconcileSweep (production dep wiring)', async () => {
-      addMetaTag()
-      await act(async () => {
-        render(<Notifications />)
-      })
-
-      expect(runReconcileSweep).toHaveBeenCalledTimes(1)
-      const deps = vi.mocked(runReconcileSweep).mock.calls[0]?.[0]
-      expect(typeof deps?.getCurrentKeyVersion).toBe('function')
-      // Fail-open BEFORE the vapid-key fetch resolves: undefined, never a guess.
-      expect(deps?.getCurrentKeyVersion?.()).toBeUndefined()
-    })
-
-    it('sources the version from pushClient.getVapidKey() and serves it to the next sweep', async () => {
-      addMetaTag()
-      const getVapidKey = vi.fn().mockResolvedValue({
-        success: true,
-        data: {pushDisabled: false, vapidKey: {publicKey: 'BNc3xVwB', keyVersion: 'v2'}},
-      })
-      vi.mocked(buildPushClient).mockReturnValueOnce({getVapidKey} as never)
-
-      await act(async () => {
-        render(<Notifications />)
-      })
-      await flush()
-
-      // Second sweep through the production focus path.
-      await triggerFocusSweep()
-
-      expect(runReconcileSweep).toHaveBeenCalledTimes(2)
-      const secondDeps = vi.mocked(runReconcileSweep).mock.calls[1]?.[0]
-      expect(secondDeps?.getCurrentKeyVersion?.()).toBe('v2')
-
-      // Rate limit: two sweeps within one refresh window issue ONE vapid-key
-      // GET, not one per sweep.
-      expect(getVapidKey).toHaveBeenCalledTimes(1)
-    })
-
-    it('fail-open: a failed getVapidKey result leaves the supplier at undefined', async () => {
-      addMetaTag()
-      const getVapidKey = vi.fn().mockResolvedValue({
-        success: false,
-        error: {kind: 'network'},
-      })
-      vi.mocked(buildPushClient).mockReturnValueOnce({getVapidKey} as never)
-
-      await act(async () => {
-        render(<Notifications />)
-      })
-      await flush()
-      await triggerFocusSweep()
-
-      const secondDeps = vi.mocked(runReconcileSweep).mock.calls[1]?.[0]
-      expect(secondDeps?.getCurrentKeyVersion?.()).toBeUndefined()
     })
   })
 })

@@ -1,7 +1,7 @@
 ---
 title: Consume a gateway operator contract bump as a full dashboard consumer (contract 1.8.0)
 date: 2026-10-07
-last_updated: 2026-10-13
+last_updated: 2026-10-15
 category: best-practices
 module: operator-contract-consumption
 problem_type: architecture_pattern
@@ -130,9 +130,30 @@ Keep similar codes distinct: `workspace-unreachable`, `workspace-unavailable` an
 ### 6. Render into one region per card, and pass what was actually painted
 
 Every card shape (fetched, optimistic launch, adopted) carries exactly one hidden
-`[data-role="run-checkout-detail"]` region, discovered by the runtime seam and
-handed to `initOperatorStream`. When `failureKind` is absent, the preparation reason
-becomes the card's reason line, and the region leaves out its own copy.
+`[data-role="run-checkout-detail"]` region and one hidden `[data-role="run-waiting"]`
+region, in that order, ahead of the output, approval, question and Cancel regions.
+The runtime seam discovers both and hands them to `initOperatorStream`. When
+`failureKind` is absent, the preparation reason becomes the card's reason line, and
+the region leaves out its own copy.
+
+Expanding a card reveals no region. Each stream attach clears and hides every
+stream-owned region, paints "Connecting to run stream…" once, then calls `connect()`.
+`updateDOM` is the only code that unhides a region, and only when the region has
+content. Collapsing hides the regions again.
+
+A recorded re-expand goes through the same seed-then-`updateDOM` path: the record seeds the stream state, and nothing is revealed until `updateDOM` runs, so the rule still holds. The record store is page memory only, bounded to 100 runs and 2,000,000 characters of output with least-recently-used eviction. It is cleared on `auth-required` and on a fixture scenario change, and it drops runs that leave the latest applied run list.
+
+While the stream is live, the waiting line reads "Waiting to start…" for a queued run
+and "Waiting for output…" otherwise. It hides on output, an open approval, an open
+question, a terminal or blocked status, and any non-live connection. Visible checkout
+detail is context, not output, so it does not hide the line. A terminal run-list
+`summaryStatus` holds it hidden until the stream sends a non-terminal status.
+
+A launched card seeds a `<time data-time-source="launch">`, and the stream writes the
+normalized `startedAt` into it. On adoption the list's `updatedAt` takes over, or the
+element is removed when there is no `updatedAt`, before the terminal-sticky return.
+The shared helpers (`formatRelativeTime`, `normalizeIsoTimestamp`,
+`MAX_TIMESTAMP_LENGTH`, `LAUNCH_TIME_SOURCE`) live in `public/operator-time.js`.
 
 Track what is on screen; don't infer it. Inferring caused two bugs: a stale
 preparation headline after provenance replaced preparation, and a region that

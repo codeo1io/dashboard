@@ -1,5 +1,6 @@
 Source: fro-bot/agent
-Path: packages/gateway/src/operator-contract/ (contract barrel) + packages/gateway/src/web/sse/ (SSE surface)
+Path: packages/gateway/src/operator-contract/ (contract barrel). `sse-frames.ts` is dashboard-authored from the
+events packages/gateway/src/web/sse/run-stream-route.ts writes.
 Contract version: exported as `OPERATOR_CONTRACT_VERSION` in `version.ts`, the single source. No other file, comment,
 or test hand-types a version or release tag; tests compare against the constant.
 Vendored copy — do not hand-edit behavior. Refresh by re-copying upstream and
@@ -66,13 +67,12 @@ inlined boundary types for RunPhase/Surface/RunState).
   (`RunSummaryStatusesAreExact`) fails the type check if the list and `RunSummaryStatus` differ
   in either direction. Accept/reject behavior is unchanged. The union itself is left as upstream
   has it, so this needs no upstream coordination to keep working.
-- `sse-frames.ts` — vendored from the gateway's web/sse/ surface
-  (packages/gateway/src/web/sse/). This is a parallel surface to
-  the contract barrel; it is NOT part of the upstream operator-contract barrel
-  export. The SSE frame types (ReadyFrame, StatusFrameData, ResetFrameData,
-  RunStreamFrame, ResetReason) are re-exported from the dashboard's contract
-  barrel for convenience. `RunStreamFrame` carries a `question` variant whose data is
-  `QuestionFrameData`.
+- `sse-frames.ts` — dashboard-authored; upstream has no matching file. It types the named
+  events that `packages/gateway/src/web/sse/run-stream-route.ts` writes on the run stream
+  (`ready`, `status`, `reset`, `output`, `approval`, `question`). `ResetReason` copies the union
+  declared in that file and in `manager.ts`; `ReadyFrame`, `StatusFrameData`, `ResetFrameData`
+  and `RunStreamFrame` are local names for those wire shapes. The dashboard's contract barrel
+  re-exports them. When upstream changes what the route writes, update this file by hand.
 - `repo-summary.ts` — locally authored (PR #968 adds RepoSummary to the upstream
   contract, but no upstream parse helper exists). The type definition
   is faithful to the upstream interface; the parse guards follow the same
@@ -82,9 +82,12 @@ inlined boundary types for RunPhase/Surface/RunState).
   `VapidKeyResponse` mirrors the Gateway's `GET /operator/push/vapid-key`
   response and deliberately omits any version field beyond `keyVersion` — the
   Gateway returns only `{publicKey, keyVersion}`, no `contractVersion`.
-  `PushSubscriptionMetadata` mirrors the Gateway's safe-metadata response from
-  `GET /operator/push/subscriptions` (opaque `endpointHash` only — never the
-  raw endpoint, `p256dh`, or `auth` keys). `PushHandoffState` is client-derived,
+  `PushSubscriptionListResponse` mirrors the Gateway's
+  `GET /operator/push/subscriptions` response, `{subscriptions: [...]}`, and
+  `PushSubscriptionMetadata` is one entry: opaque `endpointHash` only — never the
+  raw endpoint, `p256dh`, or `auth` keys — with epoch-millisecond numeric
+  `createdAt`/`updatedAt`. `parsePushSubscriptionListResponse` drops invalid
+  entries and an unknown `inactiveReason`. `PushHandoffState` is client-derived,
   not a wire field: the Gateway exposes no handoff-state route, so the
   dashboard computes it from subscription metadata plus local browser state.
   It is defined here so the vendored contract and the web-side duplicate
@@ -106,9 +109,8 @@ The following upstream exports are omitted because they depend on upstream-only 
 
 The PUBLIC frozen types (OperatorDecisionState, OperatorWebStatus, OperatorRunStatus,
 OperatorSessionInfo, OperatorCsrfToken, OperatorOk, OperatorError, OperatorIdentity,
-RunPhase, Surface, PermissionReply, RedactionContext, ReadyFrame, StatusFrameData,
-ResetFrameData, RunStreamFrame, ResetReason, and the checkout provenance and preparation
-types) are all present and correct.
+RunPhase, Surface, PermissionReply, RedactionContext, and the checkout provenance and
+preparation types) are all present and correct.
 
 ## Import rewrites applied
 
@@ -118,4 +120,3 @@ types) are all present and correct.
 - `run-status.ts`: `import type {RunCoreErrorKind} from '../execute/run-core.js'` → removed (projection helpers omitted)
 - `run-status.ts`: the relative import of `./provenance.js` → `./provenance.ts`
 - `approval.ts`: `import type {ApprovalActor, DecisionOutcome} from '../approvals/registry.js'` → removed (dependent helpers omitted)
-- `sse-frames.ts`: `import type {OperatorRunStatus} from '@fro-bot/runtime'` → `import type {OperatorRunStatus} from './run-status.ts'`

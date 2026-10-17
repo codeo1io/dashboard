@@ -61,6 +61,7 @@ const ALLOWLIST: Record<string, string> = {
   'GET /static/operator-launch.js': 'operator runtime JS for the reverse-proxied gateway surface — docs/runbooks/gateway-access.md',
   'GET /static/operator-run-index.js': 'operator runtime JS for the reverse-proxied gateway surface — docs/runbooks/gateway-access.md',
   'GET /static/operator-stream.js': 'operator runtime JS for the reverse-proxied gateway surface — docs/runbooks/gateway-access.md',
+  'GET /static/operator-time.js': 'operator runtime JS (shared relative-time formatter, upstream 2026.10.43) for the reverse-proxied gateway surface — docs/runbooks/gateway-access.md',
   'GET /static/*': 'flag-gated operator-UI static catch-all (serves public/ — operator.css and any other asset) — docs/runbooks/gateway-access.md',
   'GET /operator': 'reverse-proxied gateway surface (redirects to /) — docs/runbooks/gateway-access.md',
 }

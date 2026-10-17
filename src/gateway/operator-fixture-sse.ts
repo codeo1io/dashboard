@@ -127,6 +127,12 @@ export const FIXTURE_SCENARIO_NAMES = {
   expired_completed_silent: 'expired_completed_silent',
   /** ready → reset no-snapshot → running status → output; the stream stays open. */
   running_after_no_snapshot: 'running_after_no_snapshot',
+
+  // -- Live runs with nothing to show yet. The stream stays open, so the card keeps its waiting line. --
+  /** ready → running status, no output; the run-list row is running. */
+  waiting_no_output: 'waiting_no_output',
+  /** ready → queued status; the run-list row is queued. */
+  waiting_queued: 'waiting_queued',
 } as const
 
 /** Union of all canonical scenario name values. */
@@ -159,7 +165,7 @@ export type CheckoutScenarioName =
   | 'workspace_unavailable'
   | 'checkout_malformed_preparation'
 
-/** The scenarios that carry agent questions or exercise the expired-snapshot paths. */
+/** The scenarios that carry agent questions, exercise the expired-snapshot paths, or hold a live run with nothing to show. */
 export type QuestionScenarioName =
   | 'question_single'
   | 'question_multi_shapes'
@@ -174,6 +180,8 @@ export type QuestionScenarioName =
   | 'expired_completed_terminal_frame'
   | 'expired_completed_silent'
   | 'running_after_no_snapshot'
+  | 'waiting_no_output'
+  | 'waiting_queued'
 
 const FIXTURE_RUN_ID_MALFORMED = 'run-fixture-malformed-001'
 
@@ -875,7 +883,7 @@ export interface FixtureQuestionScript {
 }
 
 /** Summary statuses a question or expired-snapshot row can show. */
-type QuestionSummaryStatus = 'running' | 'succeeded' | 'waiting_for_question'
+type QuestionSummaryStatus = 'queued' | 'running' | 'succeeded' | 'waiting_for_question'
 
 interface QuestionScenarioSpec {
   /** Status the recent-runs row shows before the stream is opened (the card's summary status). */
@@ -1011,9 +1019,25 @@ const QUESTION_SCENARIO_SPECS: Readonly<Record<QuestionScenarioName, QuestionSce
       statusFrame(runId, 'running', 'EXECUTING', QUESTION_STARTED_AT) +
       outputFrame(runId, '[Fixture output — synthetic run result after the snapshot reset]', false, 0),
   },
+
+  // A live run with nothing to show yet, held open: the card keeps its waiting line. No question, no approval.
+  waiting_no_output: {
+    summaryStatus: 'running',
+    holdOpen: true,
+    noApproval: true,
+    script: {openRequests: []},
+    build: runId => readyFrame(OPERATOR_CONTRACT_VERSION) + statusFrame(runId, 'running', 'EXECUTING', QUESTION_STARTED_AT),
+  },
+  waiting_queued: {
+    summaryStatus: 'queued',
+    holdOpen: true,
+    noApproval: true,
+    script: {openRequests: []},
+    build: runId => readyFrame(OPERATOR_CONTRACT_VERSION) + statusFrame(runId, 'queued', 'PENDING', QUESTION_STARTED_AT),
+  },
 }
 
-/** Rows for the recent-runs list: one per question or expired-snapshot scenario. Order follows FIXTURE_SCENARIO_NAMES. */
+/** Rows for the recent-runs list: one per question, expired-snapshot or waiting scenario. Order follows FIXTURE_SCENARIO_NAMES. */
 export const FIXTURE_QUESTION_SCENARIO_ROWS: readonly {
   readonly scenario: QuestionScenarioName
   readonly summaryStatus: QuestionSummaryStatus
