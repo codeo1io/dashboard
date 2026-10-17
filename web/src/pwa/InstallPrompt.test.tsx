@@ -23,8 +23,17 @@ function makeInstallPromptEvent(): {event: Event; prompt: ReturnType<typeof vi.f
 }
 
 describe('InstallPrompt', () => {
+  // rm-651 (2026-10-09): clear both storages after each test too, so a
+  // failing test cannot poison the file for whichever test runs next (the
+  // rm-596 full-suite flake class).
+  afterEach(() => {
+    localStorage.clear()
+    sessionStorage.clear()
+  })
+
   beforeEach(() => {
     localStorage.clear()
+    sessionStorage.clear()
     vi.clearAllMocks()
   })
 

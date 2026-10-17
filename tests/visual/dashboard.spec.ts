@@ -25,6 +25,17 @@ import AxeBuilder from '@axe-core/playwright'
  * grew the operator page 3178px→3294px past the morning capture; listener
  * and privacy stayed byte-identical and the in-image clean compare re-ran
  * 3/3 green.
+ * 2026-10-17 third regen (run 4c0ec7a58ade integrate, conflict case
+ * 5079ed6a): dashboard-operator-dark.png rewritten once more — the 2026.10.43
+ * adoption landing (#636/#637/#640/#641/#643: waiting-run cards, finished-run
+ * cache, notification jumps) grew the operator page 3294px→3410px past the
+ * 0310ad63 capture while the report-only gate rode the landing red (push run
+ * 39024790480 on main itself failed with the identical signature). Same
+ * pinned image, captured from this tree's own validation run (39031225445):
+ * the received screenshot attachment IS the --update-snapshot write (md5
+ * 56b8f3986318…, git blob 222cac99…, 1280x3410, 346452 B) and is byte-exact
+ * against the pushed validation tree per the rm-142 doctrine; listener and
+ * privacy passed byte-identical in the same run and stay untouched.
  * Axe: fails only on `critical`/`serious` impact violations (moderate/minor are
  * logged for visibility). Any pre-existing fixture-page violations are scoped
  * or disabled inline with a justification — see `axeCommon()` below.

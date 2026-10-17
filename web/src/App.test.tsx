@@ -205,6 +205,9 @@ describe('App', () => {
       await waitFor(() => expect(screen.getByTestId('unread-badge')).toHaveTextContent('5'))
 
       spy.mockResolvedValue({ok: false, reason: 'network'})
+      // rm-651 (2026-10-09): flush pending passive effects before dispatching
+      // so the hook's focus-poll attach cannot race the dispatch.
+      await act(async () => {})
       // Failure 1: outage indicator only, badge not yet marked stale.
       act(() => { window.dispatchEvent(new Event('focus')) })
       await act(async () => { await new Promise(resolve => setTimeout(resolve, 25)) })
