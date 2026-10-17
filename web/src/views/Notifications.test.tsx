@@ -255,13 +255,18 @@ describe('Notifications Component', () => {
       keyVersion: 'v1',
       active: true,
     })
+    // A fresh Response per call — the component's fire-and-forget getVapidKey and
+    // the sweep's getPushSubscriptionMetadata BOTH fetch, and a Response body
+    // can be read only once; sharing one instance makes the second read throw
+    // (which the client maps to a network error and the sweep treats as skipped).
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({subscriptions: [wireRecord('b'.repeat(64)), wireRecord(localHash)]}), {
-          status: 200,
-          headers: {'content-type': 'application/json'},
-        }),
+      vi.fn().mockImplementation(
+        async () =>
+          new Response(JSON.stringify({subscriptions: [wireRecord('b'.repeat(64)), wireRecord(localHash)]}), {
+            status: 200,
+            headers: {'content-type': 'application/json'},
+          }),
       ),
     )
     vi.mocked(getNotificationPermission).mockReturnValue('granted')
@@ -289,7 +294,15 @@ describe('Notifications Component', () => {
       expect(screen.getByTestId('notifications-cta')).not.toHaveTextContent('Enable notifications')
     } finally {
       vi.unstubAllGlobals()
-      vi.mocked(buildPushClient).mockReturnValue({} as ReturnType<typeof buildPushClient>)
+      // Restore the factory-default stub, not a bare {}: beforeEach's
+      // clearAllMocks() clears calls but NOT return values, so a bare {} here
+      // poisons every later test with "pushClient.getVapidKey is not a function".
+      vi.mocked(buildPushClient).mockReturnValue({
+        getVapidKey: vi.fn().mockResolvedValue({
+          success: true,
+          data: {pushDisabled: true, vapidKey: undefined},
+        }),
+      } as unknown as ReturnType<typeof buildPushClient>)
       if (originalSw) {
         Object.defineProperty(globalThis.navigator, 'serviceWorker', originalSw)
       } else {

@@ -1347,7 +1347,7 @@ describe('operator runtime JS caching policy (rm-478)', () => {
     expect(etag).toBeTruthy()
     // The vendored static layer (upstream PR #619) ETags are sha256 base64url digests —
     // 43 chars, url-safe alphabet — not the fork's old md5 hex.
-    expect(etag).toMatch(/^"[A-Za-z0-9_-]{43}"$/)
+    expect(etag).toMatch(/^"[\w-]{43}"$/)
   })
 
   it('the ETag is deterministic across apps (content hash, not instance state)', async () => {
@@ -1383,7 +1383,7 @@ describe('operator runtime JS caching policy (rm-478)', () => {
       const res = await app.request(asset)
       expect(res.status, asset).toBe(200)
       expect(res.headers.get('cache-control'), asset).toBe('no-cache')
-      expect(res.headers.get('etag'), asset).toMatch(/^"[A-Za-z0-9_-]{43}"$/)
+      expect(res.headers.get('etag'), asset).toMatch(/^"[\w-]{43}"$/)
     }
   })
 })
