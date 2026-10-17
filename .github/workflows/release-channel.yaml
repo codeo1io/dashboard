@@ -7,9 +7,11 @@ name: Release channel staleness check
 # so `HAS_RELEASE_APP` is false and release.yaml skips create-tag /
 # promote-calver / create-GitHub-Release on every push; the live path is
 # promote-latest only. Nothing alerts on that silence. This weekly check
-# compares the newest calver tag on THIS repo's public refs against a stated
-# 45-day threshold and goes RED while the channel is stale and no dormancy
-# decision is recorded.
+# compares the newest FORK-REACHABLE calver tag (rm-1932: scoped via
+# `git tag --merged origin/main` — foreign upstream tags fetched into this
+# repo's tag namespace never feed the verdict; the summary names the
+# exclusion count) against a stated 45-day threshold and goes RED while the
+# channel is stale and no dormancy decision is recorded.
 #
 # Red-while-undecided is BY DESIGN: the decision owner is rm-714 (branch-b
 # dormancy decision — either record the channel retired-with-owner in
@@ -52,13 +54,28 @@ jobs:
           persist-credentials: false
 
       - name: 🟢 Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
+
+      # rm-1932 tier 2: the upstream fork's main — tags reachable from BOTH
+      # this repo's main and upstream main are ABSORBED upstream releases, not
+      # this channel's output (empirically: 2026.10.23 = fro-bot[bot] #613,
+      # ancestor of both). Public repo — fetched credentialless; a fetch
+      # failure fails this step (fail closed: without upstream the scope
+      # cannot tell fork releases from absorbed ones, and an unscoped verdict
+      # is exactly the false-healthy this check exists to kill).
+      - name: ⤵ Fetch upstream main for channel scoping
+        run: >-
+          git fetch --no-tags https://github.com/fro-bot/dashboard.git
+          +refs/heads/main:refs/remotes/upstream/main
 
       - name: 🔍 Evaluate release channel staleness (rm-740)
         # Exit 0 = healthy or recorded-retired; 1 = stale (red BY DESIGN while
         # the dormancy decision is undecided); 2 = extraction error (never a
         # pass). The runner injects GITHUB_STEP_SUMMARY automatically — the
         # script appends the rm-740/rm-714 summary there.
-        run: node scripts/release-channel-staleness.ts
+        run: >-
+          node scripts/release-channel-staleness.ts
+          --base-ref origin/main --upstream-ref refs/remotes/upstream/main
+

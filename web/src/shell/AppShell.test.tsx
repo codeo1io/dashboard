@@ -166,6 +166,22 @@ describe('AppShell', () => {
     expect(screen.getByRole('link', {name: 'Privacy'})).toBeInTheDocument()
   })
 
+  it('rm-1932: renders the release-channel version in the footer when provided', () => {
+    render(<AppShell releaseVersion="2026.10.23">content</AppShell>)
+
+    const version = screen.getByTestId('app-release-version')
+    expect(version).toHaveTextContent('release 2026.10.23')
+    expect(screen.getByTestId('app-footer')).toContainElement(version)
+  })
+
+  it('rm-1932: absent or null version renders NO version element — never a dev/unknown placeholder', () => {
+    const {rerender} = render(<AppShell>content</AppShell>)
+    expect(screen.queryByTestId('app-release-version')).toBeNull()
+
+    rerender(<AppShell releaseVersion={null}>content</AppShell>)
+    expect(screen.queryByTestId('app-release-version')).toBeNull()
+  })
+
   it('rm-596: the footer restore affordance renders beside Privacy (always, not only when a latch is set)', () => {
     render(<AppShell>content</AppShell>)
 

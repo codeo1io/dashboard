@@ -277,6 +277,48 @@ describe('/api/monitoring — BFF aggregation endpoint', () => {
       expect('platformStatus' in body).toBe(true)
       expect(body.platformStatus).toBeNull()
     })
+
+    it('rm-1932: RELEASE_CHANNEL_TAG env surfaces as releaseVersion on the DTO', async () => {
+      vi.stubEnv('RELEASE_CHANNEL_TAG', '2026.10.23')
+      try {
+        const app = await buildTestApp(makeSnapshot())
+        const res = await authedGet(app, '/api/monitoring')
+
+        expect(res.status).toBe(200)
+        const body = await res.json() as {releaseVersion?: unknown}
+        expect(body.releaseVersion).toBe('2026.10.23')
+      } finally {
+        vi.unstubAllEnvs()
+      }
+    })
+
+    it('rm-1932: absent or malformed RELEASE_CHANNEL_TAG emits explicit null — never a placeholder or garbage', async () => {
+      // Absent (the dev / no-injection shape).
+      {
+        vi.stubEnv('RELEASE_CHANNEL_TAG', '')
+        try {
+          const app = await buildTestApp(makeSnapshot())
+          const res = await authedGet(app, '/api/monitoring')
+          const body = await res.json() as {releaseVersion?: unknown}
+          expect('releaseVersion' in body).toBe(true)
+          expect(body.releaseVersion).toBeNull()
+        } finally {
+          vi.unstubAllEnvs()
+        }
+      }
+      // Malformed (shape-invalid env must not render as a version).
+      {
+        vi.stubEnv('RELEASE_CHANNEL_TAG', 'not-a-calver-tag')
+        try {
+          const app = await buildTestApp(makeSnapshot())
+          const res = await authedGet(app, '/api/monitoring')
+          const body = await res.json() as {releaseVersion?: unknown}
+          expect(body.releaseVersion).toBeNull()
+        } finally {
+          vi.unstubAllEnvs()
+        }
+      }
+    })
   })
 
   describe('Cache-Control: no-store', () => {

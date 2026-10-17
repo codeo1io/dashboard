@@ -1,15 +1,35 @@
 #!/usr/bin/env node
 // scripts/compute-release-tag.ts
 //
-// Compute the next CalVer release tag in YYYY.MM.PATCH format.
+// Compute the next CalVer release tag in YYYY.MM.PATCH format, or — with
+// --current — print the newest FORK-CHANNEL calver tag (rm-1932 footer
+// seam: the release version the /api/monitoring DTO serves and the footer
+// renders is produced by the SAME channel-scoped newest-calver selection the
+// staleness gate measures, imported from release-channel-staleness.ts — the
+// selection must never exist twice).
 //
 // Usage:
-//   node scripts/compute-release-tag.ts
+//   node scripts/compute-release-tag.ts                          # next-tag mode
+//   node scripts/compute-release-tag.ts --current [--base-ref REF] [--upstream-ref REF]
+//
+// --current mode:
+//   - Base ref defaults to HEAD (the build's own commit); override with
+//     --base-ref. An unresolvable base/upstream ref is exit 1 (fail closed).
+//   - Two-tier scope (rm-1932): calver tags merged into the base, MINUS tags
+//     also reachable from --upstream-ref (upstream main). Foreign upstream
+//     tags in this repo's namespace are excluded by tier 1; ABSORBED upstream
+//     releases whose commits this fork's main contains are excluded by tier 2
+//     (a fork release minted exactly at an upstream commit is misclassified
+//     — safely: toward hiding the version, never toward a wrong one).
+//   - Prints the newest reachable calver tag; exits 1 with a stderr note if
+//     none exist (callers then simply skip version injection — the footer
+//     hides its version element, never renders garbage).
 //
 // Environment:
 //   CALVER_MONTH  Override the target month (format: YYYY.MM).
 //                 Defaults to the current UTC month.
 //                 Used as a test seam — production callers omit this.
+//                 (next-tag mode only)
 //
 // Behavior:
 //   - Scans git tags matching the target month prefix (YYYY.MM.*).
@@ -27,6 +47,57 @@
 
 import {spawnSync} from 'node:child_process'
 import process from 'node:process'
+import {
+  gatherLocalTags,
+  listReachableTagNames,
+  scopeToChannel,
+  selectNewestCalverTag,
+} from './release-channel-staleness.ts'
+
+// ---------------------------------------------------------------------------
+// --current mode (rm-1932 footer seam) — resolved before the next-tag path
+// ---------------------------------------------------------------------------
+
+const argv = process.argv.slice(2)
+
+if (argv.includes('--current')) {
+  const baseRefFlag = argv.indexOf('--base-ref')
+  const baseRef = baseRefFlag !== -1 ? (argv[baseRefFlag + 1] ?? 'HEAD') : 'HEAD'
+  const upstreamRefFlag = argv.indexOf('--upstream-ref')
+  const upstreamRef = upstreamRefFlag !== -1 ? (argv[upstreamRefFlag + 1] ?? null) : null
+
+  let baseNames: Set<string>
+  let upstreamNames: Set<string> | null
+  try {
+    baseNames = listReachableTagNames(baseRef)
+    upstreamNames = upstreamRef === null ? null : listReachableTagNames(upstreamRef)
+  } catch (error) {
+    process.stderr.write(
+      `ERROR: --current cannot resolve a scoping ref: ${error instanceof Error ? error.message : String(error)}\n`,
+    )
+    process.exit(1)
+  }
+
+  const {scoped, foreignExcludedCount, upstreamExcludedCount} = scopeToChannel(
+    gatherLocalTags(),
+    baseNames,
+    upstreamNames,
+  )
+  const newest = selectNewestCalverTag(scoped)
+
+  if (newest === null) {
+    process.stderr.write(
+      `NOTE: no fork-channel calver tag from '${baseRef}' (${foreignExcludedCount} foreign + ${upstreamExcludedCount} absorbed-upstream tag(s) excluded) — skipping version injection\n`,
+    )
+    process.exit(1)
+  }
+
+  process.stderr.write(
+    `# current release: ${newest.name} (${scoped.length} fork-channel calver tag(s), ${foreignExcludedCount} foreign + ${upstreamExcludedCount} absorbed-upstream excluded)\n`,
+  )
+  process.stdout.write(`${newest.name}\n`)
+  process.exit(0)
+}
 
 // ---------------------------------------------------------------------------
 // Determine target month

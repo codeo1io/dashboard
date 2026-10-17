@@ -1,6 +1,7 @@
 import type {AggregatorSnapshot, DashboardRepo, FailingCheckDetail, RepoCiStatus} from '../github/aggregator.ts'
 import type {PlatformStatus} from '../github/platform-status.ts'
 import {Hono} from 'hono'
+import process from 'node:process'
 import {COLD_START_SNAPSHOT} from '../github/aggregator.ts'
 
 /** Injectable snapshot provider — returns the current aggregator snapshot. */
@@ -58,6 +59,30 @@ interface MonitoringDto {
    * Public third-party data; carries no fleet identity.
    */
   readonly platformStatus: PlatformStatus | null
+  /**
+   * rm-1932 (footer seam): the deployment's release-channel version, from
+   * the same scoped newest-calver selection the staleness gate measures
+   * (see currentReleaseVersion below). null when not injected at build time
+   * — the SPA footer hides its version element, never renders a placeholder.
+   */
+  readonly releaseVersion: string | null
+}
+
+/** Calver shape the release channel mints (YYYY.MM.counter — rm-1932). */
+const CALVER_TAG_SHAPE = /^\d{4}\.\d{1,2}\.\d+$/
+
+/**
+ * rm-1932: the deployment's release-channel version, injected at image build
+ * time via the RELEASE_CHANNEL_TAG build-arg (release.yaml computes it with
+ * `scripts/compute-release-tag.ts --current` — the SAME scoped newest-calver
+ * selection the release-channel-staleness gate uses; one source of truth,
+ * never a second parser). Validated against the calver shape; absent,
+ * empty, or malformed → null. Read per call so tests can stub the env
+ * without re-importing the module.
+ */
+function currentReleaseVersion(): string | null {
+  const raw = process.env['RELEASE_CHANNEL_TAG']?.trim() ?? ''
+  return raw.length > 0 && CALVER_TAG_SHAPE.test(raw) ? raw : null
 }
 
 function toMonitoringRepoDto(repo: DashboardRepo): MonitoringRepoDto {
@@ -86,6 +111,7 @@ function toMonitoringDto(snapshot: AggregatorSnapshot): MonitoringDto {
     refreshDurationMs: snapshot.refreshDurationMs,
     refreshDegraded: snapshot.refreshDegraded,
     platformStatus: snapshot.platformStatus ?? null,
+    releaseVersion: currentReleaseVersion(),
   }
 }
 

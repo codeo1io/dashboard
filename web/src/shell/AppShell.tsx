@@ -137,6 +137,13 @@ interface AppShellProps {
   listenerUnreadStaleSince?: number | null
   /** rm-208: the unread poll stopped on 401 — render the sign-in affordance instead of poll errors */
   listenerUnreadAuthExpired?: boolean
+  /**
+   * rm-1932: the deployment's release-channel version (from /api/monitoring,
+   * injected at image build time — upstream #641 shape, sequenced after the
+   * channel-truth fix). Null/undefined hides the version element entirely;
+   * never a placeholder like "dev" or "unknown".
+   */
+  releaseVersion?: string | null
 }
 
 export function AppShell({
@@ -150,6 +157,7 @@ export function AppShell({
   listenerUnreadError = null,
   listenerUnreadStaleSince = null,
   listenerUnreadAuthExpired = false,
+  releaseVersion = null,
 }: AppShellProps) {
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
   const [loggingOut, setLoggingOut] = useState(false)
@@ -578,6 +586,19 @@ export function AppShell({
           >
             Restore notifications
           </button>
+          {/* rm-1932: deployment release-channel version (upstream #641's
+              shape, sourced from the scoped calver selection — see
+              web/src/api/monitoring.ts). Conditionally rendered: absent
+              version ⇒ no element, so no stale/dev placeholder ever ships to
+              operators. */}
+          {releaseVersion !== null ? (
+            <span
+              data-testid="app-release-version"
+              className="ml-auto inline-flex min-h-11 items-center text-label text-text-muted"
+            >
+              release {releaseVersion}
+            </span>
+          ) : null}
         </div>
       </footer>
 
