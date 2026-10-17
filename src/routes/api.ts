@@ -32,6 +32,17 @@ interface MonitoringRepoStatusDto {
   readonly openIssueCount: number
   readonly openAlertCount: number | null
   readonly stale: boolean
+  /**
+   * rm-1968: last push to any branch (ISO timestamp). Powers the dormancy
+   * signal on the board. Public per-repo fact — safe for the display-only
+   * client. Null when unknown.
+   */
+  readonly pushedAt: string | null
+  /**
+   * rm-1968: archived repos are rendered muted, never red — their frozen
+   * final checks would otherwise be permanent board noise. Public fact.
+   */
+  readonly isArchived: boolean
 }
 
 interface MonitoringRepoDto {
@@ -51,6 +62,12 @@ interface MonitoringDto {
   readonly refreshDurationMs: number | null
   /** True when the last refresh attempt exceeded the watchdog ceiling (rm-156 watchdog signal) */
   readonly refreshDegraded: boolean
+  /**
+   * rm-1968: working-set repos excluded from the per-repo query loop this
+   * cycle because they are archived. Count only — no identity. 0 when the
+   * serving path never set it (degraded/legacy snapshot).
+   */
+  readonly archivedExcludedCount: number
   /**
    * rm-1447: platform-availability annotation (githubstatus feed) — overall
    * indicator, Actions component status, fetchedAt. null when no fetch has
@@ -72,6 +89,8 @@ function toMonitoringRepoDto(repo: DashboardRepo): MonitoringRepoDto {
       openIssueCount: repo.status.openIssueCount,
       openAlertCount: repo.status.openAlertCount,
       stale: repo.status.stale,
+      pushedAt: repo.status.pushedAt,
+      isArchived: repo.status.isArchived,
     },
   }
 }
@@ -85,6 +104,7 @@ function toMonitoringDto(snapshot: AggregatorSnapshot): MonitoringDto {
     refreshedAt: snapshot.refreshedAt,
     refreshDurationMs: snapshot.refreshDurationMs,
     refreshDegraded: snapshot.refreshDegraded,
+    archivedExcludedCount: snapshot.archivedExcludedCount ?? 0,
     platformStatus: snapshot.platformStatus ?? null,
   }
 }

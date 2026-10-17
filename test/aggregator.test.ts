@@ -26,7 +26,7 @@ import {err, ok} from '../src/result.ts'
 // Fixtures + helpers
 // ---------------------------------------------------------------------------
 
-function makeRepo(overrides: {node_id?: string; database_id?: number; owner?: string; name?: string; full_name?: string; installation_id?: number} = {}) {
+function makeRepo(overrides: {node_id?: string; database_id?: number; owner?: string; name?: string; full_name?: string; installation_id?: number; archived?: boolean} = {}) {
   const owner = overrides.owner ?? 'fro-bot'
   const name = overrides.name ?? 'agent'
   return {
@@ -36,6 +36,7 @@ function makeRepo(overrides: {node_id?: string; database_id?: number; owner?: st
     name,
     full_name: overrides.full_name ?? `${owner}/${name}`,
     installation_id: overrides.installation_id ?? 1,
+    archived: overrides.archived ?? false,
   }
 }
 
@@ -87,6 +88,11 @@ function makeGraphqlResponse(overrides: {
   openPrCount?: number
   openIssueCount?: number
   openAlertCount?: number | null
+  // rm-1968: lifecycle facts — omitted from the response object unless
+  // overridden, so existing fixtures exercise the optional-field parse
+  // (pushedAt null / isArchived false defaults).
+  pushedAt?: string
+  isArchived?: boolean
   repository?: null
 } = {}) {
   const failingChecks = overrides.failingChecks ?? 0
@@ -95,6 +101,8 @@ function makeGraphqlResponse(overrides: {
   }
   return {
     repository: {
+      ...(overrides.pushedAt !== undefined ? {pushedAt: overrides.pushedAt} : {}),
+      ...(overrides.isArchived !== undefined ? {isArchived: overrides.isArchived} : {}),
       defaultBranchRef: {
         target: {
           statusCheckRollup: overrides.rollupState === undefined ? null : {state: overrides.rollupState},
@@ -2671,7 +2679,7 @@ describe('rm-141 — bounded-concurrency per-repo refresh', () => {
 })
 
 /** DashboardRepo row used to seed a persisted (boot-time) snapshot. */
-function makeBootSnapshotRepo(overrides: {node_id?: string; full_name?: string} = {}): DashboardRepo {
+function makeBootSnapshotRepo(overrides: {node_id?: string; full_name?: string; pushedAt?: string | null; isArchived?: boolean} = {}): DashboardRepo {
   return {
     node_id: overrides.node_id ?? 'NODE_BOOT',
     owner: 'fro-bot',
@@ -2687,6 +2695,10 @@ function makeBootSnapshotRepo(overrides: {node_id?: string; full_name?: string} 
       openPrCount: 0,
       openIssueCount: 0,
       openAlertCount: null,
+      // rm-1968: lifecycle defaults (hidden + active); boot-cold tests
+      // override isArchived:true to pin the archived-row reuse path.
+      pushedAt: overrides.pushedAt ?? null,
+      isArchived: overrides.isArchived ?? false,
       stale: false,
       fetchedAt: 1234,
     },
@@ -3117,5 +3129,153 @@ describe('aggregator — rm-1447 platform status annotation', () => {
     expect(snap.staleBanner).toBe(true)
     expect(snap.repos).toEqual([])
     expect(snap.platformStatus).toEqual(FAKE_STATUS)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-1968: repo lifecycle — pushedAt dormancy + archived exclusion
+// ---------------------------------------------------------------------------
+
+describe('aggregator — rm-1968: repo lifecycle (pushedAt + isArchived)', () => {
+  it('carries lifecycle fields from the GraphQL response into RepoCiStatus', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([makeRepo({node_id: 'NODE_L1', owner: 'fro-bot', name: 'live-one'})])),
+      readMetadata: vi.fn().mockResolvedValue(
+        ok(makeMetadataResult({publicRepos: [makePublicRepo({node_id: 'NODE_L1', owner: 'fro-bot', name: 'live-one'})]})),
+      ),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(
+        makeGraphqlResponse({pushedAt: '2026-10-01T12:00:00Z', isArchived: false}),
+      ),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const row = agg.getSnapshot().repos[0]
+
+    expect(row?.status.pushedAt).toBe('2026-10-01T12:00:00Z')
+    expect(row?.status.isArchived).toBe(false)
+    // A live repo is never excluded.
+    expect(agg.getSnapshot().archivedExcludedCount).toBe(0)
+  })
+
+  it('parses pre-rm-1968 responses (lifecycle fields omitted) to null/false', async () => {
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([makeRepo({node_id: 'NODE_L2'})])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({publicRepos: [makePublicRepo({node_id: 'NODE_L2'})]}))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse()),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const row = agg.getSnapshot().repos[0]
+
+    expect(row?.status.pushedAt).toBeNull()
+    expect(row?.status.isArchived).toBe(false)
+  })
+
+  it('enumeration-flagged archived repo is excluded from the query loop, kept on the board, and counted', async () => {
+    const graphqlQuery = vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'}))
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(
+        makeEnumerateResult([
+          makeRepo({node_id: 'NODE_LIVE', owner: 'fro-bot', name: 'live-one'}),
+          makeRepo({node_id: 'NODE_DEAD', owner: 'fro-bot', name: 'dead-one', archived: true}),
+        ]),
+      ),
+      readMetadata: vi.fn().mockResolvedValue(
+        ok(
+          makeMetadataResult({
+            publicRepos: [
+              makePublicRepo({node_id: 'NODE_LIVE', owner: 'fro-bot', name: 'live-one'}),
+              makePublicRepo({node_id: 'NODE_DEAD', owner: 'fro-bot', name: 'dead-one'}),
+            ],
+          }),
+        ),
+      ),
+      graphqlQueryForInstallation: graphqlQuery,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    // Only the live repo was queried — zero GraphQL budget on the frozen one.
+    expect(graphqlQuery).toHaveBeenCalledTimes(1)
+    expect(graphqlQuery.mock.calls[0]?.[2]).toMatchObject({owner: 'fro-bot', name: 'live-one'})
+    // The archived repo still occupies a (muted, unknown-facts) board row.
+    expect(snap.repos).toHaveLength(2)
+    const deadRow = snap.repos.find(repo => repo.node_id === 'NODE_DEAD')
+    expect(deadRow?.status.isArchived).toBe(true)
+    expect(deadRow?.status.rollupState).toBe('unknown')
+    expect(deadRow?.status.stale).toBe(true)
+    // Observable exclusion — never a silent behavior change.
+    expect(snap.archivedExcludedCount).toBe(1)
+    const liveRow = snap.repos.find(repo => repo.node_id === 'NODE_LIVE')
+    expect(liveRow?.status.isArchived).toBe(false)
+  })
+
+  it('reuses frozen snapshot facts for a previously-queried archived repo (no second query)', async () => {
+    const graphqlQuery = vi.fn()
+      .mockResolvedValueOnce(
+        makeGraphqlResponse({rollupState: 'FAILURE', failingChecks: 3, pushedAt: '2026-09-01T00:00:00Z', isArchived: true}),
+      )
+      .mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'}))
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([makeRepo({node_id: 'NODE_ARCH', owner: 'fro-bot', name: 'arch-one'})])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({publicRepos: [makePublicRepo({node_id: 'NODE_ARCH', owner: 'fro-bot', name: 'arch-one'})]}))),
+      graphqlQueryForInstallation: graphqlQuery,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    // Cycle 1: the GraphQL response itself reports archived (enumeration did
+    // not flag it) — the row lands frozen on the board.
+    await agg.refresh()
+    expect(graphqlQuery).toHaveBeenCalledTimes(1)
+
+    // Cycle 2: enumeration NOW flags the repo archived. The cached row's
+    // frozen facts are reused and the repo is not re-queried.
+    ;(deps.enumerate as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeEnumerateResult([makeRepo({node_id: 'NODE_ARCH', owner: 'fro-bot', name: 'arch-one', archived: true})]),
+    )
+    await agg.refresh()
+    expect(graphqlQuery).toHaveBeenCalledTimes(1)
+
+    const snap = agg.getSnapshot()
+    const row = snap.repos.find(repo => repo.node_id === 'NODE_ARCH')
+    expect(row?.status.isArchived).toBe(true)
+    expect(row?.status.failingChecks).toBe(3)
+    expect(row?.status.rollupState).toBe('red')
+    expect(snap.archivedExcludedCount).toBe(1)
+  })
+
+  it('un-archiving re-enters the query loop — the enumeration flag is the live authority', async () => {
+    const graphqlQuery = vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS', isArchived: false}))
+    const deps = makeDeps({
+      enumerate: vi
+        .fn()
+        .mockResolvedValueOnce(makeEnumerateResult([makeRepo({node_id: 'NODE_BACK', owner: 'fro-bot', name: 'back-one', archived: true})]))
+        .mockResolvedValue(makeEnumerateResult([makeRepo({node_id: 'NODE_BACK', owner: 'fro-bot', name: 'back-one', archived: false})])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({publicRepos: [makePublicRepo({node_id: 'NODE_BACK', owner: 'fro-bot', name: 'back-one'})]}))),
+      graphqlQueryForInstallation: graphqlQuery,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    // Cycle 1: the REST enumeration flags the repo archived — excluded with
+    // NO query at all (the synthesized muted row is the only footprint).
+    await agg.refresh()
+    expect(graphqlQuery).toHaveBeenCalledTimes(0)
+    expect(agg.getSnapshot().archivedExcludedCount).toBe(1)
+
+    // Cycle 2: the REST enumeration reports the repo un-archived — the
+    // frozen/synthesized row must NOT veto the re-entry; the query
+    // refreshes live facts and the row goes green + active.
+    await agg.refresh()
+    expect(graphqlQuery).toHaveBeenCalledTimes(1)
+    expect(graphqlQuery.mock.calls[0]?.[2]).toMatchObject({owner: 'fro-bot', name: 'back-one'})
+    const snap = agg.getSnapshot()
+    const row = snap.repos.find(repo => repo.node_id === 'NODE_BACK')
+    expect(row?.status.isArchived).toBe(false)
+    expect(row?.status.rollupState).toBe('green')
+    expect(snap.archivedExcludedCount).toBe(0)
   })
 })

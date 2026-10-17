@@ -112,6 +112,21 @@ export interface RepoCiStatus {
   readonly stale: boolean
   /** When this data was fetched (ms since epoch) */
   readonly fetchedAt: number
+  /**
+   * rm-1968: last push to any branch (ISO timestamp from GraphQL `pushedAt`).
+   * Powers the dormancy signal on the monitoring board (a repo with no CI
+   * and no pushes is quiet by choice, not by breakage). Null when unknown
+   * (degraded fetch paths, absence entries).
+   */
+  readonly pushedAt: string | null
+  /**
+   * rm-1968: true when the repo is archived (frozen read-only). Archived
+   * repos are excluded from the per-repo query loop (the frozen facts stay
+   * correct forever) and rendered muted — never red — on the board: their
+   * final failing checks persist forever at GitHub, so without this flag a
+   * dead repo would be permanent board noise AND permanent API spend.
+   */
+  readonly isArchived: boolean
 }
 
 /**
@@ -171,6 +186,13 @@ export interface AggregatorSnapshot {
    * optional.
    */
   readonly platformStatus?: PlatformStatus
+  /**
+   * OPTIONAL (rm-1968): count of working-set repos excluded from the per-repo
+   * query loop this cycle because they are archived (enumeration-flagged or
+   * snapshot-cached). Absent on degraded/stale paths and on caches persisted
+   * before the field existed — read as 0. Count only: no names, no identity.
+   */
+  readonly archivedExcludedCount?: number
 }
 
 /**
@@ -232,6 +254,11 @@ interface GraphqlRepoResponse {
     pullRequests: {totalCount: number}
     issues: {totalCount: number}
     vulnerabilityAlerts?: {totalCount: number} | null
+    // rm-1968: lifecycle facts (GraphQL `pushedAt` / `isArchived`). Optional
+    // here because degraded paths and pre-rm-1968 fixtures never carried
+    // them; parseRepoResponse defaults null/false when absent.
+    pushedAt?: string | null
+    isArchived?: boolean
   } | null
 }
 
@@ -357,6 +384,12 @@ interface WorkingSetEntry {
   readonly owner: string
   readonly name: string
   readonly full_name: string
+  /**
+   * rm-1968: REST-native archived flag carried through from the installation
+   * enumeration (see RepoRecord.archived). Metadata-channel repos default
+   * false unless the install lookup joins them.
+   */
+  readonly archived: boolean
   readonly discovery_channel: string
   /**
    * The installation ID that can authenticate GraphQL queries for this repo.
@@ -433,7 +466,7 @@ export type RepoLogIdentity = Pick<WorkingSetEntry, 'node_id' | 'owner' | 'name'
  *   denylistComplete indicates whether ALL redacted entries contributed a databaseId.
  */
 function buildWorkingSet(
-  installRepos: readonly {node_id: string; database_id: number; owner: string; name: string; full_name: string; installation_id: number}[],
+  installRepos: readonly {node_id: string; database_id: number; owner: string; name: string; full_name: string; installation_id: number; archived: boolean}[],
   metadata: MetadataResult,
 ): {workingSet: WorkingSetEntry[]; driftCount: number; denylistComplete: boolean} {
   const {publicRepos, redactedNodeIds, redactedDatabaseIds, redactedEntriesMissingDatabaseId} = metadata
@@ -502,6 +535,9 @@ function buildWorkingSet(
       full_name: `${pub.owner}/${pub.name}`,
       discovery_channel: pub.discovery_channel,
       installation_id: installationId,
+      // rm-1968: metadata yaml has no archived flag — inherit from the joined
+      // install record when one exists, else false (fail-open: stays queried).
+      archived: installRepo?.archived ?? false,
     })
   }
 
@@ -531,6 +567,7 @@ function buildWorkingSet(
         full_name: repo.full_name,
         discovery_channel: DISCOVERED_CHANNEL,
         installation_id: repo.installation_id,
+        archived: repo.archived,
       })
       driftCount++
     }
@@ -693,7 +730,7 @@ export function parseRepoResponse(raw: unknown, fetchedAt: number, openAlertCoun
     // installation lost access. That is a degradation the operator must see,
     // so we fail visible (stale:true), matching the installation_id:null and
     // fetch-failure paths below. Serving a calm unknown here hid silent drift.
-    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, pushedAt: null, isArchived: false, stale: true, fetchedAt}
   }
 
   const target = repo.defaultBranchRef?.target
@@ -715,7 +752,7 @@ export function parseRepoResponse(raw: unknown, fetchedAt: number, openAlertCoun
   // Use the provided openAlertCount (may be from the response or null if no-alerts variant)
   const alertCount = openAlertCount ?? (repo.vulnerabilityAlerts?.totalCount ?? null)
 
-  return {rollupState, failingChecks, failingCheckDetails, openPrCount, openIssueCount, openAlertCount: alertCount, stale: false, fetchedAt}
+  return {rollupState, failingChecks, failingCheckDetails, openPrCount, openIssueCount, openAlertCount: alertCount, pushedAt: repo.pushedAt ?? null, isArchived: repo.isArchived === true, stale: false, fetchedAt}
 }
 
 async function fetchRepoStatus(
@@ -729,7 +766,7 @@ async function fetchRepoStatus(
   // installation_id must be present — if null, we cannot authenticate the query
   if (entry.installation_id === null) {
     logger.warning('No installation_id for repo; marking stale', safeRepoLogIdentity(entry))
-    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, pushedAt: null, isArchived: false, stale: true, fetchedAt}
   }
 
   const installationId = entry.installation_id
@@ -766,12 +803,12 @@ async function fetchRepoStatus(
         return parseRepoResponse(raw, fetchedAt, null)
       } catch (retryError) {
         logger.warning('Per-repo GraphQL fetch failed (no-alerts retry); marking stale', safeRepoErrorContext(entry, retryError))
-        return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+        return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, pushedAt: null, isArchived: false, stale: true, fetchedAt}
       }
     }
 
     logger.warning('Per-repo GraphQL fetch failed; marking stale', safeRepoErrorContext(entry, error))
-    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, pushedAt: null, isArchived: false, stale: true, fetchedAt}
   }
 }
 
@@ -1087,7 +1124,7 @@ export function createAggregator(
     // 2. Enumerate installation repos (deadline-bounded, rm-222)
     const enumerateResult = await deadlineOr(deps.enumerate(installationsClient), fetchDeadlineMs, 'installation enumeration')
 
-    let installRepos: readonly {node_id: string; database_id: number; owner: string; name: string; full_name: string; installation_id: number}[] = []
+    let installRepos: readonly {node_id: string; database_id: number; owner: string; name: string; full_name: string; installation_id: number; archived: boolean}[] = []
     let enumerationFailed = false
     let enumerationIncomplete: number | null = 0
     if (enumerateResult instanceof DeadlineExceededError) {
@@ -1130,6 +1167,8 @@ export function createAggregator(
       openPrCount: 0,
       openIssueCount: 0,
       openAlertCount: null,
+      pushedAt: null,
+      isArchived: false,
       stale: true,
       // Review fix note: this stamp is the "never fetched, best effort"
       // placeholder for repos we have no prior data for. When the warm-empty
@@ -1261,6 +1300,10 @@ export function createAggregator(
     // fetchRepoStatus call is deadline-bounded internally, so every worker
     // slot is guaranteed to free up; Promise.all can never hang.
     const statuses: (RepoCiStatus | undefined)[] = Array.from({length: workingSet.length})
+    // rm-1968: how many working-set repos were skipped this cycle because
+    // they are archived — surfaced in the snapshot and API so the exclusion
+    // is observable, never a silent behavior change.
+    let archivedExcludedCount = 0
     let nextIndex = 0
     const workerCount = Math.max(1, Math.min(refreshConcurrency, workingSet.length))
     const workers: Promise<void>[] = []
@@ -1273,6 +1316,28 @@ export function createAggregator(
             if (index >= workingSet.length) return
             const entry = workingSet[index]
             if (entry === undefined) continue
+            // rm-1968: archived repos are excluded from the per-repo query
+            // loop. The REST enumeration is the AUTHORITATIVE live truth —
+            // it proves archived-ness fresh every cycle, so a repo that
+            // un-archives re-enters the loop on the next refresh (the frozen
+            // row is never allowed to veto that; the first post-unarchive
+            // query refreshes isArchived=false). The snapshot row is used
+            // only to carry the last-known facts onto the board.
+            const archivedRow = lastGoodSnapshot?.repos.find(repo => repo.node_id === entry.node_id)
+            if (entry.archived) {
+              archivedExcludedCount += 1
+              statuses[index] =
+                archivedRow === undefined
+                  ? // Never seen before: synthesize a muted placeholder.
+                    // Identity is enumeration-proven; the counts are unknown,
+                    // not zero — hence 'unknown' rollup + stale, isArchived
+                    // true so the UI mutes it instead of guessing red.
+                    {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, pushedAt: null, isArchived: true, stale: true, fetchedAt: now()}
+                  : // Seen before: reuse the frozen facts, refresh only the
+                    // stamp (this cycle re-validated the row via enumeration).
+                    {...archivedRow.status, fetchedAt: now()}
+              continue
+            }
             statuses[index] = await fetchRepoStatus(entry, graphqlQueryForInstallation, now, fetchDeadlineMs)
           }
         })(),
@@ -1291,7 +1356,7 @@ export function createAggregator(
         // assigned before Promise.all resolves) and exists only to satisfy
         // noUncheckedIndexedAccess. failingCheckDetails required here too —
         // the drill-down sample is empty on an unfetched repo (rm-192).
-        status: statuses[index] ?? {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt: now()},
+        status: statuses[index] ?? {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, pushedAt: null, isArchived: false, stale: true, fetchedAt: now()},
       })
     }
 
@@ -1305,11 +1370,12 @@ export function createAggregator(
     // incomplete (install repos missing). We still show metadata publicRepos
     // (they are public and safe), but the operator must know the installation
     // channel data is absent.
-    setSnapshot(watchdogStamp({repos: sorted, staleBanner: enumerationFailed || (enumerationIncomplete ?? 0) > 0, driftCount, enumerationIncomplete, refreshedAt: now()}))
+    setSnapshot(watchdogStamp({repos: sorted, staleBanner: enumerationFailed || (enumerationIncomplete ?? 0) > 0, driftCount, enumerationIncomplete, archivedExcludedCount, refreshedAt: now()}))
 
     logger.info('Aggregator refresh complete', {
       repoCount: sorted.length,
       absenceCount: absentEntries.length,
+      archivedExcludedCount,
       driftCount,
       enumerationFailed,
       enumerationIncomplete,

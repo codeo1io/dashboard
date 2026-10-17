@@ -118,8 +118,14 @@ function platformBannerPhrase(platform: PlatformStatusSummary): string {
 }
 
 function MonitoringBoard({data}: {data: MonitoringData}) {
-  const redRepos = data.repos.filter(repo => repo.status.rollupState === 'red' || repo.status.failingChecks > 0)
-  const remaining = data.repos.length - redRepos.length
+  // rm-1968: archived repos are muted, never red — a repo frozen read-only
+  // keeps its final failing checks forever at GitHub, so without this filter
+  // a dead repo would be permanent board noise.
+  const redRepos = data.repos.filter(
+    repo => !repo.status.isArchived && (repo.status.rollupState === 'red' || repo.status.failingChecks > 0),
+  )
+  const archivedRepos = data.repos.filter(repo => repo.status.isArchived)
+  const remaining = data.repos.length - redRepos.length - archivedRepos.length
   const refreshedAt = data.refreshedAt === null ? null : new Date(data.refreshedAt).toLocaleString()
   const platform = data.platformStatus
 
@@ -155,10 +161,36 @@ function MonitoringBoard({data}: {data: MonitoringData}) {
         redRepos.map(repo => <RedRepoCard key={repo.fullName} repo={repo} />)
       )}
 
+      {/* rm-1968: archived repos — muted list, not red cards. Their facts are
+          frozen (and excluded from the refresh loop server-side); showing them
+          here keeps the operator's inventory complete without alarm noise. */}
+      {archivedRepos.length > 0 && (
+        <div data-testid="monitoring-archived" style={{opacity: 0.75}}>
+          <h3 className="operator-section-heading" style={{fontSize: 'var(--text-body-sm)'}}>
+            Archived {archivedRepos.length === 1 ? 'repository' : 'repositories'} · {archivedRepos.length}
+          </h3>
+          <ul style={{margin: 'var(--space-2) 0 0', paddingLeft: 'var(--space-4)', display: 'flex', flexDirection: 'column', gap: 'var(--space-1)', fontSize: 'var(--text-body-sm)', color: 'var(--color-text-muted)'}}>
+            {archivedRepos.map(repo => (
+              <li key={repo.fullName} data-testid="monitoring-archived-repo">
+                {repo.fullName}
+                {repo.status.pushedAt !== null && (
+                  <span> · last push {new Date(repo.status.pushedAt).toLocaleDateString()}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div data-testid="monitoring-footer" style={{fontSize: 'var(--text-body-sm)', color: 'var(--color-text-muted)'}}>
         {remaining > 0 && (
           <span>
             {remaining} {remaining === 1 ? 'repository' : 'repositories'} not failing ·{' '}
+          </span>
+        )}
+        {archivedRepos.length > 0 && (
+          <span data-testid="monitoring-archived-count">
+            {archivedRepos.length} archived ·{' '}
           </span>
         )}
         {refreshedAt !== null ? <span>refreshed {refreshedAt}</span> : <span>never refreshed</span>}
@@ -178,11 +210,31 @@ function RedRepoCard({repo}: {repo: MonitoringRepo}) {
         <span className="listener-severity severity-critical" aria-label={`Failing checks: ${status.failingChecks}`}>
           {status.failingChecks} failing {status.failingChecks === 1 ? 'check' : 'checks'}
         </span>
+        {/* rm-1967: the Dependabot posture the fleet already pays per-cycle
+            API budget for — transported end-to-end since the query-registry
+            field landed, but never rendered. openAlertCount is null when the
+            optional security_events grant is absent (graceful twin) — render
+            nothing then, never a fake zero. */}
+        {status.openAlertCount !== null && status.openAlertCount > 0 && (
+          <span className="listener-severity severity-warning" data-testid="repo-alert-count" aria-label={`Open Dependabot alerts: ${status.openAlertCount}`}>
+            {status.openAlertCount} Dependabot {status.openAlertCount === 1 ? 'alert' : 'alerts'}
+          </span>
+        )}
       </div>
 
       {status.stale && (
         <div style={{fontSize: 'var(--text-body-sm)', color: 'var(--color-text-muted)', marginBottom: 'var(--space-2)'}}>
           Status is stale — the last fetch failed; counts are from the last successful refresh.
+        </div>
+      )}
+
+      {/* rm-1968: dormancy signal — a repo whose last push is months old is
+          quiet by choice, not necessarily broken; pairs the red-ness with
+          human context. Rendered only when known (null = unknown, never a
+          fake "recent"). */}
+      {status.pushedAt !== null && (
+        <div data-testid="repo-pushed-at" style={{fontSize: 'var(--text-body-sm)', color: 'var(--color-text-muted)'}}>
+          Last push {new Date(status.pushedAt).toLocaleString()}
         </div>
       )}
 

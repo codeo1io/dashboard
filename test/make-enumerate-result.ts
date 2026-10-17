@@ -31,6 +31,9 @@ export function makeRepoRecord(overrides: Partial<RepoRecord> = {}): RepoRecord 
     name: 'fake-repo',
     full_name: 'fro-bot/fake-repo',
     installation_id: 1,
+    // rm-1968: default active (fail-open); tests override archived:true to
+    // exercise the query-loop exclusion.
+    archived: false,
     ...overrides,
   }
 }

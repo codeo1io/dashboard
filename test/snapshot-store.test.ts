@@ -42,6 +42,10 @@ function makeRepoRow(): DashboardRepo {
       openPrCount: 0,
       openIssueCount: 0,
       openAlertCount: null,
+      // rm-1968: lifecycle defaults; shape-validation overrides pin the
+      // archivedExcludedCount counter contract.
+      pushedAt: null,
+      isArchived: false,
       stale: false,
       fetchedAt: 1234,
     },
@@ -361,5 +365,48 @@ describe('logPersistProblem — payload cannot shadow context keys (rm-880)', ()
     } finally {
       warnSpy.mockRestore()
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-1968: archivedExcludedCount — optional counter, strict when present
+// ---------------------------------------------------------------------------
+
+describe('createFileSnapshotStore — rm-1968 archivedExcludedCount shape', () => {
+  const dirs: string[] = []
+
+  function makeStore(): {store: SnapshotStore; file: string} {
+    const dir = mkdtempSync(join(tmpdir(), 'snapshot-store-archived-'))
+    dirs.push(dir)
+    const file = join(dir, 'snapshot.json')
+    return {store: createFileSnapshotStore(file) as SnapshotStore, file}
+  }
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, {recursive: true, force: true})
+  })
+
+  it('round-trips a snapshot carrying the counter', () => {
+    const {store, file} = makeStore()
+    const snap = {...makeSnapshot(), archivedExcludedCount: 3}
+    store.persist(snap)
+    expect(store.load()).toEqual(snap)
+    rmSync(file)
+  })
+
+  it('loads a legacy snapshot without the counter (optionality is not corruption)', () => {
+    const {store, file} = makeStore()
+    store.persist(makeSnapshot())
+    const loaded = store.load()
+    expect(loaded).not.toBeNull()
+    expect(loaded?.archivedExcludedCount).toBeUndefined()
+    rmSync(file)
+  })
+
+  it('rejects a snapshot whose counter is present but malformed', () => {
+    const {store, file} = makeStore()
+    const bad = {...makeSnapshot(), archivedExcludedCount: 'three'}
+    writeFileSync(file, JSON.stringify(bad))
+    expect(store.load()).toBeNull()
   })
 })

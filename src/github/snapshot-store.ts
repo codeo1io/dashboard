@@ -95,6 +95,12 @@ function isValidSnapshotShape(value: unknown): value is AggregatorSnapshot {
   // the next refresh re-persists with the fields).
   if (snapshot.refreshDurationMs !== null && typeof snapshot.refreshDurationMs !== 'number') return false
   if (typeof snapshot.refreshDegraded !== 'boolean') return false
+  // rm-1968: archivedExcludedCount is OPTIONAL — a cache persisted before the
+  // lifecycle-exclusion counter existed (or by a degraded path that never set
+  // it) must still load; present-but-wrong-type is genuine corruption.
+  if (snapshot.archivedExcludedCount !== undefined && typeof snapshot.archivedExcludedCount !== 'number') {
+    return false
+  }
   for (const repo of snapshot.repos) {
     if (typeof repo !== 'object' || repo === null) return false
     const row = repo as Record<string, unknown>
