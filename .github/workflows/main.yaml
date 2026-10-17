@@ -30,7 +30,7 @@ jobs:
     # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
     # at the rm-139 Node-26 window (2026-10-28).
     runs-on: ubuntu-24.04
-    # rm-13640 rider (2026-09-29; wording made truthful by rm-486 — the
+    # fleet rider with a retired phantom id (2026-09-29; wording made truthful by rm-486 — the
     # cycle-2 comment-truth item, minted rm-281 and renumbered at the
     # 2026-10-03 integrate; main's rm-281 is the CodeQL suppression
     # recipe — 2026-09-30): the Lint job self-kills at 35 min — above the worst

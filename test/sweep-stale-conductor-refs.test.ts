@@ -2,18 +2,25 @@
  * rm-742 — stale conductor/* validation-ref sweep selection (fixture unit
  * tests). Pins the pure selection/parsing core of
  * scripts/sweep-stale-conductor-refs.ts:
- * 1. namespace containment (only conductor/ci-* and conductor/ci-base-* —
- *    never main, never conductor branches outside the ephemeral namespaces);
+ * 1. namespace containment (conductor/ci-*, conductor/ci-base-*, and
+ *    conductor/run-* — never main, never conductor branches outside those
+ *    namespaces);
  * 2. the age cutoff (stale = newest commit older than --cutoff-days);
- * 3. --exclude globs protecting named refs from deletion;
+ * 3. --exclude globs protecting named refs from deletion — including the
+ *    open-PR head refs main() gathers live (tests inject them via the
+ *    CONDUCTOR_SWEEP_PR_HEADS override; the gather + fail-closed gate are
+ *    reviewed in code);
  * 4. for-each-ref output parsing (temp-namespace → origin-ref mapping);
  * 5. dry-run is the DEFAULT posture — apply never happens implicitly (the
  *    CLI wrapper's --apply gate is reviewed in code; these tests pin the
  *    selection it would apply).
  */
+import process from 'node:process'
 import {describe, expect, it} from 'vitest'
+
 import {
   DEFAULT_CUTOFF_DAYS,
+  gatherOpenPrHeadRefs,
   isInSweepNamespace,
   matchGlob,
   parseForEachRef,
@@ -32,18 +39,20 @@ const ref = (name: string, daysAgo: number, email = 'conductor@example.com'): Co
 })
 
 describe('rm-742: namespace containment', () => {
-  it('accepts both ephemeral validation namespaces', () => {
+  it('accepts the validation namespaces and the run- namespace', () => {
     expect(isInSweepNamespace('refs/heads/conductor/ci-20261001-abc')).toBe(true)
     expect(isInSweepNamespace('refs/heads/conductor/ci-base-20261001-abc')).toBe(true)
+    expect(isInSweepNamespace('refs/heads/conductor/run-77aa88bb')).toBe(true)
   })
 
   it('rejects everything else — main, other conductor branches, tags', () => {
     expect(isInSweepNamespace('refs/heads/main')).toBe(false)
-    expect(isInSweepNamespace('refs/heads/conductor/run-x')).toBe(false)
     expect(isInSweepNamespace('refs/heads/renovate/pnpm-12')).toBe(false)
     expect(isInSweepNamespace('refs/tags/2026.08.15')).toBe(false)
     // Near-miss: the ci- prefix must be exact, not merely contained.
     expect(isInSweepNamespace('refs/heads/conductor/x-ci-thing')).toBe(false)
+    // Near-miss: run- must be a prefix of the last path segment, not contained.
+    expect(isInSweepNamespace('refs/heads/conductor/xrun-abc')).toBe(false)
   })
 
   it('selectStaleRefs never returns an out-of-namespace ref however old', () => {
@@ -53,6 +62,38 @@ describe('rm-742: namespace containment', () => {
       14,
     )
     expect(candidates.map(candidate => candidate.ref)).toEqual(['refs/heads/conductor/ci-old'])
+  })
+
+  it('selectStaleRefs still keeps a stale run- ref that backs an open PR', () => {
+    const candidates = selectStaleRefs(
+      [ref('refs/heads/conductor/run-old', 400), ref('refs/heads/conductor/ci-old', 400)],
+      NOW,
+      14,
+      ['refs/heads/conductor/run-old'],
+    )
+    expect(candidates.map(candidate => candidate.ref)).toEqual(['refs/heads/conductor/ci-old'])
+  })
+})
+
+describe('rm-742: open-PR head gather override', () => {
+  it('qualifies bare branch names and drops blank lines', () => {
+    process.env.CONDUCTOR_SWEEP_PR_HEADS = 'conductor/run-77aa88bb\n\nrefs/heads/conductor/ci-base-keep \n'
+    try {
+      const gathered = gatherOpenPrHeadRefs()
+      expect(gathered.ok).toBe(true)
+      expect(gathered.refs).toEqual(['refs/heads/conductor/run-77aa88bb', 'refs/heads/conductor/ci-base-keep'])
+    } finally {
+      delete process.env.CONDUCTOR_SWEEP_PR_HEADS
+    }
+  })
+
+  it('an empty override is ok and protects nothing', () => {
+    process.env.CONDUCTOR_SWEEP_PR_HEADS = ''
+    try {
+      expect(gatherOpenPrHeadRefs()).toEqual({ok: true, refs: []})
+    } finally {
+      delete process.env.CONDUCTOR_SWEEP_PR_HEADS
+    }
   })
 })
 

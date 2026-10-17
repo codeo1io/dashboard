@@ -47,7 +47,9 @@ edit is almost always a guard suite, not a flake; grep the edited text against
 
 Two riders on the same uncommitted tree, both landed with the cycle-19 batch:
 
-- `timeout-minutes: 35` on the lint job (rm-13640) so the job never self-kills
+- `timeout-minutes: 35` on the lint job (rider added alongside the
+  2026-09-29 audit; its comment originally cited a phantom id — see the
+  rm-842 note on retired prose ids) so the job never self-kills
   while the validator is still willing to poll.
 - The rider comment says "shared runner pool" — an era-qualified phrase the
   residue guard accepts.

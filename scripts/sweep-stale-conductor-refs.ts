@@ -15,9 +15,15 @@
  * - `--apply` is required to delete anything; apply is PUSH-GATED in this
  *   repo's process (the roadmap def defers it to a push-authorized phase —
  *   conductor work orders prohibit push outside the ship gate).
- * - Only refs matching `refs/heads/conductor/ci-*` or
- *   `refs/heads/conductor/ci-base-*` are ever considered (the ephemeral
- *   validation namespaces — nothing else).
+ * - Only refs matching `refs/heads/conductor/ci-*`, `refs/heads/conductor/ci-base-*`,
+ *   or `refs/heads/conductor/run-*` are ever considered (the ephemeral
+ *   validation namespaces plus the per-run attempt namespace — nothing else).
+ * - run-* refs additionally never sweep while they back an OPEN pull request:
+ *   open-PR head refs are gathered live (`gh pr list`) — or injected via the
+ *   CONDUCTOR_SWEEP_PR_HEADS newline-separated override — and treated as
+ *   excludes. In --apply mode a failed gather ABORTS (fail-closed); in the
+ *   default dry-run it only warns. Procedure + policy: docs/runbooks/
+ *   conductor-ref-hygiene.md.
  * - `--cutoff-days N` (default 14): only refs whose newest commit is older
  *   than N days are candidates. Validations live <1 day; 14d is a generous
  *   drift window that cannot race an in-flight validation.
@@ -35,7 +41,7 @@ import {spawnSync} from 'node:child_process'
 import process from 'node:process'
 import {pathToFileURL} from 'node:url'
 
-export const SWEEP_NAMESPACES = ['refs/heads/conductor/ci-', 'refs/heads/conductor/ci-base-'] as const
+export const SWEEP_NAMESPACES = ['refs/heads/conductor/ci-', 'refs/heads/conductor/ci-base-', 'refs/heads/conductor/run-'] as const
 export const TEMP_NAMESPACE = 'refs/conductor-sweep/'
 export const DEFAULT_CUTOFF_DAYS = 14
 
@@ -153,6 +159,38 @@ function gatherRemoteRefs(): ConductorRef[] {
   }
 }
 
+export function gatherOpenPrHeadRefs(): {ok: boolean; refs: string[]} {
+  const override = process.env.CONDUCTOR_SWEEP_PR_HEADS
+  if (override !== undefined) {
+    const refs = override
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line.length > 0)
+      .map(line => (line.startsWith('refs/heads/') ? line : `refs/heads/${line}`))
+    return {ok: true, refs}
+  }
+  const res = spawnSync(
+    'gh',
+    ['pr', 'list', '--state', 'open', '--json', 'headRefName', '--limit', '500'],
+    {encoding: 'utf8'},
+  )
+  if (res.status !== 0 || typeof res.stdout !== 'string') {
+    return {ok: false, refs: []}
+  }
+  try {
+    const prs = JSON.parse(res.stdout) as {headRefName?: unknown}[]
+    const refs: string[] = []
+    for (const pr of prs) {
+      if (typeof pr.headRefName === 'string' && pr.headRefName.length > 0) {
+        refs.push(`refs/heads/${pr.headRefName}`)
+      }
+    }
+    return {ok: true, refs}
+  } catch {
+    return {ok: false, refs: []}
+  }
+}
+
 function main(): number {
   const args = process.argv.slice(2)
   const apply = args.includes('--apply')
@@ -171,13 +209,27 @@ function main(): number {
     }
   }
 
+  const prGuard = gatherOpenPrHeadRefs()
+  if (!prGuard.ok) {
+    if (apply) {
+      process.stderr.write('::error::open-PR head gather failed; refusing to delete (fail-closed)\n')
+      return 2
+    }
+    process.stdout.write('warning: open-PR head gather failed; continuing dry-run without open-PR protection\n')
+  }
+  const allExcludes = [...excludes, ...prGuard.refs]
+
   const refs = gatherRemoteRefs()
-  const stale = selectStaleRefs(refs, Date.now(), cutoffDays, excludes)
+  const stale = selectStaleRefs(refs, Date.now(), cutoffDays, allExcludes)
 
   if (asJson) {
-    process.stdout.write(`${JSON.stringify({totalInNamespace: refs.length, cutoffDays, stale}, null, 2)}\n`)
+    process.stdout.write(
+      `${JSON.stringify({totalInNamespace: refs.length, cutoffDays, openPrProtected: prGuard.refs.length, openPrGuardOk: prGuard.ok, stale}, null, 2)}\n`,
+    )
   } else {
-    process.stdout.write(`conductor/* validation refs on origin: ${refs.length} (cutoff ${cutoffDays}d, excludes: [${excludes.join(', ')}])\n`)
+    process.stdout.write(
+      `conductor/* refs on origin: ${refs.length} (cutoff ${cutoffDays}d, open-PR protected: ${prGuard.refs.length}, excludes: [${allExcludes.join(', ')}])\n`,
+    )
     if (stale.length === 0) {
       process.stdout.write('no stale refs — nothing to do\n')
     }
