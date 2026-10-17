@@ -34,6 +34,9 @@ function makeRepo(overrides: Partial<RepoRecord> = {}): RepoRecord {
     name: 'agent',
     full_name: 'fro-bot/agent',
     installation_id: 1,
+    // rm-1968: default active; coercion tests override (absent REST field
+    // must fail open, never freeze a live repo).
+    archived: false,
     ...overrides,
   }
 }
@@ -972,6 +975,8 @@ describe('rm-1455 — page ceilings bound the while(true) pagination walks', () 
         owner: 'fro-bot',
         name: 'repo-1-0',
         full_name: 'fro-bot/repo-1-0',
+        // rm-1968: REST pages that omit `archived` coerce to false (fail-open).
+        archived: false,
       })
     } finally {
       warnSpy.mockRestore()

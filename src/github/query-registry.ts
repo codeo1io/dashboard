@@ -15,6 +15,11 @@
 export const REPO_STATUS_QUERY = `
   query RepoStatus($owner: String!, $name: String!) {
     repository(owner: $owner, name: $name) {
+      # rm-1968: repo lifecycle facts ride the same metadata:read grant as the
+      # CI fields — pushedAt powers the dormancy signal, isArchived the
+      # archived-exclusion/muting. Scalar additions; no new permission.
+      pushedAt
+      isArchived
       defaultBranchRef {
         target {
           ... on Commit {
@@ -63,6 +68,11 @@ export const REPO_STATUS_QUERY = `
 export const REPO_STATUS_QUERY_NO_ALERTS = `
   query RepoStatusNoAlerts($owner: String!, $name: String!) {
     repository(owner: $owner, name: $name) {
+      # rm-1968: lifecycle fields (see REPO_STATUS_QUERY note) are not part of
+      # the vulnerabilityAlerts permission failure — the no-alerts fallback
+      # keeps them.
+      pushedAt
+      isArchived
       defaultBranchRef {
         target {
           ... on Commit {

@@ -79,6 +79,17 @@ describe('GraphQL query-shape guard (rm-177)', () => {
     expect(symmetricDiff).toEqual(['vulnerabilityAlerts'])
   })
 
+  it('rm-1968: both templates select the repo lifecycle fields (pushedAt + isArchived)', () => {
+    // The archived-exclusion and dormancy signals depend on BOTH templates
+    // carrying the lifecycle fields: the no-alerts fallback runs precisely
+    // when the security_events grant is absent, and an archived/dormant
+    // verdict must not silently depend on which permission path answered.
+    for (const [name, query] of Object.entries(QUERIES)) {
+      expect(query.includes('pushedAt'), `${name}: missing pushedAt`).toBe(true)
+      expect(query.includes('isArchived'), `${name}: missing isArchived`).toBe(true)
+    }
+  })
+
   it('rm-225: the registry contains every exported template constant (completeness)', () => {
     // A template constant exported without a registry entry is exactly how
     // rm-177's blind spot happened: NO_ALERTS shipped live-destined but the

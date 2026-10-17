@@ -73,6 +73,15 @@ export interface RepoRecord {
   readonly name: string
   readonly full_name: string
   /**
+   * rm-1968: REST-native archived flag (`GET /installation/repositories`
+   * carries it on every repo object, metadata:read). The aggregator uses it
+   * to exclude archived repos from the per-repo GraphQL query loop from the
+   * FIRST cycle that observes them — a repo that un-archives re-enters the
+   * loop on the next enumeration, so the skip can never strand a repo
+   * permanently.
+   */
+  readonly archived: boolean
+  /**
    * The installation ID that produced this repo record.
    * Required for per-repo GraphQL authentication — each repo must be queried
    * with a token minted for the installation that can see it.
@@ -405,6 +414,7 @@ export interface InstallationRepositoriesPage {
     owner: {login: string}
     name: string
     full_name: string
+    archived?: boolean
   }[]
 }
 
@@ -429,6 +439,10 @@ export async function collectInstallationRepoPages(
         owner: repo.owner.login,
         name: repo.name,
         full_name: repo.full_name,
+        // rm-1968: coerce defensively — a page response that somehow omits
+        // the flag must fail OPEN (not archived → stays in the query loop),
+        // never silently freeze a live repo.
+        archived: repo.archived === true,
       })
     }
     if (repos.length >= data.total_count || data.repositories.length < 100) break

@@ -10,8 +10,10 @@ function makeRepo(
   overrides: { fullName?: string; discoveryChannel?: string; status?: Partial<MonitoringRepoStatus> } = {}
 ): MonitoringRepo {
   return {
-    fullName: 'fro-bot/agent',
-    discoveryChannel: 'installation',
+    // rm-1967/rm-1968 tests: honor the fullName/discoveryChannel overrides the
+    // signature already declared (the body previously hardcoded both).
+    fullName: overrides.fullName ?? 'fro-bot/agent',
+    discoveryChannel: overrides.discoveryChannel ?? 'installation',
     status: {
       rollupState: 'red',
       failingChecks: 1,
@@ -26,6 +28,10 @@ function makeRepo(
       openPrCount: 0,
       openIssueCount: 0,
       openAlertCount: null,
+      // rm-1968: lifecycle defaults — hidden + active; new tests override to
+      // exercise the dormancy render and archived muting.
+      pushedAt: null,
+      isArchived: false,
       stale: false,
       ...overrides.status
     }
@@ -38,6 +44,9 @@ function makeData(overrides: Partial<MonitoringData> = {}): MonitoringData {
     staleBanner: false,
     driftCount: 0,
     enumerationIncomplete: null,
+    // rm-1968: repos excluded from the per-repo query loop this cycle
+    // because archived (0 = none / legacy payload).
+    archivedExcludedCount: 0,
     refreshedAt: 1742000000000,
     platformStatus: null,
     ...overrides
@@ -354,5 +363,157 @@ describe('Monitoring (rm-192 red-repo drill-down)', () => {
       unmount()
       expect(capturedSignal!.aborted).toBe(true)
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-1967 (openAlertCount render) + rm-1968 (archived muting, dormancy line)
+// ---------------------------------------------------------------------------
+
+describe('Monitoring — rm-1967/rm-1968 lifecycle render', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.runOnlyPendingTimers()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('rm-1967: renders the Dependabot alert count for a repo with open alerts', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+        repos: [
+          makeRepo({
+            fullName: 'fro-bot/vulnerable',
+            status: {rollupState: 'red', failingChecks: 2, failingCheckDetails: [], openAlertCount: 7},
+          }),
+        ],
+      }),
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    const chip = screen.getByTestId('repo-alert-count')
+    expect(chip).toBeInTheDocument()
+    expect(chip).toHaveTextContent('7 Dependabot alerts')
+    expect(chip.getAttribute('aria-label')).toBe('Open Dependabot alerts: 7')
+  })
+
+  it('rm-1967: singularizes one alert and renders nothing for zero (never a fake zero)', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+        repos: [
+          makeRepo({
+            fullName: 'fro-bot/one-alert',
+            status: {rollupState: 'red', failingChecks: 1, failingCheckDetails: [], openAlertCount: 1},
+          }),
+          makeRepo({
+            fullName: 'fro-bot/clean',
+            status: {rollupState: 'green', failingChecks: 0, failingCheckDetails: [], openAlertCount: 0},
+          }),
+        ],
+      }),
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.getByTestId('repo-alert-count')).toHaveTextContent('1 Dependabot alert')
+    // The clean repo has a KNOWN zero — no chip (zero is the absence of signal).
+    expect(screen.queryAllByTestId('repo-alert-count')).toHaveLength(1)
+  })
+
+  it('rm-1967: renders nothing when openAlertCount is null (security_events grant absent)', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+        repos: [
+          makeRepo({
+            fullName: 'fro-bot/no-grant',
+            status: {rollupState: 'red', failingChecks: 1, failingCheckDetails: [], openAlertCount: null},
+          }),
+        ],
+      }),
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    expect(screen.queryByTestId('repo-alert-count')).not.toBeInTheDocument()
+  })
+
+  it('rm-1968: mutes an archived repo out of the red list and into the archived section', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+        repos: [
+          makeRepo({
+            fullName: 'fro-bot/legacy',
+            status: {rollupState: 'red', failingChecks: 5, failingCheckDetails: [], isArchived: true, pushedAt: '2024-03-01T00:00:00.000Z'},
+          }),
+          makeRepo({
+            fullName: 'fro-bot/active-red',
+            status: {rollupState: 'red', failingChecks: 1, failingCheckDetails: []},
+          }),
+        ],
+      }),
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    // The archived repo keeps its frozen red facts at GitHub forever — it must
+    // NOT be red-carded here.
+    expect(screen.queryAllByTestId('monitoring-red-repo')).toHaveLength(1)
+    expect(screen.getByText('fro-bot/active-red')).toBeInTheDocument()
+    expect(screen.queryByText('fro-bot/legacy')).not.toBeInTheDocument()
+    // It lives in the muted archived section instead.
+    expect(screen.getByTestId('monitoring-archived')).toBeInTheDocument()
+    expect(screen.getAllByTestId('monitoring-archived-repo')).toHaveLength(1)
+    expect(screen.getAllByTestId('monitoring-archived-repo')[0]).toHaveTextContent('fro-bot/legacy')
+    // The archived exclusion is observable in the footer.
+    expect(screen.getByTestId('monitoring-archived-count')).toHaveTextContent('1 archived')
+  })
+
+  it('rm-1968: renders the last-push dormancy line when pushedAt is known, nothing when null', async () => {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+      ok: true,
+      data: makeData({
+        repos: [
+          makeRepo({
+            fullName: 'fro-bot/dormant',
+            status: {rollupState: 'red', failingChecks: 1, failingCheckDetails: [], pushedAt: '2026-10-01T00:00:00.000Z'},
+          }),
+          makeRepo({
+            fullName: 'fro-bot/unknown-push',
+            status: {rollupState: 'red', failingChecks: 1, failingCheckDetails: [], pushedAt: null},
+          }),
+        ],
+      }),
+    })
+
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+
+    const lines = screen.getAllByTestId('repo-pushed-at')
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toHaveTextContent(/Last push/)
+    // No archived section when nothing is archived.
+    expect(screen.queryByTestId('monitoring-archived')).not.toBeInTheDocument()
   })
 })

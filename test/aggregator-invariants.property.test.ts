@@ -54,6 +54,23 @@ const statusArb = (fetchedAt: number): fc.Arbitrary<RepoCiStatus> =>
   fc.record({
     rollupState: fc.constantFrom('green', 'red', 'pending', 'unknown'),
     failingChecks: fc.nat({max: 12}),
+    // rm-1968: lifecycle facts ride the arbitrary. pushedAt mirrors the
+    // transport domain (ISO string | null) with BOUNDED dates — fc.date's
+    // default range produces years outside Date#toISOString's 1-9999 domain
+    // (RangeError trap, cf. run 7d62d3d5).
+    pushedAt: fc.option(
+      fc
+        .date({
+          min: new Date('2000-01-01T00:00:00.000Z'),
+          max: new Date('2200-01-01T00:00:00.000Z'),
+          // fast-check emits invalid Dates unless opted out — toISOString()
+          // would then throw RangeError (trap, cf. run 7d62d3d5).
+          noInvalidDate: true,
+        })
+        .map(date => date.toISOString()),
+      {nil: null},
+    ),
+    isArchived: fc.boolean(),
     // rm-192: the drill-down sample is generated independently of the count
     // (the count stays authoritative — details are additive metadata).
     failingCheckDetails: fc.array(
@@ -188,6 +205,10 @@ describe('aggregator parseRepoResponse invariants (rm-144)', () => {
             openPrCount: 0,
             openIssueCount: 0,
             openAlertCount: null,
+            // rm-1968: lifecycle fields on the null-repository path are
+            // unknown-hidden / not-archived — mirror in the oracle.
+            pushedAt: null,
+            isArchived: false,
             stale: true,
             fetchedAt,
           })

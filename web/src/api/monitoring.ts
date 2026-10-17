@@ -22,6 +22,10 @@ export interface MonitoringRepoStatus {
   readonly openIssueCount: number
   readonly openAlertCount: number | null
   readonly stale: boolean
+  /** rm-1968: last push to any branch (ISO). Null when unknown. Dormancy signal. */
+  readonly pushedAt: string | null
+  /** rm-1968: archived repos render muted, never red. */
+  readonly isArchived: boolean
 }
 
 export interface MonitoringRepo {
@@ -55,6 +59,8 @@ export interface MonitoringData {
   readonly driftCount: number
   readonly enumerationIncomplete: number | null
   readonly refreshedAt: number | null
+  /** rm-1968: repos excluded from the per-repo query loop this cycle because archived. */
+  readonly archivedExcludedCount: number
   /** rm-1447: null when the server could not fetch the feed (fail-open both directions). */
   readonly platformStatus: PlatformStatusSummary | null
 }
@@ -122,12 +128,19 @@ function parseRepo(item: unknown): MonitoringRepo | null {
     openIssueCount,
     openAlertCount,
     stale,
+    pushedAt,
+    isArchived,
   } = status
   if (typeof rollupState !== 'string' || !ROLLUP_STATES.includes(rollupState)) return null
   if (typeof failingChecks !== 'number') return null
   if (typeof openPrCount !== 'number' || typeof openIssueCount !== 'number') return null
   if (openAlertCount !== null && typeof openAlertCount !== 'number') return null
   if (typeof stale !== 'boolean') return null
+  // rm-1968: lifecycle fields are OPTIONAL on the wire (a stale bundle or a
+  // degraded server path may omit them) — absent means unknown; present but
+  // malformed is genuine contract drift.
+  if (pushedAt !== null && pushedAt !== undefined && typeof pushedAt !== 'string') return null
+  if (isArchived !== undefined && typeof isArchived !== 'boolean') return null
   if (!Array.isArray(failingCheckDetails)) return null
 
   const details: FailingCheckDetail[] = []
@@ -148,6 +161,8 @@ function parseRepo(item: unknown): MonitoringRepo | null {
       openIssueCount,
       openAlertCount,
       stale,
+      pushedAt: pushedAt ?? null,
+      isArchived: isArchived ?? false,
     },
   }
 }
@@ -188,6 +203,11 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
     if (data.refreshedAt !== null && typeof data.refreshedAt !== 'number') {
       return {ok: false, reason: 'contract-drift'}
     }
+    // rm-1968: optional counter — absent means 0 (legacy/degraded payload);
+    // present-but-malformed is drift.
+    if (data.archivedExcludedCount !== undefined && typeof data.archivedExcludedCount !== 'number') {
+      return {ok: false, reason: 'contract-drift'}
+    }
     // rm-1447: the platform annotation is OPTIONAL — absent/null is the
     // fail-open shape; present-but-malformed is contract drift.
     let platformStatus: PlatformStatusSummary | null = null
@@ -212,6 +232,7 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
         driftCount: data.driftCount,
         enumerationIncomplete: data.enumerationIncomplete,
         refreshedAt: data.refreshedAt,
+        archivedExcludedCount: data.archivedExcludedCount ?? 0,
         platformStatus,
       },
     }
