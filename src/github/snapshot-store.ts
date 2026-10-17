@@ -58,6 +58,47 @@ function logPersistProblem(message: string, path: string, detail: unknown): void
   logger.warning(message, fields)
 }
 
+// rm-1934 (2026-10-17): platformStatus is attached at serve time
+// (withPlatformStatus, src/github/aggregator.ts) — a cache persisted by a
+// newer server may carry it, older caches omit it. When present it must
+// satisfy the SAME closed shape the client parser enforces
+// (parsePlatformStatus in web/src/api/monitoring.ts); the server clamps the
+// third-party vocabulary before it ever reaches a persist, so anything
+// outside these sets is cache corruption, and the client would hard-reject
+// the whole payload as contract-drift — erroring the entire Monitoring view
+// for one malformed field. Rejecting the snapshot here keeps the store's
+// fail-open contract instead (load() → null → fresh recompute).
+const PLATFORM_INDICATORS: readonly string[] = [
+  'none',
+  'minor',
+  'major',
+  'critical',
+  'maintenance',
+  'unknown',
+]
+const PLATFORM_COMPONENT_STATUSES: readonly string[] = [
+  'operational',
+  'degraded_performance',
+  'partial_outage',
+  'major_outage',
+  'under_maintenance',
+]
+
+function isValidPlatformStatusShape(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false
+  const status = value as Record<string, unknown>
+  if (typeof status.overall !== 'string' || !PLATFORM_INDICATORS.includes(status.overall)) return false
+  if (typeof status.overallDescription !== 'string') return false
+  if (
+    status.actions !== null &&
+    (typeof status.actions !== 'string' || !PLATFORM_COMPONENT_STATUSES.includes(status.actions))
+  ) {
+    return false
+  }
+  if (typeof status.fetchedAt !== 'number') return false
+  return true
+}
+
 /**
  * Shallow shape validation for untrusted on-disk data. Checks the
  * AggregatorSnapshot top level and the per-repo identity/status keys the
@@ -80,6 +121,18 @@ function isValidSnapshotShape(value: unknown): value is AggregatorSnapshot {
   // the next refresh re-persists with the fields).
   if (snapshot.refreshDurationMs !== null && typeof snapshot.refreshDurationMs !== 'number') return false
   if (typeof snapshot.refreshDegraded !== 'boolean') return false
+  // rm-1934: platformStatus is an optional serve-time annotation — absent or
+  // null is valid (older cache, or a persist from before the annotation
+  // existed); present-but-malformed rejects the whole snapshot so the store
+  // fails open instead of the client's contract-drift path erroring the
+  // Monitoring view downstream.
+  if (
+    snapshot.platformStatus !== undefined &&
+    snapshot.platformStatus !== null &&
+    !isValidPlatformStatusShape(snapshot.platformStatus)
+  ) {
+    return false
+  }
   for (const repo of snapshot.repos) {
     if (typeof repo !== 'object' || repo === null) return false
     const row = repo as Record<string, unknown>

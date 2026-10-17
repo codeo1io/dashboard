@@ -102,9 +102,10 @@ Read-only dependency source repositories are available under
 `.slim/clonedeps/repos/` for inspection. Do not edit these clones.
 
 - `.slim/clonedeps/repos/fro-bot__agent/` — `fro-bot/agent` at the CI-pinned
-  tag `v0.122.1` (pin source: `.github/workflows/fro-bot.yaml`; mirror
-  re-provisioned 2026-10-15 — provision with `git clone --depth 1 --branch
-  <pin>` if absent); the gateway's operator OAuth return path contract, GitHub
+  tag `v0.122.3` (pin source: `.github/workflows/fro-bot.yaml`, which pins the
+  full commit digest; canonical mirror verified at the pinned tag 2026-10-17
+  — provision with `git clone --depth 1 --branch <pin>` if absent); the
+  gateway's operator OAuth return path contract, GitHub
   App client, secret readers, Hono build/serve split, and runtime
   logger/Result primitives that this app mirrors.
 
