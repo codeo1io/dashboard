@@ -107,6 +107,10 @@ const CLAIM_PATH_TOKEN = /(?<!\w)(?:test|src|web|scripts|docs|public|\.github)\/
 
 const TOLERATED_MISSING = new Map([
   [
+    'test/visual-parity-guard.test.ts',
+    'dropped 2026-10-17 by supersession (run 47f9aaefa379 compound SUPERSESSION record, rm-881): the sibling lane\'s test/visual-playwright-image-lockstep.test.ts (f521ec7 lineage, required Main check) is the single source of truth per the single-source rule; the compound doc quotes the dropped path in that record — prune this entry when the claim ages out of the newest cohort',
+  ],
+  [
     'test/operator-contract-window.test.ts',
     'dropped by the 2026-10-15 tip merge (06396b4 -> 3e3664c); restoration is owned by the 60-file drop-residue item (rm-887 band)',
   ],

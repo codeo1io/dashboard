@@ -158,20 +158,25 @@ describe('AppShell', () => {
     expect(screen.getByRole('link', {name: 'Privacy'})).toHaveAttribute('href', '/privacy')
   })
 
+  // rm-882 (absorb of upstream #641, fork-adapted): the footer version chip.
+  // Calver builds link to THIS fork's release notes (codeo1io, not upstream's
+  // fro-bot URL); dev/undefined/malformed values render as plain text with no
+  // link — nothing may link anywhere without a real release behind it.
   it('links a valid release version to its release notes', () => {
     vi.stubEnv('VITE_DASHBOARD_VERSION', '2026.10.33')
 
     render(<AppShell>content</AppShell>)
 
-    expect(screen.getByRole('link', {name: 'Release notes for 2026.10.33'})).toHaveAttribute(
+    const link = screen.getByRole('link', {name: 'Release notes for 2026.10.33'})
+    expect(link).toHaveAttribute(
       'href',
       'https://github.com/codeo1io/dashboard/releases/tag/2026.10.33',
     )
-    expect(screen.getByRole('link', {name: 'Release notes for 2026.10.33'})).toHaveAttribute('target', '_blank')
-    expect(screen.getByRole('link', {name: 'Release notes for 2026.10.33'})).toHaveAttribute('rel', 'noopener noreferrer')
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer')
   })
 
-  it.each([['dev'], [undefined]])('renders %s as plain dev text without a link', (version) => {
+  it.each(['dev', undefined])('renders %s as plain dev text without a link', version => {
     vi.stubEnv('VITE_DASHBOARD_VERSION', version)
 
     render(<AppShell>content</AppShell>)

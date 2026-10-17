@@ -109,6 +109,10 @@ function applyTheme(theme: Theme): void {
   document.documentElement.setAttribute('data-theme', theme)
 }
 
+// rm-882 (absorb of upstream #641, fork-adapted): the release pipeline stamps
+// the image with the precomputed CalVer tag (release.yaml → DASHBOARD_VERSION
+// build-arg → VITE_DASHBOARD_VERSION). Calver values link to THIS fork's
+// release notes; dev/local and malformed values render as plain text.
 interface AppShellProps {
   children: ReactNode
   /**
@@ -160,6 +164,8 @@ export function AppShell({
   const [notificationsRestoreNonce, setNotificationsRestoreNonce] = useState(0)
   const [installRestoreNonce, setInstallRestoreNonce] = useState(0)
   const logoutInFlight = useRef(false)
+  // rm-882: footer version chip — inline computation kept upstream-verbatim
+  // (upstream #641) with the URL fork-adapted to codeo1io release notes.
   const dashboardVersion: string = import.meta.env.VITE_DASHBOARD_VERSION || 'dev'
   const releaseNotesUrl = /^\d{4}\.\d{2}\.\d+$/.test(dashboardVersion)
     ? `https://github.com/codeo1io/dashboard/releases/tag/${dashboardVersion}`
@@ -582,6 +588,10 @@ export function AppShell({
           >
             Restore notifications
           </button>
+          {/* rm-882 (absorb of upstream #641, fork-adapted): version chip.
+              Calver builds link to this fork's release notes for the exact
+              tag; dev/malformed values stay plain text so nothing links
+              anywhere without a real release behind it. */}
           {releaseNotesUrl ? (
             <a
               href={releaseNotesUrl}
