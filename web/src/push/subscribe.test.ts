@@ -489,8 +489,8 @@ describe('subscribeOptIn', () => {
       // the file's only unbounded one — so a focus/visibility sweep hung
       // forever on every event after the first. The bound must make the sweep
       // settle AND read as "no local subscription": no local hash =>
-      // 'not_subscribed', notSubscribedConfirmed=false => no destructive
-      // action can be licensed.
+      // 'not_subscribed' => no destructive action can be licensed (the
+      // reconcile guard is unconditional since the subscription-list absorb).
       vi.useFakeTimers()
       try {
         const pushClient = fakePushClient()
@@ -1044,8 +1044,10 @@ describe('runReconcileSweep', () => {
       endpointHash: hash,
       keyVersion: 'v1',
       active: true,
-      createdAt: 1_783_056_000_000,
-      updatedAt: 1_783_056_000_000,
+      // 2026-07-08T00:00:00.000Z as epoch ms — the contract moved to numeric
+      // timestamps with the subscription-list absorb (#631).
+      createdAt: 1_783_468_800_000,
+      updatedAt: 1_783_468_800_000,
     }
     const pushClient = fakePushClient({
       getPushSubscriptionMetadata: vi.fn().mockResolvedValue(ok({pushDisabled: false, metadata})),
@@ -1075,8 +1077,10 @@ describe('runReconcileSweep', () => {
       endpointHash: hash,
       keyVersion: 'v1',
       active: true,
-      createdAt: 1_783_056_000_000,
-      updatedAt: 1_783_056_000_000,
+      // 2026-07-08T00:00:00.000Z as epoch ms — the contract moved to numeric
+      // timestamps with the subscription-list absorb (#631).
+      createdAt: 1_783_468_800_000,
+      updatedAt: 1_783_468_800_000,
     }
     const pushClient = fakePushClient({
       getPushSubscriptionMetadata: vi.fn().mockResolvedValue(ok({pushDisabled: false, metadata})),

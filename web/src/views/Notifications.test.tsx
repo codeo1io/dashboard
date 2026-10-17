@@ -21,18 +21,30 @@ vi.mock('../push/subscribe.ts', () => ({
   // rm-600: the view now calls getVapidKey() at sweep cadence to keep the
   // key-version cache fresh. Default stub is fail-open (push-disabled, no
   // key) so existing tests are unaffected; the rm-600 wiring tests override
-  // it per-test with mockReturnValueOnce.
-  buildPushClient: vi.fn().mockReturnValue({
-    getVapidKey: vi.fn().mockResolvedValue({
-      success: true,
-      data: {pushDisabled: true, vapidKey: undefined},
-    }),
-  }),
+  // it per-test with mockReturnValueOnce. Subscription-list absorb (#631):
+  // tests that swap in the real client MUST restore this default in their
+  // finally — vi.clearAllMocks() clears call history but keeps the last
+  // mockReturnValue, so a leaked {} default would starve later tests of
+  // getVapidKey.
+  buildPushClient: vi.fn().mockReturnValue(defaultPushClientStub()),
   runReconcileSweep: vi.fn(),
   subscribeOptIn: vi.fn(),
   resubscribeStaleKey: vi.fn(),
   unsubscribeOptOut: vi.fn(),
 }))
+
+/** rm-600 fork default for the buildPushClient mock — see the mock factory note above. */
+function defaultPushClientStub(): ReturnType<typeof buildPushClient> {
+  // The default only needs getVapidKey (the rm-600 sweep-cadence call); the
+  // rest of PushClient stays unstubbed until a test overrides the whole
+  // mock. Same cast shape upstream uses for its bare-{} default.
+  return {
+    getVapidKey: vi.fn().mockResolvedValue({
+      success: true,
+      data: {pushDisabled: true, vapidKey: undefined},
+    }),
+  } as unknown as ReturnType<typeof buildPushClient>
+}
 
 describe('Notifications Component', () => {
   let metaTag: HTMLMetaElement | null = null
@@ -271,19 +283,16 @@ describe('Notifications Component', () => {
       keyVersion: 'v1',
       active: true,
     })
-    // rm-600 (fork): the view fires a vapid-key fetch at sweep cadence BEFORE
-    // the subscriptions read. A single shared Response would have its body
-    // consumed by the first reader and fail the second — mint a fresh
-    // Response per call (the vapid-key leg parses the same payload, fails
-    // closed, and leaves the cached version undefined; the subscriptions leg
-    // then reads its own copy and matches).
-    const listBody = () =>
-      JSON.stringify({subscriptions: [wireRecord('b'.repeat(64)), wireRecord(localHash)]})
+    // Fork adaptation (#631 absorb): mint a FRESH Response per call. Upstream's
+    // mockResolvedValue shares one Response instance; the fork's rm-600 VAPID
+    // refresh fires an extra fetch before the sweep's metadata read, and a
+    // shared instance makes the second res.json() throw (body already read)
+    // — the sweep would read as inconclusive and skip.
     vi.stubGlobal(
       'fetch',
       vi.fn().mockImplementation(() =>
         Promise.resolve(
-          new Response(listBody(), {
+          new Response(JSON.stringify({subscriptions: [wireRecord('b'.repeat(64)), wireRecord(localHash)]}), {
             status: 200,
             headers: {'content-type': 'application/json'},
           }),
@@ -315,14 +324,10 @@ describe('Notifications Component', () => {
       expect(screen.getByTestId('notifications-cta')).not.toHaveTextContent('Enable notifications')
     } finally {
       vi.unstubAllGlobals()
-      // rm-600: reset must keep the fail-open getVapidKey stub — the view
-      // calls it at sweep cadence, and a bare {} breaks every later test.
-      vi.mocked(buildPushClient).mockReturnValue({
-        getVapidKey: vi.fn().mockResolvedValue({
-          success: true,
-          data: {pushDisabled: true, vapidKey: undefined},
-        }),
-      } as unknown as ReturnType<typeof buildPushClient>)
+      // Fork adaptation (#631 absorb): restore the rm-600 default stub, not
+      // upstream's bare {} — the fork's component calls getVapidKey() at sweep
+      // cadence and later tests rely on this default.
+      vi.mocked(buildPushClient).mockReturnValue(defaultPushClientStub())
       if (originalSw) {
         Object.defineProperty(globalThis.navigator, 'serviceWorker', originalSw)
       } else {

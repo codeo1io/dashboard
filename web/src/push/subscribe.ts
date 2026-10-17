@@ -747,8 +747,9 @@ export async function runReconcileSweep(
   // unchanged/min-interval guards below, so an unbounded read hung EVERY
   // focus/visibility sweep, not just the first. A timeout (or rejection,
   // collapsed into 'timeout') reads as "no local subscription": the handoff
-  // derivation stays conservative — no local hash => 'not_subscribed',
-  // notSubscribedConfirmed false => no destructive action — so a slow or stuck
+  // derivation stays conservative — no local hash => 'not_subscribed' => no
+  // destructive action (the reconcile guard is unconditional since the
+  // subscription-list absorb) — so a slow or stuck
   // service worker can never license a teardown.
   const localRead = await withTimeout(
     deps.getLocalSubscription(),
