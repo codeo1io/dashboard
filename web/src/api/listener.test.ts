@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { fetchListenerMessages, ackListenerMessage, ackAllListenerMessages } from './listener.ts'
+import { fetchListenerMessages, ackListenerMessage, ackAllListenerMessages, ACK_FETCH_TIMEOUT_MS } from './listener.ts'
 
 describe('listener API', () => {
   beforeEach(() => {
@@ -218,6 +218,78 @@ describe('listener API', () => {
         method: 'POST',
         headers: { 'x-csrf-token': 'tok-xyz' },
       }))
+    })
+  })
+
+  describe('rm-501: bounded ack-trio fetches', () => {
+    it('ackListenerMessage settles false when the CSRF GET never resolves (no POST attempted — fails closed)', async () => {
+      vi.useFakeTimers()
+      try {
+        vi.mocked(fetch).mockImplementation(() => new Promise(() => {}))
+        const promise = ackListenerMessage('msg-1')
+        await vi.advanceTimersByTimeAsync(ACK_FETCH_TIMEOUT_MS + 1)
+        await expect(promise).resolves.toBe(false)
+        // fail closed: the never-settling CSRF fetch means the POST never happened
+        expect(fetch).toHaveBeenCalledTimes(1)
+        expect(fetch).toHaveBeenCalledWith('/api/listener/csrf', expect.anything())
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('ackListenerMessage settles false when the ack POST never resolves (CSRF ok)', async () => {
+      vi.useFakeTimers()
+      try {
+        vi.mocked(fetch)
+          .mockResolvedValueOnce(new Response(JSON.stringify({ csrfToken: 'tok' }), { status: 200 }))
+          .mockImplementation(() => new Promise(() => {}))
+        const promise = ackListenerMessage('msg-1')
+        await vi.advanceTimersByTimeAsync(ACK_FETCH_TIMEOUT_MS + 1)
+        await expect(promise).resolves.toBe(false)
+        expect(fetch).toHaveBeenCalledTimes(2)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('ackAllListenerMessages settles false when the ack-all POST never resolves', async () => {
+      vi.useFakeTimers()
+      try {
+        vi.mocked(fetch)
+          .mockResolvedValueOnce(new Response(JSON.stringify({ csrfToken: 'tok' }), { status: 200 }))
+          .mockImplementation(() => new Promise(() => {}))
+        const promise = ackAllListenerMessages()
+        await vi.advanceTimersByTimeAsync(ACK_FETCH_TIMEOUT_MS + 1)
+        await expect(promise).resolves.toBe(false)
+        expect(fetch).toHaveBeenCalledTimes(2)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('a CSRF response whose body read never resolves settles false (the bound covers the stream, not just the request)', async () => {
+      vi.useFakeTimers()
+      try {
+        vi.mocked(fetch).mockImplementationOnce(() =>
+          Promise.resolve({
+            ok: true,
+            json: () => new Promise<unknown>(() => {}),
+          } as unknown as Response),
+        )
+        const promise = ackListenerMessage('msg-1')
+        await vi.advanceTimersByTimeAsync(ACK_FETCH_TIMEOUT_MS + 1)
+        await expect(promise).resolves.toBe(false)
+        expect(fetch).toHaveBeenCalledTimes(1)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('a rejected ack POST settles false instead of surfacing an unhandled rejection', async () => {
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(new Response(JSON.stringify({ csrfToken: 'tok' }), { status: 200 }))
+        .mockRejectedValueOnce(new TypeError('network went away'))
+      await expect(ackListenerMessage('msg-1')).resolves.toBe(false)
     })
   })
 })

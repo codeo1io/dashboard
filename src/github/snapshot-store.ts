@@ -40,18 +40,47 @@ function utf8ByteLength(value: string): number {
   return Buffer.byteLength(value, 'utf8')
 }
 
-function logPersistProblem(message: string, path: string, detail: unknown): void {
+export function logPersistProblem(message: string, path: string, detail: unknown): void {
   // rm-802: log the detail faithfully. Error instances contribute their
   // message (real I/O failures stay a scalar `error` field); plain-object
   // payloads are spread as structured fields — the size-bound call sites pass
   // `{bytes}`, and the byte count that tripped the bound must land as a
   // field (the persist-side shape), never as `'[object Object]'`. Anything
   // else stringifies (same as the pre-rm-802 scalar path).
+  // rm-860 (run 9d5c156d cycle-4): structural keys are reserved — a payload
+  // key colliding with `path` (or `error` when a String(detail) would own
+  // it) can never overwrite them; the payload's conflicting key is suffixed
+  // `-payload` instead, so the totality contract holds for every key shape.
+  // Review F6 (2026-10-17): the reservation is two-pass — non-colliding
+  // payload keys claim their exact name FIRST, so a nested payload carrying
+  // both `path` and `path-payload` cannot have the free sibling displaced by
+  // the collider's rename; only true colliders suffix, until a free name.
   const fields: Record<string, unknown> = {path}
   if (detail instanceof Error) {
     fields.error = detail.message
   } else if (typeof detail === 'object' && detail !== null) {
-    Object.assign(fields, detail)
+    const entries = Object.entries(detail as Record<string, unknown>)
+    const taken = new Set(Object.keys(fields))
+    const names = new Map<string, string>()
+    // Pass 1 — free keys keep their own name (claimed before any rename).
+    for (const [key] of entries) {
+      if (!taken.has(key)) {
+        names.set(key, key)
+        taken.add(key)
+      }
+    }
+    // Pass 2 — colliders suffix `-payload` until a free name is found.
+    for (const [key] of entries) {
+      if (names.has(key)) continue
+      let name = `${key}-payload`
+      while (taken.has(name)) name = `${name}-payload`
+      names.set(key, name)
+      taken.add(name)
+    }
+    for (const [key, value] of entries) {
+      const name = names.get(key)
+      if (name !== undefined) fields[name] = value
+    }
   } else {
     fields.error = String(detail)
   }

@@ -154,52 +154,75 @@ export async function fetchListenerMessages(opts: {
 const ACK_CSRF_HEADER = 'x-csrf-token'
 
 /**
+ * rm-501: hard ceiling on every ack-trio fetch (GET /csrf, POST /ack,
+ * POST /ack-all). The trio previously had no bound — a request that never
+ * settles left the view's `ackingId` gate latched forever (every ack button
+ * dead) with no failure surfaced. Mirrors rm-272's sweep bound: the race
+ * alone settles the await even against a transport that ignores aborts, and
+ * a timeout and a rejection both read as the same failed outcome, so every
+ * caller keeps failing closed (no token → no POST; no response → false).
+ */
+export const ACK_FETCH_TIMEOUT_MS = 15_000
+
+function withAckTimeout<T>(promise: Promise<T>): Promise<T | 'timeout'> {
+  return new Promise(resolve => {
+    const timer = setTimeout(() => resolve('timeout'), ACK_FETCH_TIMEOUT_MS)
+    promise.then(
+      value => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      () => {
+        clearTimeout(timer)
+        resolve('timeout')
+      },
+    )
+  })
+}
+
+/**
  * Fetches the session-scoped ack CSRF token from GET /api/listener/csrf.
  * Returns null on any failure so callers fail closed (no token → no POST).
  */
 async function fetchAckCsrfToken(): Promise<string | null> {
-  try {
-    const res = await fetch('/api/listener/csrf', {
+  const res = await withAckTimeout(
+    fetch('/api/listener/csrf', {
       method: 'GET',
       credentials: 'same-origin',
-    })
-    if (!res.ok) return null
-    const data: unknown = await res.json()
-    if (!isPlainObject(data) || typeof data.csrfToken !== 'string' || data.csrfToken.length === 0) {
-      return null
-    }
-    return data.csrfToken
-  } catch {
+    }),
+  )
+  if (res === 'timeout' || !res.ok) return null
+  // rm-501: the body read is inside the bound too — a response whose stream
+  // never ends is the same hang as a request that never settles.
+  const data: unknown = await withAckTimeout(res.json())
+  if (data === 'timeout' || !isPlainObject(data) || typeof data.csrfToken !== 'string' || data.csrfToken.length === 0) {
     return null
   }
+  return data.csrfToken
 }
 
 export async function ackListenerMessage(id: string): Promise<boolean> {
   const csrfToken = await fetchAckCsrfToken()
   if (csrfToken === null) return false
-  try {
-    const res = await fetch(`/api/listener/messages/${encodeURIComponent(id)}/ack`, {
+  const res = await withAckTimeout(
+    fetch(`/api/listener/messages/${encodeURIComponent(id)}/ack`, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { [ACK_CSRF_HEADER]: csrfToken },
-    })
-    return res.status === 202
-  } catch {
-    return false
-  }
+    }),
+  )
+  return res !== 'timeout' && res.status === 202
 }
 
 export async function ackAllListenerMessages(): Promise<boolean> {
   const csrfToken = await fetchAckCsrfToken()
   if (csrfToken === null) return false
-  try {
-    const res = await fetch('/api/listener/ack-all', {
+  const res = await withAckTimeout(
+    fetch('/api/listener/ack-all', {
       method: 'POST',
       credentials: 'same-origin',
       headers: { [ACK_CSRF_HEADER]: csrfToken },
-    })
-    return res.status === 202
-  } catch {
-    return false
-  }
+    }),
+  )
+  return res !== 'timeout' && res.status === 202
 }

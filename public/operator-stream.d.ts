@@ -16,6 +16,7 @@
  * test/validate-dynamic-id-parity.test.ts, rm-595).
  */
 export declare function validateDynamicId(id: string): boolean
+export declare function mintSecureIdempotencyKey(): string | null
 
 export declare const PINNED_CONTRACT_VERSION: string
 export declare const RETRY_BASE_MS: number
