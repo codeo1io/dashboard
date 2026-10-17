@@ -17,6 +17,7 @@ on:
       - 'web/**'
       - 'public/**'
       - .github/workflows/release.yaml
+      - scripts/gzip-static-sidecars.ts
       - scripts/should-release.ts
       - scripts/compute-release-tag.ts
       # rm-602 (conflict fa1b4af9): COPY'd into the builder stage and chained
