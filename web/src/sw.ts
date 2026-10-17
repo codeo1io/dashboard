@@ -22,22 +22,22 @@
  * hashed assets are precached. Runtime caches are purged on logout, auth change,
  * and app-version change via the PURGE_RUNTIME message handler.
  *
- * INSTALLED-CLIENT MIGRATION: old installed clients running the previous SW may
- * briefly serve the old monitoring shell for /operator until they open the app,
- * see the update prompt, and activate the new SW. This is an accepted version-
- * gated cutover caveat — do not add forced activation outside the prompt-mode
- * discipline. The /operator redirect handler below ensures that once the new SW
- * is active, offline /operator navigations canonicalize to the cached / shell.
+ * INSTALLED-CLIENT MIGRATION: old installed clients running a previous SW
+ * pick up this worker on their next navigation — the browser checks for SW
+ * updates on navigation, and this worker skips waiting itself (see
+ * ACTIVATION), so no "close every tab" window remains. The /operator redirect
+ * handler below ensures that once the new SW is active, offline /operator
+ * navigations canonicalize to the cached / shell.
  *
- * PROMPT-GATED ACTIVATION: a new worker installs and then WAITS. It never calls
- * skipWaiting() on install. The only activation path is the page's Refresh click:
- * updateServiceWorker(true) posts {type:'SKIP_WAITING'} (workbox-window's
- * messageSkipWaiting), the message handler below calls self.skipWaiting(), and the
- * page reloads on the resulting `controlling` event. With injectManifest the
- * worker must handle that message itself — nothing does it for us. No client-claim
- * call is made on purpose: pages already controlled by the old worker switch to
- * the new one when it activates (that fires controllerchange); claiming only matters
- * for first-install pages that have no controller yet.
+ * ACTIVATION — auto-update (rm-1960). A new worker skips the waiting phase
+ * itself: self.skipWaiting() runs at worker startup (top-level, during
+ * install) and the activate handler claims open clients. The build registers
+ * the SW with registerType: 'autoUpdate' (web/vite.config.ts):
+ * vite-plugin-pwa's registerSW.js reloads pages whose controller changed, so
+ * claimed pages land on the new shell without operator action. The
+ * SKIP_WAITING message listener stays for workbox-window messageSkipWaiting
+ * compatibility — an explicit post from a page still works alongside the
+ * self-activation.
  */
 
 import {cleanupOutdatedCaches, createHandlerBoundToURL, precacheAndRoute} from 'workbox-precaching'
@@ -174,6 +174,7 @@ interface SWWindowClient {
 interface SWClients {
   matchAll(options: {type: 'window'; includeUncontrolled?: boolean}): Promise<SWWindowClient[]>
   openWindow(url: string): Promise<unknown>
+  claim(): Promise<unknown>
 }
 
 interface SWNotification {
@@ -253,4 +254,14 @@ addEventListener('pushsubscriptionchange', (event: Event) => {
       }
     })(),
   )
+})
+
+// 8. Auto-update activation (rm-1960). The worker skips waiting itself at
+// startup (install phase) instead of waiting for every tab to close, then
+// claims open clients on activation; the autoUpdate registration
+// (registerType: 'autoUpdate' in web/vite.config.ts) reloads claimed pages
+// onto the new shell. See the ACTIVATION note in the header.
+self.skipWaiting()
+addEventListener('activate', () => {
+  clients.claim()
 })

@@ -33,13 +33,55 @@ on:
   schedule:
     - cron: '13 4 * * 1' # Mondays 04:13 UTC, off the hour
   workflow_dispatch: {}
+  # rm-1961 (cycle 3, 2026-10-17): the shared scheduler silently misses cron
+  # fires — this check has been dark since 2026-10-05. A completed Main run
+  # re-arms this workflow; the fallback-gate job keeps the weekly cadence.
+  workflow_run:
+    workflows: ['Main']
+    types: [completed]
 
 permissions:
   contents: read
+  actions: read
   issues: write
 
 jobs:
+  fallback-gate:
+    # rm-1961: gate for the workflow_run fallback trigger above. Fallback
+    # fires that are off-main (PR-triggered Main runs) or already covered by
+    # a success inside the recency window are skipped; scheduled and manual
+    # fires always pass (skip=false).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      skip: ${{ steps.recency.outputs.skip }}
+    steps:
+      - name: Fallback-fire recency dedupe
+        id: recency
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" != 'workflow_run' ]; then
+            echo 'skip=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${{ github.event.workflow_run.head_branch }}" != 'main' ]; then
+            echo 'skip=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          since="$(date -u -d '6 days ago' +%Y-%m-%d)"
+          recent="$(gh run list -R "$GITHUB_REPOSITORY" --workflow base-drift.yaml \
+            --status success --created "$since" --json databaseId --jq 'length')"
+          echo "recent-successes=$recent since=$since"
+          if [ "$recent" -gt 0 ]; then
+            echo 'skip=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'skip=false' >> "$GITHUB_OUTPUT"
+          fi
+
   drift:
+    needs: fallback-gate
+    if: needs.fallback-gate.outputs.skip != 'true'
     # 2026-09-22: ubuntu-latest per the hosted-runner CI policy (PR #11/#12)
     # — this file was authored under the retired self-hosted-only policy.
     # rm-188 (cycle 13, 2026-09-25): pinned ubuntu-24.04 — ubuntu-26.04 images are
@@ -146,6 +188,8 @@ jobs:
           exit 1
 
   pin-drift:
+    needs: fallback-gate
+    if: needs.fallback-gate.outputs.skip != 'true'
     name: Dependency and action pin drift (report-only)
     # rm-204 (landing 2026-09-25, run a4a97e30 cycle-10 B2; minted as rm-167
     # in that lineage — renumbered at this integrate: main's landed rm-167
