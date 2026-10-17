@@ -21,6 +21,7 @@ export const HARD_RELEASE_FILE_PATHS: readonly string[] = [
   'pnpm-workspace.yaml',
   // The release pipeline itself.
   '.github/workflows/release.yaml',
+  'scripts/gzip-static-sidecars.ts',
   'scripts/should-release.ts',
   'scripts/compute-release-tag.ts',
 ]
