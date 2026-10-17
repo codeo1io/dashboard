@@ -15,7 +15,15 @@
 # .github/workflows/release.yaml).
 ARG NODE_IMAGE=node:24-trixie-slim@sha256:173f125896c3087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6
 
+# rm-1483 (#641 port): release-channel tag baked into the SPA at build time.
+# release.yaml passes the calver tag as a build-arg; 'dev' keeps local builds
+# from showing a bogus version in the footer.
+ARG DASHBOARD_VERSION=dev
+
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS builder
+
+# Re-declared for use inside this stage (global ARGs only feed FROM lines).
+ARG DASHBOARD_VERSION
 
 # Enable corepack for pnpm
 RUN corepack enable && corepack prepare pnpm@11.28.5 --activate
@@ -30,6 +38,9 @@ RUN pnpm install --frozen-lockfile
 
 # Copy web workspace source
 COPY web/ ./web/
+
+# Vite bakes VITE_* env into the bundle at build time (rm-1483 #641).
+ENV VITE_DASHBOARD_VERSION=$DASHBOARD_VERSION
 
 # Build the SPA — emits hashed assets to web/dist/
 RUN pnpm build:web
