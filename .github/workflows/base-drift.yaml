@@ -150,7 +150,8 @@ jobs:
     # rm-204 (landing 2026-09-25, run a4a97e30 cycle-10 B2; minted as rm-167
     # in that lineage — renumbered at this integrate: main's landed rm-167
     # owns that id): surface pin drift the digest job cannot see. Never bumps
-    # anything (dependabot is the sole pin-mover); chronic registry drift must
+    # anything (bumps are owned by the maintenance cycles' implement phase,
+    # rm-1480); chronic registry drift must
     # not turn a weekly watch red, so this job always exits 0 and reports
     # instead.
     # rm-188 (cycle 13): pinned ubuntu-24.04 with the digest job — the
@@ -266,7 +267,7 @@ jobs:
           done <<< "$PKGS"
 
           echo "checked $TOTAL packages, $DRIFT behind latest, $MAJOR_PINNED major-pinned by design"
-          echo "checked: $TOTAL, behind latest: $DRIFT, major-pinned by design: $MAJOR_PINNED (rm-133) — dependabot owns the bumps (rm-102)" >> "$SUMMARY"
+          echo "checked: $TOTAL, behind latest: $DRIFT, major-pinned by design: $MAJOR_PINNED (rm-133) — maintenance cycles own the bumps (rm-1480)" >> "$SUMMARY"
 
       - name: Report workflow action and image pins vs latest releases
         env:
@@ -354,4 +355,4 @@ jobs:
             report_action_pin "$ref" "$repo" "$pinned"
           done <<< "$ACTIONS"
 
-          echo 'report complete — action pins listed above; dependabot owns action bumps (rm-102)'
+          echo 'report complete — action pins listed above; maintenance cycles own action bumps (rm-1480)'
