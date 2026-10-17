@@ -35,9 +35,6 @@ defaults:
 jobs:
   guard:
     name: Release guard
-    # rm-188 (cycle 13, 2026-09-25): pinned ubuntu-24.04 — ubuntu-26.04 images are
-    # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
-    # at the rm-139 Node-26 window (2026-10-28).
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -54,7 +51,7 @@ jobs:
 
       - name: 🟢 Set up Node.js
         if: github.event_name == 'push'
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
 
@@ -123,6 +120,9 @@ jobs:
     needs: [guard]
     if: needs.guard.outputs.should-release == 'true'
     runs-on: ubuntu-24.04
+    # rm-188 (cycle 13, 2026-09-25): pinned ubuntu-24.04 — ubuntu-26.04 images are
+    # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
+    # at the rm-139 Node-26 window (2026-10-28).
     timeout-minutes: 60
     permissions:
       contents: read
@@ -156,6 +156,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: 🔧 Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: 🟢 Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+
+      - name: 🏷️ Compute release version
+        id: version
+        run: |
+          git fetch --tags --force
+          TAG="$(node scripts/compute-release-tag.ts)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
       # rm-558 review fix (independent_review 2026-10-04): the multi-arch
       # build's only target-executed step — the final-stage prune RUN — runs
       # on the arm64 target, and the ubuntu-24.04 runner image ships Docker /
@@ -164,9 +179,6 @@ jobs:
       # because this host has binfmt-registered qemu).
       - name: 🐋 Set up QEMU (arm64 target emulation)
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
-
-      - name: 🔧 Set up Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: 🏗️ Build and push candidate image
         id: build
@@ -187,6 +199,8 @@ jobs:
           # stage list (check the Dockerfile header comment).
           platforms: linux/amd64,linux/arm64
           tags: ghcr.io/${{ github.repository }}:ci-${{ github.run_id }}-${{ github.run_attempt }}
+          build-args: |
+            DASHBOARD_VERSION=${{ steps.version.outputs.tag }}
           # rm-105: registry-side supply-chain attestations. Provenance v1 ships
           # by default at mode=min; mode=max adds full materials/builder data and
           # sbom adds the SPDX attestation the image was missing (verified absent
@@ -354,7 +368,7 @@ jobs:
           retention-days: 5
 
       - name: 🛡️ Upload Trivy results to code scanning
-        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           sarif_file: trivy-results-${{ steps.digest.outputs.normalized }}.sarif
           category: trivy/release-image
@@ -385,11 +399,6 @@ jobs:
           exit-code: '1'
           version: v0.72.0
 
-      - name: 🟢 Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-
       # Mint the publication token only after all third-party actions have completed.
       # Fork posture: this repository runs without APPLICATION_ID/APPLICATION_PRIVATE_KEY
       # (no release App is installed), so the token mint is skipped and the App-gated
@@ -419,31 +428,14 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          git fetch --tags --force
-
-          TAG=""
-          for attempt in 1 2 3 4 5; do
-            TAG="$(node scripts/compute-release-tag.ts)"
-            echo "Attempt $attempt: creating $TAG"
-            if gh api --method POST \
-                "repos/${{ github.repository }}/git/refs" \
-                -f "ref=refs/tags/$TAG" \
-                -f "sha=${{ github.sha }}" \
-                >/dev/null; then
-              echo "Created tag $TAG"
-              break
-            fi
-            echo "Tag creation failed (race?), refetching and retrying..."
-            git fetch --tags --force
-            TAG=""
-            sleep 2
-          done
-
-          if [ -z "$TAG" ]; then
-            echo "Failed to create release tag after 5 attempts"
-            exit 1
-          fi
-
+          TAG="${{ steps.version.outputs.tag }}"
+          echo "Creating precomputed release tag $TAG"
+          gh api --method POST \
+            "repos/${{ github.repository }}/git/refs" \
+            -f "ref=refs/tags/$TAG" \
+            -f "sha=${{ github.sha }}" \
+            >/dev/null
+          echo "Created tag $TAG"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: 📦 Promote release-unique image tags
@@ -474,23 +466,13 @@ jobs:
           # observed 2026-09 on the workstation-era self-hosted runner), so parse the
           # Digest line from the default output instead of trusting the template
           # across buildx versions.
-          # rm-691 (2026-10-07, run b2a3ae9bf75b implement): the readbacks below
-          # (this one and promote-latest) must NOT let awk exit before consuming
-          # docker's full output. The workflow shell is `bash -Eeuo pipefail`:
-          # when awk exits early, docker's next write to the closed pipe fails
-          # and docker exits non-zero (255 observed live), so the readback
-          # conjunct fails even though the Digest line was already parsed.
-          # That class caused four red Release runs (37567189586, 37574226127,
-          # 37453985189, 37435636956 — each "did not verify" with the correct
-          # digest visible in the log; the promotion itself always landed). The
-          # END-pattern parse is byte-equivalent (exactly one top-level Digest
-          # line in the default output) and preserves docker's real exit
-          # status, so genuine inspect failures still fail honestly.
-          # (2026-10-16, conflict case 5eb4cb85): restored after the October
-          # upstream-adoption lineage reverted it to the early-exit form as
-          # adoption collateral — docs/runbooks/release.md Class-A row and the
-          # Known-gated surfaces section document this fix as landed, so the
-          # mechanics ride this integrate together with the runbook.
+          # rm-691 (2026-10-07): the readbacks below (this one and promote-latest)
+          # must NOT let awk exit before consuming docker's full output — under
+          # `bash -Eeuo pipefail`, awk's early exit makes docker's next write fail
+          # (255 observed live) and the readback conjunct fails despite a parsed
+          # digest (four red Release runs: 37567189586, 37574226127, 37453985189,
+          # 37435636956). The END-pattern parse is byte-equivalent and preserves
+          # docker's real exit status.
           for TAG in "$CALVER" "sha-${SHORT_SHA}"; do
             got=$(docker buildx imagetools inspect \
               "ghcr.io/${{ github.repository }}:$TAG" \
@@ -528,13 +510,6 @@ jobs:
           verified=0
           for attempt in 1 2 3; do
             got=""
-            # rm-691: awk must consume docker's full output before exiting —
-            # an early `exit` races the writer under `bash -Eeuo pipefail`
-            # (docker exits 255 on the closed pipe, failing the readback even
-            # though the Digest was parsed). See the NOTE above the CalVer
-            # readback for the four red runs this class caused. (2026-10-16,
-            # conflict case 5eb4cb85: restored after the October upstream-
-            # adoption lineage reverted it as adoption collateral.)
             if docker buildx imagetools create \
                 --tag "ghcr.io/${{ github.repository }}:latest" "$SRC" \
                 && got="$(docker buildx imagetools inspect \
