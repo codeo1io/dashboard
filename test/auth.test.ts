@@ -8,7 +8,7 @@ import {Buffer} from 'node:buffer'
 import {createHmac} from 'node:crypto'
 import {describe, expect, it} from 'vitest'
 import {fetchGitHubUserLogin, makeGitHubOAuthClient} from '../src/auth/oauth.ts'
-import {sanitizeErrorMessage} from '../src/logger.ts'
+import {redactSensitiveFields, sanitizeErrorMessage} from '../src/logger.ts'
 import {deriveLogoutCsrfToken} from '../src/routes/auth.ts'
 import {buildDashboardApp} from '../src/server.ts'
 import {SessionManager} from '../src/session.ts'
@@ -261,6 +261,39 @@ describe('sanitizeErrorMessage (FIX #5)', () => {
   it('passes through safe error messages unchanged', () => {
     const msg = 'OAuth callback: state mismatch'
     expect(sanitizeErrorMessage(msg)).toBe(msg)
+  })
+})
+
+describe('redactSensitiveFields — cookie/session family (rm-1482)', () => {
+  it('masks a cookie-bearing context object', () => {
+    const ctx = {cookie: 'session=abc123def456; theme=dark'}
+    expect(redactSensitiveFields(ctx)).toEqual({cookie: '[REDACTED]'})
+  })
+
+  it('masks set-cookie and session field spellings', () => {
+    const ctx = {
+      setCookie: 'oauth_state=xyz; HttpOnly',
+      session: 'opaque-session-value',
+      sessionId: 'sess_1234567890',
+    }
+    const redacted = redactSensitiveFields(ctx)
+    expect(redacted.setCookie).toBe('[REDACTED]')
+    expect(redacted.session).toBe('[REDACTED]')
+    expect(redacted.sessionId).toBe('[REDACTED]')
+  })
+
+  it('walks nested context objects and masks only matching string leaves', () => {
+    const ctx = {headers: {cookie: 'session=abc'}, path: '/auth/callback', attempt: 2}
+    expect(redactSensitiveFields(ctx)).toEqual({
+      headers: {cookie: '[REDACTED]'},
+      path: '/auth/callback',
+      attempt: 2,
+    })
+  })
+
+  it('passes non-sensitive fields and non-string sensitive values through', () => {
+    const ctx = {path: '/x', session: 12345}
+    expect(redactSensitiveFields(ctx)).toEqual({path: '/x', session: 12345})
   })
 })
 
