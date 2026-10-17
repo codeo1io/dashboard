@@ -46,13 +46,24 @@ const ALLOWED_UNDECLARED: Readonly<Record<string, readonly string[]>> = {
   'operator-run-index': ['formatRelativeTime', 'markCardExpandedForLaunch'],
 }
 
-/** Pinned type-only declaration counts (export type + export interface). */
+/**
+ * Pinned type-only declaration counts (export type + export interface).
+ *
+ * Re-pinned 2026-10-17 (conflict 697a238c, integrate 6524c836): the guard was
+ * born at base 3e3664c0 pinned to operator-stream 31/34 and operator-run-index
+ * 3/2, but main had already adopted upstream 2026.10.43 (c51597ad), which grew
+ * operator-stream by `StreamConnectionStatus` (type) + `FinishedRunRecord`
+ * (interface) and operator-run-index by `RunIndexInitOutcome` (type). The
+ * 7a0e2163 landing merged the guard without re-pinning, leaving main red on
+ * exactly these two assertions. The adoption is the deliberate .d.ts edit this
+ * pin exists to witness; value-export parity was unaffected.
+ */
 const TYPE_ONLY_COUNTS: Readonly<
   Record<string, {readonly type: number; readonly interface: number}>
 > = {
-  'operator-stream': {type: 31, interface: 34},
+  'operator-stream': {type: 32, interface: 35},
   'operator-launch': {type: 1, interface: 2},
-  'operator-run-index': {type: 3, interface: 2},
+  'operator-run-index': {type: 4, interface: 2},
 }
 
 interface DeclaredExports {
