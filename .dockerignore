@@ -14,7 +14,14 @@
 docs
 node_modules
 test
-scripts
+# rm-602 (conflict fa1b4af9, integrate 6524c836): `pnpm build:web` chains
+# scripts/gzip-static-sidecars.ts and the Docker builder stage runs that build
+# in-image, so the script must stay in the context — the previous wholesale
+# `scripts` entry would have broken `docker build` at RUN pnpm build:web with
+# MODULE_NOT_FOUND. Children-only exclusion keeps the seal for every other
+# script (test/CI tooling never reaches the daemon).
+scripts/*
+!scripts/gzip-static-sidecars.ts
 web/dist
 web/dist-fixture
 web/coverage

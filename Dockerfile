@@ -39,6 +39,12 @@ RUN pnpm install --frozen-lockfile
 # Copy web workspace source
 COPY web/ ./web/
 
+# rm-602: build:web chains this one zero-dependency script (gzip-9 sidecars
+# for the precompressed serveStatic mounts), so the builder stage needs it in
+# the image — everything else under scripts/ stays sealed out of the context
+# (.dockerignore's scripts/* entry with this single re-inclusion).
+COPY scripts/gzip-static-sidecars.ts ./scripts/
+
 # Vite bakes VITE_* env into the bundle at build time (rm-1483 #641).
 ENV VITE_DASHBOARD_VERSION=$DASHBOARD_VERSION
 
