@@ -1,14 +1,14 @@
+import {randomUUID} from 'node:crypto'
+import {mkdirSync} from 'node:fs'
+import {dirname} from 'node:path'
+import {DatabaseSync} from 'node:sqlite'
 /**
  * `node:sqlite`-backed persistence for the operator listener channel.
  *
  * See docs/contracts/operator-listener-channel.md — retention policy (500 rows
  * / 30 days) and idempotency (dedupeKey upsert) are enforced here.
  */
-import type {IngestMessage, ListenerLink, ListenerMessage, MessagesResponse} from './contract.ts'
-import {randomUUID} from 'node:crypto'
-import {mkdirSync} from 'node:fs'
-import {dirname} from 'node:path'
-import {DatabaseSync} from 'node:sqlite'
+import {parseLinks, type IngestMessage, type ListenerLink, type ListenerMessage, type MessagesResponse} from './contract.ts'
 
 export interface ListenerStore {
   insert: (input: IngestMessage) => {id: string; receivedAt: string}
@@ -40,6 +40,38 @@ const DEFAULT_LIST_LIMIT = 100
 const MIN_LIST_LIMIT = 1
 const MAX_LIST_LIMIT = 200
 
+/**
+ * rm-187: the `links` cell is the only free-form JSON the store persists, and
+ * it is read back with a bare `JSON.parse` — a corrupt cell (hand-edit,
+ * torn write, schema drift from an older format) would throw inside
+ * `rowToMessage` and 500 the whole messages endpoint for one bad row. The
+ * twin in src/github/snapshot-store.ts landed guarded; this closes the gap:
+ * a corrupt cell degrades to "no links" with every other field intact, and
+ * every degraded read logs once so silent data loss cannot recur (the
+ * endpoint stays 200 with the healthy rows).
+ */
+function parseLinksCell(raw: string, id: string): readonly ListenerLink[] {
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) throw new Error('not a JSON array')
+    // rm-187 follow-up (2026-10-10): the array CONTENTS used to flow through a
+    // bare cast (`[1,2,3]` served as ListenerLink[]). Reuse the ingest-side
+    // canonical validator so a persisted cell is accepted exactly when the
+    // same shape would have been accepted at ingest — a wrong-shaped element
+    // degrades the whole cell to empty links, other fields intact.
+    const validated = parseLinks(parsed)
+    if (!validated.success) throw new Error(validated.error.message)
+    return validated.data
+  } catch (error) {
+    console.warn(
+      `[listener-store] degraded links cell on message ${id}: ${
+        error instanceof Error ? error.message : String(error)
+      } — serving empty links, other fields intact`,
+    )
+    return []
+  }
+}
+
 function rowToMessage(row: MessageRow): ListenerMessage {
   return {
     id: row.id,
@@ -48,7 +80,7 @@ function rowToMessage(row: MessageRow): ListenerMessage {
     severity: row.severity as ListenerMessage['severity'],
     title: row.title,
     body: row.body,
-    links: JSON.parse(row.links) as readonly ListenerLink[],
+    links: parseLinksCell(row.links, row.id),
     dedupeKey: row.dedupe_key,
     createdAt: row.created_at,
     receivedAt: row.received_at,
