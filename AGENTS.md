@@ -101,10 +101,22 @@ view of Fro Bot's cross-repo footprint.
 Read-only dependency source repositories are available under
 `.slim/clonedeps/repos/` for inspection. Do not edit these clones.
 
-- `.slim/clonedeps/repos/fro-bot__agent/` — `fro-bot/agent` at `v0.78.0`; the
-  gateway's operator OAuth return path contract, GitHub App client, secret
-  readers, Hono build/serve split, and runtime logger/Result primitives that
-  this app mirrors.
+- `.slim/clonedeps/repos/fro-bot__agent/` — `fro-bot/agent` at the CI-pinned
+  tag `v0.122.1` (pin source: `.github/workflows/fro-bot.yaml`; mirror
+  re-provisioned 2026-10-15 — provision with `git clone --depth 1 --branch
+  <pin>` if absent); the gateway's operator OAuth return path contract, GitHub
+  App client, secret readers, Hono build/serve split, and runtime
+  logger/Result primitives that this app mirrors. The live pin is newer —
+  `.github/workflows/fro-bot.yaml` pins the agent at v0.122.2 (digest 06469674e6671f36c7f22b87f136d34d6d69f060),
+  whose gateway serves operator contract 1.11.0 on `/operator/stream`, and this
+  fork's reader accepts the additive 1.6.0–1.11.0 set
+  (`src/gateway/operator-contract/version.ts`); consult the pinned tag, not the
+  mirror, for current contract questions (re-derive from the workflow pin
+  whenever it moves). The rm-879 review-fix round verified v0.122.3 (digest
+  7d273ac643c8f9c0dc8615222677693dc337adef) against its upstream tag but
+  deferred the pin bump itself to the landing gate, so the workflow still
+  carries v0.122.2 — re-anchor the pin line and this note together when the
+  bump lands.
 
 ## Landing-pipeline traps
 

@@ -67,6 +67,8 @@ if (handoffState === 'not_subscribed' && localSubscriptionPresent && options?.no
 }
 ```
 
+The `notSubscribedConfirmed` option was later removed: the subscription-list read is an ambiguous signal - it can be stale, race another tab's unsubscribe, or come back empty - never proof of a mismatch, so the guard is now unconditional (fail-safe conservatism).
+
 With no local subscription, control fell through to `action: 'register'` and minted an endpoint with no user action. That reached production and was caught minutes after deploy — a hard reload with no button press emitted `push.subscribed`. Fixed in #511.
 
 The guard looked complete. It was complete for the case being fixed, and silently partial for its mirror.

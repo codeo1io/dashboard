@@ -3,8 +3,21 @@
  * Loaded only by web/src/operator/runtime.ts via dynamic import with ?manual=1.
  */
 
-/** Index-only status set. Stream-only statuses (blocked, waiting_for_approval) are excluded. */
-export type RunSummaryStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+/** The status set a run summary can carry. The stream-only blocked status is excluded. */
+export type RunSummaryStatus =
+  | 'queued'
+  | 'running'
+  | 'waiting_for_approval'
+  | 'waiting_for_question'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+
+/**
+ * Run-summary status ↔ hyphenated CSS class token (`waiting_for_question` → `status-waiting-for-question`).
+ * The card emitter writes through it; web/src/operator/runtime.ts mirrors it to read a card's class back.
+ */
+export declare const RUN_STATUS_CLASS_TOKENS: Readonly<Record<RunSummaryStatus, string>>
 
 /** Operator-safe failure-reason code. */
 export type FailureKind =
