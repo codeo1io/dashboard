@@ -105,8 +105,13 @@ jobs:
         run: >
           pnpm exec playwright test
           ${{ (github.event_name == 'workflow_dispatch' && inputs.update-baselines) && '--update-snapshots' || '' }}
-        env:
-          UPDATE_BASELINES: ${{ (github.event_name == 'workflow_dispatch' && inputs.update-baselines) && 'true' || 'false' }}
+        # rm-1976 (2026-10-18, run 743f2e47 review-fix): this step used to also
+        # export `UPDATE_BASELINES: true/false` alongside the flag — a dead
+        # lever even when minted: no spec, config, or script has ever read it
+        # (the workflow_dispatch baseline-update path is driven entirely by
+        # the inline `--update-snapshots` argument above), and the env export
+        # was the only site in the repo. Tombstoned here; removed, not
+        # commented out, to keep the step's surface == what actually runs.
 
       - name: Upload report on failure
         if: failure()
