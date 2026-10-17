@@ -14,10 +14,11 @@
 ## Open items
 
 ### Add test coverage for 20 untested module(s)
-- id: `rm-022` | track: reliability | priority: 100.0 | status: candidate
+- id: `rm-022` | track: reliability | priority: 100.0 | status: in_progress
 - signals: reliability.no_tests:.agents/skills/impeccable/scripts/context-signals.mjs, reliability.no_tests:.agents/skills/impeccable/scripts/critique-storage.mjs, reliability.no_tests:.agents/skills/impeccable/scripts/detect-csp.mjs, reliability.no_tests:.agents/skills/impeccable/scripts/detector/design-system.mjs, reliability.no_tests:.agents/skills/impeccable/scripts/detector/detect-antipatterns-browser.js (+15 more)
 - acceptance: Every module in \['.agents/skills/impeccable/scripts/context-signals.mjs', '.agents/skills/impeccable/scripts/critique-storage.mjs', '.agents/skills/impeccable/scripts/detect-csp.mjs', '.agents/skills/impeccable/scripts/detector/design-system.mjs', '.agents/skills/impeccable/scripts/detector/detect-antipatterns-browser.js', '.agents/skills/impeccable/scripts/detector/detect-antipatterns.mjs', '.agents/skills/impeccable/scripts/detector/engines/browser/detect-url.mjs', '.agents/skills/impeccable/scripts/detector/engines/regex/detect-text.mjs', '.agents/skills/impeccable/scripts/detector/engines/static-html/css-cascade.mjs', '.agents/skills/impeccable/scripts/detector/engines/static-html/detect-html.mjs', '.agents/skills/impeccable/scripts/detector/engines/visual/screenshot-contrast.mjs', '.agents/skills/impeccable/scripts/detector/profile/profiler.mjs', '.agents/skills/impeccable/scripts/detector/registry/antipatterns.mjs', '.agents/skills/impeccable/scripts/detector/shared/inline-ignores.mjs', '.agents/skills/impeccable/scripts/hook-admin.mjs', '.agents/skills/impeccable/scripts/hook-before-edit.mjs', '.agents/skills/impeccable/scripts/hook-lib.mjs', '.agents/skills/impeccable/scripts/lib/design-parser.mjs', '.agents/skills/impeccable/scripts/lib/impeccable-config.mjs', '.agents/skills/impeccable/scripts/lib/impeccable-paths.mjs'\] has a corresponding test file with at least one passing test
 - evidence: full suite green (python -m pytest -q) at HEAD; conductor validation digest validation:v1:<sha> recorded in the shipping PR
+- rider: src/github slice landed 2026-10-17 run e178a9460f10 cycle:3 implement — NEW test/app-client.test.ts (fixture-server success-path contracts: mint route + App-JWT bearer + the exact read-only permissions body, rm-185 expiresAt normalization incl. ill-formed dates, graphql query-fn token/header/body plumbing, non-Error placeholder) and NEW test/query-registry.test.ts (non-circular registry identity, NO_ALERTS fallback delta, declared-variable surface, failing-check conclusion set, rm-288 import-free property); 17/17 focused green alongside test/read-only-invariant-guard.test.ts; the acceptance's impeccable-scripts enumeration remains open — slice rider only, def not closable
 
 ### Restore required gates green at HEAD on main
 - id: `rm-100` | track: reliability | priority: 100.0 | status: in_progress
@@ -25,9 +26,10 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Aggregator GraphQL queries are a live syntax error (//-comments inside templates)
-- id: `rm-177` | track: reliability | priority: 97.0 | status: in_progress
+- id: `rm-177` | track: reliability | priority: 97.0 | status: done
 - acceptance: the two comments become `#`-style or move outside the templates (the rm-110 ceiling note survives in valid form); a structural guard test asserts no exported query template contains a `//`-prefixed line (negative-verified); full suite green; the board's live data path recovers — proven by rm-179's canary or one recorded live query
 - evidence: campaign-recorded in dashboard ROADMAP.md
+- rider: closed 2026-10-17 run e178a9460f10 cycle:3 implement — acceptance verifiably satisfied at HEAD 7042635: both exported templates carry # comments (no //-line survives), test/query-shape-guard.test.ts asserts no registered template contains a //-prefixed line with the negative-verification record and is green in this run's focused battery, and the canary (.github/workflows/canary.yaml) iterates the registry for the live half
 
 ### Lint gate blocked on main: ROADMAP paragraph-length cliff (rm-103 and rm-157 signals paragraphs)
 - id: `rm-284` | track: reliability | priority: 97.0 | status: in_progress
@@ -86,9 +88,10 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Port the rm-155 bounded-poll pattern to Monitoring.tsx (poll wedge fix)
-- id: `rm-251` | track: reliability | priority: 85.0 | status: in_progress
+- id: `rm-251` | track: reliability | priority: 85.0 | status: done
 - acceptance: the rm-155 pattern is extracted into a shared bounded-poll hook (useBoundedPoll or equivalent) consumed by BOTH Listener.tsx and Monitoring.tsx — fetch gains an internal deadline or the view races a ~15s abort, the latch releases in a finally on every path including rejection, and unmount aborts the in-flight controller; a web test pins that a never-settling fetch (deferred promise) cannot hold the latch past the bound and that unmount aborts
 - evidence: campaign-recorded in dashboard ROADMAP.md
+- rider: closed 2026-10-17 run e178a9460f10 cycle:3 implement — acceptance verifiably satisfied at HEAD 7042635: the rm-155 lifecycle lives in web/src/hooks/useBoundedPoll.ts + useBoundedPoll.test.ts, consumed by BOTH views (Listener.tsx:10 import / :38 call; Monitoring.tsx:9 / :34) citing rm-155/rm-251, and the hook's tests pin the never-settling-fetch latch release and unmount abort
 
 ### Release image carries a fixed HIGH in the pinned base's libpcre2 — in-image upgrade + comment truth (bundled-npm half already stripped wholesale)
 - id: `rm-647` | track: reliability | priority: 85.0 | status: in_progress
@@ -272,9 +275,9 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Machine-check the read-only invariant: static guard test against write-capability imports and Octokit write call sites
-- id: `rm-649` | track: reliability | priority: 60.0 | status: in_progress
-- acceptance:
-- evidence: campaign-recorded in dashboard ROADMAP.md
+- id: `rm-649` | track: reliability | priority: 60.0 | status: implemented 2026-10-17, validated pre-review (run e178a9460f10 cycle:3 implement b5739db8; suite begun by the reaped predecessor attempt 20c46636, adopted after live verification, and completed with the app-client.ts mint-seam family this attempt)
+- acceptance: a machine guard freezes the fork's #1 security invariant: a static scan of src/, web/src/, and public/ asserting ZERO write-capability GitHub API usage (write endpoint methods and mutation route literals; verified zero at introduction), mint-site assertions that the installations.ts permission objects carry only 'read' values in exactly the AGENTS-declared core/optional/full subset and that the app-client.ts mint seams keep permissions typed as Record<string, 'read'> with a verbatim pass-through to auth-app, plus in-suite bite-proof demonstrations proving the detector fires on synthetic write snippets and passes read-only ones; assertion-only — no src/ edit rides the unit
+- evidence: test/read-only-invariant-guard.test.ts 7/7 green focused (zero write findings across the src/ 50-file, web/src/ 69-file, and public/ 7-file trees; write-method detector + mutation-route detector + mint-seam value scan each bite-proven); the wire-level companion proof — the mint POST body carries exactly the read-only permissions the caller passed — lives in test/app-client.test.ts under rm-022's slice
 
 ### Aggregator cold-start in-flight degradation contract
 - id: `rm-197` | track: reliability | priority: 59.0 | status: in_progress
@@ -452,9 +455,10 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Direct test coverage for the src/secrets.ts hardening branches
-- id: `rm-228` | track: reliability | priority: 46.0 | status: in_progress
+- id: `rm-228` | track: reliability | priority: 46.0 | status: done
 - acceptance: `test/secrets.test.ts` covers each branch — happy path + trailing-newline strip, PEM multiline preservation, ENOENT fall-through, optional-null, whitespace-only null, required-missing error naming both lookup paths, symlink refusal, directory, character device, FIFO (write end held by a detached child so openSync rendezvous instead of hanging), oversize abort, exactly-at-cap acceptance, embedded newline from file and from env — with ZERO executable changes to `src/secrets.ts`
 - evidence: campaign-recorded in dashboard ROADMAP.md
+- rider: closed 2026-10-17 run e178a9460f10 cycle:3 implement — acceptance verifiably satisfied at HEAD 7042635: test/secrets.test.ts describe blocks cover happy paths (incl. trailing-newline strip), required-secret failure naming both lookup paths, not-a-regular-file hardening (symlink/directory/char-device/FIFO), size cap incl. at-cap acceptance, single-line line-break rejection, and the ENOENT/optional/whitespace nulls — with ZERO executable changes to src/secrets.ts
 
 ### .dockerignore local-artifact seal (rm-186 completion rider)
 - id: `rm-242` | track: reliability | priority: 46.0 | status: in_progress
@@ -467,9 +471,10 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### 401 collapses into reason 'network' in the Listener and Monitoring fetchers
-- id: `rm-273` | track: reliability | priority: 46.0 | status: in_progress
+- id: `rm-273` | track: reliability | priority: 46.0 | status: done
 - acceptance: the fetch-error reason union gains 'unauthenticated' for 401 (distinct from transport failure) across listener.ts and monitoring.ts; Listener and Monitoring render an auth-expired affordance consistent with rm-208's badge design instead of a network error; web tests feed ok/401/rejected mocks per fetcher
 - evidence: campaign-recorded in dashboard ROADMAP.md
+- rider: closed 2026-10-17 run e178a9460f10 cycle:3 implement — acceptance verifiably satisfied at HEAD 7042635: both fetchers classify 401 as 'unauthenticated' (monitoring.ts:167-168 first fetch and :177 second fetch; listener.ts:103-104 and :117), the reason unions at monitoring.ts:64 / listener.ts:33 carry the distinct name, monitoring.test.ts:94 pins the rm-273 mapping (:106 pins rm-515's redirect sibling), and both views branch on the reason (Listener.tsx:51, Monitoring.tsx:47) with view tests feeding the mocks
 
 ### /auth/logout body cap must be enforced BEFORE buffering, and the post-read check must count BYTES — finished by rm-497
 - id: `rm-512` | track: reliability | priority: 46.0 | status: in_progress
@@ -547,9 +552,10 @@
 - evidence: PR #619 body sentence (github api); the vendored field in the absorbed tree; focused tests green
 
 ### Client polling hygiene batch (listener latch, unread-poll guard)
-- id: `rm-155` | track: reliability | priority: 42.0 | status: in_progress
+- id: `rm-155` | track: reliability | priority: 42.0 | status: done
 - acceptance: the Listener poll releases its latch in a finally block and aborts in-flight fetches on unmount (controller wired to the request signal), with a regression test seeding a never-settling fetch and asserting the next tick still polls; the App poll gains an in-flight guard, surfaces poll failure once (silent recovery allowed), and pauses while document.hidden (visibilitychange resumes with an immediate poll); no behavior change on the happy path
 - evidence: campaign-recorded in dashboard ROADMAP.md
+- rider: closed 2026-10-17 run e178a9460f10 cycle:3 implement — acceptance verifiably satisfied at HEAD 7042635: Listener.tsx:21 documents the hard ceiling with the lifecycle in the shared hook, useBoundedPoll.test.ts pins the never-settling-fetch next-tick poll and unmount abort, Monitoring.test.tsx:312 and Listener.test.tsx:323 cite the restored shape, and App.test.tsx:223 pins the hidden-tab pause with visibilitychange resume and immediate poll
 
 ### CodeQL PinnedDependencies alert on the base-drift unpinned download
 - id: `rm-209` | track: reliability | priority: 42.0 | status: in_progress
