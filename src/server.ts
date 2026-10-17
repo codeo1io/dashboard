@@ -1279,10 +1279,15 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   // (/icon-*, manifest.webmanifest) revalidate every load via an explicit
   // no-cache; sw.js and /registerSW.js already carry a stronger no-store
   // family (the pre-secureHeaders CSP-bypass middleware and the wrapper
-  // below). Adapter note for the next @hono/node-server bump: 2.1.3's
-  // serveStatic sets ONLY Last-Modified and has no ETag /
-  // If-Modified-Since handling (no 304s), so these headers are the entire
-  // caching story — re-derive.
+  // below). Adapter note, re-derived against @hono/node-server 2.1.5 source
+  // (rm-760 rider, run 26b6e1ab 2026-10-17): 2.1.5's serveStatic still sets
+  // ONLY Last-Modified (serve-static.mjs) — no ETag / If-Modified-Since
+  // handling, no 304s — so these headers remain the entire caching story.
+  // 2.1.5 changes two behaviors worth knowing here: serveStatic now serves
+  // GET and HEAD only (any other method falls through to app routing —
+  // pinned by test/static-assets.test.ts), and the adapter aborts the
+  // request signal on HTTP/2 client resets (index.mjs). Re-derive on the
+  // next bump.
   // Re-grafted 2026-10-11 (conductor integrate 08a0abac): the 2026-10-17
   // upstream adoption dropped this block and its tests; restored verbatim
   // from lineage 88e423a with this merge.
