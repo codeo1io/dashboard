@@ -31,6 +31,13 @@ export const LISTENER_FETCH_TIMEOUT_MS = 15000
 export function ListenerChannel() {
   const [viewState, setViewState] = useState<ViewState>({ state: 'loading' })
   const [ackingId, setAckingId] = useState<string | 'all' | null>(null)
+  /**
+   * rm-501: visible failed-ack feedback. An ack that settles false (bounded
+   * timeout, rejection, non-202) must not vanish silently — the banner stays
+   * until the operator retries, and every new attempt clears it first, so the
+   * ack buttons themselves are the retry affordance.
+   */
+  const [ackFailed, setAckFailed] = useState(false)
 
   // rm-251: the rm-155 lifecycle now lives in the shared useBoundedPoll hook
   // (extracted when Monitoring.tsx was fixed); this view keeps only its own
@@ -72,20 +79,29 @@ export function ListenerChannel() {
   const handleAck = async (id: string) => {
     if (ackingId) return
     setAckingId(id)
+    setAckFailed(false)
     const success = await ackListenerMessage(id)
     setAckingId(null)
     if (success) {
       void poll(false)
+    } else {
+      // rm-501: surface the failure — the api's rm-501 bound guarantees this
+      // path is reached even when the transport never settles.
+      setAckFailed(true)
     }
   }
 
   const handleAckAll = async () => {
     if (ackingId) return
     setAckingId('all')
+    setAckFailed(false)
     const success = await ackAllListenerMessages()
     setAckingId(null)
     if (success) {
       void poll(false)
+    } else {
+      // rm-501: same visible-failure contract as the per-message ack.
+      setAckFailed(true)
     }
   }
 
@@ -107,6 +123,12 @@ export function ListenerChannel() {
           </button>
         )}
       </div>
+
+      {ackFailed && (
+        <div data-testid="listener-ack-failure" className="operator-warning-panel" role="alert" style={{ marginBottom: 'var(--space-3)' }}>
+          Couldn't mark as read — the request timed out or was rejected. Try again.
+        </div>
+      )}
 
       {viewState.state === 'loading' && (
         <div data-testid="listener-loading" className="run-index-skeleton-container" aria-live="polite">

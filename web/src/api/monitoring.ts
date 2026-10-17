@@ -32,6 +32,10 @@ export interface MonitoringRepo {
 
 export interface MonitoringData {
   readonly repos: readonly MonitoringRepo[]
+  /** Wall-clock duration (ms) of the last completed refresh attempt, or null when no cycle has stamped it yet (rm-156) */
+  readonly refreshDurationMs: number | null
+  /** True when the last refresh attempt exceeded the watchdog ceiling — data is being served but the walk is degraded (rm-156) */
+  readonly refreshDegraded: boolean
   readonly staleBanner: boolean
   readonly driftCount: number
   readonly enumerationIncomplete: number | null
@@ -52,6 +56,11 @@ function parseFailingCheckDetail(item: unknown): FailingCheckDetail | null {
   if (workflowTitle !== null && typeof workflowTitle !== 'string') return null
   if (runAttempt !== null && typeof runAttempt !== 'number') return null
   if (typeof checkName !== 'string' || typeof detailsUrl !== 'string') return null
+  // https://-only detailsUrl contract (mirrors the enforced link filter in
+  // web/src/api/listener.ts): '' is the server's no-link value; any non-empty
+  // value must be https:// — a non-https detailsUrl is contract drift and the
+  // strict parse fails closed.
+  if (detailsUrl !== '' && !detailsUrl.startsWith('https://')) return null
   return {workflowTitle, runAttempt, checkName, detailsUrl}
 }
 
@@ -137,6 +146,16 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
     if (data.refreshedAt !== null && typeof data.refreshedAt !== 'number') {
       return {ok: false, reason: 'contract-drift'}
     }
+    // rm-107: the watchdog pair is part of the server DTO (src/routes/api.ts)
+    // and must survive this whitelist — dropping it would hide a degraded walk
+    // (rm-156) from the operator UI. null refreshDurationMs is legal (no
+    // cycle has stamped a snapshot yet); refreshDegraded is always present.
+    if (data.refreshDurationMs !== null && typeof data.refreshDurationMs !== 'number') {
+      return {ok: false, reason: 'contract-drift'}
+    }
+    if (typeof data.refreshDegraded !== 'boolean') {
+      return {ok: false, reason: 'contract-drift'}
+    }
 
     const repos: MonitoringRepo[] = []
     for (const item of data.repos) {
@@ -153,6 +172,8 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
         driftCount: data.driftCount,
         enumerationIncomplete: data.enumerationIncomplete,
         refreshedAt: data.refreshedAt,
+        refreshDurationMs: data.refreshDurationMs,
+        refreshDegraded: data.refreshDegraded,
       },
     }
   } catch (err) {

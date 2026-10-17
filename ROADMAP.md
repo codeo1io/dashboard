@@ -16,7 +16,7 @@
 ### Add test coverage for 20 untested module(s)
 - id: `rm-022` | track: reliability | priority: 100.0 | status: candidate
 - signals: reliability.no_tests:.agents/skills/impeccable/scripts/context-signals.mjs, reliability.no_tests:.agents/skills/impeccable/scripts/critique-storage.mjs, reliability.no_tests:.agents/skills/impeccable/scripts/detect-csp.mjs, reliability.no_tests:.agents/skills/impeccable/scripts/detector/design-system.mjs, reliability.no_tests:.agents/skills/impeccable/scripts/detector/detect-antipatterns-browser.js (+15 more)
-- acceptance: Every module in ['.agents/skills/impeccable/scripts/context-signals.mjs', '.agents/skills/impeccable/scripts/critique-storage.mjs', '.agents/skills/impeccable/scripts/detect-csp.mjs', '.agents/skills/impeccable/scripts/detector/design-system.mjs', '.agents/skills/impeccable/scripts/detector/detect-antipatterns-browser.js', '.agents/skills/impeccable/scripts/detector/detect-antipatterns.mjs', '.agents/skills/impeccable/scripts/detector/engines/browser/detect-url.mjs', '.agents/skills/impeccable/scripts/detector/engines/regex/detect-text.mjs', '.agents/skills/impeccable/scripts/detector/engines/static-html/css-cascade.mjs', '.agents/skills/impeccable/scripts/detector/engines/static-html/detect-html.mjs', '.agents/skills/impeccable/scripts/detector/engines/visual/screenshot-contrast.mjs', '.agents/skills/impeccable/scripts/detector/profile/profiler.mjs', '.agents/skills/impeccable/scripts/detector/registry/antipatterns.mjs', '.agents/skills/impeccable/scripts/detector/shared/inline-ignores.mjs', '.agents/skills/impeccable/scripts/hook-admin.mjs', '.agents/skills/impeccable/scripts/hook-before-edit.mjs', '.agents/skills/impeccable/scripts/hook-lib.mjs', '.agents/skills/impeccable/scripts/lib/design-parser.mjs', '.agents/skills/impeccable/scripts/lib/impeccable-config.mjs', '.agents/skills/impeccable/scripts/lib/impeccable-paths.mjs'] has a corresponding test file with at least one passing test
+- acceptance: Every module in `['.agents/skills/impeccable/scripts/context-signals.mjs', '.agents/skills/impeccable/scripts/critique-storage.mjs', '.agents/skills/impeccable/scripts/detect-csp.mjs', '.agents/skills/impeccable/scripts/detector/design-system.mjs', '.agents/skills/impeccable/scripts/detector/detect-antipatterns-browser.js', '.agents/skills/impeccable/scripts/detector/detect-antipatterns.mjs', '.agents/skills/impeccable/scripts/detector/engines/browser/detect-url.mjs', '.agents/skills/impeccable/scripts/detector/engines/regex/detect-text.mjs', '.agents/skills/impeccable/scripts/detector/engines/static-html/css-cascade.mjs', '.agents/skills/impeccable/scripts/detector/engines/static-html/detect-html.mjs', '.agents/skills/impeccable/scripts/detector/engines/visual/screenshot-contrast.mjs', '.agents/skills/impeccable/scripts/detector/profile/profiler.mjs', '.agents/skills/impeccable/scripts/detector/registry/antipatterns.mjs', '.agents/skills/impeccable/scripts/detector/shared/inline-ignores.mjs', '.agents/skills/impeccable/scripts/hook-admin.mjs', '.agents/skills/impeccable/scripts/hook-before-edit.mjs', '.agents/skills/impeccable/scripts/hook-lib.mjs', '.agents/skills/impeccable/scripts/lib/design-parser.mjs', '.agents/skills/impeccable/scripts/lib/impeccable-config.mjs', '.agents/skills/impeccable/scripts/lib/impeccable-paths.mjs']` has a corresponding test file with at least one passing test
 - evidence: full suite green (python -m pytest -q) at HEAD; conductor validation digest validation:v1:<sha> recorded in the shipping PR
 
 ### Restore required gates green at HEAD on main
@@ -32,6 +32,14 @@
 ### Lint gate blocked on main: ROADMAP paragraph-length cliff (rm-103 and rm-157 signals paragraphs)
 - id: `rm-284` | track: reliability | priority: 97.0 | status: in_progress
 - acceptance: the two paragraphs are split into blank-line-separated sub-paragraphs (blank line + 2-space indent, same list item) at plain-text boundaries into fragments ~2.4K chars, content byte-exact on rejoin — the proven cure measured 7317ch→14s rc=0 and 7967ch→13s rc=0 (run c06f7bf3d796, same attempt); CI Lint completes green well under the 35m timeout on the landing tree (post-fix reference: 53s); a length scan (awk 'length($0)>5000') finds no non-HTML-comment line above ~4K chars in ROADMAP.md; the rule errors masked beneath the timeout are fixed in the same pass — markdown/no-missing-label-refs fires on bracketed lists like `tags: [security, …]` (proven instance: docs/prioritization/2026-09-29-cycle-19-batch.md:4, landed bbc5b55 — backtick-wrap cures)
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+<!-- (2026-10-16, run 9d5c156d cycle-4 restore attempt 2f245515, riding roadmap-diff mints rm-857..rm-860): census 241 defs / 0 dups / max rm-860; the 2026-10-06 managed render stripped every prior extension comment, so this claim re-anchors the guard's newest-comment truth after the rm-857 restore re-landed the census tooling itself. -->
+
+### Landing-merge adoption collateral: 53 dropped files plus six content-level feature losses (restore + union guard)
+<!-- (2026-10-17 independent_review:fix 44f7bbd6, curing review F1/F3/F4): main.yaml test-job checkout gains fetch-depth: 0 — the union guard's epoch sanity assert walks every merge and fails deterministically on a depth-1 PR-head CI checkout; cve-tripwire NODE_IMAGE literal corrected to node:24-trixie-slim and the Dockerfile ARG repinned 173f1258→7f486cab (old digest 404-dead on a token-authed registry HEAD, live tag digest re-probed 2026-10-17) so the restored lane is not born-red; docs/runbooks/release.md resolved to main's content + the row-B gates-main re-flip (this batch restores lockfile-guard.yaml). -->
+- id: `rm-857` | track: reliability | priority: 96.0 | status: implemented 2026-10-17, validated pre-review, pending the cycle-4 landing (run 9d5c156d cycle:4 implement 2f245515 — attested by df78c2fc after two KTD13 fold rejections that changed no content; targeted_tests 5b80fc26 RC=0 on the engine-selected impacted set plus the actionlint container; full_tests 939aff96 via the supervisor-ratified six-job local Main mirror at base 3e3664c — root 65 files / 3108 tests + web 35 files / 1233 tests, 0 fail, lint and check-types and design and actionlint and scripts-load green after one convention-exact prose-residue EXCLUDED_FILES restoration; the lint rider was exceeded by the full-suite ROADMAP cure of all 50 pre-existing errors at HEAD; the docs-truth supersede rider and the rm-675 emitter-literals extension were applied by compound e9f0a8a9 on 2026-10-17; compound record at docs/prioritization/2026-10-17-repository-maintenance-cycle-4-compound-run-9d5c156d444f.md)
+- acceptance: a curated restore batch re-lands the collateral proven dropped at 3e3664c (cat-file matrix: merge-base 364272b has it, the p1 adoption lineage toward 5d5f9be deleted it, p2 06396b4 kept it, the landing merge took the deletions — first vanish at merge 88e423a whose both parents had the files): whole files — ONE canonical read-only-invariant guard (union of the dropped `read-only-invariant-guard.test.ts` and `readonly-invariant-guard.test.ts` spellings — the rm-649 CI machine-check of critical security invariant #1), `.github/workflows/cve-tripwire.yaml` (the rm-648 weekly tripwire) and `.github/workflows/lockfile-guard.yaml`, `scripts/roadmap-census.ts` plus `test/roadmap-integrity-guard.test.ts`, the `robots-wellknown`, `server-entry-point`, `operator-contract-window` tests, `web/src/shell/ErrorBoundary.tsx` plus its test, `docs/runbooks/release.md`, and the still-valuable dropped docs lessons; content-level losses — rm-713 robots routes and allowlist in `src/server.ts`, rm-514 ErrorBoundary mount in `web/src/main.tsx`, rm-501 `ACK_FETCH_TIMEOUT_MS`/`withAckTimeout` plus the `listener-ack-failure` banner in `web/src/api/listener.ts` and `web/src/views/Listener.tsx`, rm-107/156 `refreshDegraded`/`refreshDurationMs` whitelist plus degraded banner in `web/src/api/monitoring.ts` and `web/src/views/Monitoring.tsx`, rm-487 focus re-probe in `web/src/App.tsx`, rm-600 keyVersion metadata in `web/src/push/subscribe.ts` — each hunk reconciled against upstream drift since 06396b4, never a blind revert; verification at the landing tree: the zero-ref greps flip non-zero (`ACK_FETCH_TIMEOUT_MS`, `refreshDegraded`, `robots` in `src/server.ts`, `ErrorBoundary` in `web/src/main.tsx`, `listener-ack-failure`) and every restored guard/test passes; root-cause guard: a landing-merge union test asserting no file present in BOTH parents of a merge is silently absent from the merge result (deletions must be explicit in the merge commit); lint rider: backtick-wrap the two literal `[object Object]` strings in the rm-802 def (its header and acceptance lines — the source of the census regression 48 to 50, proven 0 occurrences at 5d5f9be vs 2 at 3e3664c) returning the census to 48, and extend the rm-675 emitter obligations to bracketed literals in def prose so the next managed render does not re-emit the unwrapped form (a repo-side wrap alone regresses — the strings ride the campaign-record data); docs-truth rider: the surviving batch docs narrating the cve-tripwire scheduled 2026-10-12 first fire as a live watch item (docs/prioritization/2026-10-10-cycle-3-batch-run-e5b718478274.md:55-56 and docs/prioritization/2026-10-09-repository-maintenance-cycle-3-batch-run-d8fdf8b79ad5.md:41,162) gain a supersede annotation naming the collateral drop — that fire never happened (workflow absent at HEAD; repo Actions dark since 2026-10-09)
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Main Lint job times out on every push-to-main run — decompose it and defuse the ROADMAP signals-line pathology
@@ -92,7 +100,7 @@
 
 ### Release image carries a fixed HIGH in the pinned base's libpcre2 — in-image upgrade + comment truth (bundled-npm half already stripped wholesale)
 - id: `rm-647` | track: reliability | priority: 85.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### PR-side Dockerfile validity gate: parse COPY sources before merge
@@ -108,6 +116,13 @@
 ### Gateway contract forward-support: 1.7.0/1.8.0 fields, v0.116.0 401 semantics, and the v0.117.0 absorb riders (grows rm-157)
 - id: `rm-252` | track: reliability | priority: 80.0 | status: in_progress
 - acceptance: the operator contract version accepted extends additively to 1.8.0 (1.6.0/1.7.0/1.8.0); run-status renders checkout-advance provenance and distinguishes workspace-preparation failures from run failures and incomplete invocation (rm-157's acceptance rides here); 401 from a gateway at v0.116.0+ maps to an operator-actionable workspace-unavailable state rather than auth-required; BOTH parsers (src/gateway/operator-sse-reader.ts and public/operator-stream.js — see rm-253's wire-or-fold decision) grow the new fields exactly once; the workflow pin bumps to the absorbed agent version with the riders above
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+<!-- (2026-10-17, run 9d5c156d cycle-4 compound e9f0a8a9: rm-858 is the standing cycle-5 lead — unselected at cycle-4 only because the rm-857 collateral restore outranked it at 96.0 vs 80.0; this cycle's research battery 7364f33f holds the window truth: fork floor 2026.10.25 adopted at a385ca5, upstream tip 2026.10.35 published 2026-10-15T13:44Z, operator contract 1.9.0 to 1.11.0 via upstream pull 619, gateway v0.122.3 latest, deployment dependency recorded in the acceptance; selection context and the estate-probe precondition live in docs/prioritization/2026-10-17-repository-maintenance-cycle-4-compound-run-9d5c156d444f.md) -->
+
+### Absorb upstream window 2026.10.26 to 2026.10.35 — operator contract 1.11.0 (waiting runs, notification jumps)
+- id: `rm-858` | track: reliability | priority: 80.0 | status: in_progress
+- acceptance: one deliberate absorb batch from the fork floor 2026.10.25 (a385ca5) to the upstream tip 2026.10.35 (published 2026-10-15T13:44Z): `OPERATOR_CONTRACT_VERSION` 1.9.0 to 1.11.0 per upstream #619 (`src/gateway/operator-contract/*` plus `public/operator-*`, additive minors: waiting runs and notification jumps) with fixture harness and contract tests moved in lockstep; the six capability PRs verified write-path-free via `pulls/:id/files` and cited in the batch doc — #623/#630 waiting-line UI, #629 iOS Home Screen install steps, #631 gateway subscription-list read, #633 signed-out sign-in recovery with a recorded disposition against the fork OAuth return-path handling in `src/auth/oauth.ts`, #634 scroll-into-view for jumped cards; dep riders: fro-bot/agent v0.122.3, @types/node 24.19.2, @opencode-ai/plugin 1.19.0, codeql-action digest; #622 recorded as skipped (fork consumes no bfra-me/.github actions — grep-cited); rm-252 acceptance re-truthed to 1.11.0; `.slim/clonedeps/repos/fro-bot__agent` refreshed to v0.122.3 and the stale AGENTS.md v0.78.0 clone note corrected; deployment dependency recorded in the batch doc: gateway at v0.122.x or newer before the 1.11.0 surfaces are live-useful (runbook documents v0.114.1 gates); while Actions is dark the batch doc carries the manual upstream-drift check as the compensating control; check-types and the full suite green on the landing tree
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Transitive override floors sit below every patched line — fast-uri carries two live high alerts
@@ -182,7 +197,7 @@
 
 ### rm-779
 - id: `rm-779` | track: reliability | priority: 72.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Reality canary for the GitHub data path (verify the real transport contract)
@@ -192,7 +207,7 @@
 
 ### serveStatic double-decode advisories: land @hono/node-server 2.1.3 + hono 4.13.12 with a bypass regression test
 - id: `rm-498` | track: reliability | priority: 70.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### failingChecks drill-down: workflow title + attempt via additive GraphQL fields
@@ -217,7 +232,7 @@
 
 ### Bound the /auth/logout body read for real (the rm-268 cap is post-hoc)
 - id: `rm-497` | track: reliability | priority: 66.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### detailsUrl https://-only contract at the failing-check boundary (assess F1)
@@ -227,7 +242,7 @@
 
 ### Pre-Release CVE tripwire: weekly trivy scan of the pinned base digest (the layer no detector covers)
 - id: `rm-648` | track: reliability | priority: 65.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Operator 401 remap: workspace-unavailable is not session-expiry on gateway ≥v0.116.0
@@ -272,7 +287,7 @@
 
 ### Machine-check the read-only invariant: static guard test against write-capability imports and Octokit write call sites
 - id: `rm-649` | track: reliability | priority: 60.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Aggregator cold-start in-flight degradation contract
@@ -287,7 +302,7 @@
 
 ### Operator stream seq-gap surfacing — parse-drop invisibility (client-only gap detection)
 - id: `rm-853` | track: reliability | priority: 58.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### rm-182
@@ -347,7 +362,7 @@
 
 ### Release build context ships git state and local secrets to the daemon (.dockerignore absent)
 - id: `rm-186` | track: reliability | priority: 54.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Runtime parsers for operator-client approval/run responses
@@ -362,17 +377,17 @@
 
 ### Cache gateway-mode session validation (bounded revocation-latency decision)
 - id: `rm-419` | track: reliability | priority: 52.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Repo settings hardening — restrict allowed_actions and require SHA pinning
 - id: `rm-843` | track: reliability | priority: 52.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Workflow duration and flakiness trends per repo
 - id: `rm-216` | track: reliability | priority: 51.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Document the Fro Bot workflow disable state
@@ -402,7 +417,7 @@
 
 ### base-drift tag literal derives from the Dockerfile ARG (rm-779 class, second site)
 - id: `rm-856` | track: reliability | priority: 50.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Gateway session-validation roundtrip: cache or consciously keep per-request
@@ -422,7 +437,7 @@
 
 ### Fleet PR review-request / triage inbox
 - id: `rm-224` | track: reliability | priority: 48.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Bounded-concurrency fleet refresh in the aggregator
@@ -432,7 +447,7 @@
 
 ### One corrupt links cell bricks the listener messages endpoint
 - id: `rm-187` | track: reliability | priority: 47.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### pnpm-store caching for hosted CI
@@ -477,12 +492,12 @@
 
 ### Endpoint-parity guard: README's Endpoints list must match the live Hono route table
 - id: `rm-556` | track: reliability | priority: 46.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Operator contract 1.8.0 browser display half — checkout provenance + preparation on the expanded run card
 - id: `rm-842` | track: reliability | priority: 46.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Release-pipeline failure triage: promote-readback exhaustion and build-and-push
@@ -522,12 +537,12 @@
 
 ### Unbounded operator client fetches: listener acks and the logout chain can wedge the UI
 - id: `rm-501` | track: reliability | priority: 44.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### rm-780
 - id: `rm-780` | track: reliability | priority: 44.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Client polling hygiene batch (listener latch, unread-poll guard)
@@ -572,7 +587,7 @@
 
 ### Fork-exclusion guard misses the re-injectable .github/renovate.json5
 - id: `rm-213` | track: reliability | priority: 40.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### gateway-access runbook: v0.116.0 deployment coupling and bearer-token facts
@@ -592,17 +607,17 @@
 
 ### codeql-action pin refresh to current v4.38.x — was the lone stale action pin
 - id: `rm-650` | track: reliability | priority: 40.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Consolidate the five Monday-morning crons into one scheduled workflow (single queue slot)
 - id: `rm-674` | track: reliability | priority: 40.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Publish /.well-known/security.txt
 - id: `rm-245` | track: reliability | priority: 39.5 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Dependabot auto-merge for grouped patch/minor PRs
@@ -622,7 +637,7 @@
 
 ### Rate limiter coverage decision: the logout pair sits outside every class
 - id: `rm-500` | track: reliability | priority: 38.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Immutable Cache-Control for content-hashed static assets
@@ -657,7 +672,7 @@
 
 ### fast-uri floor is stale: '>=3.1.5' admits the GHSA-58mr-gqgx-xq4g version
 - id: `rm-499` | track: reliability | priority: 36.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Container deploy hardening: VOLUME for the listener store, HEALTHCHECK, and a loud missing-/data failure mode
@@ -667,7 +682,7 @@
 
 ### Actions run-history deletion of the audit-cron first-red — adjudicate the dispute, establish run-history integrity
 - id: `rm-659` | track: reliability | priority: 36.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Shared test fixtures must be field-complete for required payload fields
@@ -687,7 +702,7 @@
 
 ### Web-suite test isolation: the rm-596 dismiss-latch test is order/host-flaky and the node-26 localStorage recipe is undocumented
 - id: `rm-651` | track: reliability | priority: 35.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Drop the eight unused workbox runtime dependencies
@@ -702,12 +717,12 @@
 
 ### Deadline racing + stall watchdog on the aggregator refresh cycle
 - id: `rm-222` | track: reliability | priority: 34.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### DASHBOARD_MONITORING_REFRESH gate (bounded monitoring refresh)
 - id: `rm-223` | track: reliability | priority: 34.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Surface gateway run-status checkout provenance
@@ -725,9 +740,14 @@
 - acceptance: one deliberate pass — vitest 5 evaluated on the full suite (46 server files + web) with breaking changes named or the bump declined in the entry; jsdom 30 and pnpm 12 evaluated with their migration notes; impeccable@4 tried against .impeccable/config.json (bump both or record why not); the in-range trio lands as a lockfile refresh rider; no bundled mega-PR — each major is its own landing
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
+### Dependency-major pass beyond rm-271: typescript 7, vite-plugin-pwa 2, jest-dom 7, @types/node 26
+- id: `rm-859` | track: reliability | priority: 34.0 | status: in_progress
+- acceptance: each major evaluated on the full suite with breaking changes named or the bump declined in the entry, one landing per major (rm-271's no-mega-PR rule): typescript 6.0.3 to 7.0.2, vite-plugin-pwa 1.3.0 to 2.0.0, @testing-library/jest-dom 6.9.1 to 7.0.1; @types/node 26.6.5 evaluated with a recorded disposition to stay on the Node 24 LTS runtime line (upstream precedent #632 stays at 24; engines >=24 unchanged); the 2026-10-15 registry battery recorded in the entry (vitest 5.0.4, jsdom 30.1.3, pnpm 12.11.2 remain rm-271's scope; vite 8.3.4, eslint 10.12.0, tailwindcss 4.3.3, workbox 7.4.1 confirmed current); in-range minors (react 19.3.1, @playwright/test 1.64.1, fast-check 4.10.2, hono 4.13.13) land as a lockfile-refresh rider
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
 ### Pre-gate base-digest and tool-pin sweep ahead of the Monday 2026-10-12 layer
 - id: `rm-689` | track: reliability | priority: 34.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### snapshot-store byte bound counts UTF-16 code units
@@ -737,7 +757,7 @@
 
 ### ubuntu-latest alias-flip guard for non-containerized jobs
 - id: `rm-188` | track: reliability | priority: 33.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Binding-docs truth batch 2 (README badge/endpoints, dependabot comment, vite kill-switch comment)
@@ -826,7 +846,8 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Push idempotency key must fail closed, never fall back to randomness
-- id: `rm-482` | track: reliability | priority: 30.0 | status: in_progress
+<!-- (2026-10-17 independent_review:fix 44f7bbd6, curing review F2): handleCancel now mints the idempotency key BEFORE taking the canceling/cancelInitiated mutex — the null-key fail-closed return no longer wedges the rendered "Try again" on the mutex nor misattributes terminal copy to a cancel that never dispatched; regression-pinned twice in test/operator-stream-core.test.ts (retry-unwedge + neutral-terminal). -->
+- id: `rm-482` | track: reliability | priority: 30.0 | status: implemented 2026-10-17, validated pre-review, pending the cycle-4 landing (run 9d5c156d cycle:4 implement 2f245515; mintSecureIdempotencyKey is exported at public/operator-stream.js:322 and consumed at :2757 and :3094, the pre-batch open Math.random and Date.now fallbacks at operator-launch.js:75-76 and operator-stream.js:2747/:3083 are gone — grep-verified at compound — and web/src/push/subscribe.ts stays fail-closed before any side effect; focused operator suites green and the full six-job local Main mirror green at base 3e3664c)
 - acceptance: mintIdempotencyKey returns null when the environment cannot mint securely and subscribeOptIn checks BEFORE any side effect (no browser subscription is started); no Math.random fallback remains anywhere in the push path
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
@@ -857,7 +878,7 @@
 
 ### Scheduled conductor-ref census guard (fail-visible residue growth without push authority)
 - id: `rm-681` | track: reliability | priority: 30.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### eslint-plugin-erasable-syntax-only 0.4.2 → 0.7.x + enable the new export-aliases rule (fork-first)
@@ -872,12 +893,12 @@
 
 ### SSE multi-line data join per WHATWG 9.2.6 on both parser twins
 - id: `rm-854` | track: reliability | priority: 30.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
-### snapshot-store logPersistProblem flattens structured payloads to '[object Object]'
+### snapshot-store logPersistProblem flattens structured payloads to `[object Object]`
 - id: `rm-802` | track: reliability | priority: 30.0 | status: implemented 2026-10-09, validated pre-review, landed at this integrate (run d8fdf8b79ad54a68883810c1fc29a2da cycle:3 implement 2852b2bf; targeted_tests 921/921 on the engine-named 12 surfaces + full_tests via the supervisor-approved six-job local mirror under the account-level Actions outage; batch doc docs/prioritization/2026-10-09-repository-maintenance-cycle-3-batch-run-d8fdf8b79ad5.md)
-- acceptance: the persistence-problem logger emits plain-object payloads as structured fields (the size-bound `{bytes}` value lands as a field, never a stringified '[object Object]'), keeps Error-instance message extraction for real errors, and the rm-701/rm-759 describes carry spy tests asserting a single warning record with the exact numeric byte value and no `error` field (red before, green after); load()'s fail-open return semantics unchanged
+- acceptance: the persistence-problem logger emits plain-object payloads as structured fields (the size-bound `{bytes}` value lands as a field, never a stringified `[object Object]`), keeps Error-instance message extraction for real errors, and the rm-701/rm-759 describes carry spy tests asserting a single warning record with the exact numeric byte value and no `error` field (red before, green after); load()'s fail-open return semantics unchanged
 - evidence: vitest run of test/snapshot-store.test.ts (17/17 = 15 pre-existing at the batch base + 2 new); RED pre-fix log in the run's spool scratch; composed on the rm-701/rm-759 mechanics this same integrate restored after their adoption-lineage drop
 
 ### rm-184
@@ -907,7 +928,7 @@
 
 ### Visual gate PR-trigger completeness (render-affecting inputs)
 - id: `rm-420` | track: reliability | priority: 28.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### The Inbox badge poll never re-arms after a cross-tab re-login while the rm-273 loops self-heal
@@ -927,7 +948,7 @@
 
 ### Public robots.txt: a well-known disallow for the authenticated surface
 - id: `rm-713` | track: reliability | priority: 28.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Absorb upstream #570: operator launch-card anatomy (repo label, cancel region, role=button, expansion retention)
@@ -942,7 +963,7 @@
 
 ### Snapshot-store load buffers the full cache file before the byte-bound rejection
 - id: `rm-759` | track: reliability | priority: 27.0 | status: implemented (restored 2026-10-15 at the integrate of run d8fdf8b79ad5, conflict case 70b938272a—the statSync pre-read size gate + spy-proven ordering tests landed 2026-10-08/09 and were dropped as adoption collateral by the October upstream-adoption lineage; restored here with rm-802 structured-payload logging composed on top)
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Server and docs hygiene batch
@@ -957,7 +978,7 @@
 
 ### Listener per-message parse failures vanish against the unread count
 - id: `rm-215` | track: reliability | priority: 26.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### No root ErrorBoundary: a render-time exception unmounts the whole SPA
@@ -1022,7 +1043,7 @@
 
 ### Permissions-Policy header: deny-by-default powerful features on every response
 - id: `rm-557` | track: reliability | priority: 24.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### VAPID stale-key handoff wire is production-dead
@@ -1037,7 +1058,7 @@
 
 ### In-window dependency refresh — vite 8.3.4, eslint 10.12.0, @hono/node-server 2.1.4, @playwright/test 1.64.0, @opencode-ai/plugin 1.18.35
 - id: `rm-760` | track: reliability | priority: 24.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Code-truth micro-batch: dead param, env-parse lenience
@@ -1057,12 +1078,12 @@
 
 ### Document the operator environment variables (README table + structural coverage guard)
 - id: `rm-214` | track: reliability | priority: 22.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Client-truth micro-batch (five verified-live sites)
 - id: `rm-421` | track: reliability | priority: 22.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Parity guard for the three validateDynamicId copies
@@ -1072,7 +1093,7 @@
 
 ### .github/copilot-instructions.md still teaches the pre-PWA SSR architecture
 - id: `rm-612` | track: reliability | priority: 22.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### security-posture runbook: carry the conditional GitHub-Release design
@@ -1082,7 +1103,7 @@
 
 ### Pin X-GitHub-Api-Version at every GitHub egress client
 - id: `rm-855` | track: reliability | priority: 22.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### License decision (blocked-external)
@@ -1112,12 +1133,12 @@
 
 ### Ledger repair: recovery path from the lossy 2026-10-06 roadmap-sync render
 - id: `rm-675` | track: reliability | priority: 20.0 | status: in_progress
-- acceptance: emitter obligations land in the external roadmap-sync renderer BEFORE any next managed render (no trailing spaces on empty acceptance lines, backticked bracket lists, HTML-comment and id-def preservation, byte-identical status round-trip); a diff-based ledger census guard (defs/comments/statuses) gates render commits; full pre-sync-ledger restoration vs compose-forward is decided and executed — deliberately deferred out of the 2026-10-06 cure landing as must_remain_separate.
+- acceptance: emitter obligations land in the external roadmap-sync renderer BEFORE any next managed render (no trailing spaces on empty acceptance lines, backticked bracket lists, HTML-comment and id-def preservation, byte-identical status round-trip); a diff-based ledger census guard (defs/comments/statuses) gates render commits; full pre-sync-ledger restoration vs compose-forward is decided and executed — deliberately deferred out of the 2026-10-06 cure landing as must_remain_separate. 2026-10-17 cycle-4 extension (rm-857 lint rider, compound e9f0a8a9): the backtick obligation also covers bracketed string literals inside def prose — the rm-802 header and acceptance lines carried bare object-Object literals, and a repo-side wrap alone regresses because the strings ride the campaign-record data; the emitter must emit them wrapped.
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Re-pin pnpm/action-setup v6.0.10 → v6.1.0 at its three workflow sites
 - id: `rm-761` | track: reliability | priority: 20.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### App badge for unread listener notifications
@@ -1132,7 +1153,7 @@
 
 ### Release image multi-arch (linux/arm64): BUILDPLATFORM builders, arch-neutral final stages
 - id: `rm-558` | track: reliability | priority: 18.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### operator-stream runtime: module-singleton stream handle vs StrictMode double-mount (dev-only today)
@@ -1157,7 +1178,7 @@
 
 ### pnpm auto-install rewrites pnpm-lock.yaml on script runs — evidence-integrity hazard, kill-switch proven
 - id: `rm-656` | track: reliability | priority: 14.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### docs/solutions frontmatter convention has no machine check; one shipped lesson already evades it
@@ -1177,7 +1198,7 @@
 
 ### Ephemeral-validation refs accumulate stale conductor/ci-* heads on origin
 - id: `rm-778` | track: reliability | priority: 12.0 | status: in_progress
-- acceptance: 
+- acceptance:
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### healthz Cache-Control residual (micro)
@@ -1187,7 +1208,13 @@
 
 ### HSTS max-age is 180d on every response (secure-headers ramp window overdue)
 - id: `rm-613` | track: reliability | priority: 10.0 | status: in_progress
-- acceptance: 
+- acceptance:
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### snapshot-store logPersistProblem: payload keys can clobber structural log fields (micro)
+<!-- (2026-10-17 independent_review:fix 44f7bbd6, curing review F6): the reservation is now two-pass — non-colliding payload keys claim their exact name first, so a nested {path, path-payload} payload keeps the free sibling's name while the collider suffixes past every claimed name; mapping stays total and injective for every key shape; pinned in test/snapshot-store.test.ts. -->
+- id: `rm-860` | track: reliability | priority: 10.0 | status: implemented 2026-10-17, validated pre-review, pending the cycle-4 landing (run 9d5c156d cycle:4 implement 2f245515; the structural-key reservation — payload keys colliding with path or error are suffixed -payload — rides src/github/snapshot-store.ts logPersistProblem with its unit pin in test/snapshot-store.test.ts; focused snapshot-store suite green and the full six-job local Main mirror green at base 3e3664c; rider selected at prioritize a66b3d94 beside the rm-857 lead)
+- acceptance: logPersistProblem's Object.assign(fields, detail) spread reserves the structural keys — a plain-object payload key named `path` (or `error`) is namespaced or dropped with a comment naming the reservation; a unit test pins that a payload carrying a `path` key cannot overwrite the structural path field; untriggerable at current call sites (only `{bytes}` is ever passed — 2026-10-15 adversarial review of the landed rm-802 code), so this is a totality guard on the rm-802 contract, not a live defect
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### DASHBOARD_VISUAL_PORT parses to NaN silently (micro)
