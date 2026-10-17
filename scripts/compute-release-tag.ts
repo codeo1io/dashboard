@@ -24,6 +24,15 @@
 //   candidates because their third component (15) is a valid integer. Nested
 //   four-part tags (e.g. 2026.06.15.1) are ignored because their third
 //   component after stripping the month prefix contains a dot.
+//
+// Foreign-tag filter (rm-1481):
+//   Local tag stores can carry foreign calver tags (upstream-leaked or
+//   mirror-minted). A tag counts toward the fork channel only when it is
+//   visible on origin, anchored to a commit merged into origin/main, or
+//   anchored inside the upstream absorb window (merge-base..upstream/main).
+//   Probes are best-effort: when none of them can run (no origin/upstream
+//   wiring), the unfiltered local list is used so behavior stays identical
+//   to the pre-filter script.
 
 import {spawnSync} from 'node:child_process'
 import process from 'node:process'
@@ -73,9 +82,65 @@ if (result.status !== 0) {
 
 const tags = (result.stdout ?? '').split('\n').filter(line => line.length > 0)
 
+// ---------------------------------------------------------------------------
+// Foreign-tag filter (rm-1481)
+// ---------------------------------------------------------------------------
+
+function gitOk(args: string[]): {ok: boolean; stdout: string} {
+  const res = spawnSync('git', args, {encoding: 'utf8', timeout: 30_000})
+  return {ok: res.status === 0 && res.error === undefined, stdout: res.stdout ?? ''}
+}
+
+function forkChannelTags(monthLocal: string, local: string[]): string[] {
+  const originProbe = gitOk(['ls-remote', '--tags', 'origin', `refs/tags/${monthLocal}.*`])
+  const onOrigin = originProbe.ok
+    ? new Set(
+        originProbe.stdout
+          .split('\n')
+          .filter(line => line.length > 0 && !line.endsWith('^{}'))
+          .map(line => line.replace(/^.*refs\/tags\//, '')),
+      )
+    : null
+  const mergedProbe = gitOk(['tag', '--merged', 'origin/main', '-l', `${monthLocal}.*`])
+  const merged = mergedProbe.ok
+    ? new Set(mergedProbe.stdout.split('\n').filter(line => line.length > 0))
+    : null
+  let windowCommits: Set<string> | null = null
+  const mb = gitOk(['merge-base', 'origin/main', 'upstream/main'])
+  if (mb.ok) {
+    const revs = gitOk(['rev-list', `${mb.stdout.trim()}..upstream/main`])
+    if (revs.ok) {
+      windowCommits = new Set(revs.stdout.split('\n').filter(line => line.length > 0))
+    }
+  }
+  if (onOrigin === null && merged === null && windowCommits === null) {
+    process.stderr.write(
+      'NOTE: foreign-tag filter unavailable (origin/upstream unprobeable); using unfiltered local tags\n',
+    )
+    return local
+  }
+  const kept = local.filter(tag => {
+    if (onOrigin !== null && onOrigin.has(tag)) return true
+    if (merged !== null && merged.has(tag)) return true
+    if (windowCommits !== null) {
+      const peel = gitOk(['rev-parse', `${tag}^{commit}`])
+      if (peel.ok && windowCommits.has(peel.stdout.trim())) return true
+    }
+    return false
+  })
+  if (kept.length < local.length) {
+    process.stderr.write(
+      `NOTE: filtered ${local.length - kept.length} foreign tag(s) for ${monthLocal}\n`,
+    )
+  }
+  return kept
+}
+
+const channelTags = forkChannelTags(month, tags)
+
 let maxPatch = -1
 
-for (const tag of tags) {
+for (const tag of channelTags) {
   // Strip the "YYYY.MM." prefix to get the candidate suffix
   const prefix = `${month}.`
   if (!tag.startsWith(prefix)) continue
