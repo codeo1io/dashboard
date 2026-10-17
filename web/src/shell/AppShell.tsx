@@ -161,6 +161,11 @@ export function AppShell({
   const [installRestoreNonce, setInstallRestoreNonce] = useState(0)
   const logoutInFlight = useRef(false)
 
+  // rm-1483 (#641 port): release-channel version injected at image build time
+  // via VITE_DASHBOARD_VERSION (Dockerfile ARG DASHBOARD_VERSION, release.yaml
+  // build-arg). 'dev' = local/CI build, no version link in the footer.
+  const dashboardVersion = import.meta.env.VITE_DASHBOARD_VERSION || 'dev'
+
   useEffect(() => {
     applyTheme(theme)
     window.localStorage.setItem('fro-bot-theme', theme)
@@ -565,6 +570,16 @@ export function AppShell({
           >
             Privacy
           </a>
+          {dashboardVersion !== 'dev' && (
+            <a
+              href={`https://github.com/codeo1io/dashboard/releases/tag/${dashboardVersion}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex min-h-11 items-center text-label text-text-muted underline underline-offset-4 transition-colors duration-fast hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              {dashboardVersion}
+            </a>
+          )}
           {/* rm-596: the way back for the one-way dismiss latches (notifications
               card + install prompt). Always rendered, not conditional on a
               latch being set: the dismissal happens inside the children, so a

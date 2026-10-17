@@ -1,7 +1,16 @@
-import {render, screen} from '@testing-library/react'
-import {describe, expect, it} from 'vitest'
+import {fireEvent, render, screen} from '@testing-library/react'
+import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {Operator} from './Operator.tsx'
 import type {OperatorState} from '../operator/state.ts'
+
+const maybeAutoRedirectToGatewaySignIn = vi.hoisted(() => vi.fn())
+const navigateToGatewaySignIn = vi.hoisted(() => vi.fn())
+vi.mock('../operator/sign-in-recovery.ts', () => ({
+  maybeAutoRedirectToGatewaySignIn,
+  navigateToGatewaySignIn,
+  clearGatewaySignInRedirectGuard: vi.fn(),
+  GATEWAY_SIGN_IN_URL: '/operator/auth/github/start?return_to=/operator',
+}))
 
 describe('Operator', () => {
   it('renders without throwing', () => {
@@ -900,5 +909,46 @@ describe('Operator — stream and status announcement hooks', () => {
     expect(noticeEl).toHaveAttribute('role', 'status')
     expect(noticeEl).toHaveAttribute('aria-live', 'polite')
     expect(noticeEl).toHaveClass('operator-stream-status')
+  })
+})
+
+describe('Operator sign-in recovery (rm-1483, upstream #633/#637)', () => {
+  const validStates: readonly OperatorState[] = ['ready', 'loading', 'auth-required', 'rate-limited', 'offline', 'unavailable']
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    sessionStorage.clear()
+  })
+
+  afterEach(() => {
+    sessionStorage.clear()
+  })
+
+  it('renders a sign-in action button when signed out', () => {
+    render(<Operator state="auth-required" />)
+    expect(screen.getByRole('button', {name: 'Sign in with GitHub'})).toBeInTheDocument()
+  })
+
+  it('navigates to the gateway sign-in URL when the sign-in button is clicked', () => {
+    render(<Operator state="auth-required" />)
+    fireEvent.click(screen.getByRole('button', {name: 'Sign in with GitHub'}))
+    expect(navigateToGatewaySignIn).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not render a sign-in button outside the signed-out state', () => {
+    for (const state of validStates) {
+      if (state === 'auth-required') continue
+      const {unmount} = render(<Operator state={state} />)
+      expect(screen.queryByRole('button', {name: 'Sign in with GitHub'})).not.toBeInTheDocument()
+      unmount()
+    }
+  })
+
+  it('does not call the auto redirect from a manual click (no redirect loop)', () => {
+    sessionStorage.setItem('fro-bot.operator-sign-in-redirect', String(Date.now()))
+    render(<Operator state="auth-required" />)
+    fireEvent.click(screen.getByRole('button', {name: 'Sign in with GitHub'}))
+    expect(navigateToGatewaySignIn).toHaveBeenCalledTimes(1)
+    expect(maybeAutoRedirectToGatewaySignIn).not.toHaveBeenCalled()
   })
 })

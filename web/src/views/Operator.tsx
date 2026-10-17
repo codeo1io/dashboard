@@ -25,6 +25,7 @@ import {useEffect, useRef, useState} from 'react'
 import {getStateActionReason, getStateDetail, getStateHeadline, getStateRecoveryHint} from '../operator/copy.ts'
 import {createOperatorRuntime} from '../operator/runtime.ts'
 import type {OperatorRuntimeHandle} from '../operator/runtime.ts'
+import {navigateToGatewaySignIn} from '../operator/sign-in-recovery.ts'
 import {isActionDisabled} from '../operator/state.ts'
 import type {OperatorState} from '../operator/state.ts'
 
@@ -254,6 +255,16 @@ export function Operator({state = 'loading', onRuntimeStateChange, fixtureMode, 
             )}
           </div>
         </div>
+
+        {state === 'auth-required' && (
+          <button
+            type="button"
+            className="operator-primary-action operator-sign-in-action"
+            onClick={() => navigateToGatewaySignIn()}
+          >
+            Sign in with GitHub
+          </button>
+        )}
 
         {state === 'ready' && (
           <button
