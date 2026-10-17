@@ -17,6 +17,14 @@
 # Topology note: the local `autonomy-upstream` remote convention does not
 # exist on a fresh Actions checkout, so upstream is fetched by URL into
 # FETCH_HEAD and compared against origin/<default branch>.
+#
+# Absorb-window freshness companion (rm-856 fetch-first arm, 2026-10-15):
+# scripts/absorb-window.ts measures the same window on demand with a
+# fetch-first, fail-closed posture — it refuses cached tracking refs older
+# than --max-age-hours with the staleness age, so a stale local upstream
+# ref can never undercount the window the way the 2026-10-14 run did
+# (2 recorded vs 4 real). This workflow stays the scheduled alert; the
+# script is the truth source for absorb planning.
 name: Upstream drift check
 
 on:
