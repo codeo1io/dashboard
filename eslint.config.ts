@@ -11,7 +11,13 @@ export default defineConfig(
     // .agents/ is a vendored shared-skill bundle (e.g. .agents/skills/impeccable) of
     // third-party .mjs/.md files — not our source; linting it reports tens of thousands
     // of errors.
-    ignores: ['docs/plans/**', 'docs/solutions/**', 'docs/brainstorms/**', 'web/**', '.agents/**', '.opencode/**'],
+    ignores: ['docs/plans/**', 'docs/solutions/**', 'docs/brainstorms/**', 'web/**', '.agents/**', '.opencode/**', '.slim/**'],
+    // ^ .slim/ holds the cloned dependency-source mirrors (.slim/clonedeps/repos/*).
+    // Mirrors are provisioned on demand (AGENTS.md recipe, rm-1510's lockstep
+    // re-provision instructions) and each carries its OWN eslint config needing
+    // plugins this repo does not install — without this ignore, any provisioned
+    // mirror derails `pnpm lint` with an unrelated "could not find plugin"
+    // configuration error.
     typescript: {
       tsconfigPath: './tsconfig.json',
       // Enforce Node 24 strip-only TypeScript compatibility: rejects parameter properties,

@@ -561,7 +561,9 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
           // opens the NEXT chunk forges a phantom record boundary and the frame
           // is dropped without even a parse error. Hold a trailing CR back and
           // let it normalize together with the following chunk.
-          let text = buffer + decoder.decode(value, {stream: true})
+          const prevBuffer = buffer
+          const decodedChunk = decoder.decode(value, {stream: true})
+          let text = prevBuffer + decodedChunk
           let held = ''
           if (text.endsWith('\r')) {
             held = '\r'
@@ -570,8 +572,31 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
           // normalizeCrlf is idempotent on already-normalized text, so
           // re-normalizing the concatenation is safe; only the junction
           // between a held CR and a following LF changes.
+          //
+          // rm-1507: the byte counter advances by the fold's INCREMENTAL delta —
+          // encode only the junction (the previously-held CR / a trailing lone
+          // high surrogate plus the chunk text that passes through normalizeCrlf),
+          // never the retained buffer, so steady-state per-chunk cost is linear
+          // in chunk size, not buffer size. Mirrors appendStreamChunkByteDelta
+          // in public/operator-stream.js (parity pinned by
+          // test/operator-stream-sse-parity.test.ts); record extraction below
+          // subtracts the removed record's bytes.
+          const prevHeldBytes = prevBuffer.endsWith('\r') ? 1 : 0
+          let junctionStart = prevBuffer.length - prevHeldBytes
+          let prevTailBytes = 0
+          if (junctionStart > 0) {
+            const lastUnit = prevBuffer.charCodeAt(junctionStart - 1)
+            if (lastUnit >= 0xD800 && lastUnit <= 0xDBFF) {
+              junctionStart -= 1
+              prevTailBytes = 3 // previously counted as one U+FFFD
+            }
+          }
+          bufferBytes +=
+            encoder.encode(normalizeCrlf(text.slice(junctionStart))).length +
+            (held === '\r' ? 1 : 0) -
+            prevHeldBytes -
+            prevTailBytes
           buffer = normalizeCrlf(text) + held
-          bufferBytes = encoder.encode(buffer).length
         }
 
         // Hard buffer cap (UTF-8 bytes, rm-114) — fail closed if exceeded without a boundary

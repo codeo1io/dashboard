@@ -57,6 +57,13 @@ export type RunIndexResult =
   | {readonly kind: 'unavailable'; readonly authFailure?: boolean}
 
 export declare const RUN_INDEX_CAP: 100
+
+/**
+ * rm-1446: the gateway session's push-health vocabulary (mirrors the
+ * operator contract's OPERATOR_PUSH_HEALTH_STATUSES; pinned three-way by
+ * test/operator-push-health-parity.test.ts).
+ */
+export declare const OPERATOR_PUSH_HEALTH_STATUSES: readonly ['ready', 'degraded', 'unknown']
 export declare const VALID_RUN_SUMMARY_STATUSES: ReadonlySet<string>
 
 /**

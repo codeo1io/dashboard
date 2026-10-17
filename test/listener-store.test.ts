@@ -1,4 +1,8 @@
 import type {IngestMessage} from '../src/listener/contract.ts'
+import {mkdtempSync} from 'node:fs'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
+import {DatabaseSync} from 'node:sqlite'
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {createListenerStore, type ListenerStore} from '../src/listener/store.ts'
 
@@ -167,5 +171,48 @@ describe('listener store', () => {
 
   it('close does not throw', () => {
     expect(() => store.close()).not.toThrow()
+  })
+})
+
+describe('listener store read-path guards (rm-1511)', () => {
+  it('drops rows with unvalidated source/severity, logs each, and keeps healthy rows', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'listener-store-rm1511-'))
+    const dbPath = join(dir, 'messages.db')
+    const fileStore = createListenerStore(dbPath)
+    const good = fileStore.insert(makeMessage())
+    const badSource = fileStore.insert(
+      makeMessage({source: 'agent', dedupeKey: 'rm1511-bad-source'}),
+    )
+    const badSeverity = fileStore.insert(
+      makeMessage({dedupeKey: 'rm1511-bad-sev', createdAt: '2026-07-11T12:01:00Z'}),
+    )
+
+    // Corrupt the two rows past the write-path validator — the exact shape a
+    // schema drift or hand-edited legacy row produces.
+    const db = new DatabaseSync(dbPath)
+    db.prepare("UPDATE messages SET source = 'web' WHERE id = ?").run(badSource.id)
+    db.prepare("UPDATE messages SET severity = 'sev7' WHERE id = ?").run(badSeverity.id)
+    db.close()
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const {messages} = fileStore.list({})
+
+      // Bounded failure: the two degraded rows are dropped, the healthy row
+      // survives intact, and the endpoint-shape response stays coherent.
+      expect(messages).toHaveLength(1)
+      expect(messages[0]?.id).toBe(good.id)
+      expect(messages[0]?.source).toBe('infra')
+
+      const logged = warn.mock.calls.map(call => String(call[0]))
+      expect(logged).toHaveLength(2)
+      expect(logged.some(line => line.includes(`id=${badSource.id}`))).toBe(true)
+      expect(logged.some(line => line.includes(`id=${badSeverity.id}`))).toBe(true)
+      expect(logged.every(line => line.includes('[listener-store] dropping degraded message row'))).toBe(
+        true,
+      )
+    } finally {
+      warn.mockRestore()
+    }
   })
 })

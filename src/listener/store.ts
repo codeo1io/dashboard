@@ -72,12 +72,28 @@ function parseLinksCell(raw: string, id: string): readonly ListenerLink[] {
   }
 }
 
-function rowToMessage(row: MessageRow): ListenerMessage {
+function rowToMessage(row: MessageRow): ListenerMessage | null {
+  const source = row.source === 'infra' || row.source === 'agent' ? row.source : null
+  const severity =
+    row.severity === 'info' || row.severity === 'warning' || row.severity === 'critical'
+      ? row.severity
+      : null
+  if (source === null || severity === null) {
+    // rm-1511: read-path guard. The ingest contract parse is the single
+    // authority for these unions on the write path; a drifted or legacy row
+    // once rendered with an unvalidated enum value on the operator surface.
+    // Bounded failure: drop the one degraded row (list stays intact) and log
+    // — the same degrade-not-500 philosophy as the rm-187 links-cell fix.
+    console.warn(
+      `[listener-store] dropping degraded message row id=${String(row.id)} (invalid source/severity)`,
+    )
+    return null
+  }
   return {
     id: row.id,
-    source: row.source as ListenerMessage['source'],
+    source,
     kind: row.kind,
-    severity: row.severity as ListenerMessage['severity'],
+    severity,
     title: row.title,
     body: row.body,
     links: parseLinksCell(row.links, row.id),
@@ -202,7 +218,7 @@ export function createListenerStore(dbPath: string): ListenerStore {
     const unreadCountRow = countUnreadStmt.get() as unknown as {n: number}
 
     return {
-      messages: rows.map(rowToMessage),
+      messages: rows.map(rowToMessage).filter((message): message is ListenerMessage => message !== null),
       unreadCount: unreadCountRow.n,
       prunedCount: prunedTotal,
     }
