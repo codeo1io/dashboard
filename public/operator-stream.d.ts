@@ -463,8 +463,8 @@ export interface CancelActionEvent {
   readonly data: {readonly runId: string}
 }
 
-/** Statuses a run-list summary can carry. */
-export type RunSummaryStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+/** Statuses a run-list summary can carry. The waiting statuses are gateway overlays on a running run. */
+export type RunSummaryStatus = 'queued' | 'running' | 'waiting_for_approval' | 'waiting_for_question' | 'succeeded' | 'failed' | 'cancelled'
 
 export interface StreamState {
   readonly connection: ConnectionStatus

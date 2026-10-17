@@ -75,11 +75,14 @@ export function discoverCardStreamTargets(runId: string): {
 
 /**
  * The run-list summary statuses the run index parser keeps (public/operator-run-index.js
- * VALID_RUN_SUMMARY_STATUSES). Stream-only statuses (blocked, waiting_for_*) are not summaries.
+ * VALID_RUN_SUMMARY_STATUSES). 'blocked' is stream-only; the waiting statuses are gateway
+ * overlays on a running run and do ride run summaries.
  */
 const SUMMARY_STATUSES: ReadonlySet<RunSummaryStatus> = new Set<RunSummaryStatus>([
   'queued',
   'running',
+  'waiting_for_approval',
+  'waiting_for_question',
   'succeeded',
   'failed',
   'cancelled',
@@ -412,6 +415,43 @@ async function defaultRuntimeLoader(opts?: {
     }
   }
 
+  // Pending card reveal scheduled by scrollRunCardIntoView — canceled when the operator
+  // selects another card first or when the runtime seam cleans up.
+  let pendingCardReveal: number | null = null
+
+  /** Cancel a scheduled card reveal, e.g. when the operator selects another card first. */
+  function cancelPendingCardReveal(): void {
+    if (pendingCardReveal !== null) {
+      window.cancelAnimationFrame(pendingCardReveal)
+      pendingCardReveal = null
+    }
+  }
+
+  /**
+   * Reveal a run card to the operator. The entry points that render a stream into a
+   * card (select, restore, launch) call this, because a card expanded below the fold
+   * hides the exact thing the expansion was for. scrollIntoView({block: 'nearest'})
+   * never scrolls when the card is already visible, so this only moves the page when
+   * something is actually hidden. Double rAF (per the pattern in
+   * https://github.com/w3c/csswg-drafts/issues/5496): the first frame flushes the DOM
+   * work the expansion itself performs (the card's substructure reveal mutates
+   * layout), the second runs after that layout has settled, so scrollIntoView measures
+   * the card at its final position instead of mid-transition.
+   */
+  function scrollRunCardIntoView(card: HTMLElement): void {
+    cancelPendingCardReveal()
+    pendingCardReveal = window.requestAnimationFrame(() => {
+      pendingCardReveal = window.requestAnimationFrame(() => {
+        pendingCardReveal = null
+        // Guarded for test DOMs that do not implement scrollIntoView (jsdom historically
+        // lacks it): a missing method must never turn a card reveal into a thrown error.
+        if (typeof card.scrollIntoView === 'function') {
+          card.scrollIntoView({block: 'nearest'})
+        }
+      })
+    })
+  }
+
   // Build the active-stream coordination callbacks. These are passed to run-index and
   // launch modules so the runtime seam owns the single active stream handle.
   //
@@ -424,7 +464,12 @@ async function defaultRuntimeLoader(opts?: {
   // - Otherwise the card was just expanded — close whichever stream is active
   //   (if any) and attach the new one. _attachStream already closes the prior
   //   handle first, so this covers both "nothing was open" and "switching cards."
+
   const onSelectRun = (runId: string) => {
+    // An ordinary card select cancels any pending reveal: whatever expansion scheduled
+    // it is being superseded right now (either a new card is opening, or the pending
+    // card is collapsing again) and its reveal would be a scroll the operator did not ask for.
+    cancelPendingCardReveal()
     if (streamOwner.activeRunId === runId) {
       streamOwner.close()
       _clearRunHash()
@@ -438,6 +483,9 @@ async function defaultRuntimeLoader(opts?: {
     const noticeEl = typeof document !== 'undefined'
       ? document.querySelector('[data-role="stream-status"]')
       : null
+    if (card instanceof HTMLElement) {
+      scrollRunCardIntoView(card)
+    }
     _attachStream(runId, statusEl, noticeEl)
     _writeRunHash(runId)
   }
@@ -461,6 +509,9 @@ async function defaultRuntimeLoader(opts?: {
     const noticeEl = typeof document !== 'undefined'
       ? document.querySelector('[data-role="stream-status"]')
       : null
+    if (card instanceof HTMLElement) {
+      scrollRunCardIntoView(card)
+    }
     _attachStream(runId, statusEl, noticeEl)
   }
 
@@ -485,6 +536,7 @@ async function defaultRuntimeLoader(opts?: {
     const noticeEl = typeof document !== 'undefined'
       ? document.querySelector('[data-role="stream-status"]')
       : null
+    scrollRunCardIntoView(card)
     _attachStream(runId, statusEl, noticeEl)
     _writeRunHash(runId)
     // A launched run's card must present as already-expanded/observed the moment
@@ -527,6 +579,8 @@ async function defaultRuntimeLoader(opts?: {
   }
 
   return () => {
+    // Cancel any pending card reveal before closing the stream handle owned by THIS instance.
+    cancelPendingCardReveal()
     // Close the stream handle owned by THIS runtime instance on cleanup.
     streamOwner.close()
     if (typeof streamMod.resetBootstrapState === 'function') {

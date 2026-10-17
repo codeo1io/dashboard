@@ -19,10 +19,19 @@ import {err, ok} from '../../result.ts'
 import {isOperatorFailureKind} from './run-status.ts'
 
 /**
- * Index-only status set. 'blocked' and 'waiting_for_approval' are stream-only
- * overlays — never produced by the run-summary projector.
+ * Run-summary statuses. 'blocked' is stream-only — never produced by the
+ * run-summary projector. The waiting statuses are gateway overlays on a
+ * running run; a newer gateway feed may list them, so summary parsing
+ * accepts them additively instead of dropping the run.
  */
-export type RunSummaryStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+export type RunSummaryStatus =
+  | 'queued'
+  | 'running'
+  | 'waiting_for_approval'
+  | 'waiting_for_question'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
 
 /**
  * Operator-safe projection of a run's summary.
@@ -49,6 +58,8 @@ const MAX_DATE_LENGTH = 128
 const VALID_RUN_SUMMARY_STATUSES: ReadonlySet<string> = new Set([
   'queued',
   'running',
+  'waiting_for_approval',
+  'waiting_for_question',
   'succeeded',
   'failed',
   'cancelled',
