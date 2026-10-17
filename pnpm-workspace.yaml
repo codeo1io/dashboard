@@ -67,7 +67,10 @@ overrides:
   # NEWLY indexed advisory BY DESIGN and the undici 8 + jsdom 30 migration
   # rides rm-271's majors window. undici is dev-transitive via jsdom.
   undici@7: '>=7.30.0 <8.0.0'
-  # upstream 2026.10.17: new advisory floor
+  # GHSA-238p-pmpm-9mq7 — katex prototype pollution can bypass trust
+  # restrictions (published 2026-10-05; vulnerable >=0.11.0 <0.18.2), patched
+  # at 0.18.2: the 2026-10-17 upstream advisory floor, rationale recorded
+  # inline per the rm-499 advisory-naming house style (run d495512fd2cc U3).
   katex@0: '>=0.18.2 <1.0.0'
 
 shamefullyHoist: true
