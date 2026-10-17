@@ -86,6 +86,20 @@ export function parseLinks(raw: unknown): Result<ListenerLink[], Error> {
 }
 
 /**
+ * rm-1459: shared source/severity vocabulary predicates. The read path
+ * (listener store) re-validates cells off disk through the SAME gates the
+ * ingest path uses, instead of bare-casting them past the type system.
+ */
+export function isListenerSource(value: unknown): value is ListenerSource {
+  return value === 'infra' || value === 'agent'
+}
+
+/** rm-1459: see isListenerSource. */
+export function isListenerSeverity(value: unknown): value is ListenerSeverity {
+  return value === 'info' || value === 'warning' || value === 'critical'
+}
+
+/**
  * Parses and validates a raw ingest request body against the contract.
  * Returns a closed `IngestMessage` DTO on success, or a fixed-reason `Error`
  * on any violation. Never includes the offending value in the error message.
@@ -95,7 +109,7 @@ export function parseIngestBody(raw: unknown): Result<IngestMessage, Error> {
 
   const {source, kind, severity, title, body, links, dedupeKey, createdAt} = raw
 
-  if (source !== 'infra' && source !== 'agent') {
+  if (!isListenerSource(source)) {
     return err(new Error('invalid source'))
   }
 
@@ -103,7 +117,7 @@ export function parseIngestBody(raw: unknown): Result<IngestMessage, Error> {
     return err(new Error('invalid kind'))
   }
 
-  if (severity !== 'info' && severity !== 'warning' && severity !== 'critical') {
+  if (!isListenerSeverity(severity)) {
     return err(new Error('invalid severity'))
   }
 
