@@ -69,3 +69,61 @@ out-of-band signal: repository tests cannot run while Actions is dark.
   schedule-only lanes (audit, base-drift, canary, fro-bot, upstream-drift)
   dark with no runs in the window. The outage state this runbook was written
   under.
+
+## Actions pin census and zizmor (rm-1931, rm-1930)
+
+While run-creation darkness starves dependabot and every CI lane, two more
+things rot silently: action pins drift from upstream releases, and stale or
+bare version comments (`# v4`, `# v6`) make pin audits unauditable. Two
+out-of-band companions extend the darkness watch for exactly that gap:
+
+- `pnpm pins:census` — offline structural census (no network):
+  `scripts/actions-pin-census.ts` walks `.github/workflows/*.ya?ml` plus
+  every `action.yaml` composite under `.github/`, then reports one verdict:
+  GREEN (exit 0) every `uses` pin is a 40-hex digest with a full
+  `major.minor.patch` comment, one digest per action; STALE (exit 1) comment
+  defects only; DRIFT (exit 3) unpinned refs, split pins, or digest drift.
+- `pnpm pins:census:online` — same census plus a latest-release comparison
+  per action (major-line aware: repos like `github/codeql-action` dual-track
+  `v4.x` action tags and `codeql-bundle-*` releases, so the comment's major
+  line is the oracle, not `releases/latest`). Network failures degrade to
+  STALE with an explicit note — never GREEN.
+- `pnpm lint:workflows` — zizmor 1.31.1 (pinned via uvx) with
+  `.github/zizmor.yml`, scanning all of `.github` (workflows plus local
+  composites) as the audit-class complement to actionlint.
+
+Standing baseline (2026-10-17, run 65d41c1b implement phase; reconciled
+same-day in the targeted_tests phase against origin/main's concurrent
+`43af4cf` landing, which had already taken the setup-node v7.1.0 /
+action-setup v6.1.0 / upload-artifact v7.0.2 refreshes and the rm-142
+playwright 1.64.0 image-lockstep repair — this tree adopts that world
+verbatim and keeps only what main has not landed yet):
+
+- Offline census GREEN on the reconciled pins: setup-node v7.1.0
+  (949feb2413d6), action-setup v6.1.0 (ea17c68df891),
+  upload-artifact unified v7.0.2 (cf430e030ddb), codeql-action v4.38.3
+  (24c54180a607) — adopted from main's comment-truth; the v4.39.0
+  (6f2ac81f5cd8) refresh this batch had staged was deferred to next-cycle
+  pin work to keep the fold conflict-free — setup-qemu v4.4.0
+  (990126619549), labeler v6.1.0 (f27b6088b921) — workflow files and the
+  `actions/setup` composite both.
+- Online census: two standing DRIFT rows are deliberate — `fro-bot/agent`
+  workflow pins v0.122.1 (15dc1d9) matching the deployed gateway, while
+  v0.122.3 (7d273ac) sits undeployed upstream; the estate pin moves as its
+  own decision, not as pin hygiene. And `github/codeql-action` in-tree
+  v4.38.3 (24c54180) trails the v4.x latest — the deferred v4.39.0 bump
+  above — so its three use-sites (init/analyze/upload-sarif) each show as a
+  digest-drift row until that next-cycle refresh lands.
+- zizmor: triaged ignores live in `.github/zizmor.yml` with per-line
+  reasons (template-injection on operator-owned contexts, intentional
+  persistent caches, local-composite self-references, digest-carrying image
+  aliases). Remaining findings are the unignored hardening backlog and are
+  expected to keep `pnpm lint:workflows` nonzero until narrowed:
+  permissions least-privilege passes (read-all and job-level write scopes in
+  main/codeql/fro-bot/base-drift), the `ref-confusion` in
+  upstream-drift.yaml, and the comment-blocked `dangerous-triggers` family
+  in fro-bot.yaml. Land them as their own ledger work, then lift nothing
+  else.
+
+Run both probes on the same cadence as the darkness watch; the online census
+and zizmor need network but no CI lane.
