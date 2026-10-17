@@ -154,7 +154,13 @@ describe('ROADMAP.md render-guard census (rm-1454)', () => {
     ).toBeGreaterThanOrEqual(MIN_DISTINCT_TRACKS)
   })
 
-  it('eslint ROADMAP.md exits clean', () => {
+  // The probe budget below must exceed spawnSync's own 120s timeout: the
+  // repo-wide 30s testTimeout would otherwise truncate the probe under
+  // concurrent suite load (observed 59s eslint-on-ROADMAP while sibling
+  // suites churn; 7.4s isolated) and fail this leg on harness truncation
+  // instead of the eslint result — and a guard that cannot run its probe
+  // is a broken guard.
+  it('eslint ROADMAP.md exits clean', {timeout: 150_000}, () => {
     const eslintBin = resolve(repoRoot, 'node_modules', '.bin', 'eslint')
     const result = spawnSync(eslintBin, ['ROADMAP.md', '-f', 'json'], {
       cwd: repoRoot,
