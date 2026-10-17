@@ -1,0 +1,53 @@
+# zizmor configuration (rm-1930, run 65d41c1b9f8e4c63aad7a7588d4cad09).
+# Static analysis for GitHub Actions, beside actionlint. Every ignore below is
+# a triaged disposition, not a dismissal; reasons per line, standing baseline
+# ledger and unignored error-class backlog in docs/runbooks/actions-darkness-watch.md
+# (Actions pin census and zizmor section). Lift an ignore only with its reason.
+rules:
+  unpinned-alias:
+    ignore:
+      # Image alias carries the digest of the image this same workflow just
+      # built (steps.build.outputs.digest): pinned by construction, statically
+      # opaque to zizmor.
+      - release.yaml:452
+      - release.yaml:453
+  template-injection:
+    ignore:
+      # github.event.schedule = the cron name from the schedule trigger:
+      # operator-owned metadata, feeds a probe arg, never a shell context.
+      - audit.yaml:85
+      # github.event.repository.default_branch on a schedule-only workflow:
+      # repository metadata, no pull_request trigger can carry attacker input.
+      - upstream-drift.yaml:49
+      # github.event.number / github.ref in the concurrency group key:
+      # concurrency keys are matched, not executed; values are repo-numeric.
+      - main.yaml:12
+  cache-usage-persistent:
+    ignore:
+      # dist and coverage caches deliberately use restore-keys for warm
+      # cross-branch starts; persistent fallback is the intended design.
+      - release.yaml:200
+      - release.yaml:452
+      - release.yaml:453
+      - release.yaml:498
+      - release.yaml:510
+      - release.yaml:511
+      - release.yaml:527
+      - release.yaml:543
+      - release.yaml:566
+      - main.yaml:135
+      - main.yaml:143
+  self-repository:
+    ignore:
+      # Local composite ./.github/actions/setup: the $/ self-referential uses
+      # syntax adoption is deferred pending GitHub runner support; digest-
+      # pinned internals are verified by scripts/actions-pin-census.ts instead.
+      - canary.yaml:70
+      - codeql.yaml:53
+      - fro-bot.yaml:347
+      - main.yaml:55
+      - main.yaml:77
+      - main.yaml:105
+      - main.yaml:125
+      - main.yaml:172
+      - release.yaml:402
