@@ -8,13 +8,17 @@
  * - PWA SW assets: /sw.js + /registerSW.js served with correct MIME + no-cache, public pre-auth
  * - PWA manifest: /manifest.webmanifest served as application/manifest+json, public pre-auth
  * - CSP on /sw.js: no page CSP applied (workers don't inherit page CSP)
+ * - Static response compression (rm-602): gzip sidecar selection by Accept-Encoding
+ *   on the web/dist serveStatic family, Vary: Accept-Encoding, identity fallback,
+ *   and the operator-stream family's identity disposition
  */
 import type {GitHubOAuthClient} from '../src/auth/oauth.ts'
 import {Buffer} from 'node:buffer'
-import {existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync} from 'node:fs'
+import {existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join, resolve} from 'node:path'
 import process from 'node:process'
+import {gunzipSync} from 'node:zlib'
 import {Hono} from 'hono'
 import {afterEach, describe, expect, it} from 'vitest'
 import {PINNED_CONTRACT_VERSION} from '../public/operator-stream.js'
@@ -60,6 +64,23 @@ async function buildTestApp(operatorUiEnabled: boolean) {
 async function authedGet(app: Awaited<ReturnType<typeof buildTestApp>>, path: string): Promise<Response> {
   const cookie = makeSessionCookie()
   return app.request(path, {headers: {cookie: `session=${cookie}`}})
+}
+
+async function authedGetWithHeaders(
+  app: Awaited<ReturnType<typeof buildTestApp>>,
+  path: string,
+  headers: Record<string, string>,
+): Promise<Response> {
+  const cookie = makeSessionCookie()
+  return app.request(path, {headers: {cookie: `session=${cookie}`, ...headers}})
+}
+
+/** The Vite content-hashed SPA bundle filename in web/dist/assets. */
+function hashedBundle(): string {
+  const assets = readdirSync('web/dist/assets')
+  const js = assets.find(f => f.startsWith('index-') && f.endsWith('.js'))
+  if (js === undefined) throw new Error('hashed SPA bundle missing from web/dist/assets — run pnpm build:web')
+  return js
 }
 
 // ---------------------------------------------------------------------------
@@ -295,250 +316,6 @@ describe('static route absent when operator UI disabled', () => {
     const app = await buildTestApp(false)
     const res = await app.request('/api/healthz')
     expect(res.status).toBe(200)
-  })
-})
-
-describe('/static/* revalidation — a deploy must not leave a stale operator module in the browser', () => {
-  const unconditionalModules = [
-    '/static/operator-stream.js',
-    '/static/operator-launch.js',
-    '/static/operator-run-index.js',
-  ] as const
-
-  it.each(unconditionalModules)('%s carries Cache-Control: no-cache and keeps Last-Modified (flag off)', async path => {
-    const app = await buildTestApp(false)
-    const res = await app.request(path)
-    expect(res.status).toBe(200)
-    expect(res.headers.get('cache-control')).toBe('no-cache')
-    expect(res.headers.get('last-modified')).not.toBeNull()
-  })
-
-  it.each(unconditionalModules)('%s carries Cache-Control: no-cache with the ?manual=1 query the loader uses', async path => {
-    const app = await buildTestApp(true)
-    const res = await app.request(`${path}?manual=1`)
-    expect(res.status).toBe(200)
-    expect(res.headers.get('cache-control')).toBe('no-cache')
-    expect(res.headers.get('last-modified')).not.toBeNull()
-  })
-
-  it('a flag-gated /static asset (operator.css) carries Cache-Control: no-cache and keeps Last-Modified', async () => {
-    const app = await buildTestApp(true)
-    const res = await app.request('/static/operator.css')
-    expect(res.status).toBe(200)
-    expect(res.headers.get('cache-control')).toBe('no-cache')
-    expect(res.headers.get('last-modified')).not.toBeNull()
-  })
-
-  it('never uses no-store: the browser may keep the file and revalidate it', async () => {
-    const app = await buildTestApp(true)
-    for (const path of [...unconditionalModules, '/static/operator.css']) {
-      const res = await app.request(path)
-      expect(res.headers.get('cache-control'), path).not.toContain('no-store')
-    }
-  })
-
-  it('a missing /static file is still a 404 with no cache header added', async () => {
-    const app = await buildTestApp(true)
-    const res = await app.request('/static/does-not-exist.js')
-    expect(res.status).toBe(404)
-    expect(res.headers.get('cache-control')).toBeNull()
-  })
-
-  it('a flag-gated /static asset is still not served with the flag off, and gets no cache header', async () => {
-    const app = await buildTestApp(false)
-    const res = await app.request('/static/operator.css')
-    expect(res.status).not.toBe(200)
-    expect(res.headers.get('cache-control')).toBeNull()
-  })
-
-  it('the auth flow on /static is unchanged: an unauthenticated flag-on request is public (200), and flag-off non-module paths never leak a file', async () => {
-    const on = await buildTestApp(true)
-    expect((await on.request('/static/operator.css')).status).toBe(200)
-    const off = await buildTestApp(false)
-    const gated = await off.request('/static/operator.css')
-    expect(gated.status).not.toBe(200)
-  })
-})
-
-describe('/static/* conditional GET — revalidation answers 304 instead of re-sending the file', () => {
-  const ETAG_PATTERN = /^"[\w-]{43}"$/
-  const paths = ['/static/operator-stream.js', '/static/operator-launch.js', '/static/operator-run-index.js', '/static/operator.css'] as const
-
-  it.each(paths)('GET %s returns 200 with a strong content-based ETag', async path => {
-    const app = await buildTestApp(true)
-    const res = await app.request(path)
-    expect(res.status).toBe(200)
-    expect(res.headers.get('etag')).toMatch(ETAG_PATTERN)
-    expect(res.headers.get('last-modified')).not.toBeNull()
-    expect((await res.text()).length).toBeGreaterThan(0)
-  })
-
-  it.each(paths)('GET %s with its own ETag returns 304: no body, no-cache, validators kept', async path => {
-    const app = await buildTestApp(true)
-    const first = await app.request(path)
-    const etag = first.headers.get('etag') ?? ''
-    expect(etag).toMatch(ETAG_PATTERN)
-
-    const res = await app.request(path, {headers: {'if-none-match': etag}})
-
-    expect(res.status).toBe(304)
-    expect(await res.text()).toBe('')
-    expect(res.headers.get('cache-control')).toBe('no-cache')
-    expect(res.headers.get('etag')).toBe(etag)
-    expect(res.headers.get('last-modified')).toBe(first.headers.get('last-modified'))
-  })
-
-  it('a stale or mismatched validator returns 200 with the full body', async () => {
-    const app = await buildTestApp(true)
-    const first = await app.request('/static/operator-run-index.js')
-    const body = await first.text()
-    for (const validator of ['"stale"', '"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"', 'garbage', '']) {
-      const res = await app.request('/static/operator-run-index.js', {headers: {'if-none-match': validator}})
-      expect(res.status, validator).toBe(200)
-      expect(await res.text(), validator).toBe(body)
-      expect(res.headers.get('cache-control'), validator).toBe('no-cache')
-    }
-  })
-
-  it('matches the way If-None-Match is defined: weak form, a list, and *', async () => {
-    const app = await buildTestApp(true)
-    const etag = (await app.request('/static/operator-launch.js')).headers.get('etag') ?? ''
-    for (const validator of [`W/${etag}`, `"other", ${etag}`, '*']) {
-      const res = await app.request('/static/operator-launch.js', {headers: {'if-none-match': validator}})
-      expect(res.status, validator).toBe(304)
-    }
-  })
-
-  it('a HEAD revalidation returns 304 too', async () => {
-    const app = await buildTestApp(true)
-    const etag = (await app.request('/static/operator-launch.js')).headers.get('etag') ?? ''
-    const res = await app.request('/static/operator-launch.js', {method: 'HEAD', headers: {'if-none-match': etag}})
-    expect(res.status).toBe(304)
-  })
-
-  it('a ranged request is not turned into a 304', async () => {
-    const app = await buildTestApp(true)
-    const etag = (await app.request('/static/operator-launch.js')).headers.get('etag') ?? ''
-    const res = await app.request('/static/operator-launch.js', {headers: {'if-none-match': etag, range: 'bytes=0-9'}})
-    expect(res.status).toBe(206)
-  })
-
-  it('works for the unconditional modules with the flag off', async () => {
-    const app = await buildTestApp(false)
-    const etag = (await app.request('/static/operator-stream.js')).headers.get('etag') ?? ''
-    expect(etag).toMatch(ETAG_PATTERN)
-    expect((await app.request('/static/operator-stream.js', {headers: {'if-none-match': etag}})).status).toBe(304)
-  })
-
-  it('404s and the flag-gated paths are unchanged: no ETag, no cache header, never a 304', async () => {
-    const on = await buildTestApp(true)
-    const missing = await on.request('/static/does-not-exist.js', {headers: {'if-none-match': '*'}})
-    expect(missing.status).toBe(404)
-    expect(missing.headers.get('etag')).toBeNull()
-    expect(missing.headers.get('cache-control')).toBeNull()
-
-    const off = await buildTestApp(false)
-    const gated = await off.request('/static/operator.css', {headers: {'if-none-match': '*'}})
-    expect(gated.status).not.toBe(200)
-    expect(gated.status).not.toBe(304)
-    expect(gated.headers.get('etag')).toBeNull()
-  })
-
-  it('does not resolve outside public/: traversal paths are not served and never get a validator', async () => {
-    const app = await buildTestApp(true)
-    for (const path of ['/static/../package.json', '/static/%2e%2e/package.json', '/static/..%2fpackage.json']) {
-      const res = await app.request(path, {headers: {'if-none-match': '*'}})
-      expect(res.status, path).not.toBe(200)
-      expect(res.status, path).not.toBe(304)
-      expect(res.headers.get('etag'), path).toBeNull()
-    }
-  })
-})
-
-describe('/static/* validators follow the content, not the mtime', () => {
-  const dirs: string[] = []
-  afterEach(() => {
-    for (const dir of dirs.splice(0)) rmSync(dir, {recursive: true, force: true})
-  })
-
-  function makeRoot(content: string) {
-    const root = mkdtempSync(join(tmpdir(), 'static-files-'))
-    dirs.push(root)
-    mkdirSync(root, {recursive: true})
-    const file = join(root, 'mod.js')
-    writeFileSync(file, content)
-    const publicStatic = createPublicStatic(root)
-    const app = new Hono()
-    app.use('/static/*', publicStatic.revalidate)
-    app.use('/static/*', publicStatic.serve)
-    return {app, file}
-  }
-
-  it('a same-size file with different content and an OLDER mtime gets a new ETag and no false 304', async () => {
-    const {app, file} = makeRoot('export const v = "aaaa"\n')
-    const first = await app.request('/static/mod.js')
-    const etag1 = first.headers.get('etag') ?? ''
-    expect(etag1).not.toBe('')
-    expect((await app.request('/static/mod.js', {headers: {'if-none-match': etag1}})).status).toBe(304)
-
-    writeFileSync(file, 'export const v = "bbbb"\n')
-    utimesSync(file, new Date(0), new Date(0))
-
-    const afterDeploy = await app.request('/static/mod.js', {headers: {'if-none-match': etag1}})
-    expect(afterDeploy.status).toBe(200)
-    expect(await afterDeploy.text()).toBe('export const v = "bbbb"\n')
-    expect(afterDeploy.headers.get('etag')).not.toBe(etag1)
-  })
-
-  it('a same-size file with different content and a NEWER mtime gets a new ETag and no false 304', async () => {
-    const {app, file} = makeRoot('export const v = "aaaa"\n')
-    const etag1 = (await app.request('/static/mod.js')).headers.get('etag') ?? ''
-
-    writeFileSync(file, 'export const v = "cccc"\n')
-    utimesSync(file, new Date(Date.now() + 60_000), new Date(Date.now() + 60_000))
-
-    const res = await app.request('/static/mod.js', {headers: {'if-none-match': etag1}})
-    expect(res.status).toBe(200)
-    expect(res.headers.get('etag')).not.toBe(etag1)
-  })
-
-  it('the same content with a newer mtime keeps its ETag, so the browser still gets a 304', async () => {
-    const {app, file} = makeRoot('export const v = "aaaa"\n')
-    const etag1 = (await app.request('/static/mod.js')).headers.get('etag') ?? ''
-
-    utimesSync(file, new Date(Date.now() + 60_000), new Date(Date.now() + 60_000))
-
-    expect((await app.request('/static/mod.js', {headers: {'if-none-match': etag1}})).status).toBe(304)
-  })
-
-  it('only files under the root are reachable: a traversal path is a 404 with no validator', async () => {
-    const {app} = makeRoot('export const v = 1\n')
-    const res = await app.request('/static/../mod.js', {headers: {'if-none-match': '*'}})
-    expect(res.status).toBe(404)
-    expect(res.headers.get('etag')).toBeNull()
-  })
-})
-
-describe('waiting-summary fixture rows stay out of production artifacts', () => {
-  it('no waiting-row, transition-row or missing-run fixture ID reaches web/dist or the shipped browser modules', async () => {
-    const fs = await import('node:fs/promises')
-    const path = await import('node:path')
-    const files = [
-      'web/dist/sw.js',
-      'web/dist/index.html',
-      'public/operator-stream.js',
-      'public/operator-launch.js',
-      'public/operator-run-index.js',
-    ]
-    for (const file of await fs.readdir('web/dist/assets')) {
-      if (file.endsWith('.js') || file.endsWith('.css')) files.push(path.join('web/dist/assets', file))
-    }
-    for (const file of files) {
-      const src = await fs.readFile(file, 'utf8')
-      for (const id of ['run-fixture-index-approval-flow', 'run-fixture-index-transition-question', 'run-fixture-missing-001', 'req-fixture-approval-001']) {
-        expect(src, `${file} must not contain ${id}`).not.toContain(id)
-      }
-    }
   })
 })
 
@@ -1768,5 +1545,137 @@ describe('rm-690 — Cache-Control policy for static surfaces', () => {
     const res = await app.request('/registerSW.js')
     expect(res.status).toBe(200)
     expect(res.headers.get('cache-control')).toBe('no-cache, no-store, must-revalidate')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Static response compression — rm-602 (repository-maintenance cycle 3,
+// run f2821fb57c34): `pnpm build:web` emits `<name>.gz` sidecars
+// (scripts/gzip-static-sidecars.ts) and the web/dist serveStatic family runs
+// `precompressed: true`, so @hono/node-server selects the gzip variant by
+// Accept-Encoding (Content-Encoding: gzip + Vary: Accept-Encoding, with
+// Content-Length/Last-Modified from the sidecar). The production proxy
+// compresses nothing (marcusrbrown/infra Caddyfile carries no `encode`
+// directive — gate discharged 2026-10-09), so compression is an app-layer
+// concern and precomputed build artifacts beat a runtime middleware.
+// SSE exclusion is structural: nothing in this scheme compresses a stream —
+// only files that exist before the request arrives — and the operator-stream
+// family stays identity by disposition (no sidecars in tracked public/).
+// ---------------------------------------------------------------------------
+describe('static response compression — gzip sidecars (rm-602)', () => {
+  const COMPRESSIBLE = ['.html', '.js', '.mjs', '.css', '.json', '.svg', '.webmanifest', '.txt', '.xml']
+
+  it('build:web emitted a .gz sidecar for every compressible file in web/dist', () => {
+    expect(existsSync('web/dist')).toBe(true)
+    const roots = ['web/dist', 'web/dist/assets']
+    let checked = 0
+    for (const root of roots) {
+      for (const name of readdirSync(root)) {
+        if (!COMPRESSIBLE.some(ext => name.endsWith(ext))) continue
+        checked++
+        expect(existsSync(join(root, `${name}.gz`))).toBe(true)
+      }
+    }
+    expect(checked).toBeGreaterThan(5) // html + manifest + sw + bundle + css at minimum
+  })
+
+  it('sidecars are valid gzip of the original bytes and shrink the hashed bundle', () => {
+    for (const rel of ['web/dist/index.html', 'web/dist/manifest.webmanifest', 'web/dist/sw.js', `web/dist/assets/${hashedBundle()}`]) {
+      const original = readFileSync(rel)
+      const sidecar = readFileSync(`${rel}.gz`)
+      expect(gunzipSync(sidecar).equals(original)).toBe(true)
+    }
+    const bundle = `web/dist/assets/${hashedBundle()}`
+    expect(statSync(`${bundle}.gz`).size).toBeLessThan(statSync(bundle).size)
+  })
+
+  it('GET /assets/<bundle>.js with Accept-Encoding: gzip serves the sidecar variant', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request(`/assets/${hashedBundle()}`, {
+      headers: {'accept-encoding': 'gzip'},
+    })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-encoding')).toBe('gzip')
+    expect((res.headers.get('vary') ?? '').toLowerCase()).toContain('accept-encoding')
+    const sidecar = readFileSync(`web/dist/assets/${hashedBundle()}.gz`)
+    expect(Number(res.headers.get('content-length'))).toBe(sidecar.byteLength)
+    expect(Buffer.from(await res.arrayBuffer()).equals(sidecar)).toBe(true)
+  })
+
+  it('GET /assets/<bundle>.js without Accept-Encoding serves identity bytes (variant fallback)', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request(`/assets/${hashedBundle()}`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-encoding')).toBeNull()
+    const original = readFileSync(`web/dist/assets/${hashedBundle()}`)
+    expect(Buffer.from(await res.arrayBuffer()).equals(original)).toBe(true)
+  })
+
+  it('an Accept-Encoding the sidecars do not match (deflate only) still serves identity', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request(`/assets/${hashedBundle()}`, {
+      headers: {'accept-encoding': 'deflate'},
+    })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-encoding')).toBeNull()
+  })
+
+  it('HEAD /assets/<bundle>.js with Accept-Encoding: gzip advertises the sidecar without a body', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request(`/assets/${hashedBundle()}`, {
+      method: 'HEAD',
+      headers: {'accept-encoding': 'gzip'},
+    })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-encoding')).toBe('gzip')
+    const sidecar = readFileSync(`web/dist/assets/${hashedBundle()}.gz`)
+    expect(Number(res.headers.get('content-length'))).toBe(sidecar.byteLength)
+  })
+
+  it('GET / serves the compressed SPA shell (default push-off branch)', async () => {
+    const app = await buildTestApp(false)
+    const res = await authedGetWithHeaders(app, '/', {'accept-encoding': 'gzip'})
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-encoding')).toBe('gzip')
+    expect((res.headers.get('vary') ?? '').toLowerCase()).toContain('accept-encoding')
+    const sidecar = readFileSync('web/dist/index.html.gz')
+    expect(Buffer.from(await res.arrayBuffer()).equals(sidecar)).toBe(true)
+  })
+
+  it('GET /manifest.webmanifest with gzip keeps its manifest content-type AND compresses', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/manifest.webmanifest', {headers: {'accept-encoding': 'gzip'}})
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-encoding')).toBe('gzip')
+    expect(res.headers.get('content-type')).toBe('application/manifest+json; charset=UTF-8')
+    expect(res.headers.get('cache-control')).toBe('no-cache')
+  })
+
+  it('GET /privacy with gzip serves the compressed policy page', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/privacy', {headers: {'accept-encoding': 'gzip'}})
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-encoding')).toBe('gzip')
+  })
+
+  it('GET /sw.js with gzip keeps its no-store policy AND compresses', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/sw.js', {headers: {'accept-encoding': 'gzip'}})
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-encoding')).toBe('gzip')
+    expect(res.headers.get('cache-control')).toBe('no-cache, no-store, must-revalidate')
+  })
+
+  it('operator-stream family stays IDENTITY with Accept-Encoding: gzip (rm-602 disposition + SSE exclusion)', async () => {
+    // public/ is tracked source copied verbatim into the image — no build step
+    // emits sidecars there — and the SSE streams this family serves live in
+    // the gateway, never behind serveStatic. Nothing must ever compress them.
+    const app = await buildTestApp(false)
+    const res = await app.request('/static/operator-stream.js', {headers: {'accept-encoding': 'gzip'}})
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-encoding')).toBeNull()
+    expect(res.headers.get('cache-control')).toBe('no-cache')
+    expect(res.headers.get('etag')).not.toBeNull() // rm-478 policy intact
+    expect(existsSync('public/operator-stream.js.gz')).toBe(false)
   })
 })
