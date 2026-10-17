@@ -13232,3 +13232,71 @@ describe('finished-run store — recorded init', () => {
     expect(handle.getConnectionStatus()).toBe('active')
   })
 })
+
+describe('approval-click containment — #636 port (rm-1457)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('renderApprovalPrompt container contains clicks so the host card toggle listener never collapses the card', async () => {
+    stubRenderEnv()
+    const prompt: ApprovalFrameDataOpen = {
+      runId: 'run-001',
+      requestID: 'req-001',
+      permission: 'shell',
+      command: 'echo hi',
+      settled: false,
+    }
+    const {client, decideCalls} = makeFakeApprovalClient()
+    const el = renderPromptAsFake(prompt, 'run-001', client)
+
+    // The run card that hosts this prompt toggles expansion on click. Upstream
+    // #636: the prompt container must register a click listener that stops
+    // propagation, so a decision click never reaches the card listener.
+    const containerHandlers = el.eventListeners.click ?? []
+    expect(containerHandlers.length).toBeGreaterThanOrEqual(1)
+
+    let stopped = false
+    for (const handler of containerHandlers) {
+      handler({stopPropagation: () => {
+        stopped = true
+      }})
+    }
+    expect(stopped).toBe(true)
+
+    // Containment must not swallow decisions: the Once button still dispatches
+    // to the approval client with the request context intact.
+    findVisibleButtons(el).find(b => b.textContent === 'Once')?.dispatchEvent({type: 'click'})
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(decideCalls).toHaveLength(1)
+    expect(decideCalls[0]?.runId).toBe('run-001')
+    expect(decideCalls[0]?.requestId).toBe('req-001')
+  })
+
+  it('renderCancelControl container contains clicks for the same reason', async () => {
+    stubCancelRenderEnv()
+    const {client, cancelCalls} = makeFakeCancelClient()
+    const {el} = renderCancelControl('run-001', client, () => {}) as unknown as {el: FakeElement}
+
+    const containerHandlers = el.eventListeners.click ?? []
+    expect(containerHandlers.length).toBeGreaterThanOrEqual(1)
+
+    let stopped = false
+    for (const handler of containerHandlers) {
+      handler({stopPropagation: () => {
+        stopped = true
+      }})
+    }
+    expect(stopped).toBe(true)
+
+    // The two-step cancel flow still works through the containment.
+    findVisibleButtons(el).find(b => b.textContent === 'Cancel run')?.dispatchEvent({type: 'click'})
+    await new Promise(resolve => setTimeout(resolve, 10))
+    const confirm = findVisibleButtons(el).find(b => b.textContent === 'Confirm cancel')
+    expect(confirm).toBeDefined()
+    confirm?.dispatchEvent({type: 'click'})
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(cancelCalls).toHaveLength(1)
+    expect(cancelCalls[0]?.runId).toBe('run-001')
+  })
+})
