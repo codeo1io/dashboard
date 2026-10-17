@@ -9,6 +9,7 @@ import {randomUUID} from 'node:crypto'
 import {mkdirSync} from 'node:fs'
 import {dirname} from 'node:path'
 import {DatabaseSync} from 'node:sqlite'
+import {logger} from '../logger.ts'
 
 export interface ListenerStore {
   insert: (input: IngestMessage) => {id: string; receivedAt: string}
@@ -40,6 +41,44 @@ const DEFAULT_LIST_LIMIT = 100
 const MIN_LIST_LIMIT = 1
 const MAX_LIST_LIMIT = 200
 
+/**
+ * Row ids already reported as carrying unreadable links (warn-once set,
+ * pruned by retention so it cannot grow monotonically for process lifetime).
+ */
+const warnedUnreadableLinks = new Set<string>()
+
+/**
+ * Fail-closed links read: `links` is JSON our own insert path wrote, but a corrupted or
+ * hand-edited row must fail closed — a read-path throw would 500 every
+ * list() (each operator poll) until the row ages out of retention.
+ * Unreadable or non-array payloads degrade to an empty link list plus ONE
+ * diagnostic per corrupt row (the poll loop re-reads the same rows); the
+ * message itself still renders.
+ */
+function readStoredLinks(row: MessageRow): readonly ListenerLink[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(row.links)
+  } catch {
+    warnUnreadableLinks(row, 'unreadable links JSON')
+    return []
+  }
+  if (!Array.isArray(parsed)) {
+    warnUnreadableLinks(row, 'non-array links JSON')
+    return []
+  }
+  return parsed as readonly ListenerLink[]
+}
+
+function warnUnreadableLinks(row: MessageRow, reason: string): void {
+  if (warnedUnreadableLinks.has(row.id)) return
+  warnedUnreadableLinks.add(row.id)
+  logger.warning(
+    `listener store: ${reason} on stored message — serving degraded row with no links`,
+    {messageId: row.id, source: row.source},
+  )
+}
+
 function rowToMessage(row: MessageRow): ListenerMessage {
   return {
     id: row.id,
@@ -48,7 +87,7 @@ function rowToMessage(row: MessageRow): ListenerMessage {
     severity: row.severity as ListenerMessage['severity'],
     title: row.title,
     body: row.body,
-    links: JSON.parse(row.links) as readonly ListenerLink[],
+    links: readStoredLinks(row),
     dedupeKey: row.dedupe_key,
     createdAt: row.created_at,
     receivedAt: row.received_at,
@@ -107,6 +146,7 @@ export function createListenerStore(dbPath: string): ListenerStore {
     )
   `)
   const pruneAgeStmt = db.prepare('DELETE FROM messages WHERE received_at < ?')
+  const selectWarnedIdStmt = db.prepare('SELECT id FROM messages WHERE id = ?')
 
   // rm-244-class visibility: cumulative count of messages evicted by the
   // retention policy since the store was created. In-memory by design — it
@@ -199,6 +239,17 @@ export function createListenerStore(dbPath: string): ListenerStore {
     const cutoff = new Date(Date.now() - RETENTION_MAX_AGE_MS).toISOString()
     const ageResult = pruneAgeStmt.run(cutoff)
     prunedTotal += Number(ageResult.changes)
+    pruneWarnedUnreadableLinks()
+  }
+
+  // Retention deletes evict rows whose ids may still sit in the module-level
+  // warn-once set — drop the evicted ids so the set tracks live rows only.
+  function pruneWarnedUnreadableLinks(): void {
+    if (warnedUnreadableLinks.size === 0) return
+    for (const warnedId of warnedUnreadableLinks) {
+      const row = selectWarnedIdStmt.get(warnedId) as unknown as {id: string} | undefined
+      if (row === undefined) warnedUnreadableLinks.delete(warnedId)
+    }
   }
 
   function close(): void {

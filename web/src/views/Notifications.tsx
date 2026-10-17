@@ -3,12 +3,13 @@ import {getPushSupport} from '../push/capability.ts'
 import {getLogoutAbortSignal} from '../push/logout-abort.ts'
 import {
   INITIAL_RECONCILE_SWEEP_CACHE,
+  ensurePushServiceWorker,
   resubscribeStaleKey,
   runReconcileSweep,
   subscribeOptIn,
   unsubscribeOptOut,
 } from '../push/subscribe.ts'
-import type {MinimalServiceWorkerRegistration, ReconcileSweepCache} from '../push/subscribe.ts'
+import type {ReconcileSweepCache} from '../push/subscribe.ts'
 import {buildPushClient} from '../push/subscribe.ts'
 import {getNotificationCopy} from './notifications-copy.ts'
 import type {NotificationUiState} from './notifications-copy.ts'
@@ -62,6 +63,7 @@ export function Notifications({
   const [metaEnabled] = useState<boolean>(readPushEnabledMeta)
   const [currentUiState, setCurrentUiState] = useState<NotificationUiState>('not-requested')
   const [inFlight, setInFlight] = useState(false)
+  const [devAidNotice, setDevAidNotice] = useState<string | null>(null)
   const [isCardDismissed, setIsCardDismissed] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false
     return window.localStorage.getItem(DISMISS_SETTINGS_KEY) === '1'
@@ -181,7 +183,7 @@ export function Notifications({
       try {
         if (result.action === 'register') {
           const outcome = await subscribeOptIn({
-            serviceWorkerReady: () => navigator.serviceWorker.ready as unknown as Promise<MinimalServiceWorkerRegistration>,
+            serviceWorkerReady: ensurePushServiceWorker,
             requestPermission: () => Notification.requestPermission(),
             pushClient,
             signal: getLogoutAbortSignal(),
@@ -200,7 +202,7 @@ export function Notifications({
           }
         } else if (result.action === 'resubscribe') {
           const outcome = await resubscribeStaleKey({
-            serviceWorkerReady: () => navigator.serviceWorker.ready as unknown as Promise<MinimalServiceWorkerRegistration>,
+            serviceWorkerReady: ensurePushServiceWorker,
             requestPermission: () => Notification.requestPermission(),
             pushClient,
             signal: getLogoutAbortSignal(),
@@ -360,7 +362,7 @@ export function Notifications({
     setInFlight(true)
     try {
       const outcome = await subscribeOptIn({
-        serviceWorkerReady: () => navigator.serviceWorker.ready as unknown as Promise<MinimalServiceWorkerRegistration>,
+        serviceWorkerReady: ensurePushServiceWorker,
         requestPermission: () => Notification.requestPermission(),
         pushClient,
         signal: getLogoutAbortSignal(),
@@ -499,7 +501,7 @@ export function Notifications({
             data-testid="notifications-status-announcer"
             className="sr-only"
           >
-            {inFlight ? 'Updating push subscription…' : `${copy.headline}: ${copy.detail}`}
+            {devAidNotice ?? (inFlight ? 'Updating push subscription…' : `${copy.headline}: ${copy.detail}`)}
           </div>
 
           {/* DEV-gated synthetic push button */}
@@ -509,6 +511,7 @@ export function Notifications({
               data-testid="synthetic-push-btn"
               onClick={() => {
                 if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+                  setDevAidNotice(null)
                   navigator.serviceWorker.controller.postMessage({
                     type: 'MOCK_SYNTHETIC_PUSH',
                     payload: {
@@ -517,6 +520,12 @@ export function Notifications({
                       data: {type: 'approval', route: '/'},
                     },
                   })
+                } else {
+                  // Acceptance: the dev aid no-ops with a visible reason when
+                  // no controller exists (pre-subscription) — never silently.
+                  setDevAidNotice(
+                    'Simulate Push needs an active push service worker — enable push first, then retry.',
+                  )
                 }
               }}
               className="px-3 py-1.5 rounded-md border border-border bg-transparent text-text-muted text-label font-mono uppercase tracking-label cursor-pointer transition-colors duration-fast hover:border-accent hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"

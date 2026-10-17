@@ -1,4 +1,8 @@
-import type {IngestMessage} from '../src/listener/contract.ts'
+import type {IngestMessage, MessagesResponse} from '../src/listener/contract.ts'
+import {mkdtempSync, rmSync} from 'node:fs'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
+import {DatabaseSync} from 'node:sqlite'
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {createListenerStore, type ListenerStore} from '../src/listener/store.ts'
 
@@ -167,5 +171,123 @@ describe('listener store', () => {
 
   it('close does not throw', () => {
     expect(() => store.close()).not.toThrow()
+  })
+
+  it('valid links round-trip through the stored-JSON column', () => {
+    const links = [
+      {label: 'run log', url: 'https://example.invalid/run/42'},
+      {label: 'commit', url: 'https://example.invalid/c/a385ca5'},
+    ]
+    const {id} = store.insert(makeMessage({links, dedupeKey: 'links-roundtrip'}))
+    const {messages} = store.list({})
+    expect(messages[0]?.id).toBe(id)
+    expect(messages[0]?.links).toEqual(links)
+  })
+
+  it('unreadable links JSON fails closed — degraded row, no throw, one diagnostic', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'listener-store-poisoned-links-'))
+    const dbPath = join(dir, 'messages.db')
+    const fileStore = createListenerStore(dbPath)
+    const {id} = fileStore.insert(makeMessage({dedupeKey: 'poison-unreadable'}))
+
+    // Poison out-of-band: a second sqlite handle stands in for corruption or
+    // hand edits to the row — the store's own handle must never see a throw.
+    const interloper = new DatabaseSync(dbPath)
+    interloper.prepare('UPDATE messages SET links = ? WHERE id = ?').run('{"not":"json', id)
+    interloper.close()
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let failure: unknown = null
+    let listed: MessagesResponse | null = null
+    try {
+      listed = fileStore.list({})
+    } catch (error) {
+      failure = error
+    }
+
+    expect(failure).toBeNull()
+    expect(listed?.messages[0]?.id).toBe(id)
+    expect(listed?.messages[0]?.title).toBe('Autoheal restarted gateway')
+    expect(listed?.messages[0]?.links).toEqual([])
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[warning]'))
+
+    // The poll loop re-reads the same rows — the diagnostic is emitted once.
+    fileStore.list({})
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    warnSpy.mockRestore()
+    fileStore.close()
+    rmSync(dir, {recursive: true, force: true})
+  })
+
+  it('non-array links JSON also fails closed to an empty link list', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'listener-store-nonarray-links-'))
+    const dbPath = join(dir, 'messages.db')
+    const fileStore = createListenerStore(dbPath)
+    const {id} = fileStore.insert(makeMessage({dedupeKey: 'poison-nonarray'}))
+
+    const interloper = new DatabaseSync(dbPath)
+    interloper.prepare('UPDATE messages SET links = ? WHERE id = ?').run('{"looks":"valid-but-not-an-array"}', id)
+    interloper.close()
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const listed = fileStore.list({})
+
+    expect(listed.messages[0]?.id).toBe(id)
+    expect(listed.messages[0]?.links).toEqual([])
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    warnSpy.mockRestore()
+    fileStore.close()
+    rmSync(dir, {recursive: true, force: true})
+  })
+
+  it('warn-once set is pruned when retention deletes the poisoned row', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'listener-store-warnprune-'))
+    const dbPath = join(dir, 'messages.db')
+    const fileStore = createListenerStore(dbPath)
+    const {id} = fileStore.insert(makeMessage({dedupeKey: 'warn-prune'}))
+
+    // Poison out-of-band, same as the tests above: the diagnostic fires once.
+    const poison = new DatabaseSync(dbPath)
+    poison.prepare('UPDATE messages SET links = ? WHERE id = ?').run('{"not":"json', id)
+    poison.close()
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    fileStore.list({})
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    fileStore.list({})
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+
+    // Retention delete out-of-band + prune: the row is gone, so its id must
+    // leave the warn-once set (no monotonic growth for process lifetime).
+    const evictor = new DatabaseSync(dbPath)
+    evictor.prepare('DELETE FROM messages WHERE id = ?').run(id)
+    evictor.close()
+    fileStore.prune()
+
+    // Re-insert the SAME id with poisoned links out-of-band: the diagnostic
+    // fires again, proving the retention prune evicted the id from the set.
+    const reinsert = new DatabaseSync(dbPath)
+    reinsert
+      .prepare(
+        'INSERT INTO messages (id, source, kind, severity, title, body, links, dedupe_key, created_at, received_at, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)',
+      )
+      .run(
+        id,
+        'infra',
+        'deploy-health',
+        'warning',
+        'Autoheal restarted gateway',
+        'gateway health probe failed 3x; container restarted and recovered.',
+        '{"not":"json',
+        '2026-07-11T12:00:00Z',
+        '2026-07-11T12:00:00Z',
+      )
+    reinsert.close()
+    fileStore.list({})
+    expect(warnSpy).toHaveBeenCalledTimes(2)
+    warnSpy.mockRestore()
+    fileStore.close()
+    rmSync(dir, {recursive: true, force: true})
   })
 })

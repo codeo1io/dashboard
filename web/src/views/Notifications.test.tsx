@@ -17,6 +17,10 @@ vi.mock('../push/capability.ts', () => ({
 
 vi.mock('../push/subscribe.ts', () => ({
   INITIAL_RECONCILE_SWEEP_CACHE: {},
+  // The view registers the push-only SW by default instead of
+  // injecting a bare `ready` wait. Default stub resolves immediately; the
+  // subscribe flows here mock subscribeOptIn itself, so the dep is inert.
+  ensurePushServiceWorker: vi.fn().mockResolvedValue({pushManager: {}}),
   // rm-600: the view now calls getVapidKey() at sweep cadence to keep the
   // key-version cache fresh. Default stub is fail-open (push-disabled, no
   // key) so existing tests are unaffected; the rm-600 wiring tests override
@@ -702,6 +706,27 @@ describe('Notifications Component', () => {
         data: {type: 'approval', route: '/'},
       },
     })
+  })
+
+  it('synthetic push click with no SW controller surfaces a visible reason instead of a silent no-op', async () => {
+    addMetaTag()
+    // Container present, controller absent — the pre-subscription state.
+    Object.defineProperty(navigator, 'serviceWorker', {
+      writable: true,
+      value: {
+        controller: undefined,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      },
+    })
+
+    await act(async () => {
+      render(<Notifications />)
+    })
+
+    fireEvent.click(screen.getByTestId('synthetic-push-btn'))
+
+    expect(screen.getByTestId('notifications-status-announcer')).toHaveTextContent(/enable push first/i)
   })
 
   describe('rm-600 — VAPID key-version cache wiring (getCurrentKeyVersion supplier)', () => {
