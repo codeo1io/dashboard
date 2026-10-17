@@ -114,6 +114,10 @@ const TOLERATED_MISSING = new Map([
     'src/web/sse/manager.ts',
     'upstream tree path quoted for comparison in the gate doc — never a fork deliverable',
   ],
+  [
+    'test/visual-parity-guard.test.ts',
+    'deliberately dropped at supersession, never landed: run 47f9aaefa379 (2026-10-17 cycle-1) abandoned its red-first guard for the sibling-landed richer single-source guard test/visual-playwright-image-lockstep.test.ts (see that cycle doc supersession record + rm-881 ADOPTED-ON-MAIN); prune when the 2026-10-17 cohort ages out',
+  ],
 ])
 
 function newestCohortDocs(): string[] {
