@@ -43,7 +43,7 @@ jobs:
     steps:
       - name: ⤵ Checkout (with history for push range)
         if: github.event_name == 'push'
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.sha }}
@@ -51,7 +51,7 @@ jobs:
 
       - name: 🟢 Set up Node.js
         if: github.event_name == 'push'
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
 
@@ -120,18 +120,27 @@ jobs:
     needs: [guard]
     if: needs.guard.outputs.should-release == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # rm-188 (cycle 13, 2026-09-25): pinned ubuntu-24.04 — ubuntu-26.04 images are
+    # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
+    # at the rm-139 Node-26 window (2026-10-28).
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
       security-events: write
+    env:
+      # The secrets context is not available in step-level if: expressions (Actions
+      # schema), so stage App-credential presence here. Fork repos without a release
+      # App skip the App-gated publication steps with a warning — see the app-token
+      # step below.
+      HAS_RELEASE_APP: ${{ secrets.APPLICATION_ID != '' && secrets.APPLICATION_PRIVATE_KEY != '' }}
     outputs:
       tag: ${{ steps.calver.outputs.tag }}
       digest: ${{ steps.build.outputs.digest }}
 
     steps:
       - name: ⤵ Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.sha }}
@@ -151,7 +160,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: 🟢 Set up Node.js
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
 
@@ -162,6 +171,15 @@ jobs:
           TAG="$(node scripts/compute-release-tag.ts)"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
+      # rm-558 review fix (independent_review 2026-10-04): the multi-arch
+      # build's only target-executed step — the final-stage prune RUN — runs
+      # on the arm64 target, and the ubuntu-24.04 runner image ships Docker /
+      # Buildx with NO qemu/binfmt handlers. Without this step the arm64
+      # target dies exec-format-error at that RUN (local builds only pass
+      # because this host has binfmt-registered qemu).
+      - name: 🐋 Set up QEMU (arm64 target emulation)
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
       - name: 🏗️ Build and push candidate image
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -169,10 +187,27 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
-          platforms: linux/amd64
+          # rm-558: multi-arch release. The Dockerfile's toolchain stages are
+          # FROM --platform=$BUILDPLATFORM (shared/cache-hit across targets); each
+          # target only re-COPYs the arch-independent artifacts and runs one ~1.2 s
+          # prune rm (the only target-executed step). Measured locally at
+          # 2026-10-04 (attempt 1599ea1e, delegate spool): shared toolchain build
+          # 1m51s; linux/arm64 target adds 4.9s warm — vs a fully-QEMU-emulated
+          # build of the pre-restructure Dockerfile whose single vite stage alone
+          # took 84s. Expect near-zero CI-time delta vs the amd64-only baseline; if
+          # the release run balloons, emulation of a toolchain stage crept into the
+          # stage list (check the Dockerfile header comment).
+          platforms: linux/amd64,linux/arm64
           tags: ghcr.io/${{ github.repository }}:ci-${{ github.run_id }}-${{ github.run_attempt }}
           build-args: |
             DASHBOARD_VERSION=${{ steps.version.outputs.tag }}
+          # rm-105: registry-side supply-chain attestations. Provenance v1 ships
+          # by default at mode=min; mode=max adds full materials/builder data and
+          # sbom adds the SPDX attestation the image was missing (verified absent
+          # on the pre-change :latest digest). See
+          # docs/solutions/workflow-issues/registry-attestation-verification-2026-09-25.md
+          sbom: true
+          provenance: mode=max
 
       - name: 🧪 Smoke-test candidate image by digest
         run: |
@@ -333,7 +368,7 @@ jobs:
           retention-days: 5
 
       - name: 🛡️ Upload Trivy results to code scanning
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           sarif_file: trivy-results-${{ steps.digest.outputs.normalized }}.sarif
           category: trivy/release-image
@@ -365,15 +400,31 @@ jobs:
           version: v0.72.0
 
       # Mint the publication token only after all third-party actions have completed.
+      # Fork posture: this repository runs without APPLICATION_ID/APPLICATION_PRIVATE_KEY
+      # (no release App is installed), so the token mint is skipped and the App-gated
+      # publication steps below degrade to a warning — mirroring the dispatch job's
+      # unprovisioned-secret contract. The scanned image is still published to GHCR by
+      # the ci-<run> tag from the build step, and :latest promotion needs no App token.
       - name: 🤖 Get App token for publication
         id: app-token
+        if: env.HAS_RELEASE_APP == 'true'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ secrets.APPLICATION_ID }}
           private-key: ${{ secrets.APPLICATION_PRIVATE_KEY }}
 
+      - name: ⚠️ Publication credentials not provisioned
+        if: env.HAS_RELEASE_APP != 'true'
+        run: >-
+          echo "::warning title=CalVer release skipped::APPLICATION_ID/APPLICATION_PRIVATE_KEY
+          are not configured in this repository — skipping release-tag creation and
+          CalVer/sha image promotion. The scanned image is published as
+          ghcr.io/${{ github.repository }}:ci-${{ github.run_id }}-${{ github.run_attempt }}
+          and :latest."
+
       - name: 🏷️ Create release tag
         id: calver
+        if: ${{ steps.app-token.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
@@ -388,6 +439,7 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: 📦 Promote release-unique image tags
+        if: ${{ steps.app-token.outcome == 'success' }}
         run: |
           CALVER="${{ steps.calver.outputs.tag }}"
           SRC="ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"
@@ -433,6 +485,7 @@ jobs:
           echo "digest verification OK"
 
       - name: 🚀 Create GitHub Release
+        if: ${{ steps.app-token.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |

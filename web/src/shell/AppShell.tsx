@@ -162,7 +162,7 @@ export function AppShell({
   const logoutInFlight = useRef(false)
   const dashboardVersion: string = import.meta.env.VITE_DASHBOARD_VERSION || 'dev'
   const releaseNotesUrl = /^\d{4}\.\d{2}\.\d+$/.test(dashboardVersion)
-    ? `https://github.com/fro-bot/dashboard/releases/tag/${dashboardVersion}`
+    ? `https://github.com/codeo1io/dashboard/releases/tag/${dashboardVersion}`
     : undefined
 
   useEffect(() => {

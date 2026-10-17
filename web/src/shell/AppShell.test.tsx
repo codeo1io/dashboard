@@ -165,7 +165,7 @@ describe('AppShell', () => {
 
     expect(screen.getByRole('link', {name: 'Release notes for 2026.10.33'})).toHaveAttribute(
       'href',
-      'https://github.com/fro-bot/dashboard/releases/tag/2026.10.33',
+      'https://github.com/codeo1io/dashboard/releases/tag/2026.10.33',
     )
     expect(screen.getByRole('link', {name: 'Release notes for 2026.10.33'})).toHaveAttribute('target', '_blank')
     expect(screen.getByRole('link', {name: 'Release notes for 2026.10.33'})).toHaveAttribute('rel', 'noopener noreferrer')
