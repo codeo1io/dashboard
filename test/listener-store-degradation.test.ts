@@ -15,6 +15,97 @@ import {DatabaseSync} from 'node:sqlite'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {createListenerStore} from '../src/listener/store.ts'
 
+describe('listener store rm-1459 (drift-shaped source/severity cells skip their row visibly)', () => {
+  let dir: string
+  let dbPath: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'dashboard-rm1459-'))
+    dbPath = join(dir, `listener-${randomUUID()}.db`)
+  })
+
+  afterEach(() => {
+    rmSync(dir, {recursive: true, force: true})
+  })
+
+  function seedTwoRows(): {healthy: string; drift: string} {
+    const store = createListenerStore(dbPath)
+    const insert = (title: string) =>
+      store.insert({
+        source: 'infra',
+        kind: 'deploy-health',
+        severity: 'warning',
+        title,
+        body: 'b',
+        links: [],
+        dedupeKey: null,
+        createdAt: '2026-10-17T10:00:00Z',
+      }).id
+    return {healthy: insert('healthy row'), drift: insert('drift row')}
+  }
+
+  function corruptCell(column: 'source' | 'severity', value: string, id: string): void {
+    const db = new DatabaseSync(dbPath)
+    db.exec(`PRAGMA table_info(messages)`)
+    const stmt = db.prepare(`UPDATE messages SET ${column} = ? WHERE id = ?`)
+    stmt.run(value, id)
+    db.close()
+  }
+
+  it('a drift-shaped source cell skips its row, keeps healthy rows, and logs via the structured logger', () => {
+    const {healthy, drift} = seedTwoRows()
+    corruptCell('source', 'listener-api', drift)
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const page = createListenerStore(dbPath).list({})
+    warn.mockRestore()
+
+    expect(page.messages.map(m => m.id)).toEqual([healthy])
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0]?.[0])).toContain('[listener-store] degraded row')
+    expect(String(warn.mock.calls[0]?.[0])).toContain('source=listener-api')
+  })
+
+  it('a drift-shaped severity cell skips its row and logs the severity value', () => {
+    const {healthy, drift} = seedTwoRows()
+    corruptCell('severity', 'urgent', drift)
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const page = createListenerStore(dbPath).list({})
+    warn.mockRestore()
+
+    expect(page.messages.map(m => m.id)).toEqual([healthy])
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0]?.[0])).toContain('severity=urgent')
+  })
+
+  it('both cells drift on the same row: one log line, row skipped, endpoint stays healthy', () => {
+    const {healthy, drift} = seedTwoRows()
+    corruptCell('source', 'agent-api', drift)
+    corruptCell('severity', 'info2', drift)
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const page = createListenerStore(dbPath).list({})
+    warn.mockRestore()
+
+    expect(page.messages.map(m => m.id)).toEqual([healthy])
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0]?.[0])).toContain('source=agent-api')
+    expect(String(warn.mock.calls[0]?.[0])).toContain('severity=info2')
+  })
+
+  it('a fully valid row produces no degradation log', () => {
+    seedTwoRows()
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const page = createListenerStore(dbPath).list({})
+    warn.mockRestore()
+
+    expect(page.messages).toHaveLength(2)
+    expect(warn).not.toHaveBeenCalled()
+  })
+})
+
 describe('listener store rm-187 (degraded links cell never 500s the messages read)', () => {
   let dir: string
   let dbPath: string
