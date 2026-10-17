@@ -13,7 +13,7 @@ applies_when:
 tags: [conductor, ephemeral-pr, ci-validation, ref-hygiene, teardown-leak]
 related:
   - 'docs/solutions/workflow-issues/conductor-full-validation-ephemeral-pr-public-repo-2026-10-04.md (intended validator lifecycle this leak falsifies)'
-  - 'run 43ca0b6277b0 sweep archive bundle, sha256 40be1d8fe3a26b266008d62e886afe790505521f3ba225576efed4a167f6bfa7 (119 refs, 2026-10-17)'
+  - 'run 43ca0b6277b0 pre-delete archive is an apply-time mechanism, not a frozen scratch path: re-materialize by fetching the delete-set refs from origin into a bare repo, then git bundle create --all + verify (first bundle 2026-10-17 sha256 40be1d8f…, 119 refs; re-materialized 2026-10-17T20:00Z sha256 8d673e84…, 122 refs)'
 ---
 
 ## Problem
@@ -27,9 +27,10 @@ them continuously —
 - Census 2026-10-17T04:17Z: 120 `ci-base-*` + 3 `ci-[0-9a-f]{12}` heads on
   origin; committer dates run 2026-10-09T23:16Z → 2026-10-16T15:22Z (roughly
   one leaked pair per failed validation).
-- Two teardown-missed draft PRs (#521, #533) stayed OPEN exactly 7 days
-  (2026-10-10 → 2026-10-17), polluting the open-PR list next to live batch
-  PRs.
+- Two teardown-missed draft PRs (#521, #533) stayed OPEN ~7 days (7d5h58m and
+  7d4h16m: #521 2026-10-10T01:18:57Z → 2026-10-17T07:16:24Z, #533
+  2026-10-10T02:59:53Z → 2026-10-17T07:16:17Z), polluting the open-PR list next
+  to live batch PRs.
 - Happy path verified the same day: PR #855 ran the full cycle in 2m25s
   (refs + PR created 08:42:38Z, PR closed 08:45:03Z, both refs deleted) —
   the leak is failure-path-only, not systemic to every validation.
@@ -44,8 +45,9 @@ Detection: `git ls-remote origin 'refs/heads/conductor/*'` + count by class;
 per-head PR state via `gh pr list --state all --head conductor/ci-<id>`.
 
 Sweep gates, in execution order (a live fleet mints new refs at any moment,
-so re-derive the set at apply time; two derivations 08:45Z and 13:33Z with
-the 12h rule produced the identical 119-ref set):
+so re-derive the set at apply time; derivations 08:45Z and 13:33Z produced
+the identical 119-ref set, and the 2026-10-17T20:03Z re-derivation grew it
+to 122 as the three then-fresh refs aged past the cutoff — by design):
 
 1. Terminal PRs first: every ci-* head in the delete set must have a CLOSED
    or MERGED PR. (#521/#533 were merged into their own ci-base validation
@@ -55,8 +57,10 @@ the 12h rule produced the identical 119-ref set):
    and `visual-capture-*` are landing-pipeline surfaces — never touched.
 3. Age cutoff: commit committer date ≤ now − 12h (commit date ≈ ref
    creation; protects in-flight validations).
-4. Live open-PR heads must have ZERO intersection with the delete set,
-   re-checked at apply time.
+4. Live open-PR refs (BOTH headRefName and baseRefName) must have ZERO
+   intersection with the delete set, re-checked at apply time. The gate must
+   FAIL CLOSED on any gh failure (auth/rate-limit/network) — a masked error
+   is a vacuous pass (verified live: bogus-repo probe exits 71, no mutation).
 5. Archive before delete: fetch all ci refs into a bare repo, then
    `git bundle create --all` + `bundle verify` ("complete history") + record
    the sha256.
@@ -68,8 +72,10 @@ the 12h rule produced the identical 119-ref set):
    pre-existing run-*/visual-capture ref is missing afterward (additions are
    legitimate new fleet refs — only deletions are collateral).
 
-Rollback: re-push refs from the bundle/archive; `gh pr reopen` only AFTER
-the head ref exists again (reopen needs the head).
+Rollback: re-push refs from the apply-time archive bundle — if the bundle is
+gone, re-materialize it the same way (every delete-set ref was still on
+origin at the 2026-10-17T20:00Z re-derivation; only --apply deletes them);
+`gh pr reopen` only AFTER the head ref exists again (reopen needs the head).
 
 ## Prevention
 
