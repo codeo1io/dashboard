@@ -92,4 +92,25 @@ describe('base-drift digest readback — workflow statics (rm-166)', () => {
       'base-drift.yaml must fail loudly when the live digest readback comes back empty',
     ).toBe(true)
   })
+
+  it('base-drift.yaml derives the watched tag from the Dockerfile ARG, never a hardcoded family literal (rm-856)', () => {
+    const file = readWorkflowFiles().find(f => f.name === 'base-drift.yaml')
+    const text = file?.text ?? ''
+    // rm-856 (cycle 2, 2026-10-17): the workflow was born inspecting a hardcoded
+    // node:24-slim tag while the Dockerfile pins node:24-trixie-slim — the drift
+    // comparison was structurally empty and the watcher stayed blind while the
+    // real pin went dead (173f1258, 404). The tag must be derived from the
+    // Dockerfile's ARG NODE_IMAGE line (mirrors the cve-tripwire derivation in
+    // 43af4cf), so a family move only ever touches the Dockerfile.
+    expect(
+      text.includes(String.raw`sed -nE 's/^ARG NODE_IMAGE=(node:[^@[:space:]]+@sha256:[0-9a-f]{64})$/\1/p' Dockerfile`),
+      'base-drift.yaml must derive the watched tag from the Dockerfile ARG NODE_IMAGE line',
+    ).toBe(true)
+    for (const literal of ['node:24-slim', 'node:24-trixie-slim', 'manifests/24-slim', 'manifests/24-trixie-slim']) {
+      expect(
+        text.includes(literal),
+        `base-drift.yaml must not hardcode the watched family literal ${literal} — derive it from the Dockerfile ARG (rm-856)`,
+      ).toBe(false)
+    }
+  })
 })
