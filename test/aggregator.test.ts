@@ -3119,3 +3119,83 @@ describe('aggregator — rm-1447 platform status annotation', () => {
     expect(snap.platformStatus).toEqual(FAKE_STATUS)
   })
 })
+
+// ---------------------------------------------------------------------------
+// rm-1488: latch/join ordering — the platform-status join settles BEFORE the
+// refresh latch releases, so no cycle can start while the previous cycle's
+// platform-status fetch is still pending
+// ---------------------------------------------------------------------------
+
+describe('aggregator — rm-1488 latch/join ordering', () => {
+  type PlatformStatusValue = Awaited<ReturnType<NonNullable<AggregatorDeps['platformStatusFetch']>>>
+
+  const FAKE_STATUS = {
+    overall: 'minor' as const,
+    overallDescription: 'Investigating Actions run creation delays',
+    actions: 'major_outage' as const,
+    fetchedAt: 1_700_000_123_456,
+  }
+
+  it('a refresh() arriving while the platform-status join is still pending is skipped (no overlapping cycle)', async () => {
+    let releaseStatus!: (value: PlatformStatusValue) => void
+    const statusGate = new Promise<PlatformStatusValue>(resolve => {
+      releaseStatus = resolve
+    })
+    const platformStatusFetch = vi.fn(async () => statusGate)
+    const deps = makeDeps({platformStatusFetch})
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+
+    const firstCycle = agg.refresh()
+    // Let the walk settle (every walk dep resolves immediately) so the cycle
+    // is parked in refresh()'s join window: walk done, platform status still
+    // pending.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(platformStatusFetch).toHaveBeenCalledTimes(1)
+
+    // Join window: this trigger must observe a HELD latch and skip. Under the
+    // pre-rm-1488 order (latch released before the join was awaited) it
+    // started a second cycle whose platform fetch overlapped the pending one.
+    const secondTrigger = agg.refresh()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(platformStatusFetch).toHaveBeenCalledTimes(1)
+    expect(deps.enumerate).toHaveBeenCalledTimes(1)
+
+    // Settle the join: the first cycle completes and the annotation lands.
+    releaseStatus(FAKE_STATUS)
+    await firstCycle
+    await secondTrigger
+    expect(platformStatusFetch).toHaveBeenCalledTimes(1)
+    expect(agg.getSnapshot().platformStatus).toEqual(FAKE_STATUS)
+
+    // Latch open again: a new cycle runs and fetches once more.
+    await agg.refresh()
+    expect(platformStatusFetch).toHaveBeenCalledTimes(2)
+    expect(deps.enumerate).toHaveBeenCalledTimes(2)
+  })
+
+  it('a rejecting platform fetch settles the join, opens the latch, and never rejects refresh()', async () => {
+    let rejectStatus!: (reason?: unknown) => void
+    const statusGate = new Promise<never>((_, reject) => {
+      rejectStatus = reject
+    })
+    const platformStatusFetch = vi.fn(async () => statusGate)
+    const deps = makeDeps({platformStatusFetch})
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+
+    const firstCycle = agg.refresh()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const secondTrigger = agg.refresh() // must be skipped while the join is pending
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(platformStatusFetch).toHaveBeenCalledTimes(1)
+    rejectStatus(new Error('status feed dark'))
+    await expect(firstCycle).resolves.toBeUndefined()
+    await secondTrigger
+
+    // The failed fetch cleared the annotation (fail-open) and the latch is
+    // open again: the next cycle starts fresh.
+    expect('platformStatus' in agg.getSnapshot()).toBe(false)
+    await agg.refresh()
+    expect(platformStatusFetch).toHaveBeenCalledTimes(2)
+    expect(deps.enumerate).toHaveBeenCalledTimes(2)
+  })
+})

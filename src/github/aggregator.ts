@@ -1342,9 +1342,20 @@ export function createAggregator(
       })
       markSnapshotStale()
     } finally {
-      refreshing = false
-      cycleStartedAt = null
-      await platformStatusPromise
+      // rm-1488: settle the platform-status join BEFORE releasing the latch.
+      // Releasing first opened a window in which a trigger observed a clean
+      // latch and started a new cycle while this cycle's platform-status
+      // fetch was still pending — overlapping updatePlatformStatus() calls
+      // interleaving their once-per-cycle annotation writes. updatePlatformStatus
+      // never rejects (fail-open by contract), so this await cannot delay the
+      // latch release in practice; the inner finally keeps the release
+      // unconditional should that contract ever regress.
+      try {
+        await platformStatusPromise
+      } finally {
+        refreshing = false
+        cycleStartedAt = null
+      }
     }
   }
 
