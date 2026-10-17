@@ -1,9 +1,14 @@
 name: visual
 
-# Dark (report-only) visual-regression + a11y gate.
-# Intentionally NOT a required check: failures here surface drift for review
-# without blocking merges. Baselines under tests/visual/__screenshots__.
-# Promote to required once baselines are stable across runner generations.
+# Dark visual-regression + a11y gate — declared report-only but BLOCKING IN
+# PRACTICE: the conductor composite validation closes candidate PRs on a
+# visual red (forensics 2026-10-17: #870 closed 1m39s after its 13:08Z red,
+# #871 ~2min after its 14:04Z red). Treat baselines under
+# tests/visual/__screenshots__/ as required artifacts: any change that
+# alters rendered output lands its regen in the same PR (provenance protocol
+# in tests/visual/dashboard.spec.ts). rm-1970 tracks making this structural
+# (rulesets required-check + a reviewed auto-regen path); until then this
+# comment is the operator contract.
 # rm-207 (cycle-17, 2026-09-25): the fixture server serves `public/` (the
 # ~3k-line operator runtime) and `web/dist/` built from `web/` — the paths
 # filter must cover every non-test surface that reaches the browser, else
