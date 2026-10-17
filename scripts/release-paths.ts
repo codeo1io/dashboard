@@ -48,4 +48,12 @@ export const HARD_RELEASE_ROOT_TSCONFIG_GLOB = 'tsconfig*.json'
 export const WORKFLOW_TRIGGER_ONLY_PATHS: readonly string[] = [
   'package.json',
   'pnpm-lock.yaml',
+  // rm-602 (run f2821fb57c34) landed on main after this lineage's base
+  // 06095e9: main's release.yaml on.push.paths gained the precompressed-
+  // sidecar script, and the ephemeral validation tree pairs current-main
+  // workflows with this lineage's code, so the corpus must know the entry
+  // or test/should-release.test.ts reds on the mixed tree (PR #898's exact
+  // failure). Trigger-only here — the script does not exist at this base;
+  // main's HARD classification wins at the eventual integrate.
+  'scripts/gzip-static-sidecars.ts',
 ]

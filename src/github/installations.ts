@@ -19,6 +19,7 @@ import type {DashboardAppClient} from './app-client.ts'
 import {Octokit} from '@octokit/core'
 import {logger} from '../logger.ts'
 import {err, ok} from '../result.ts'
+import {pinGitHubApiVersion} from './api-version.ts'
 import {createBoundedFetch, GITHUB_REQUEST_TIMEOUT_MS, safeErrorMessage} from './app-client.ts'
 
 // ---------------------------------------------------------------------------
@@ -385,16 +386,20 @@ export async function enumerateRepos(
 // ---------------------------------------------------------------------------
 
 async function listInstallationReposWithToken(token: string): Promise<readonly Omit<RepoRecord, 'installation_id'>[]> {
-  const installOctokit = new Octokit({
-    auth: token,
-    // rm-197: serial per-repo walk must not stall the refresh. rm-267: the
-    // bare `timeout` key is INERT on hung upstreams (rm-156) — ride
-    // createBoundedFetch like the app-client siblings (transport contract).
-    request: {
-      timeout: GITHUB_REQUEST_TIMEOUT_MS,
-      fetch: createBoundedFetch(GITHUB_REQUEST_TIMEOUT_MS),
-    },
-  })
+  // rm-855: REST API version pinned on every egress path at construction
+  // (see ./api-version.ts for why this is not a `defaultHeaders` option).
+  const installOctokit = pinGitHubApiVersion(
+    new Octokit({
+      auth: token,
+      // rm-197: serial per-repo walk must not stall the refresh. rm-267: the
+      // bare `timeout` key is INERT on hung upstreams (rm-156) — ride
+      // createBoundedFetch like the app-client siblings (transport contract).
+      request: {
+        timeout: GITHUB_REQUEST_TIMEOUT_MS,
+        fetch: createBoundedFetch(GITHUB_REQUEST_TIMEOUT_MS),
+      },
+    }),
+  )
 
   const repos: Omit<RepoRecord, 'installation_id'>[] = []
   let page = 1

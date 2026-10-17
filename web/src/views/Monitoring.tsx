@@ -4,6 +4,7 @@ import {
   type FetchMonitoringResult,
   type MonitoringData,
   type MonitoringRepo,
+  type PlatformMaintenance,
   type PlatformStatusSummary,
 } from '../api/monitoring.ts'
 import {useBoundedPoll} from '../hooks/useBoundedPoll.ts'
@@ -117,6 +118,14 @@ function platformBannerPhrase(platform: PlatformStatusSummary): string {
   return platform.overall === 'critical' ? 'a critical platform incident' : 'a major platform incident'
 }
 
+/** rm-1467: localized window range; '' on a malformed timestamp (span dropped). */
+function maintenanceWindowLabel(maintenance: PlatformMaintenance): string {
+  const from = new Date(maintenance.scheduledFor)
+  const until = new Date(maintenance.scheduledUntil)
+  if (Number.isNaN(from.getTime()) || Number.isNaN(until.getTime())) return ''
+  return `${from.toLocaleString()} – ${until.toLocaleString()}`
+}
+
 function MonitoringBoard({data}: {data: MonitoringData}) {
   const redRepos = data.repos.filter(repo => repo.status.rollupState === 'red' || repo.status.failingChecks > 0)
   const remaining = data.repos.length - redRepos.length
@@ -133,6 +142,21 @@ function MonitoringBoard({data}: {data: MonitoringData}) {
             {platform.overallDescription !== '' ? ` (${platform.overallDescription})` : ''} · platform status as
             of {new Date(platform.fetchedAt).toLocaleTimeString()}
           </span>
+        </div>
+      )}
+
+      {platform !== null && platform.maintenances.length > 0 && (
+        <div data-testid="monitoring-maintenance-chip" className="operator-platform-banner" role="status">
+          {platform.maintenances.map(maintenance => {
+            const window = maintenanceWindowLabel(maintenance)
+            return (
+              <span key={`${maintenance.name}:${maintenance.scheduledFor}`}>
+                {maintenance.status === 'in_progress' ? 'Underway' : 'Scheduled'} platform maintenance:{' '}
+                {maintenance.name}
+                {window !== '' ? ` · ${window}` : ''}
+              </span>
+            )
+          })}
         </div>
       )}
 
