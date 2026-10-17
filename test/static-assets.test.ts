@@ -1216,3 +1216,52 @@ describe('rm-690 — Cache-Control policy for static surfaces', () => {
     expect(res.headers.get('cache-control')).toBe('no-cache, no-store, must-revalidate')
   })
 })
+
+// ---------------------------------------------------------------------------
+// rm-1455 — serveStatic method semantics: GET/HEAD only
+// ---------------------------------------------------------------------------
+// @hono/node-server 2.1.5 (PR #405) makes serveStatic answer GET/HEAD ONLY:
+// a non-GET static request falls through to the app's 404 and never reaches a
+// file read. At the previous pin (2.1.3) serve-static had NO method check — a
+// POST /sw.js streamed back the full SW body with 200 — so these pins are
+// load-bearing for the bump. HEAD keeps serving headers (Content-Length +
+// Last-Modified) with an empty body.
+
+describe('rm-1455 — serveStatic answers GET/HEAD only (non-GET static never reads a file)', () => {
+  it('POST /sw.js is 404, not 200 — no SW body (2.1.3 streamed the full file)', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/sw.js', {method: 'POST'})
+    expect(res.status).toBe(404)
+    const body = await res.text()
+    expect(body).not.toContain('addEventListener')
+    expect(body).not.toContain('caches')
+  })
+
+  it('PUT /sw.js is 404, not 200 — no SW body', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/sw.js', {method: 'PUT'})
+    expect(res.status).toBe(404)
+    expect(await res.text()).not.toContain('addEventListener')
+  })
+
+  it('DELETE /sw.js is 404, not 200', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/sw.js', {method: 'DELETE'})
+    expect(res.status).toBe(404)
+  })
+
+  it('POST /assets/<content-hashed> is 404 without the immutable header (the immutable story is GET-only)', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request(`/assets/${firstHashedAsset()}`, {method: 'POST'})
+    expect(res.status).toBe(404)
+    expect(res.headers.get('cache-control') ?? '').not.toContain('immutable')
+  })
+
+  it('HEAD /sw.js still serves headers: 200 + Content-Length, empty body', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request('/sw.js', {method: 'HEAD'})
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-length')).not.toBeNull()
+    expect(await res.text()).toBe('')
+  })
+})
