@@ -79,6 +79,7 @@ import {
   UPDATE_FAILURE_REASONS,
 } from '../src/gateway/operator-contract/index.ts'
 import {isOperatorFailureKind, OPERATOR_FAILURE_KINDS} from '../src/gateway/operator-contract/run-status.ts'
+import {ACCEPTED_OPERATOR_CONTRACT_VERSIONS} from '../src/gateway/operator-contract/version.ts'
 
 // ---------------------------------------------------------------------------
 // Type-level assignability: dashboard types ↔ canonical contract types
@@ -243,7 +244,8 @@ describe('OPERATOR_CONTRACT_VERSION', () => {
     expect(OPERATOR_CONTRACT_VERSION).toMatch(/^\d+\.\d+\.\d+$/)
   })
 
-  it('is the single version literal in the vendored directory: none in any comment or in the README', () => {
+  it('carries no version literal in prose beyond the accepted-set ladder (rm-873 additive policy)', () => {
+    const allowed = new Set([...ACCEPTED_OPERATOR_CONTRACT_VERSIONS, OPERATOR_CONTRACT_VERSION])
     const files = readdirSync(CONTRACT_DIR).filter(name => name.endsWith('.ts') || name.endsWith('.md'))
     expect(files).toContain('version.ts')
     expect(files).toContain('README.md')
@@ -254,15 +256,18 @@ describe('OPERATOR_CONTRACT_VERSION', () => {
       const text = readFileSync(join(CONTRACT_DIR, name), 'utf8')
       const prose = name.endsWith('.md') ? [text] : commentRanges(text).map(range => text.slice(range.pos, range.end))
       for (const chunk of prose) {
-        expect(findVersionLiterals(chunk), `${name} comment/prose carries a version or tag literal`).toEqual([])
+        const offending = findVersionLiterals(chunk).filter(literal => !allowed.has(literal))
+        expect(offending, `${name} comment/prose carries a version literal outside the accepted set`).toEqual([])
       }
     }
   })
 
-  it('version.ts holds OPERATOR_CONTRACT_VERSION as the only literal outside comments', () => {
+  it('version.ts code literals are exactly the pin plus the accepted set, and the pin is a member', () => {
     const text = readFileSync(join(CONTRACT_DIR, 'version.ts'), 'utf8')
     const code = blankRanges(text, commentRanges(text))
-    expect(findVersionLiterals(code)).toEqual([OPERATOR_CONTRACT_VERSION])
+    const expected = [...new Set([OPERATOR_CONTRACT_VERSION, ...ACCEPTED_OPERATOR_CONTRACT_VERSIONS])].sort()
+    expect([...new Set(findVersionLiterals(code))].sort()).toEqual(expected)
+    expect(ACCEPTED_OPERATOR_CONTRACT_VERSIONS.has(OPERATOR_CONTRACT_VERSION)).toBe(true)
   })
 })
 
@@ -1335,8 +1340,16 @@ describe('parseRunSummary', () => {
     }
   })
 
-  it('accepts all five valid index statuses', () => {
-    const statuses = ['queued', 'running', 'succeeded', 'failed', 'cancelled'] as const
+  it('accepts all seven valid summary statuses (waiting overlays included)', () => {
+    const statuses = [
+      'queued',
+      'running',
+      'waiting_for_approval',
+      'waiting_for_question',
+      'succeeded',
+      'failed',
+      'cancelled',
+    ] as const
     for (const status of statuses) {
       const input = {runId: 'run-1', repo: 'fro-bot/agent', status, createdAt: '2026-06-01T00:00:00.000Z'}
       const result = parseRunSummary(input)
@@ -1357,12 +1370,14 @@ describe('parseRunSummary', () => {
     }
   })
 
-  it('rejects stream-only status: waiting_for_approval', () => {
-    const input = {runId: 'run-1', repo: 'fro-bot/agent', status: 'waiting_for_approval', createdAt: '2026-06-01T00:00:00.000Z'}
-    const result = parseRunSummary(input)
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.message).toBe('invalid run summary shape')
+  it('accepts the contract 1.11.0 waiting overlays as valid summary statuses (rm-873)', () => {
+    for (const status of ['waiting_for_approval', 'waiting_for_question'] as const) {
+      const input = {runId: 'run-1', repo: 'fro-bot/agent', status, createdAt: '2026-06-01T00:00:00.000Z'}
+      const result = parseRunSummary(input)
+      expect(result.success, `status "${status}" should be accepted`).toBe(true)
+      if (result.success) {
+        expect(result.data.status).toBe(status)
+      }
     }
   })
 
@@ -1640,7 +1655,7 @@ describe('parseRunSummaryList', () => {
   it('returns empty array when all items are invalid', () => {
     const input = [
       {runId: 'run-1', repo: 'fro-bot/agent', status: 'blocked', createdAt: '2026-06-01T00:00:00.000Z'},
-      {runId: 'run-2', repo: 'fro-bot/agent', status: 'waiting_for_approval', createdAt: '2026-06-01T00:00:00.000Z'},
+      {runId: 'run-2', repo: 'fro-bot/agent', status: 'waiting', createdAt: '2026-06-01T00:00:00.000Z'},
     ]
     const result = parseRunSummaryList(input)
     expect(result.success).toBe(true)

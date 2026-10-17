@@ -15,8 +15,8 @@ import {existsSync, readdirSync, statSync} from 'node:fs'
 import {join, resolve} from 'node:path'
 import process from 'node:process'
 import {afterEach, describe, expect, it} from 'vitest'
-import {PINNED_CONTRACT_VERSION} from '../public/operator-stream.js'
-import {OPERATOR_CONTRACT_VERSION} from '../src/gateway/operator-contract/version.ts'
+import {ACCEPTED_CONTRACT_VERSIONS, PINNED_CONTRACT_VERSION} from '../public/operator-stream.js'
+import {ACCEPTED_OPERATOR_CONTRACT_VERSIONS, OPERATOR_CONTRACT_VERSION} from '../src/gateway/operator-contract/version.ts'
 import {FIXTURE_QUESTION_SCENARIO_ROWS} from '../src/gateway/operator-fixture-sse.ts'
 import {buildDashboardApp} from '../src/server.ts'
 import {SessionManager} from '../src/session.ts'
@@ -889,16 +889,23 @@ describe('security — raw failure reason codes security invariants', () => {
 })
 
 describe('security — operator-stream.js contract pin and checkout-field boundary', () => {
-  it('holds exactly one version literal (the pin), and imports no server code', async () => {
+  it('version literals are exactly the pin plus the accepted ladder (rm-873), and imports no server code', async () => {
     const fs = await import('node:fs/promises')
     const src = await fs.readFile('public/operator-stream.js', 'utf8')
     // Strip comments so prose that names a version cannot hide a second pin.
     const code = src.replaceAll(/\/\*[\s\S]*?\*\//g, '').replaceAll(/(^|[^:])\/\/.*$/gm, '$1')
     const literals = code.match(/['"`]\d+\.\d+\.\d+['"`]/g) ?? []
-    expect(literals).toHaveLength(1)
+    const expected = [...ACCEPTED_CONTRACT_VERSIONS, PINNED_CONTRACT_VERSION].map(v => `'${v}'`)
+    expect([...literals].sort()).toEqual([...expected].sort())
     expect(code).toMatch(/export const PINNED_CONTRACT_VERSION = ['"]\d+\.\d+\.\d+['"]/)
     expect(code).not.toMatch(/from\s+['"][^'"]*(?:src\/|\.ts['"])/)
     expect(code).not.toMatch(/\bimport\s*\(/)
+  })
+
+  it('the browser accepted ladder equals the vendored contract set (every ladder moves together)', () => {
+    expect([...ACCEPTED_CONTRACT_VERSIONS].sort()).toEqual([...ACCEPTED_OPERATOR_CONTRACT_VERSIONS].sort())
+    expect(ACCEPTED_CONTRACT_VERSIONS.has(PINNED_CONTRACT_VERSION)).toBe(true)
+    expect(PINNED_CONTRACT_VERSION).toBe(OPERATOR_CONTRACT_VERSION)
   })
 
   it('the browser pin equals the vendored contract version (every pin moves together)', () => {
