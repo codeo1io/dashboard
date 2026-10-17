@@ -44,11 +44,18 @@ describe('curated override floors (rm-499)', () => {
     expect(workspace).toContain('GHSA-58mr-gqgx-xq4g')
   })
 
+  it('the overrides block names the advisory beside the katex floor (house style, rm-276 backfill)', () => {
+    // Same rule as fast-uri: a floor is a RECORDED DECISION, so its GHSA
+    // travels with it. Backfilled 2026-10-17 (run d495512fd2cc U3) for the
+    // katex@0 floor minted upstream 2026-10-17.
+    expect(workspace).toContain('GHSA-238p-pmpm-9mq7')
+  })
+
   it('the curated block keeps its recorded selectors present (presence-only, values owned by their mints)', () => {
     // Presence pins only: each remaining floor's VALUE is owned by the item
     // that minted it (brace-expansion/undici/toml), so this suite does not
     // freeze their lines — it only fails if a selector disappears entirely.
-    for (const selector of ['brace-expansion@2', 'brace-expansion@5', 'toml', 'undici@7']) {
+    for (const selector of ['brace-expansion@2', 'brace-expansion@5', 'katex@0', 'toml', 'undici@7']) {
       expect(overrideFloor(selector), `${selector} floor missing from the overrides block`).not.toBeNull()
     }
   })
