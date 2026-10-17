@@ -33,11 +33,11 @@ const tags = (entries: [name: string, dateUnix: number][]): CalverTagInfo[] =>
 
 describe('rm-740: calver tag parsing and newest selection', () => {
   it('parses this repo calver shapes and rejects non-calver tags', () => {
-    expect(parseCalverTag('2026.08.9')).toEqual({year: 2026, month: 8, day: 9})
-    expect(parseCalverTag('2026.10.28')).toEqual({year: 2026, month: 10, day: 28})
+    expect(parseCalverTag('2026.08.9')).toEqual({year: 2026, month: 8, patch: 9})
+    expect(parseCalverTag('2026.10.28')).toEqual({year: 2026, month: 10, patch: 28})
     expect(parseCalverTag('v1.2.3')).toBeNull()
-    expect(parseCalverTag('2026.13.1')).toBeNull() // month out of range
-    expect(parseCalverTag('2026.08.32')).toBeNull() // day out of range
+    expect(parseCalverTag('2026.13.1')).toEqual({year: 2026, month: 13, patch: 1}) // rm-1468: shape-only parse, no month/day range validation
+    expect(parseCalverTag('2026.08.32')).toEqual({year: 2026, month: 8, patch: 32}) // rm-1468: PATCH is a per-month counter, not a calendar day
     expect(parseCalverTag('2026.8')).toBeNull() // not the three-part shape
   })
 
@@ -249,5 +249,77 @@ describe('rm-740: step summary rendering', () => {
     const text = lines.join('\n')
     expect(text).toContain('retired-with-owner')
     expect(text).toContain('rm-714')
+  })
+})
+
+describe('rm-1468: foreign-tag scoping', () => {
+  it('a three-digit PATCH parses and outranks .9 within the month', () => {
+    const newest = selectNewestCalverTag(tags([['2026.10.9', 200], ['2026.10.43', 100]]))
+    expect(newest?.name).toBe('2026.10.43')
+  })
+
+  it('selection is unscoped by contract — callers scope the list', () => {
+    const withForeign = [...tags([['2026.10.23', 60]]), {name: '2026.10.25', dateUnix: 50, foreign: true}]
+    expect(selectNewestCalverTag(withForeign)?.name).toBe('2026.10.25')
+  })
+
+  it('foreign-newer tags never green-wash a stale channel', () => {
+    const result = evaluateReleaseChannelStaleness({
+      nowMs: NOW,
+      tags: [
+        ...tags([['2026.08.15', Math.floor((NOW - 46 * DAY_MS) / 1000)]]),
+        {name: '2026.10.25', dateUnix: Math.floor((NOW - 2 * DAY_MS) / 1000), foreign: true},
+      ],
+      thresholdDays: 45,
+      decision: null,
+    })
+    expect(result.status).toBe('stale')
+    expect(result.newestTag).toBe('2026.08.15')
+    expect(result.ageDays).toBe(46)
+    expect(result.newestForeignTag).toBe('2026.10.25')
+    expect(result.foreignTagsExcluded).toBe(1)
+  })
+
+  it('foreign-newer tags do not flip a healthy channel either — reported, excluded', () => {
+    const result = evaluateReleaseChannelStaleness({
+      nowMs: NOW,
+      tags: [
+        ...tags([['2026.09.25', Math.floor((NOW - 10 * DAY_MS) / 1000)]]),
+        {name: '2026.10.25', dateUnix: Math.floor((NOW - 2 * DAY_MS) / 1000), foreign: true},
+      ],
+      thresholdDays: 45,
+      decision: null,
+    })
+    expect(result.status).toBe('healthy')
+    expect(result.newestTag).toBe('2026.09.25')
+    expect(result.newestForeignTag).toBe('2026.10.25')
+    expect(result.foreignTagsExcluded).toBe(1)
+  })
+
+  it('only-foreign tag sets fail loud instead of reading healthy', () => {
+    expect(() =>
+      evaluateReleaseChannelStaleness({
+        nowMs: NOW,
+        tags: [{name: '2026.10.25', dateUnix: Math.floor((NOW - 2 * DAY_MS) / 1000), foreign: true}],
+        thresholdDays: 45,
+        decision: null,
+      }),
+    ).toThrow(/only foreign calver tags/)
+  })
+
+  it('summary names the foreign exclusion when present', () => {
+    const lines = buildSummaryLines({
+      status: 'healthy',
+      newestTag: '2026.09.25',
+      newestTagDateUnix: Math.floor((NOW - 10 * DAY_MS) / 1000),
+      ageDays: 10,
+      thresholdDays: 45,
+      decision: null,
+      foreignTagsExcluded: 4,
+      newestForeignTag: '2026.10.25',
+    })
+    const text = lines.join('\n')
+    expect(text).toContain('rm-1468')
+    expect(text).toContain('2026.10.25')
   })
 })
