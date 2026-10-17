@@ -4,6 +4,9 @@ import {
   classifyWorkflows,
   computeDarkness,
   DARKNESS_THRESHOLD_MS,
+  extractSchedules,
+  laneThresholdMs,
+  maxCronGapMs,
 } from '../scripts/actions-darkness-watch.ts'
 
 const NOW = '2026-10-15T12:00:00.000Z'
@@ -17,6 +20,7 @@ function verdictFor(options: {
   workflows?: {id: number; path: string; name: string}[]
   runs?: {workflowId: number; createdAt: string}[]
   triggers?: Record<string, string[]>
+  schedules?: Record<string, string[]>
   pushedAt?: string
   now?: string
 }) {
@@ -32,6 +36,7 @@ function verdictFor(options: {
     },
     pushedAt: options.pushedAt ?? PUSHED_RECENT,
     now: options.now ?? NOW,
+    schedules: options.schedules ?? {},
   })
 }
 
@@ -157,5 +162,92 @@ describe('computeDarkness', () => {
     })
     expect(result.candidates).toBe(1)
     expect(result.verdict).toBe('DARK')
+  })
+
+  it('fails closed to UNKNOWN when run timestamps are unparseable', () => {
+    const result = verdictFor({
+      runs: [{workflowId: 1, createdAt: 'not-a-date'}],
+      pushedAt: daysAgo(3),
+    })
+    expect(result.verdict).toBe('UNKNOWN')
+    expect(result.darkWorkflows).toHaveLength(0)
+    expect(result.unknownWorkflows).toHaveLength(1)
+    expect(result.unknownWorkflows[0]?.lastRun).toBe('unparseable')
+  })
+
+  it('fails closed to UNKNOWN when the now override is unparseable', () => {
+    const result = verdictFor({
+      now: 'not-a-date',
+      runs: [{workflowId: 1, createdAt: daysAgo(0.1)}],
+    })
+    expect(result.verdict).toBe('UNKNOWN')
+    expect(result.darkWorkflows).toHaveLength(0)
+    expect(result.unknownWorkflows.map(w => w.name)).toEqual(['now'])
+  })
+
+  it('fails closed to UNKNOWN when pushed_at is unparseable', () => {
+    const result = verdictFor({
+      pushedAt: 'not-a-date',
+      runs: [{workflowId: 1, createdAt: daysAgo(0.1)}],
+    })
+    expect(result.verdict).toBe('UNKNOWN')
+    expect(result.darkWorkflows).toHaveLength(0)
+    expect(result.unknownWorkflows.map(w => w.name)).toEqual(['pushed_at'])
+  })
+
+  it('keeps a weekly-cron lane green inside its cadence window', () => {
+    const result = verdictFor({
+      triggers: {'.github/workflows/main.yaml': ['schedule']},
+      schedules: {'.github/workflows/main.yaml': ['0 6 * * 1']},
+      runs: [{workflowId: 1, createdAt: daysAgo(3)}],
+      pushedAt: daysAgo(5),
+    })
+    expect(result.verdict).toBe('GREEN')
+  })
+
+  it('marks a weekly-cron lane dark past its cadence without any push owed', () => {
+    const result = verdictFor({
+      triggers: {'.github/workflows/main.yaml': ['schedule']},
+      schedules: {'.github/workflows/main.yaml': ['0 6 * * 1']},
+      runs: [{workflowId: 1, createdAt: daysAgo(8)}],
+      pushedAt: daysAgo(30),
+    })
+    expect(result.verdict).toBe('DARK')
+    expect(result.darkWorkflows[0]?.thresholdDays).toBe(7.5)
+  })
+})
+
+describe('cron thresholds', () => {
+  it('measures the longest union gap over a week', () => {
+    expect(maxCronGapMs(['0 6 * * 1'])).toBe(7 * 24 * 60 * 60 * 1000)
+    expect(maxCronGapMs(['0 6,18 * * *'])).toBe(12 * 60 * 60 * 1000)
+    expect(maxCronGapMs(['30 */4 * * *'])).toBe(4 * 60 * 60 * 1000)
+  })
+
+  it('falls back to a week for unparseable crons', () => {
+    expect(maxCronGapMs(['garbage'])).toBe(7 * 24 * 60 * 60 * 1000)
+    expect(maxCronGapMs([])).toBe(7 * 24 * 60 * 60 * 1000)
+  })
+
+  it('floors lane thresholds at the stale threshold and adds grace', () => {
+    expect(laneThresholdMs('.github/workflows/x.yaml', undefined)).toBe(DARKNESS_THRESHOLD_MS)
+    expect(laneThresholdMs('.github/workflows/x.yaml', {})).toBe(DARKNESS_THRESHOLD_MS)
+    expect(laneThresholdMs('.github/workflows/x.yaml', {'.github/workflows/x.yaml': ['0 6 * * 1']})).toBe(
+      7 * 24 * 60 * 60 * 1000 + 12 * 60 * 60 * 1000,
+    )
+    expect(laneThresholdMs('.github/workflows/x.yaml', {'.github/workflows/x.yaml': ['0 6,18 * * *']})).toBe(
+      DARKNESS_THRESHOLD_MS,
+    )
+  })
+
+  it('extracts cron schedules from workflow texts', () => {
+    const schedules = extractSchedules({
+      'main.yaml': 'on:\n  push:\n    branches: [main]\n  schedule:\n    - cron: "0 6 * * 1"\n',
+      'array.yaml': 'on: [push]\n',
+      'broken.yaml': 'on: [push\n',
+    })
+    expect(schedules['main.yaml']).toEqual(['0 6 * * 1'])
+    expect(schedules['array.yaml']).toBeUndefined()
+    expect(schedules['broken.yaml']).toBeUndefined()
   })
 })

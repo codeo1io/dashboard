@@ -136,6 +136,20 @@ env:
     fro-bot). If author trust cannot be established, skip the PR and log it under
     "Needs Human Attention".
 
+    FORK RIDER — DEPENDENCY OWNERSHIP ON THIS FORK (rm-1480, re-trued 2026-10-17)
+    The DEPENDENCY OWNERSHIP and TRUSTED AUTHORS paragraphs above are the
+    upstream repository's policy, adopted wholesale when this fork absorbed
+    the upstream workflow restructure (2026-10-17). On THIS fork
+    (codeo1io/dashboard) no automation owns routine bumps: Dependabot produced
+    zero PRs here and its config was retired 2026-10-16 (rm-1480); the Renovate
+    workflow and config do not run here (workflow retired during CI migration,
+    config deleted 2026-09-22). Maintenance-cycle implement phases own routine
+    dependency and version bumps, with registry-time maturity verification
+    (ROADMAP rm-1480; docs/runbooks/security-posture.md, Automation
+    dispositions). Where the paragraphs above name Renovate or Dependabot as
+    the owner, substitute the maintenance cycle; the trusted-author and
+    security-only-bump constraints stand unchanged.
+
     CATEGORIES (work in order)
 
     1. ERRORED PRs
