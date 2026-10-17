@@ -26,6 +26,7 @@
 
 import {validateDynamicId} from './validate-dynamic-id.ts'
 import type {RunSummaryStatus} from '../../../public/operator-stream.js'
+import {clearGatewaySignInRedirectGuard, maybeAutoRedirectToGatewaySignIn} from './sign-in-recovery.ts'
 import type {OperatorState} from './state.ts'
 
 /**
@@ -35,6 +36,14 @@ import type {OperatorState} from './state.ts'
  * decode/encode call — a megabyte-long hash must not reach those paths.
  */
 export const MAX_HASH_ID_LENGTH = 512
+
+/**
+ * Run-index init outcome contract (public/operator-run-index.js). The loader uses
+ * 'auth-required' for the once-per-tab gateway sign-in redirect and
+ * 'loaded'/'empty' to clear that redirect guard; 'unavailable' and 'stale' leave
+ * the guard untouched.
+ */
+export type OperatorRunIndexInitOutcome = 'loaded' | 'empty' | 'auth-required' | 'unavailable' | 'stale'
 
 /**
  * Discover the per-card render targets for a run's stream (output, coalesced
@@ -353,7 +362,7 @@ async function defaultRuntimeLoader(opts?: {
       onRestoreRun?: (runId: string, card: Element, status: string) => void
       onRestoreMiss?: () => void
       onAuthRequired?: () => void
-    }) => Promise<void>
+    }) => Promise<OperatorRunIndexInitOutcome>
     resetRunIndexState?: () => void
     markRunStreamAttached?: (runId: string) => void
     markCardExpandedForLaunch?: (runId: string) => void
@@ -513,7 +522,11 @@ async function defaultRuntimeLoader(opts?: {
     const runIndexOpts = opts?.endpointBase !== undefined
       ? {endpointBase: opts.endpointBase, fixtureSessionId: opts.fixtureSessionId, onSelectRun, restoreRunId, onRestoreRun, onRestoreMiss, onAuthRequired}
       : {onSelectRun, restoreRunId, onRestoreRun, onRestoreMiss, onAuthRequired}
-    await runIndexMod.initOperatorRunIndex(runIndexOpts)
+    const initOutcome = await runIndexMod.initOperatorRunIndex(runIndexOpts)
+    const runIndexLoaded = initOutcome === 'loaded' || initOutcome === 'empty'
+    // The fixture harness has no gateway sign-in route, so it never redirects.
+    if (initOutcome === 'auth-required' && opts?.endpointBase === undefined) maybeAutoRedirectToGatewaySignIn('auth-required')
+    if (runIndexLoaded) clearGatewaySignInRedirectGuard()
   }
 
   if (typeof launchMod.resetLaunchState === 'function') {

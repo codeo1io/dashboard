@@ -35,9 +35,11 @@ const COPY: Record<OperatorState, OperatorStateCopy> = {
   },
   'auth-required': {
     headline: 'Sign in required',
-    detail: 'Your session has expired or is not established.',
-    actionReason: 'Launch and approval actions are disabled until you sign in.',
-    recoveryHint: 'Sign in to continue.',
+    detail: "You're signed out.",
+    // No action-disabled reason: the dedicated sign-in button (Operator.tsx) is the
+    // action, so a redundant reason line would only repeat the headline.
+    actionReason: null,
+    recoveryHint: '',
   },
   'rate-limited': {
     headline: 'Too many requests',
