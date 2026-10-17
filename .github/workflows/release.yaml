@@ -168,6 +168,13 @@ jobs:
       - name: 🔧 Set up Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
+      - name: 🏷️ Compute release version
+        id: version
+        run: |
+          git fetch --tags --force
+          TAG="$(node scripts/compute-release-tag.ts)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
       - name: 🏗️ Build and push candidate image
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -175,6 +182,10 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
+          # rm-1483 (#641 port): bake the release tag into the SPA so the footer
+          # links the exact image's release notes.
+          build-args: |
+            DASHBOARD_VERSION=${{ steps.version.outputs.tag }}
           # rm-558: multi-arch release. The Dockerfile's toolchain stages are
           # FROM --platform=$BUILDPLATFORM (shared/cache-hit across targets); each
           # target only re-COPYs the arch-independent artifacts and runs one ~1.2 s
