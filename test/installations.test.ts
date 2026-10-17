@@ -5,14 +5,18 @@
  * Covers: happy path, edge cases, error paths, and security invariants.
  */
 
+import type {DashboardAppClient} from '../src/github/app-client.ts'
 import type {InstallationRecord, InstallationsClient, RepoRecord} from '../src/github/installations.ts'
 
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {
+  buildInstallationsClient,
+  collectInstallationRepoPages,
   CORE_READ_PERMISSIONS,
   enumerateRepos,
   FetchInstallationsError,
   FULL_READ_PERMISSIONS,
+  MAX_PAGINATION_PAGES,
   mintReadOnlyToken,
   OPTIONAL_READ_PERMISSIONS,
 } from '../src/github/installations.ts'
@@ -928,5 +932,139 @@ describe('token cache hygiene — bounded + departure-pruned', () => {
     // base+1 was refreshed, so it is still cached.
     await mintReadOnlyToken(base + 1, mint)
     expect(mintsFor(mint, base + 1)).toBe(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-1455 — pagination page ceilings for the two while(true) walks
+// ---------------------------------------------------------------------------
+
+describe('rm-1455 — page ceilings bound the while(true) pagination walks', () => {
+  it('collectInstallationRepoPages: a stub that always returns a full final page stops at MAX_PAGINATION_PAGES and warns', async () => {
+    // Hostile/buggy upstream: every page is full (100 entries) and the
+    // total_count never says stop. Before rm-1455 this looped forever.
+    const perPage = 100
+    const fetchPage = vi.fn(async (page: number) => ({
+      total_count: 1_000_000,
+      repositories: Array.from({length: perPage}, (_, i) => ({
+        id: page * 1000 + i,
+        node_id: `R_pg${page}_${i}`,
+        owner: {login: 'fro-bot'},
+        name: `repo-${page}-${i}`,
+        full_name: `fro-bot/repo-${page}-${i}`,
+      })),
+    }))
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const repos = await collectInstallationRepoPages(fetchPage)
+
+      expect(fetchPage).toHaveBeenCalledTimes(MAX_PAGINATION_PAGES)
+      expect(repos).toHaveLength(MAX_PAGINATION_PAGES * perPage)
+      // Fail-visible: the truncation is logged, never silent.
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Installation repositories pagination hit the page ceiling'),
+      )
+      // Records are narrowed off the wire shape as before.
+      expect(repos[0]).toEqual({
+        node_id: 'R_pg1_0',
+        database_id: 1000,
+        owner: 'fro-bot',
+        name: 'repo-1-0',
+        full_name: 'fro-bot/repo-1-0',
+      })
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  it('collectInstallationRepoPages: a short final page terminates naturally with no ceiling warning', async () => {
+    const fetchPage = vi.fn(async (page: number) =>
+      page === 1
+        ? {
+            total_count: 150,
+            repositories: Array.from({length: 100}, (_, i) => ({
+              id: 1000 + i,
+              node_id: `R_p1_${i}`,
+              owner: {login: 'fro-bot'},
+              name: `repo-1-${i}`,
+              full_name: `fro-bot/repo-1-${i}`,
+            })),
+          }
+        : {
+            total_count: 150,
+            repositories: Array.from({length: 50}, (_, i) => ({
+              id: 2000 + i,
+              node_id: `R_p2_${i}`,
+              owner: {login: 'fro-bot'},
+              name: `repo-2-${i}`,
+              full_name: `fro-bot/repo-2-${i}`,
+            })),
+          },
+    )
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const repos = await collectInstallationRepoPages(fetchPage)
+      expect(fetchPage).toHaveBeenCalledTimes(2)
+      expect(repos).toHaveLength(150)
+      expect(warnSpy).not.toHaveBeenCalled()
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  it('collectInstallationRepoPages: reaching total_count terminates naturally with no ceiling warning', async () => {
+    const fetchPage = vi.fn(async (page: number) => ({
+      // total_count is satisfied by the first page even though the page is
+      // full — the census leg must stop without a second fetch.
+      total_count: 100,
+      repositories: Array.from({length: 100}, (_, i) => ({
+        id: page * 1000 + i,
+        node_id: `R_pg${page}_${i}`,
+        owner: {login: 'fro-bot'},
+        name: `repo-${page}-${i}`,
+        full_name: `fro-bot/repo-${page}-${i}`,
+      })),
+    }))
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const repos = await collectInstallationRepoPages(fetchPage)
+      expect(fetchPage).toHaveBeenCalledTimes(1)
+      expect(repos).toHaveLength(100)
+      expect(warnSpy).not.toHaveBeenCalled()
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  it('buildInstallationsClient.listInstallations: an always-full installations page stops at MAX_PAGINATION_PAGES and warns', async () => {
+    // Octokit-boundary cast of a minimal fake — the house `as unknown as X`
+    // convention for exactly this boundary.
+    const request = vi.fn(async () => ({
+      data: Array.from({length: 100}, (_, i) => ({
+        id: 5000 + i,
+        account: {login: `org-${i}`},
+      })),
+    }))
+    const fakeAppClient = {
+      octokit: {request},
+      mintInstallationToken: vi.fn(),
+    } as unknown as DashboardAppClient
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const installations = await buildInstallationsClient(fakeAppClient).listInstallations()
+
+      expect(request).toHaveBeenCalledTimes(MAX_PAGINATION_PAGES)
+      expect(installations).toHaveLength(MAX_PAGINATION_PAGES * 100)
+      expect(installations[0]).toEqual({id: 5000, account: 'org-0'})
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('App installations pagination hit the page ceiling'),
+      )
+    } finally {
+      warnSpy.mockRestore()
+    }
   })
 })
