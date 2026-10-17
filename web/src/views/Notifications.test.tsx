@@ -63,8 +63,18 @@ describe('Notifications Component', () => {
     metaTag = null
   }
 
+  // rm-651 (2026-10-09): clear both storages after each test too, so a
+  // failing test cannot poison the file for whichever test runs next (the
+  // rm-596 full-suite flake class).
+  afterEach(() => {
+    localStorage.clear()
+    sessionStorage.clear()
+    removeMetaTag()
+  })
+
   beforeEach(() => {
     localStorage.clear()
+    sessionStorage.clear()
     vi.clearAllMocks()
     removeMetaTag()
 
@@ -769,9 +779,14 @@ describe('Notifications Component', () => {
     addMetaTag()
     const postMessage = vi.fn()
     const mockController = {postMessage}
-
+    // rm-651 (2026-10-09): this stub must stay configurable + be restored,
+    // otherwise a non-configurable own 'serviceWorker' survives the test and
+    // the sibling defineProperty stubs throw 'Cannot redefine property' under
+    // any non-default test ordering (reproduced with --sequence.shuffle).
+    const originalSw = Object.getOwnPropertyDescriptor(globalThis.navigator, 'serviceWorker')
     Object.defineProperty(navigator, 'serviceWorker', {
       writable: true,
+      configurable: true,
       value: {
         controller: mockController,
         ready: Promise.resolve({}),
@@ -779,22 +794,98 @@ describe('Notifications Component', () => {
         removeEventListener: vi.fn(),
       },
     })
+    try {
+      await act(async () => {
+        render(<Notifications />)
+      })
 
-    await act(async () => {
-      render(<Notifications />)
+      const syncBtn = screen.getByTestId('synthetic-push-btn')
+      expect(syncBtn).toBeInTheDocument()
+
+      fireEvent.click(syncBtn)
+      expect(postMessage).toHaveBeenCalledWith({
+        type: 'MOCK_SYNTHETIC_PUSH',
+        payload: {
+          title: 'operator.approval_needed.title',
+          body: 'operator.approval_needed.body',
+          data: {type: 'approval', route: '/'},
+        },
+      })
+    } finally {
+      if (originalSw) {
+        Object.defineProperty(globalThis.navigator, 'serviceWorker', originalSw)
+      } else {
+        Reflect.deleteProperty(globalThis.navigator, 'serviceWorker')
+      }
+    }
+  })
+
+  describe('rm-600 — VAPID key-version cache wiring (getCurrentKeyVersion supplier)', () => {
+    const flush = () => act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
     })
 
-    const syncBtn = screen.getByTestId('synthetic-push-btn')
-    expect(syncBtn).toBeInTheDocument()
+    /** Trigger a second sweep through the same path production uses (focus). */
+    const triggerFocusSweep = () => act(async () => {
+      window.dispatchEvent(new Event('focus'))
+      // Sweep is debounced 250ms on focus/visibility coalescing.
+      await new Promise((resolve) => setTimeout(resolve, 320))
+    })
 
-    fireEvent.click(syncBtn)
-    expect(postMessage).toHaveBeenCalledWith({
-      type: 'MOCK_SYNTHETIC_PUSH',
-      payload: {
-        title: 'operator.approval_needed.title',
-        body: 'operator.approval_needed.body',
-        data: {type: 'approval', route: '/'},
-      },
+    it('passes a getCurrentKeyVersion function into runReconcileSweep (production dep wiring)', async () => {
+      addMetaTag()
+      await act(async () => {
+        render(<Notifications />)
+      })
+
+      expect(runReconcileSweep).toHaveBeenCalledTimes(1)
+      const deps = vi.mocked(runReconcileSweep).mock.calls[0]?.[0]
+      expect(typeof deps?.getCurrentKeyVersion).toBe('function')
+      // Fail-open BEFORE the vapid-key fetch resolves: undefined, never a guess.
+      expect(deps?.getCurrentKeyVersion?.()).toBeUndefined()
+    })
+
+    it('sources the version from pushClient.getVapidKey() and serves it to the next sweep', async () => {
+      addMetaTag()
+      const getVapidKey = vi.fn().mockResolvedValue({
+        success: true,
+        data: {pushDisabled: false, vapidKey: {publicKey: 'BNc3xVwB', keyVersion: 'v2'}},
+      })
+      vi.mocked(buildPushClient).mockReturnValueOnce({getVapidKey} as never)
+
+      await act(async () => {
+        render(<Notifications />)
+      })
+      await flush()
+
+      // Second sweep through the production focus path.
+      await triggerFocusSweep()
+
+      expect(runReconcileSweep).toHaveBeenCalledTimes(2)
+      const secondDeps = vi.mocked(runReconcileSweep).mock.calls[1]?.[0]
+      expect(secondDeps?.getCurrentKeyVersion?.()).toBe('v2')
+
+      // Rate limit: two sweeps within one refresh window issue ONE vapid-key
+      // GET, not one per sweep.
+      expect(getVapidKey).toHaveBeenCalledTimes(1)
+    })
+
+    it('fail-open: a failed getVapidKey result leaves the supplier at undefined', async () => {
+      addMetaTag()
+      const getVapidKey = vi.fn().mockResolvedValue({
+        success: false,
+        error: {kind: 'network'},
+      })
+      vi.mocked(buildPushClient).mockReturnValueOnce({getVapidKey} as never)
+
+      await act(async () => {
+        render(<Notifications />)
+      })
+      await flush()
+      await triggerFocusSweep()
+
+      const secondDeps = vi.mocked(runReconcileSweep).mock.calls[1]?.[0]
+      expect(secondDeps?.getCurrentKeyVersion?.()).toBeUndefined()
     })
   })
 })
