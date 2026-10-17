@@ -104,3 +104,30 @@ jobs:
 
           # Non-zero so the run is visibly red on drift.
           exit 1
+
+  contract-parity:
+    # rm-1493: alert-only companion to the commit-count watch above. The drift
+    # job exits 1 on any commit delta, which would swallow a later step in that
+    # job, so parity runs as its own job on the same weekly cadence. It never
+    # writes anything — a red run is the signal. See
+    # scripts/check-gateway-contract-parity.ts for the decision table.
+    name: Gateway contract parity (rm-1493)
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - name: Check gateway contract parity (vendored pins vs pinned and latest agent releases)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/check-gateway-contract-parity.ts
