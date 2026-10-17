@@ -59,6 +59,31 @@ Scorecard's Maintained check wants commit activity across a ~90-day window;
 the fork was created 2026-08-10, so the check cannot pass yet. Expected to
 self-resolve around 2026-11-08. No action.
 
+## Automation dispositions (2026-10-16)
+
+- **Dependabot retired (`rm-1480`, folding `rm-102`).** The fork's only
+  configured dependency bot never produced a single PR: `gh api
+  'repos/codeo1io/dashboard/pulls?state=all'` filtered to author
+  `app/dependabot` returns 0, and Dependabot alerts (`state=all`) return an
+  empty array — the lane is inert end to end. The updater job's own logs are
+  org-side and invisible from this repository; only the operator
+  (GitHub org settings holder) can read them. Repair would require
+  org-side provisioning the fork deliberately does not have (Actions secrets
+  total_count = 0; the Renovate alternative upstream uses needs an App
+  installation the org never created, and `rm-136` already retired that
+  path once). Decision: retire the config (delete `.github/dependabot.yml`)
+  and own dependency refreshes in the maintenance cycles' implement phase —
+  the 2026-10-16 cycle demonstrated the manual lane works (three matured
+  bumps landed same-day with registry-time verification). Revisit only with
+  an operator-provisioned updater lane; the roadmap keeps the decision row.
+- **Secret-scanning validity checks + non-provider patterns: declined for
+  now (`rm-1482`).** Both remain disabled (probed 2026-10-16). With Actions
+  suspended since 2026-10-09 there is no lane to triage the additional
+  alerts these features generate, and the repository holds zero secrets by
+  design (tokens are env-provided; `*.pem`/`*.key` are gitignored in-repo).
+  Re-evaluate when the CI fleet is green again; one-line API flips, no
+  migration cost either way.
+
 ## Maintenance of this document
 
 Re-verify this table whenever the weekly Scorecard run refreshes (badge data
