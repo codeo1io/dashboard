@@ -62,6 +62,7 @@ import {
   parseOperatorError,
   parseOperatorOk,
   parseOperatorSessionInfo,
+  parsePushSubscriptionListResponse,
   parseQuestionFrame,
   parseRepoSummary,
   parseRepoSummaryList,
@@ -1288,6 +1289,71 @@ describe('parseRunSummary', () => {
     }
   })
 
+  // rm-874: the waiting overlays were stream-only before this batch; a
+  // gateway already emitting them (contract 1.10+) had every such summary
+  // DROPPED at this parse seam. They now parse — and survive the list parse.
+  it('accepts waiting_for_approval (rm-874 waiting overlay)', () => {
+    const input = {
+      runId: 'run-waiting-1',
+      repo: 'fro-bot/agent',
+      status: 'waiting_for_approval',
+      createdAt: '2026-06-01T00:00:00.000Z',
+    }
+    const result = parseRunSummary(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.status).toBe('waiting_for_approval')
+    }
+  })
+
+  it('accepts waiting_for_question (rm-874 waiting overlay)', () => {
+    const input = {
+      runId: 'run-waiting-2',
+      repo: 'fro-bot/agent',
+      status: 'waiting_for_question',
+      createdAt: '2026-06-01T00:00:00.000Z',
+    }
+    const result = parseRunSummary(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.status).toBe('waiting_for_question')
+    }
+  })
+
+  it('still rejects the blocked stream-only overlay', () => {
+    const input = {
+      runId: 'run-blocked-1',
+      repo: 'fro-bot/agent',
+      status: 'blocked',
+      createdAt: '2026-06-01T00:00:00.000Z',
+    }
+    const result = parseRunSummary(input)
+    expect(result.success).toBe(false)
+  })
+
+  it('rm-874: waiting-overlay summaries SURVIVE parseRunSummaryList (the pre-batch drop)', () => {
+    const list = parseRunSummaryList([
+      {
+        runId: 'run-running',
+        repo: 'fro-bot/agent',
+        status: 'running',
+        createdAt: '2026-06-01T00:00:00.000Z',
+      },
+      {
+        runId: 'run-waiting',
+        repo: 'fro-bot/agent',
+        status: 'waiting_for_approval',
+        createdAt: '2026-06-01T00:10:00.000Z',
+      },
+    ])
+    expect(list.success).toBe(true)
+    if (list.success) {
+      // Both entries survive, order preserved — before rm-874 the waiting
+      // entry was silently skipped by the per-item validation.
+      expect(list.data.map(summary => summary.status)).toEqual(['running', 'waiting_for_approval'])
+    }
+  })
+
   it('accepts a run summary with updatedAt present', () => {
     const input = {
       runId: 'run-abc-123',
@@ -1357,13 +1423,10 @@ describe('parseRunSummary', () => {
     }
   })
 
-  it('rejects stream-only status: waiting_for_approval', () => {
+  it('rm-874 INVERSION: waiting_for_approval now parses — the pre-batch stream-only rule dropped it', () => {
     const input = {runId: 'run-1', repo: 'fro-bot/agent', status: 'waiting_for_approval', createdAt: '2026-06-01T00:00:00.000Z'}
     const result = parseRunSummary(input)
-    expect(result.success).toBe(false)
-    if (!result.success) {
-      expect(result.error.message).toBe('invalid run summary shape')
-    }
+    expect(result.success).toBe(true)
   })
 
   it('rejects stream-only status: blocked', () => {
@@ -1640,7 +1703,7 @@ describe('parseRunSummaryList', () => {
   it('returns empty array when all items are invalid', () => {
     const input = [
       {runId: 'run-1', repo: 'fro-bot/agent', status: 'blocked', createdAt: '2026-06-01T00:00:00.000Z'},
-      {runId: 'run-2', repo: 'fro-bot/agent', status: 'waiting_for_approval', createdAt: '2026-06-01T00:00:00.000Z'},
+      {runId: 'run-2', repo: 'fro-bot/agent', status: 'mystery-status', createdAt: '2026-06-01T00:00:00.000Z'},
     ]
     const result = parseRunSummaryList(input)
     expect(result.success).toBe(true)
@@ -1793,5 +1856,164 @@ describe('TerminalPhase and PHASE_TO_WEB_STATUS', () => {
     for (const phase of allPhases) {
       expect(PHASE_TO_WEB_STATUS[phase]).toBeDefined()
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// parsePushSubscriptionListResponse (rm-873)
+// ---------------------------------------------------------------------------
+// The gateway serves a subscription LIST since upstream #631 (epoch-ms
+// numeric timestamps); the pre-#631 flat single record (string ISO dates)
+// stays a graceful fallback until a live probe proves the deployed gateway
+// serves the list wire. The fork DTO keeps ISO strings — epoch-ms values are
+// normalized at this parse seam.
+
+describe('parsePushSubscriptionListResponse', () => {
+  const HASH = 'a'.repeat(64)
+
+  it('parses the #631 list wire and normalizes epoch-ms dates to ISO strings', () => {
+    const result = parsePushSubscriptionListResponse({
+      subscriptions: [
+        {
+          endpointHash: HASH,
+          keyVersion: '2026-04',
+          active: true,
+          createdAt: 1_780_000_000_000,
+          updatedAt: 1_780_000_060_000,
+        },
+      ],
+    })
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.subscriptions).toHaveLength(1)
+      const entry = result.data.subscriptions[0]
+      expect(entry?.endpointHash).toBe(HASH)
+      expect(entry?.createdAt).toBe(new Date(1_780_000_000_000).toISOString())
+      expect(entry?.updatedAt).toBe(new Date(1_780_000_060_000).toISOString())
+      expect('inactiveReason' in (entry ?? {})).toBe(false)
+    }
+  })
+
+  it('keeps a valid allowlisted inactiveReason on a list entry', () => {
+    const result = parsePushSubscriptionListResponse({
+      subscriptions: [
+        {endpointHash: HASH, keyVersion: '2026-04', active: false, createdAt: 1, updatedAt: 2, inactiveReason: 'dead'},
+      ],
+    })
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.subscriptions[0]?.inactiveReason).toBe('dead')
+    }
+  })
+
+  it('drops an unknown inactiveReason but keeps the entry (allowlist-gated, never whole-entry rejection)', () => {
+    const result = parsePushSubscriptionListResponse({
+      subscriptions: [
+        {endpointHash: HASH, keyVersion: '2026-04', active: false, createdAt: 1, updatedAt: 2, inactiveReason: 'mystery'},
+      ],
+    })
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.subscriptions).toHaveLength(1)
+      expect('inactiveReason' in (result.data.subscriptions[0] ?? {})).toBe(false)
+    }
+  })
+
+  it('drops invalid entries, keeps valid ones (per-entry validation)', () => {
+    const result = parsePushSubscriptionListResponse({
+      subscriptions: [
+        {endpointHash: 'too-short', keyVersion: '2026-04', active: true, createdAt: 1, updatedAt: 2},
+        {endpointHash: HASH, keyVersion: '2026-04', active: true, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: 3},
+        {endpointHash: HASH, keyVersion: '2026-04', active: true, createdAt: 1, updatedAt: 2},
+        'not-an-object',
+      ],
+    })
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.subscriptions).toHaveLength(1)
+    }
+  })
+
+  it('rejects out-of-range and non-finite epoch timestamps', () => {
+    for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, 9_000_000_000_000_000]) {
+      const result = parsePushSubscriptionListResponse({
+        subscriptions: [{endpointHash: HASH, keyVersion: '2026-04', active: true, createdAt: bad, updatedAt: 2}],
+      })
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.subscriptions).toHaveLength(0)
+      }
+    }
+  })
+
+  it('accepts an empty list — valid wire, no subscriptions', () => {
+    const result = parsePushSubscriptionListResponse({subscriptions: []})
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.subscriptions).toHaveLength(0)
+    }
+  })
+
+  it('FALLBACK: wraps a pre-#631 flat record (string ISO dates) as a one-entry list', () => {
+    const result = parsePushSubscriptionListResponse({
+      endpointHash: HASH,
+      keyVersion: '2026-04',
+      active: true,
+      createdAt: '2026-07-01T10:00:00Z',
+      updatedAt: '2026-07-01T10:05:00Z',
+    })
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.subscriptions).toHaveLength(1)
+      expect(result.data.subscriptions[0]?.createdAt).toBe('2026-07-01T10:00:00Z')
+    }
+  })
+
+  it('FALLBACK: keeps an allowlisted inactiveReason and DROPS a drifted one (review fix 2026-10-17 — flat path allowlist parity)', () => {
+    const kept = parsePushSubscriptionListResponse({
+      endpointHash: HASH,
+      keyVersion: '2026-04',
+      active: false,
+      createdAt: '2026-07-01T10:00:00Z',
+      updatedAt: '2026-07-01T10:05:00Z',
+      inactiveReason: 'dead',
+    })
+    expect(kept.success).toBe(true)
+    if (kept.success) {
+      expect(kept.data.subscriptions[0]?.inactiveReason).toBe('dead')
+    }
+
+    // A well-formed string outside the PushInactiveReason union must never
+    // ride the DTO through the flat fallback — same drop-not-reject rule as
+    // the list-wire entry parse.
+    const dropped = parsePushSubscriptionListResponse({
+      endpointHash: HASH,
+      keyVersion: '2026-04',
+      active: false,
+      createdAt: '2026-07-01T10:00:00Z',
+      updatedAt: '2026-07-01T10:05:00Z',
+      inactiveReason: 'quarantined-by-gateway-drift',
+    })
+    expect(dropped.success).toBe(true)
+    if (dropped.success) {
+      expect(dropped.data.subscriptions).toHaveLength(1)
+      expect('inactiveReason' in (dropped.data.subscriptions[0] ?? {})).toBe(false)
+    }
+  })
+
+  it('rejects a bare array (the gateway always wraps in an envelope)', () => {
+    const result = parsePushSubscriptionListResponse([{endpointHash: HASH, keyVersion: 'k', active: true, createdAt: 1, updatedAt: 2}])
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects null and non-object shapes', () => {
+    expect(parsePushSubscriptionListResponse(null).success).toBe(false)
+    expect(parsePushSubscriptionListResponse('subscriptions').success).toBe(false)
+    expect(parsePushSubscriptionListResponse(42).success).toBe(false)
+  })
+
+  it('rejects an object that is neither a list envelope nor a valid flat record', () => {
+    const result = parsePushSubscriptionListResponse({subscriptions: 'nope', unexpected: true})
+    expect(result.success).toBe(false)
   })
 })

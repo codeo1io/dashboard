@@ -15,7 +15,7 @@ import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import fc from 'fast-check'
 import {afterEach, describe, expect, it, vi} from 'vitest'
-import {createFileSnapshotStore} from '../src/github/snapshot-store.ts'
+import {createFileSnapshotStore, logPersistProblem} from '../src/github/snapshot-store.ts'
 import {logger} from '../src/logger.ts'
 
 // node:fs exports a frozen namespace, so rm-759's ordering proof mocks the
@@ -317,6 +317,49 @@ describe('createFileSnapshotStore — size gate fires before the read (rm-759)',
       expect(readMock).toHaveBeenCalledTimes(1)
     } finally {
       readMock.mockReset()
+    }
+  })
+})
+
+describe('logPersistProblem — payload cannot shadow context keys (rm-880)', () => {
+  it('drops payload path/error while keeping the context path and surviving fields', () => {
+    const warnSpy = vi.spyOn(logger, 'warning').mockImplementation(() => {})
+    try {
+      logPersistProblem('persist problem', '/truth/cache.json', {
+        path: '/shadow/path.json',
+        error: 'shadow-error',
+        bytes: 4096,
+      })
+      expect(warnSpy).toHaveBeenCalledTimes(1)
+      const [message, fields] = warnSpy.mock.calls[0] ?? []
+      expect(message).toBe('persist problem')
+      expect(fields).toEqual({path: '/truth/cache.json', bytes: 4096})
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  it('Error details still land as the scalar error field, path preserved', () => {
+    const warnSpy = vi.spyOn(logger, 'warning').mockImplementation(() => {})
+    try {
+      logPersistProblem('persist problem', '/truth/cache.json', new Error('disk on fire'))
+      expect(warnSpy).toHaveBeenCalledTimes(1)
+      const [, fields] = warnSpy.mock.calls[0] ?? []
+      expect(fields).toEqual({path: '/truth/cache.json', error: 'disk on fire'})
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  it('scalar details stringify into the error field, path preserved', () => {
+    const warnSpy = vi.spyOn(logger, 'warning').mockImplementation(() => {})
+    try {
+      logPersistProblem('persist problem', '/truth/cache.json', 'raw message')
+      expect(warnSpy).toHaveBeenCalledTimes(1)
+      const [, fields] = warnSpy.mock.calls[0] ?? []
+      expect(fields).toEqual({path: '/truth/cache.json', error: 'raw message'})
+    } finally {
+      warnSpy.mockRestore()
     }
   })
 })
