@@ -94,10 +94,14 @@ async function authedGet(app: Awaited<ReturnType<typeof buildTestApp>>, path: st
 // ---------------------------------------------------------------------------
 // PWA SW asset serving — /registerSW.js
 // ---------------------------------------------------------------------------
-// NOTE: vite-plugin-pwa only emits registerSW.js when using auto-register mode.
-// Since the app uses useRegisterSW() in a component (ReloadPrompt), the
-// registration code is bundled into the main JS chunk and registerSW.js is NOT
-// emitted. The route remains in isPublicPath for forward-compatibility.
+// NOTE (2026-10-17, run 09ea72cc7eb644818a10fe785e3498e1): the built app DOES
+// emit /registerSW.js — vite-plugin-pwa's injected registerSW auto-registration
+// script — and web/dist/index.html loads it via the vite-plugin-pwa:register-sw
+// script tag (asserted in the PWA SW asset serving block below). Registration
+// therefore happens on every page load; the SW it registers is the kill-switch
+// (see the Service worker cache boundary banner). The SW update-path decision
+// (prompt vs autoUpdate) is tracked separately; these assertions pin the
+// current emission truth so any change to it is deliberate.
 
 // ---------------------------------------------------------------------------
 // PWA manifest serving — /manifest.webmanifest
@@ -117,12 +121,14 @@ async function authedGet(app: Awaited<ReturnType<typeof buildTestApp>>, path: st
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Service worker cache boundary — fixture routes are not intercepted
+// Service worker cache boundary — the SW is a kill-switch, not a route table
 //
-// The SW uses a deny-by-default NavigationRoute with an explicit denylist.
-// /__fixture/* paths are not in the SW route table, so they naturally pass
-// through to the server. These tests prove the SW source does not add fixture
-// route handling and does not precache or runtime-cache fixture paths.
+// The registered SW (web/src/sw.ts) is a kill-switch: on activation it deletes
+// every cache in caches.keys(), unregisters its own registration, and reloads
+// clients. It installs no NavigationRoute and no denylist at all, so
+// /__fixture/* paths always pass through to the server and nothing is ever
+// precached or runtime-cached. The tests below pin exactly that — and would
+// redden if a route table were added without revisiting fixture handling.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -708,6 +714,32 @@ describe('PWA SW asset serving — /registerSW.js', () => {
     expect(res.status).not.toBe(302)
     expect(res.status).not.toBe(401)
   })
+
+  // Emission truth (run 09ea72cc7eb644818a10fe785e3498e1, T2): the built app
+  // DOES auto-register — vite-plugin-pwa injects the register-sw script tag
+  // into index.html and emits registerSW.js, which registers the kill-switch
+  // sw.js on every page load. Pinned here so the update-path decision (prompt
+  // vs autoUpdate, tracked separately) must flip these deliberately.
+  it('built web/dist/index.html loads the register-sw script tag (emission truth)', async () => {
+    const fs = await import('node:fs/promises')
+    const html = await fs.readFile('web/dist/index.html', 'utf8')
+    expect(html).toContain('id="vite-plugin-pwa:register-sw"')
+    expect(html).toContain('src="/registerSW.js"')
+  })
+
+  it('built web/dist/registerSW.js registers /sw.js at the root scope', async () => {
+    const fs = await import('node:fs/promises')
+    const src = await fs.readFile('web/dist/registerSW.js', 'utf8')
+    expect(src).toMatch(/serviceWorker\s*\.\s*register\(\s*'\/sw\.js'/)
+    expect(src).toContain("scope: '/'")
+  })
+
+  it('built web/dist/sw.js is the kill-switch SW: unregisters, installs no route table', async () => {
+    const fs = await import('node:fs/promises')
+    const src = await fs.readFile('web/dist/sw.js', 'utf8')
+    expect(src).toContain('unregister()')
+    expect(src).not.toContain('NavigationRoute')
+  })
 })
 
 describe('PWA manifest serving — /manifest.webmanifest', () => {
@@ -923,12 +955,20 @@ describe('service worker cache boundary — fixture routes not intercepted', () 
     expect(src).not.toContain('/__fixture')
   })
 
-  it('web/dist/sw.js NavigationRoute denylist does not include fixture prefix', async () => {
+  it('built web/dist has no fixture strings in the SW output (kill-switch SW)', async () => {
     const fs = await import('node:fs/promises')
     const src = await fs.readFile('web/dist/sw.js', 'utf8')
-    // The denylist patterns are /^\/auth/, /^\/operator\/auth/, /^\/api/
-    // /__fixture must not appear in any denylist or allowlist pattern
+    // The SW is a kill-switch: no NavigationRoute exists in the built sw.js
+    // (asserted in the registerSW block), so there is no denylist or allowlist
+    // to leak fixture paths into.
     expect(src).not.toContain('fixture')
+  })
+
+  it('built web/dist/sw.js unregisters and installs no route table', async () => {
+    const fs = await import('node:fs/promises')
+    const src = await fs.readFile('web/dist/sw.js', 'utf8')
+    expect(src).toContain('unregister()')
+    expect(src).not.toContain('NavigationRoute')
   })
 })
 
