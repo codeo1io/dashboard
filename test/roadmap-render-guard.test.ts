@@ -78,6 +78,22 @@ const FOG_MARKED_RE = /fog[ (]*rm-\d+(?:\s*\/\s*rm-\d+)*/gi
 const RM_REF_RE = /rm-(\d+)/g
 
 describe('ROADMAP.md render-guard census (rm-1454)', () => {
+  it('no line exceeds the 4000-char ledger line ceiling (rm-1460)', () => {
+    const offenders = roadmapLines()
+      .map((text, index) => ({line: index + 1, length: text.length}))
+      .filter(entry => entry.length > 4000)
+      .map(entry => `ROADMAP.md:${entry.line} (${entry.length} chars)`)
+
+    expect(
+      offenders,
+      'Lines over the 4000-char ledger ceiling (rm-1460) — graft/cycle ' +
+      'comments and riders must wrap at sentence boundaries instead of ' +
+      'growing unbounded single lines: they break diff review, blame, and ' +
+      'every editorless consumer of the ledger. Wrap the content (never ' +
+      'rewrite it) and keep the wrap change in the same batch.',
+    ).toEqual([])
+  })
+
   it('no line carries trailing whitespace', () => {
     const offenders = roadmapLines()
       .map((text, index) => ({line: index + 1, text}))

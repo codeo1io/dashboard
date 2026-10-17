@@ -73,6 +73,7 @@ import {
   RETRY_FACTOR,
   RETRY_MAX_COUNT,
   sanitizeCheckoutText,
+  sseBufferByteLength,
   toSafeRunView,
 } from '../public/operator-stream.js'
 import {
@@ -1362,6 +1363,45 @@ describe('MAX_SSE_BUFFER_BYTES constant', () => {
   it('is a positive number', () => {
     expect(typeof MAX_SSE_BUFFER_BYTES).toBe('number')
     expect(MAX_SSE_BUFFER_BYTES).toBeGreaterThan(0)
+  })
+
+  // rm-1457: the cap is enforced in UTF-8 bytes, never UTF-16 code units —
+  // the previous `.length` check undercounted astral/CJK content 2-3x.
+  it('sseBufferByteLength measures UTF-8 bytes, not UTF-16 units', () => {
+    expect(sseBufferByteLength('a')).toBe(1)
+    expect(sseBufferByteLength('日')).toBe(3)
+    expect(sseBufferByteLength('𝕏')).toBe(4)
+    // The units-blind measurement this replaces — pin the divergence so a
+    // regression to `.length` fails here first.
+    expect('𝕏'.length).toBe(2)
+    expect(sseBufferByteLength('𝕏')).not.toBe('𝕏'.length)
+  })
+
+  it('pins the byte boundary around the cap (exactly-cap fits, cap+4 trips)', () => {
+    // 250_000 astral chars = exactly 1_000_000 UTF-8 bytes; +1 char = +4 bytes.
+    const atCap = '𝕏'.repeat(MAX_SSE_BUFFER_BYTES / 4)
+    const overCap = '𝕏'.repeat(MAX_SSE_BUFFER_BYTES / 4 + 1)
+    expect(sseBufferByteLength(atCap)).toBe(MAX_SSE_BUFFER_BYTES)
+    expect(sseBufferByteLength(atCap) > MAX_SSE_BUFFER_BYTES).toBe(false)
+    expect(sseBufferByteLength(overCap)).toBe(MAX_SSE_BUFFER_BYTES + 4)
+    expect(sseBufferByteLength(overCap) > MAX_SSE_BUFFER_BYTES).toBe(true)
+    // And in UTF-16 units both sit under the cap — the divergence the
+    // byte-true check exists to catch.
+    expect(overCap.length).toBeLessThan(MAX_SSE_BUFFER_BYTES)
+  })
+
+  it('agrees with TextEncoder on astral + CJK round-trip content', () => {
+    const reference = new TextEncoder()
+    const samples = [
+      '',
+      '日'.repeat(1000),
+      '😀🤖✅'.repeat(500),
+      'mixed 日 本 😀 text 🚀 with ascii',
+      'é'.repeat(999),
+    ]
+    for (const sample of samples) {
+      expect(sseBufferByteLength(sample)).toBe(reference.encode(sample).length)
+    }
   })
 })
 
@@ -5965,6 +6005,53 @@ describe('buildApprovalClient — fixtureSessionId propagated to approval reques
 
     expect(capturedUrl).toBeDefined()
     expect(capturedUrl).not.toContain('fixtureSessionId')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Byte-true buffer cap (rm-1457)
+// ---------------------------------------------------------------------------
+
+describe('initOperatorStream — buffer cap is byte-true (rm-1457)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('an astral flood over MAX_SSE_BUFFER_BYTES UTF-8 bytes (but under it in UTF-16 units) fails closed', async () => {
+    const noticeEl = makeFakeEl('div')
+    const statusEl = makeFakeEl('span')
+
+    // 250_001 astral chars = 1_000_004 UTF-8 bytes (over the 1_000_000 cap) but
+    // only 500_002 UTF-16 units (under it): a units-blind `.length` check let
+    // this flood stream through to a clean close. The check must be bytes.
+    const flood = '𝕏'.repeat(250_001)
+    expect(Buffer.byteLength(flood, 'utf8')).toBeGreaterThan(MAX_SSE_BUFFER_BYTES)
+    expect(flood.length).toBeLessThan(MAX_SSE_BUFFER_BYTES)
+
+    let reads = 0
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: {get: () => 'text/event-stream'},
+      body: {
+        getReader: () => ({
+          read: async () => {
+            if (reads === 0) {
+              reads += 1
+              return {done: false, value: Buffer.from(flood, 'utf8')}
+            }
+            return {done: true}
+          },
+        }),
+      },
+    }))
+
+    const handle = initOperatorStream({runId: 'run-flood-bytes', statusEl, noticeEl})
+
+    await new Promise(resolve => setTimeout(resolve, 20))
+    handle.close()
+
+    expect(noticeEl.dataset.connectionState).toBe('failed')
   })
 })
 

@@ -24,6 +24,13 @@ export declare const RETRY_MAX_COUNT: number
 export declare const MAX_SSE_BUFFER_BYTES: number
 
 /**
+ * rm-1457: UTF-8 byte length of the stream buffer. The cap constant is
+ * BYTES-named; callers must never compare it against a UTF-16 `.length`
+ * (undercounts astral 2x and CJK 3x).
+ */
+export declare function sseBufferByteLength(text: string): number
+
+/**
  * rm-477: append one decoded read() chunk to the stream buffer, holding a
  * trailing CR back so a CRLF pair split across chunks cannot forge a phantom
  * record boundary. The server reader carries the same pending-CR logic inline.
