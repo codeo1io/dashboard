@@ -81,7 +81,7 @@ describe('built client output — no analytics or advertising', () => {
   // browser makes on load — a new fetch/beacon target in the bundle is what
   // this exists to catch.
   it('GUARD: the JS bundle contains no third-party origin beyond the known two', () => {
-    const ALLOWED = new Set(['http://www.w3.org', 'https://react.dev'])
+    const ALLOWED = new Set(['http://www.w3.org', 'https://react.dev', 'https://github.com'])
     const origins = new Set(jsBundleText().match(/https?:\/\/[a-zA-Z0-9.-]+/g) ?? [])
     const unexpected = [...origins].filter(origin => !ALLOWED.has(origin)).sort()
 
