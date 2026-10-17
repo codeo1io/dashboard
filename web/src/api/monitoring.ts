@@ -21,6 +21,12 @@ export interface MonitoringRepoStatus {
   readonly openPrCount: number
   readonly openIssueCount: number
   readonly openAlertCount: number | null
+  /** rm-1516: open code-scanning alerts; null when the server lacks security_events:read. */
+  readonly openCodeScanningCount: number | null
+  /** rm-1517: last push (ISO); null when absent. */
+  readonly pushedAt: string | null
+  /** rm-1517: repository archived flag; null when absent. */
+  readonly isArchived: boolean | null
   readonly stale: boolean
 }
 
@@ -121,12 +127,18 @@ function parseRepo(item: unknown): MonitoringRepo | null {
     openPrCount,
     openIssueCount,
     openAlertCount,
+    openCodeScanningCount,
+    pushedAt,
+    isArchived,
     stale,
   } = status
   if (typeof rollupState !== 'string' || !ROLLUP_STATES.includes(rollupState)) return null
   if (typeof failingChecks !== 'number') return null
   if (typeof openPrCount !== 'number' || typeof openIssueCount !== 'number') return null
   if (openAlertCount !== null && typeof openAlertCount !== 'number') return null
+  if (openCodeScanningCount !== null && openCodeScanningCount !== undefined && typeof openCodeScanningCount !== 'number') return null
+  if (pushedAt !== null && pushedAt !== undefined && typeof pushedAt !== 'string') return null
+  if (isArchived !== null && isArchived !== undefined && typeof isArchived !== 'boolean') return null
   if (typeof stale !== 'boolean') return null
   if (!Array.isArray(failingCheckDetails)) return null
 
@@ -147,6 +159,10 @@ function parseRepo(item: unknown): MonitoringRepo | null {
       openPrCount,
       openIssueCount,
       openAlertCount,
+      // rm-1516/rm-1517: absent fields degrade to null (never to a wrong value)
+      openCodeScanningCount: openCodeScanningCount ?? null,
+      pushedAt: pushedAt ?? null,
+      isArchived: isArchived ?? null,
       stale,
     },
   }

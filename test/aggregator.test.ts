@@ -289,6 +289,9 @@ describe('aggregator — happy path: CI state mapping', () => {
         openPrCount: 3,
         openIssueCount: 7,
         openAlertCount: 2,
+        openCodeScanningCount: null,
+        pushedAt: null,
+        isArchived: null,
       })),
     })
 
@@ -555,6 +558,9 @@ describe('aggregator — edge cases', () => {
         openPrCount: 0,
         openIssueCount: 0,
         openAlertCount: 0,
+        openCodeScanningCount: null,
+        pushedAt: null,
+        isArchived: null,
       })),
     })
 
@@ -2687,6 +2693,9 @@ function makeBootSnapshotRepo(overrides: {node_id?: string; full_name?: string} 
       openPrCount: 0,
       openIssueCount: 0,
       openAlertCount: null,
+      openCodeScanningCount: null,
+      pushedAt: null,
+      isArchived: null,
       stale: false,
       fetchedAt: 1234,
     },

@@ -48,7 +48,15 @@ export const REPO_STATUS_QUERY = `
       issues(states: OPEN) {
         totalCount
       }
+      # rm-1517: repo lifecycle context (metadata:read — granted on every installation)
+      pushedAt
+      isArchived
       vulnerabilityAlerts(states: OPEN) {
+        totalCount
+      }
+      # rm-1516: open code-scanning alerts — same security_events permission class
+      # as vulnerabilityAlerts; the no-alerts fallback variant omits BOTH security fields
+      codeScanningAlerts(states: OPEN) {
         totalCount
       }
     }
@@ -56,9 +64,12 @@ export const REPO_STATUS_QUERY = `
 `
 
 /**
- * Fallback query variant without vulnerabilityAlerts — used when the token
- * lacks the security_events/vulnerability_alerts scope. openAlertCount is set
- * to null (not stale) when this variant is used.
+ * Fallback query variant without the security fields (vulnerabilityAlerts and
+ * codeScanningAlerts) — used when the token lacks the
+ * security_events/vulnerability_alerts scope. BOTH openAlertCount and
+ * openCodeScanningCount are set to null (not stale) when this variant is used.
+ * Repo lifecycle context (rm-1517: pushedAt/isArchived) is kept — metadata:read
+ * is granted on every installation.
  */
 export const REPO_STATUS_QUERY_NO_ALERTS = `
   query RepoStatusNoAlerts($owner: String!, $name: String!) {
@@ -96,6 +107,9 @@ export const REPO_STATUS_QUERY_NO_ALERTS = `
       issues(states: OPEN) {
         totalCount
       }
+      # rm-1517: repo lifecycle context (metadata:read — granted on every installation)
+      pushedAt
+      isArchived
     }
   }
 `

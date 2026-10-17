@@ -68,6 +68,9 @@ const statusArb = (fetchedAt: number): fc.Arbitrary<RepoCiStatus> =>
     openPrCount: fc.nat({max: 50}),
     openIssueCount: fc.nat({max: 500}),
     openAlertCount: fc.option(fc.nat({max: 30}), {nil: null}),
+    openCodeScanningCount: fc.option(fc.nat({max: 30}), {nil: null}),
+    pushedAt: fc.option(fc.date().map((d) => d.toISOString()), {nil: null}),
+    isArchived: fc.option(fc.boolean(), {nil: null}),
     stale: fc.boolean(),
     fetchedAt: fc.constant(fetchedAt),
   })
@@ -188,6 +191,9 @@ describe('aggregator parseRepoResponse invariants (rm-144)', () => {
             openPrCount: 0,
             openIssueCount: 0,
             openAlertCount: null,
+            openCodeScanningCount: null,
+            pushedAt: null,
+            isArchived: null,
             stale: true,
             fetchedAt,
           })

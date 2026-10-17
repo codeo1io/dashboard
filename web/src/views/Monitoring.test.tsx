@@ -26,6 +26,9 @@ function makeRepo(
       openPrCount: 0,
       openIssueCount: 0,
       openAlertCount: null,
+      openCodeScanningCount: null,
+      pushedAt: null,
+      isArchived: null,
       stale: false,
       ...overrides.status
     }

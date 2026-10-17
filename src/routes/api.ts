@@ -31,6 +31,12 @@ interface MonitoringRepoStatusDto {
   readonly openPrCount: number
   readonly openIssueCount: number
   readonly openAlertCount: number | null
+  /** rm-1516: open code-scanning alerts; null when security_events:read is not granted. */
+  readonly openCodeScanningCount: number | null
+  /** rm-1517: last push (ISO) or null. */
+  readonly pushedAt: string | null
+  /** rm-1517: repository archived flag or null. */
+  readonly isArchived: boolean | null
   readonly stale: boolean
 }
 
@@ -71,6 +77,10 @@ function toMonitoringRepoDto(repo: DashboardRepo): MonitoringRepoDto {
       openPrCount: repo.status.openPrCount,
       openIssueCount: repo.status.openIssueCount,
       openAlertCount: repo.status.openAlertCount,
+      // rm-1516/rm-1517: security + lifecycle context (nullable end-to-end)
+      openCodeScanningCount: repo.status.openCodeScanningCount,
+      pushedAt: repo.status.pushedAt,
+      isArchived: repo.status.isArchived,
       stale: repo.status.stale,
     },
   }

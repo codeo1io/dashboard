@@ -120,6 +120,10 @@ function platformBannerPhrase(platform: PlatformStatusSummary): string {
 function MonitoringBoard({data}: {data: MonitoringData}) {
   const redRepos = data.repos.filter(repo => repo.status.rollupState === 'red' || repo.status.failingChecks > 0)
   const remaining = data.repos.length - redRepos.length
+  const securityCount = data.repos.filter(
+    (repo) => (repo.status.openAlertCount ?? 0) + (repo.status.openCodeScanningCount ?? 0) > 0,
+  ).length
+  const archivedCount = data.repos.filter((repo) => repo.status.isArchived === true).length
   const refreshedAt = data.refreshedAt === null ? null : new Date(data.refreshedAt).toLocaleString()
   const platform = data.platformStatus
 
@@ -161,6 +165,14 @@ function MonitoringBoard({data}: {data: MonitoringData}) {
             {remaining} {remaining === 1 ? 'repository' : 'repositories'} not failing ·{' '}
           </span>
         )}
+        {securityCount > 0 && (
+          <span data-testid="monitoring-security-count">
+            {securityCount} with open security alert{securityCount === 1 ? '' : 's'} ·{' '}
+          </span>
+        )}
+        {archivedCount > 0 && (
+          <span data-testid="monitoring-archived-count">{archivedCount} archived ·{' '}</span>
+        )}
         {refreshedAt !== null ? <span>refreshed {refreshedAt}</span> : <span>never refreshed</span>}
       </div>
     </div>
@@ -178,11 +190,32 @@ function RedRepoCard({repo}: {repo: MonitoringRepo}) {
         <span className="listener-severity severity-critical" aria-label={`Failing checks: ${status.failingChecks}`}>
           {status.failingChecks} failing {status.failingChecks === 1 ? 'check' : 'checks'}
         </span>
+        {status.openAlertCount !== null && status.openAlertCount > 0 && (
+          <span className="listener-severity" aria-label={`Dependabot alerts: ${status.openAlertCount}`}>
+            {status.openAlertCount} dependabot {status.openAlertCount === 1 ? 'alert' : 'alerts'}
+          </span>
+        )}
+        {status.openCodeScanningCount !== null && status.openCodeScanningCount > 0 && (
+          <span className="listener-severity" aria-label={`Code-scanning alerts: ${status.openCodeScanningCount}`}>
+            {status.openCodeScanningCount} code-scanning {status.openCodeScanningCount === 1 ? 'alert' : 'alerts'}
+          </span>
+        )}
+        {status.isArchived === true && (
+          <span className="listener-severity" aria-label="Repository archived">
+            archived
+          </span>
+        )}
       </div>
 
       {status.stale && (
         <div style={{fontSize: 'var(--text-body-sm)', color: 'var(--color-text-muted)', marginBottom: 'var(--space-2)'}}>
           Status is stale — the last fetch failed; counts are from the last successful refresh.
+        </div>
+      )}
+
+      {status.pushedAt !== null && Number.isFinite(Date.parse(status.pushedAt)) && (
+        <div style={{fontSize: 'var(--text-body-sm)', color: 'var(--color-text-muted)', marginBottom: 'var(--space-2)'}}>
+          Last push {new Date(status.pushedAt).toLocaleDateString()}
         </div>
       )}
 

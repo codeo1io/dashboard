@@ -108,6 +108,12 @@ export interface RepoCiStatus {
   readonly openIssueCount: number
   /** Number of open security alerts (null if permission unavailable) */
   readonly openAlertCount: number | null
+  /** rm-1516: open code-scanning alerts; null when security_events:read is not granted or unavailable */
+  readonly openCodeScanningCount: number | null
+  /** rm-1517: last push timestamp (ISO); null when absent */
+  readonly pushedAt: string | null
+  /** rm-1517: repository archived flag; null when absent */
+  readonly isArchived: boolean | null
   /** Whether this repo's data is stale (per-repo fetch failed) */
   readonly stale: boolean
   /** When this data was fetched (ms since epoch) */
@@ -232,6 +238,12 @@ interface GraphqlRepoResponse {
     pullRequests: {totalCount: number}
     issues: {totalCount: number}
     vulnerabilityAlerts?: {totalCount: number} | null
+    // rm-1516: open code-scanning alerts — same security_events permission class;
+    // absent from the no-alerts fallback variant's response
+    codeScanningAlerts?: {totalCount: number} | null
+    // rm-1517: repo lifecycle context (metadata:read — granted on every installation)
+    pushedAt?: string | null
+    isArchived?: boolean | null
   } | null
 }
 
@@ -251,6 +263,7 @@ function needsAttention(status: RepoCiStatus): boolean {
   if (status.rollupState === 'red') return true
   if (status.failingChecks > 0) return true
   if (status.openAlertCount !== null && status.openAlertCount > 0) return true
+  if (status.openCodeScanningCount !== null && status.openCodeScanningCount > 0) return true
   if (status.openPrCount > 0) return true
   return false
 }
@@ -627,7 +640,7 @@ export function escapeRegExp(text: string): string {
  * Detect whether a GraphQL error is specifically about the vulnerabilityAlerts
  * field being inaccessible (permission/scope error).
  */
-function isVulnerabilityAlertsPermissionError(error: unknown): boolean {
+function isSecurityFieldPermissionError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
   const msg = error.message.toLowerCase()
   // GitHub GraphQL returns errors like:
@@ -645,6 +658,9 @@ function isVulnerabilityAlertsPermissionError(error: unknown): boolean {
     msg.includes('vulnerabilityalerts') ||
     msg.includes('vulnerability_alerts') ||
     msg.includes('vulnerability alerts') ||
+    msg.includes('codescanningalerts') ||
+    msg.includes('code_scanning_alerts') ||
+    msg.includes('code scanning alerts') ||
     msg.includes('resource not accessible by integration') ||
     (msg.includes('push access') && msg.includes('vulnerability'))
   )
@@ -693,7 +709,7 @@ export function parseRepoResponse(raw: unknown, fetchedAt: number, openAlertCoun
     // installation lost access. That is a degradation the operator must see,
     // so we fail visible (stale:true), matching the installation_id:null and
     // fetch-failure paths below. Serving a calm unknown here hid silent drift.
-    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, openCodeScanningCount: null, pushedAt: null, isArchived: null, stale: true, fetchedAt}
   }
 
   const target = repo.defaultBranchRef?.target
@@ -715,7 +731,7 @@ export function parseRepoResponse(raw: unknown, fetchedAt: number, openAlertCoun
   // Use the provided openAlertCount (may be from the response or null if no-alerts variant)
   const alertCount = openAlertCount ?? (repo.vulnerabilityAlerts?.totalCount ?? null)
 
-  return {rollupState, failingChecks, failingCheckDetails, openPrCount, openIssueCount, openAlertCount: alertCount, stale: false, fetchedAt}
+  return {rollupState, failingChecks, failingCheckDetails, openPrCount, openIssueCount, openAlertCount: alertCount, openCodeScanningCount: repo.codeScanningAlerts?.totalCount ?? null, pushedAt: repo.pushedAt ?? null, isArchived: repo.isArchived ?? null, stale: false, fetchedAt}
 }
 
 async function fetchRepoStatus(
@@ -729,7 +745,7 @@ async function fetchRepoStatus(
   // installation_id must be present — if null, we cannot authenticate the query
   if (entry.installation_id === null) {
     logger.warning('No installation_id for repo; marking stale', safeRepoLogIdentity(entry))
-    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, openCodeScanningCount: null, pushedAt: null, isArchived: null, stale: true, fetchedAt}
   }
 
   const installationId = entry.installation_id
@@ -750,7 +766,7 @@ async function fetchRepoStatus(
   } catch (error) {
     // P1 #11: if the error is specifically about vulnerabilityAlerts permission,
     // retry without that field and set openAlertCount = null (not stale).
-    if (isVulnerabilityAlertsPermissionError(error)) {
+    if (isSecurityFieldPermissionError(error)) {
       logger.warning('vulnerabilityAlerts permission error; retrying without alerts field', safeRepoLogIdentity(entry))
       try {
         // The no-alerts retry is deadline-bounded too.
@@ -766,12 +782,12 @@ async function fetchRepoStatus(
         return parseRepoResponse(raw, fetchedAt, null)
       } catch (retryError) {
         logger.warning('Per-repo GraphQL fetch failed (no-alerts retry); marking stale', safeRepoErrorContext(entry, retryError))
-        return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+        return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, openCodeScanningCount: null, pushedAt: null, isArchived: null, stale: true, fetchedAt}
       }
     }
 
     logger.warning('Per-repo GraphQL fetch failed; marking stale', safeRepoErrorContext(entry, error))
-    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt}
+    return {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, openCodeScanningCount: null, pushedAt: null, isArchived: null, stale: true, fetchedAt}
   }
 }
 
@@ -1291,7 +1307,7 @@ export function createAggregator(
         // assigned before Promise.all resolves) and exists only to satisfy
         // noUncheckedIndexedAccess. failingCheckDetails required here too —
         // the drill-down sample is empty on an unfetched repo (rm-192).
-        status: statuses[index] ?? {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt: now()},
+        status: statuses[index] ?? {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, openCodeScanningCount: null, pushedAt: null, isArchived: null, stale: true, fetchedAt: now()},
       })
     }
 
