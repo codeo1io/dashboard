@@ -71,6 +71,10 @@ function toMonitoringRepoDto(repo: DashboardRepo): MonitoringRepoDto {
       openPrCount: repo.status.openPrCount,
       openIssueCount: repo.status.openIssueCount,
       openAlertCount: repo.status.openAlertCount,
+      // rm-1516/rm-1517: security + lifecycle context (nullable end-to-end)
+      openCodeScanningCount: repo.status.openCodeScanningCount,
+      pushedAt: repo.status.pushedAt,
+      isArchived: repo.status.isArchived,
       stale: repo.status.stale,
     },
   }

@@ -232,6 +232,12 @@ interface GraphqlRepoResponse {
     pullRequests: {totalCount: number}
     issues: {totalCount: number}
     vulnerabilityAlerts?: {totalCount: number} | null
+    // rm-1516: open code-scanning alerts — same security_events permission class;
+    // absent from the no-alerts fallback variant's response
+    codeScanningAlerts?: {totalCount: number} | null
+    // rm-1517: repo lifecycle context (metadata:read — granted on every installation)
+    pushedAt?: string | null
+    isArchived?: boolean | null
   } | null
 }
 
