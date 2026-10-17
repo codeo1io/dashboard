@@ -17,6 +17,14 @@ ARG NODE_IMAGE=node:24-trixie-slim@sha256:7f486cabe892bff8fef04c0f7da8dba84a560b
 
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS builder
 
+# 2026-10-18 (rm-1519): make release.yaml's --build-arg DASHBOARD_VERSION live again. The 2026.10.43
+# adoption merge rewrote the Dockerfile stages without this ARG/ENV pair, so release images fell
+# back to the 'dev' footer (web/src/shell/AppShell.tsx:163) and the codeo1io release-notes link
+# never rendered. Vite bakes VITE_* process env into the client at build time, so an ENV in the
+# builder stage is the whole wiring; default 'dev' keeps local builds unchanged.
+ARG DASHBOARD_VERSION=dev
+ENV VITE_DASHBOARD_VERSION=${DASHBOARD_VERSION}
+
 # Enable corepack for pnpm
 RUN corepack enable && corepack prepare pnpm@11.28.5 --activate
 
