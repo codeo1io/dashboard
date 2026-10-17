@@ -1026,3 +1026,11 @@ export declare function renderApprovalPrompt(
   approvalClient: ApprovalClient,
   onSettle: () => void,
 ): HTMLElement
+
+/**
+ * Fork hardening (rm-594, kept per #16393): bound every approval-client
+ * fetch — CSRF fetch, decision POST, list — with its own timeout signal,
+ * exactly as the question client is bounded by QUESTION_FETCH_TIMEOUT_MS.
+ * Per-fetch bound in milliseconds.
+ */
+export declare const APPROVAL_FETCH_TIMEOUT_MS: number

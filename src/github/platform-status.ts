@@ -31,6 +31,22 @@ export type PlatformComponentStatus =
   | 'major_outage'
   | 'under_maintenance'
 
+/** Maintenance-window status from /api/v2/scheduled-maintenances.json. */
+export type PlatformMaintenanceStatus = 'scheduled' | 'in_progress'
+
+/** An upcoming or underway platform maintenance window (rm-1467). */
+export interface PlatformMaintenance {
+  /** Bounded third-party text — display-only. */
+  readonly name: string
+  readonly status: PlatformMaintenanceStatus
+  /** Bounded ISO timestamps (`scheduled_for` / `scheduled_until`). */
+  readonly scheduledFor: string
+  readonly scheduledUntil: string
+}
+
+/** How many maintenance windows ride the annotation — bounded so a noisy feed cannot flood the DTO. */
+export const PLATFORM_STATUS_MAINTENANCE_MAX_ITEMS = 3
+
 /**
  * The additive snapshot annotation. `actions` is null when the components
  * read failed or the Actions component was absent — overall platform truth
@@ -43,6 +59,12 @@ export interface PlatformStatus {
   readonly overallDescription: string
   /** Actions component status; null = unknown (component read failed or absent). */
   readonly actions: PlatformComponentStatus | null
+  /**
+   * Upcoming/underway scheduled maintenance windows, soonest first (rm-1467).
+   * Empty array when the maintenance read fails or reports nothing — a failed
+   * maintenance read NEVER degrades the rest of the annotation.
+   */
+  readonly maintenances: readonly PlatformMaintenance[]
   /** Wall-clock ms-epoch of the read that produced this annotation. */
   readonly fetchedAt: number
 }
@@ -123,9 +145,10 @@ export async function fetchPlatformStatus(opts: PlatformStatusOptions = {}): Pro
     ])
 
   try {
-    const [statusOutcome, componentsOutcome] = await Promise.allSettled([
+    const [statusOutcome, componentsOutcome, maintenanceOutcome] = await Promise.allSettled([
       timeoutRace(fetchJson(fetchFn, `${baseUrl}/status.json`, signal)),
       timeoutRace(fetchJson(fetchFn, `${baseUrl}/components.json`, signal)),
+      timeoutRace(fetchJson(fetchFn, `${baseUrl}/scheduled-maintenances.json`, signal)),
     ])
 
     const statusBody =
@@ -160,13 +183,51 @@ export async function fetchPlatformStatus(opts: PlatformStatusOptions = {}): Pro
       }
     }
 
+    // Scheduled maintenance windows (rm-1467): filter to the live statuses —
+    // the feed returns its FULL history, mostly 'completed' entries. Any
+    // failure or unexpected shape leaves the list empty (fail-open) without
+    // touching the rest of the annotation.
+    const maintenances: PlatformMaintenance[] = []
+    const maintenanceRaw =
+      maintenanceOutcome.status === 'fulfilled' &&
+      typeof maintenanceOutcome.value === 'object' &&
+      maintenanceOutcome.value !== null &&
+      Array.isArray((maintenanceOutcome.value as {scheduled_maintenances?: unknown}).scheduled_maintenances)
+        ? (maintenanceOutcome.value as {scheduled_maintenances: unknown[]}).scheduled_maintenances
+        : null
+    if (maintenanceRaw !== null) {
+      for (const entry of maintenanceRaw) {
+        if (typeof entry !== 'object' || entry === null) continue
+        const {name, status, scheduled_for: scheduledFor, scheduled_until: scheduledUntil} = entry as {
+          name?: unknown
+          status?: unknown
+          scheduled_for?: unknown
+          scheduled_until?: unknown
+        }
+        const maintenanceStatus: PlatformMaintenanceStatus | null =
+          status === 'in_progress' ? 'in_progress' : status === 'scheduled' ? 'scheduled' : null
+        if (maintenanceStatus === null) continue
+        if (typeof name !== 'string' || typeof scheduledFor !== 'string' || typeof scheduledUntil !== 'string') {
+          continue
+        }
+        maintenances.push({
+          name: name.slice(0, PLATFORM_STATUS_DESCRIPTION_MAX_CHARS),
+          status: maintenanceStatus,
+          scheduledFor: scheduledFor.slice(0, 40),
+          scheduledUntil: scheduledUntil.slice(0, 40),
+        })
+      }
+      maintenances.sort((a, b) => (a.scheduledFor < b.scheduledFor ? -1 : a.scheduledFor > b.scheduledFor ? 1 : 0))
+      maintenances.splice(PLATFORM_STATUS_MAINTENANCE_MAX_ITEMS)
+    }
+
     // Nothing usable at all → annotation absent (fail-open), never a
     // fabricated "operational".
     if (overall === 'unknown' && actions === null && statusBody === null) {
       return null
     }
 
-    return {overall, overallDescription, actions, fetchedAt: now()}
+    return {overall, overallDescription, actions, maintenances, fetchedAt: now()}
   } catch (error) {
     // Both reads raced the shared deadline and lost, or an unexpected throw —
     // fail-open with no annotation. Never propagate.

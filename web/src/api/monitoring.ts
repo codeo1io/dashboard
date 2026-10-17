@@ -41,11 +41,24 @@ export type PlatformComponentStatus =
   | 'major_outage'
   | 'under_maintenance'
 
+/** Maintenance-window status from the githubstatus scheduled-maintenance feed. */
+export type PlatformMaintenanceStatus = 'scheduled' | 'in_progress'
+
+/** rm-1467: an upcoming or underway platform maintenance window, soonest first. */
+export interface PlatformMaintenance {
+  readonly name: string
+  readonly status: PlatformMaintenanceStatus
+  readonly scheduledFor: string
+  readonly scheduledUntil: string
+}
+
 /** rm-1447: platform-availability annotation riding the monitoring DTO. */
 export interface PlatformStatusSummary {
   readonly overall: PlatformIndicator
   readonly overallDescription: string
   readonly actions: PlatformComponentStatus | null
+  /** rm-1467: live maintenance windows; [] when the read fails or reports none. */
+  readonly maintenances: readonly PlatformMaintenance[]
   readonly fetchedAt: number
 }
 
@@ -93,6 +106,16 @@ const PLATFORM_COMPONENT_STATUSES: readonly string[] = [
  * CLAMPS the third-party vocabulary ('unknown'/null holes) before emitting,
  * so a value outside these closed sets is genuine contract drift.
  */
+function parsePlatformMaintenance(item: unknown): PlatformMaintenance | null {
+  if (!isPlainObject(item)) return null
+  const {name, status, scheduledFor, scheduledUntil} = item
+  if (typeof name !== 'string' || typeof scheduledFor !== 'string' || typeof scheduledUntil !== 'string') {
+    return null
+  }
+  if (status !== 'scheduled' && status !== 'in_progress') return null
+  return {name, status, scheduledFor, scheduledUntil}
+}
+
 function parsePlatformStatus(item: unknown): PlatformStatusSummary | null {
   if (!isPlainObject(item)) return null
   const {overall, overallDescription, actions, fetchedAt} = item
@@ -100,10 +123,15 @@ function parsePlatformStatus(item: unknown): PlatformStatusSummary | null {
   if (typeof overallDescription !== 'string') return null
   if (actions !== null && (typeof actions !== 'string' || !PLATFORM_COMPONENT_STATUSES.includes(actions))) return null
   if (typeof fetchedAt !== 'number') return null
+  const rawMaintenances = item['maintenances']
+  if (rawMaintenances !== undefined && !Array.isArray(rawMaintenances)) return null
+  const maintenances = (rawMaintenances ?? []).map(parsePlatformMaintenance)
+  if (maintenances.some((m) => m === null)) return null
   return {
     overall: overall as PlatformIndicator,
     overallDescription,
     actions: actions as PlatformComponentStatus | null,
+    maintenances: maintenances as readonly PlatformMaintenance[],
     fetchedAt,
   }
 }

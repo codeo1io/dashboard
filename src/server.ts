@@ -46,6 +46,7 @@ import {FIXTURE_OPERATOR_PREFIX} from './gateway/operator-fixture-routes.ts'
 import {createOperatorServerFetch} from './gateway/operator-server-fetch.ts'
 import {createGatewaySessionCache} from './gateway/session-cache.ts'
 import {COLD_START_SNAPSHOT, createAggregator} from './github/aggregator.ts'
+import {pinGitHubApiVersion} from './github/api-version.ts'
 import {
   createBoundedFetch,
   createDashboardAppClient,
@@ -1428,10 +1429,15 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
       // honor the `timeout` option against hung upstreams — while the
       // `timeout` key stays pinned so the rm-197 transport-contract gate
       // (test/transport-timeout-contract.test.ts) keeps matching this site.
-      const installOctokit = new Octokit({
-        auth: token,
-        request: {timeout: GITHUB_REQUEST_TIMEOUT_MS, fetch: createBoundedFetch(GITHUB_REQUEST_TIMEOUT_MS)},
-      })
+      // rm-855: REST API version pinned on every egress path at construction
+      // (single source: src/github/api-version.ts — not a `defaultHeaders`
+      // option; the pin is written into the endpoint defaults).
+      const installOctokit = pinGitHubApiVersion(
+        new Octokit({
+          auth: token,
+          request: {timeout: GITHUB_REQUEST_TIMEOUT_MS, fetch: createBoundedFetch(GITHUB_REQUEST_TIMEOUT_MS)},
+        }),
+      )
       const response = await installOctokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
         owner: 'codeo1io',
         repo: '.github',

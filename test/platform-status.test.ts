@@ -41,6 +41,7 @@ describe('fetchPlatformStatus (rm-1447)', () => {
       overall: 'none',
       overallDescription: 'All Systems Operational',
       actions: 'operational',
+      maintenances: [],
       fetchedAt: 1_700_000_123_456,
     })
   })
@@ -143,16 +144,129 @@ describe('fetchPlatformStatus (rm-1447)', () => {
     expect(status?.overallDescription).toHaveLength(PLATFORM_STATUS_DESCRIPTION_MAX_CHARS)
   })
 
-  it('requests the two documented endpoints under the base URL (trailing slashes stripped)', async () => {
+  it('requests the three documented endpoints under the base URL (trailing slashes stripped)', async () => {
     const fetchFn = healthyFetch()
     await fetchPlatformStatus({fetchFn, baseUrl: 'https://status.example.test/api/v2///'})
     const calls = (fetchFn as unknown as {mock: {calls: unknown[][]}}).mock.calls.map(call => String(call[0]))
     expect(calls).toContain('https://status.example.test/api/v2/status.json')
     expect(calls).toContain('https://status.example.test/api/v2/components.json')
-    expect(calls).toHaveLength(2)
+    expect(calls).toContain('https://status.example.test/api/v2/scheduled-maintenances.json')
+    expect(calls).toHaveLength(3)
   })
 
   it('defaults match the public feed contract (base URL constant exported for ops)', () => {
     expect(PLATFORM_STATUS_BASE_URL).toBe('https://www.githubstatus.com/api/v2')
+  })
+})
+
+/** rm-1467: a feed-shaped scheduled-maintenance entry with per-test overrides. */
+function maintenanceEntry(overrides: Record<string, unknown>): Record<string, unknown> {
+  return {
+    name: 'Scheduled database maintenance',
+    status: 'scheduled',
+    scheduled_for: '2026-10-20T14:00:00Z',
+    scheduled_until: '2026-10-20T16:00:00Z',
+    ...overrides,
+  }
+}
+
+describe('fetchPlatformStatus maintenance windows (rm-1467)', () => {
+  it('live windows are surfaced, completed ones filtered, soonest first', async () => {
+    const fetchFn = vi.fn(async (input: string | URL) => {
+      const url = String(input)
+      if (url.endsWith('/status.json')) return jsonResponse(HEALTHY_STATUS)
+      if (url.endsWith('/components.json')) return jsonResponse(HEALTHY_COMPONENTS)
+      return jsonResponse({
+        scheduled_maintenances: [
+          maintenanceEntry({name: 'Completed window', status: 'completed', scheduled_for: '2026-10-01T00:00:00Z'}),
+          maintenanceEntry({name: 'Later window', scheduled_for: '2026-10-25T02:00:00Z', scheduled_until: '2026-10-25T04:00:00Z'}),
+          maintenanceEntry({name: 'Underway window', status: 'in_progress', scheduled_for: '2026-10-17T09:00:00Z', scheduled_until: '2026-10-17T11:00:00Z'}),
+        ],
+      })
+    }) as unknown as typeof fetch
+    const status = await fetchPlatformStatus({fetchFn})
+    expect(status?.maintenances).toEqual([
+      {
+        name: 'Underway window',
+        status: 'in_progress',
+        scheduledFor: '2026-10-17T09:00:00Z',
+        scheduledUntil: '2026-10-17T11:00:00Z',
+      },
+      {
+        name: 'Later window',
+        status: 'scheduled',
+        scheduledFor: '2026-10-25T02:00:00Z',
+        scheduledUntil: '2026-10-25T04:00:00Z',
+      },
+    ])
+  })
+
+  it('caps the list at PLATFORM_STATUS_MAINTENANCE_MAX_ITEMS keeping the soonest', async () => {
+    const fetchFn = vi.fn(async (input: string | URL) => {
+      const url = String(input)
+      if (url.endsWith('/scheduled-maintenances.json')) {
+        return jsonResponse({
+          scheduled_maintenances: [5, 4, 3, 2, 1].map(day =>
+            maintenanceEntry({name: `Window ${day}`, scheduled_for: `2026-11-0${day}T10:00:00Z`}),
+          ),
+        })
+      }
+      return jsonResponse(HEALTHY_STATUS)
+    }) as unknown as typeof fetch
+    const status = await fetchPlatformStatus({fetchFn})
+    expect(status?.maintenances.map(m => m.name)).toEqual(['Window 1', 'Window 2', 'Window 3'])
+  })
+
+  it('malformed entries are skipped without breaking the healthy ones', async () => {
+    const fetchFn = vi.fn(async (input: string | URL) => {
+      const url = String(input)
+      if (url.endsWith('/scheduled-maintenances.json')) {
+        return jsonResponse({
+          scheduled_maintenances: [
+            'not-an-object',
+            maintenanceEntry({name: 123}),
+            maintenanceEntry({status: 'novel-status'}),
+            maintenanceEntry({scheduled_for: null}),
+            maintenanceEntry({name: 'Healthy entry'}),
+          ],
+        })
+      }
+      return jsonResponse(HEALTHY_STATUS)
+    }) as unknown as typeof fetch
+    const status = await fetchPlatformStatus({fetchFn})
+    expect(status?.maintenances.map(m => m.name)).toEqual(['Healthy entry'])
+  })
+
+  it('maintenance read failure leaves the annotation otherwise intact (fail-open)', async () => {
+    const fetchFn = vi.fn(async (input: string | URL) => {
+      if (String(input).endsWith('/scheduled-maintenances.json')) return jsonResponse({message: 'gone'}, 404)
+      if (String(input).endsWith('/components.json')) return jsonResponse(HEALTHY_COMPONENTS)
+      return jsonResponse(HEALTHY_STATUS)
+    }) as unknown as typeof fetch
+    const status = await fetchPlatformStatus({fetchFn})
+    expect(status?.overall).toBe('none')
+    expect(status?.actions).toBe('operational')
+    expect(status?.maintenances).toEqual([])
+  })
+
+  it('non-object maintenance body degrades to an empty list', async () => {
+    const fetchFn = vi.fn(async (input: string | URL) => {
+      if (String(input).endsWith('/scheduled-maintenances.json')) return jsonResponse(['array', 'body'])
+      return jsonResponse(HEALTHY_STATUS)
+    }) as unknown as typeof fetch
+    const status = await fetchPlatformStatus({fetchFn})
+    expect(status?.maintenances).toEqual([])
+  })
+
+  it('maintenance names are clamped to the description bound', async () => {
+    const long = 'y'.repeat(PLATFORM_STATUS_DESCRIPTION_MAX_CHARS + 10)
+    const fetchFn = vi.fn(async (input: string | URL) => {
+      if (String(input).endsWith('/scheduled-maintenances.json')) {
+        return jsonResponse({scheduled_maintenances: [maintenanceEntry({name: long})]})
+      }
+      return jsonResponse(HEALTHY_STATUS)
+    }) as unknown as typeof fetch
+    const status = await fetchPlatformStatus({fetchFn})
+    expect(status?.maintenances[0]?.name).toHaveLength(PLATFORM_STATUS_DESCRIPTION_MAX_CHARS)
   })
 })
