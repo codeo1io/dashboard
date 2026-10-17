@@ -154,10 +154,14 @@ process lifetime. That warning is the fastest two-source check available:
      overwrite, or accept the shared budget for the single-operator traffic
      pattern this deployment runs.
 
-Two-source discipline matters: a single source can never produce two distinct
-forwarded values, so one client alone cannot fire (or verify) the detector —
-which is also why a false positive requires two genuinely distinct forwarded
-values, not one client retrying. Full background — the shared-key failure mode
+Spoofing caveat (rm-1979): in the default topology the limiter keys on the
+direct address but fingerprints the client-suppliable X-Forwarded-For header,
+so one client CAN fire the warning — the repo's own middleware test does
+exactly that by sending two header values from a single client. Two cheap
+requests pre-fire the log-once warning, blinding the detector for the process
+lifetime; a fired warning therefore means proxy misconfiguration OR spoofing,
+and two-source verification is only meaningful when an overwriting proxy
+(RATE_LIMIT_TRUSTED_PROXY=1) constructs the header. Full background — the shared-key failure mode
 behind the gateway variant of this trap — in
 `docs/solutions/security-issues/gateway-operator-oauth-rate-limit-shared-key-behind-caddy-2026-09-21.md`.
 

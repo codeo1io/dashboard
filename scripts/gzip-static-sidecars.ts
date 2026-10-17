@@ -21,9 +21,14 @@
 // Zero-dependency by design (node:fs/node:path/node:zlib + process only) so it
 // runs in any stage that has Node — including the Docker builder stage, which
 // is what makes the sidecars ship inside the image.
+//
+// rm-1980: the run also writes gzip-sidecar-manifest.json recording every
+// compressible file and whether it got a sidecar (sidecarBytes null = skipped
+// because gzip would not shrink it). The static-assets gate reads the manifest
+// so a deliberate skip is provable instead of looking like a missing sidecar.
 
 import {readdirSync, readFileSync, statSync, writeFileSync} from 'node:fs'
-import {join} from 'node:path'
+import {join, relative} from 'node:path'
 import process from 'node:process'
 import {gzipSync} from 'node:zlib'
 
@@ -44,6 +49,15 @@ const COMPRESSIBLE_EXTENSIONS: readonly string[] = [
 const COMPRESSED_EXTENSIONS: readonly string[] = ['.gz', '.br', '.zst', '.zstd']
 
 const GZIP_LEVEL = 9
+
+/** Manifest lives at the dist root so the gate can verify skip intent (rm-1980). */
+const MANIFEST_NAME = 'gzip-sidecar-manifest.json'
+
+type SidecarEntry = {
+  file: string
+  originalBytes: number
+  sidecarBytes: number | null
+}
 
 function isCompressible(name: string): boolean {
   if (COMPRESSED_EXTENSIONS.some(ext => name.endsWith(ext))) return false
@@ -74,26 +88,39 @@ function main(): number {
     return 1
   }
 
-  const stats = {files: 0, filesCompressed: 0, originalBytes: 0, sidecarBytes: 0}
+  const entries: SidecarEntry[] = []
   for (const file of walk(root)) {
     if (!isCompressible(file)) continue
-    stats.files++
+    const rel = relative(root, file)
+    // The manifest itself is a .json in the walk on rebuilds; never compress
+    // or record it (it is written fresh below).
+    if (rel === MANIFEST_NAME) continue
     const original = readFileSync(file)
     const compressed = gzipSync(original, {level: GZIP_LEVEL})
     // Skip a sidecar that would not shrink the transfer (tiny files can
-    // outgrow their gzip framing) — identity fallback serves those fine.
-    if (compressed.byteLength >= original.byteLength) continue
-    writeFileSync(`${file}.gz`, compressed)
-    stats.filesCompressed++
-    stats.originalBytes += original.byteLength
-    stats.sidecarBytes += compressed.byteLength
+    // outgrow their gzip framing) — identity fallback serves those fine, and
+    // the skip is recorded as sidecarBytes: null in the manifest (rm-1980).
+    const sidecarBytes = compressed.byteLength >= original.byteLength ? null : compressed.byteLength
+    if (sidecarBytes !== null) writeFileSync(`${file}.gz`, compressed)
+    entries.push({file: rel, originalBytes: original.byteLength, sidecarBytes})
   }
 
+  writeFileSync(
+    join(root, MANIFEST_NAME),
+    `${JSON.stringify({root, files: entries}, null, 2)}\n`,
+  )
+
+  const filesCompressed = entries.filter(entry => entry.sidecarBytes !== null).length
+  const originalBytes = entries.reduce(
+    (sum, entry) => sum + (entry.sidecarBytes === null ? 0 : entry.originalBytes),
+    0,
+  )
+  const sidecarBytes = entries.reduce((sum, entry) => sum + (entry.sidecarBytes ?? 0), 0)
   const ratio =
-    stats.originalBytes > 0 ? ((1 - stats.sidecarBytes / stats.originalBytes) * 100).toFixed(1) : '0.0'
+    originalBytes > 0 ? ((1 - sidecarBytes / originalBytes) * 100).toFixed(1) : '0.0'
   console.log(
-    `gzip-static-sidecars: ${stats.filesCompressed}/${stats.files} compressible files in ${root}` +
-    ` (${stats.originalBytes} → ${stats.sidecarBytes} bytes, -${ratio}%)`,
+    `gzip-static-sidecars: ${filesCompressed}/${entries.length} compressible files in ${root}` +
+    ` (${originalBytes} → ${sidecarBytes} bytes, -${ratio}%), manifest ${MANIFEST_NAME}`,
   )
   return 0
 }

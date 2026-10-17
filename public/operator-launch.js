@@ -233,12 +233,30 @@ export function buildLaunchClient(opts) {
   const getScenario = opts?.getScenario
   const fixtureSessionId = opts?.fixtureSessionId
 
-  const browserFetch = (input, init) =>
-    globalThis.fetch(input, {
+  // rm-1983: browser-direct calls are bounded so a stalled gateway socket
+  // rejects instead of pinning the UI. Metadata calls mirror the operator-stream
+  // 10s precedent (QUESTION/APPROVAL_FETCH_TIMEOUT_MS); the run launch does
+  // heavier gateway work and gets a longer bound. Tests shrink these by spying
+  // AbortSignal.timeout.
+  const METADATA_FETCH_TIMEOUT_MS = 10_000
+  const LAUNCH_RUN_TIMEOUT_MS = 60_000
+  const browserFetch = (input, init, timeoutMs = METADATA_FETCH_TIMEOUT_MS) => {
+    const timeoutSignal =
+      typeof AbortSignal !== 'undefined' &&
+      typeof AbortSignal.timeout === 'function'
+        ? AbortSignal.timeout(timeoutMs)
+        : undefined
+    const signal =
+      timeoutSignal !== undefined && init?.signal !== undefined
+        ? AbortSignal.any([init.signal, timeoutSignal])
+        : (timeoutSignal ?? init?.signal)
+    return globalThis.fetch(input, {
       ...init,
+      signal,
       credentials: 'include',
       redirect: 'error',
     })
+  }
 
   return {
     async refreshCsrf() {
@@ -252,8 +270,9 @@ export function buildLaunchClient(opts) {
           return {success: false, error: {kind: 'protocol', message: 'invalid csrf response'}}
         }
         return {success: true, data: {csrfToken: data.csrfToken}}
-      } catch {
-        return {success: false, error: {kind: 'network', message: 'network error'}}
+      } catch (err) {
+        const kind = err?.name === 'TimeoutError' || err?.name === 'AbortError' ? 'timeout' : 'network'
+        return {success: false, error: {kind, message: 'network error'}}
       }
     },
 
@@ -273,8 +292,9 @@ export function buildLaunchClient(opts) {
           }
         }
         return {success: true, data}
-      } catch {
-        return {success: false, error: {kind: 'network', message: 'network error'}}
+      } catch (err) {
+        const kind = err?.name === 'TimeoutError' || err?.name === 'AbortError' ? 'timeout' : 'network'
+        return {success: false, error: {kind, message: 'network error'}}
       }
     },
 
@@ -307,7 +327,7 @@ export function buildLaunchClient(opts) {
             'idempotency-key': req.idempotencyKey,
           },
           body: JSON.stringify(bodyObj),
-        })
+        }, LAUNCH_RUN_TIMEOUT_MS)
         if (res.status === 200 || res.status === 202) {
           const data = await res.json()
           if (typeof data.runId !== 'string' || data.runId === '') {
@@ -316,8 +336,9 @@ export function buildLaunchClient(opts) {
           return {success: true, data: {runId: data.runId}}
         }
         return {success: false, error: {kind: 'http', status: res.status}}
-      } catch {
-        return {success: false, error: {kind: 'network', message: 'network error'}}
+      } catch (err) {
+        const kind = err?.name === 'TimeoutError' || err?.name === 'AbortError' ? 'timeout' : 'network'
+        return {success: false, error: {kind, message: 'network error'}}
       }
     },
   }
