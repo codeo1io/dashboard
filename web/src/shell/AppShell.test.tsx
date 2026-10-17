@@ -125,6 +125,7 @@ describe('AppShell', () => {
   afterEach(() => {
     document.documentElement.removeAttribute('data-theme')
     vi.unstubAllGlobals()
+    vi.unstubAllEnvs()
     vi.restoreAllMocks()
   })
 
@@ -569,6 +570,37 @@ describe('AppShell', () => {
       fireEvent.click(screen.getByTestId('logout-button'))
 
       expect(signalBefore.aborted).toBe(true)
+    })
+  })
+
+  describe('release version footer (#641 port)', () => {
+    it.each([
+      ['dev'],
+      [undefined],
+    ])('renders %s release version as plain dev text with no link', version => {
+      vi.stubEnv('VITE_DASHBOARD_VERSION', version)
+      render(<AppShell>content</AppShell>)
+      expect(screen.getByText('dev')).toBeInTheDocument()
+      expect(screen.queryByRole('link', {name: /release notes/i})).not.toBeInTheDocument()
+    })
+
+    it('renders the release version link for a calver-shaped version', () => {
+      vi.stubEnv('VITE_DASHBOARD_VERSION', '2026.10.25')
+      render(<AppShell>content</AppShell>)
+      const link = screen.getByRole('link', {name: 'Release notes for 2026.10.25'})
+      expect(link).toHaveAttribute(
+        'href',
+        'https://github.com/codeo1io/dashboard/releases/tag/2026.10.25',
+      )
+      expect(link).toHaveAttribute('target', '_blank')
+      expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+    })
+
+    it('does not link a non-calver injected version — only the calver regex links', () => {
+      vi.stubEnv('VITE_DASHBOARD_VERSION', 'v1.2.3')
+      render(<AppShell>content</AppShell>)
+      expect(screen.getByText('v1.2.3')).toBeInTheDocument()
+      expect(screen.queryByRole('link', {name: /release notes/i})).not.toBeInTheDocument()
     })
   })
 })

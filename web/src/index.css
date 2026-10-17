@@ -144,6 +144,8 @@
 }
 
 .run-card {
+  /* #634 port: block:'start' scrolls land the card clear of the sticky header. */
+  scroll-margin-top: calc(var(--space-12) + var(--space-4));
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;

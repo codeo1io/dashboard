@@ -412,6 +412,105 @@ async function defaultRuntimeLoader(opts?: {
     }
   }
 
+  // Ported from upstream fro-bot/dashboard PR #634 (de2ce7fd): scroll a
+  // jumped-to / hash-restored run card fully into view, and keep it in view
+  // when the card's question or approval region is revealed later. An ordinary
+  // click-expand never scrolls, and any user scroll intent cancels the pending
+  // late reveal. Pure DOM affordance — no gateway reads, no contract surface.
+  let cancelPendingCardReveal = () => {}
+
+  const scrollRunCardIntoView = (card: HTMLElement): void => {
+    cancelPendingCardReveal()
+
+    const reduceMotion =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const behavior: ScrollBehavior = reduceMotion ? 'auto' : 'smooth'
+    const scrollToStart = () => {
+      if (typeof card.scrollIntoView === 'function') {
+        card.scrollIntoView({block: 'start', behavior})
+      }
+    }
+    scrollToStart()
+
+    let cancelled = false
+    let firstFrame: number | undefined
+    let secondFrame: number | undefined
+    let revealTimeout: number | undefined
+    const observer = new MutationObserver(checkForRevealedContent)
+
+    const cleanup = () => {
+      cancelled = true
+      observer.disconnect()
+      if (firstFrame !== undefined) window.cancelAnimationFrame?.(firstFrame)
+      if (secondFrame !== undefined) window.cancelAnimationFrame?.(secondFrame)
+      if (revealTimeout !== undefined) window.clearTimeout(revealTimeout)
+      window.removeEventListener('wheel', onUserScroll)
+      window.removeEventListener('touchmove', onUserScroll)
+      window.removeEventListener('pointerdown', onUserScroll)
+      window.removeEventListener('keydown', onScrollKey)
+      if (cancelPendingCardReveal === cleanup) cancelPendingCardReveal = () => {}
+    }
+    const onUserScroll = () => {
+      cleanup()
+    }
+    const onScrollKey = (event: KeyboardEvent) => {
+      // Do not intercept keyboard interaction aimed at a control inside the card.
+      if (
+        event.target instanceof Element &&
+        event.target.closest(
+          'input, textarea, select, [contenteditable]:not([contenteditable="false"])',
+        ) !== null
+      ) {
+        return
+      }
+      if (
+        ['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp', ' '].includes(
+          event.key,
+        )
+      ) {
+        cleanup()
+      }
+    }
+
+    const hasRevealedContent = () =>
+      Array.from(
+        card.querySelectorAll<HTMLElement>(
+          '[data-role="run-questions"], [data-role="run-approvals"]',
+        ),
+      ).some(region => !region.hidden && region.childNodes.length > 0)
+
+    function checkForRevealedContent() {
+      if (cancelled || card.dataset.expanded !== 'true' || !hasRevealedContent()) {
+        return
+      }
+      observer.disconnect()
+      firstFrame = window.requestAnimationFrame(() => {
+        firstFrame = undefined
+        secondFrame = window.requestAnimationFrame(() => {
+          secondFrame = undefined
+          if (cancelled || card.dataset.expanded !== 'true') return cleanup()
+          scrollToStart()
+          cleanup()
+        })
+      })
+    }
+
+    cancelPendingCardReveal = cleanup
+    window.addEventListener('wheel', onUserScroll, {passive: true})
+    window.addEventListener('touchmove', onUserScroll, {passive: true})
+    window.addEventListener('pointerdown', onUserScroll)
+    window.addEventListener('keydown', onScrollKey)
+    revealTimeout = window.setTimeout(cleanup, 10_000)
+    observer.observe(card, {
+      attributes: true,
+      childList: true,
+      subtree: true,
+      attributeFilter: ['hidden', 'data-expanded'],
+    })
+    checkForRevealedContent()
+  }
+
   // Build the active-stream coordination callbacks. These are passed to run-index and
   // launch modules so the runtime seam owns the single active stream handle.
   //
@@ -425,6 +524,8 @@ async function defaultRuntimeLoader(opts?: {
   //   (if any) and attach the new one. _attachStream already closes the prior
   //   handle first, so this covers both "nothing was open" and "switching cards."
   const onSelectRun = (runId: string) => {
+    // Any operator click supersedes a pending late reveal scroll (#634).
+    cancelPendingCardReveal()
     if (streamOwner.activeRunId === runId) {
       streamOwner.close()
       _clearRunHash()
@@ -457,6 +558,8 @@ async function defaultRuntimeLoader(opts?: {
   // nothing terminal-specific for this callback to special-case, so TERMINAL_RUN_STATUSES
   // is retained only for tests/documentation of that contract, not a branch here.
   const onRestoreRun = (runId: string, card: Element, _status: string) => {
+    // A hash-restored card is a jump target: scroll it fully into view (#634).
+    if (card instanceof HTMLElement) scrollRunCardIntoView(card)
     const statusEl = card.querySelector('[data-role="run-status"]') ?? null
     const noticeEl = typeof document !== 'undefined'
       ? document.querySelector('[data-role="stream-status"]')
@@ -527,6 +630,8 @@ async function defaultRuntimeLoader(opts?: {
   }
 
   return () => {
+    // A pending late reveal never outlives the runtime (#634).
+    cancelPendingCardReveal()
     // Close the stream handle owned by THIS runtime instance on cleanup.
     streamOwner.close()
     if (typeof streamMod.resetBootstrapState === 'function') {
