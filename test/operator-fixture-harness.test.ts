@@ -3439,3 +3439,86 @@ describe('waiting summary fixtures — a run ID that is valid but not in the lis
     expect(res.status).toBe(404)
   })
 })
+
+describe('fixture harness in-memory state bounds (rm-1489)', () => {
+  it('evicts the oldest sessions past FIXTURE_SESSION_CAP together with the state they own, and never evicts the active session', async () => {
+    const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
+
+    const launchFor = async (fixtureSessionId: string, idempotencyKey: string) =>
+      app.request(`${FIXTURE_OPERATOR_PREFIX}/runs`, {
+        method: 'POST',
+        headers: {'content-type': 'application/json'},
+        body: JSON.stringify({
+          scenario: FIXTURE_SCENARIO_NAMES.success,
+          idempotencyKey,
+          fixtureSessionId,
+          csrfToken: 'fixture-csrf',
+          repo: 'fixture-org/fixture-repo',
+          prompt: '[Fixture prompt]',
+        }),
+      })
+
+    // The oldest session is minted first and owns a launched run plus an idempotency entry.
+    const oldestSessionRes = await app.request(`${FIXTURE_OPERATOR_PREFIX}/session`)
+    expect(oldestSessionRes.status).toBe(200)
+    const {fixtureSessionId: oldestSessionId} = await oldestSessionRes.json() as {fixtureSessionId: string}
+    const oldestLaunch = await launchFor(oldestSessionId, 'fixture-idem-key-rm-1489-001')
+    expect(oldestLaunch.status).toBe(200)
+    const {runId: oldestRunId} = await oldestLaunch.json() as {runId: string}
+
+    // Drive the session set past 2x FIXTURE_SESSION_CAP (the bound is 50).
+    for (let i = 0; i < 100; i++) {
+      const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/session`)
+      expect(res.status).toBe(200)
+    }
+
+    // Evicted with its session: the launch is rejected as an invalid session …
+    const evictedLaunch = await launchFor(oldestSessionId, 'fixture-idem-key-rm-1489-002')
+    expect(evictedLaunch.status).toBe(400)
+    expect(await evictedLaunch.json()).toEqual({error: 'invalid-fixture-session'})
+
+    // … its run's stream is unknown …
+    const evictedStream = await app.request(
+      `${FIXTURE_OPERATOR_PREFIX}/runs/${oldestRunId}/stream?fixtureSessionId=${oldestSessionId}`,
+    )
+    expect(evictedStream.status).toBe(404)
+
+    // … and the most recently minted session still launches — the active session is never the one evicted.
+    const latestSessionRes = await app.request(`${FIXTURE_OPERATOR_PREFIX}/session`)
+    expect(latestSessionRes.status).toBe(200)
+    const {fixtureSessionId: latestSessionId} = await latestSessionRes.json() as {fixtureSessionId: string}
+    const activeLaunch = await launchFor(latestSessionId, 'fixture-idem-key-rm-1489-003')
+    expect(activeLaunch.status).toBe(200)
+  })
+
+  it('reports idempotent replays of an evicted session as a fresh invalid session, not a replay', async () => {
+    const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
+
+    const sessionRes = await app.request(`${FIXTURE_OPERATOR_PREFIX}/session`)
+    const {fixtureSessionId} = await sessionRes.json() as {fixtureSessionId: string}
+    const launch = async () =>
+      app.request(`${FIXTURE_OPERATOR_PREFIX}/runs`, {
+        method: 'POST',
+        headers: {'content-type': 'application/json'},
+        body: JSON.stringify({
+          scenario: FIXTURE_SCENARIO_NAMES.success,
+          idempotencyKey: 'fixture-idem-key-rm-1489-replay',
+          fixtureSessionId,
+          csrfToken: 'fixture-csrf',
+          repo: 'fixture-org/fixture-repo',
+          prompt: '[Fixture prompt]',
+        }),
+      })
+    const first = await launch()
+    expect(first.status).toBe(200)
+
+    // Push the session out of the retained window, then replay the SAME idempotency key:
+    // the idempotency entry was owned by the evicted session and must not resurrect it.
+    for (let i = 0; i < 100; i++) {
+      await app.request(`${FIXTURE_OPERATOR_PREFIX}/session`)
+    }
+    const replay = await launch()
+    expect(replay.status).toBe(400)
+    expect(await replay.json()).toEqual({error: 'invalid-fixture-session'})
+  })
+})

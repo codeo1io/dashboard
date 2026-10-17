@@ -53,11 +53,32 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Compare Dockerfile pins to live node:24-slim digest
+      - name: Compare the Dockerfile's pinned base digest against its live tag digest
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+
+          # rm-856 (cycle 2, 2026-10-17): the watched tag is DERIVED from the
+          # Dockerfile's ARG NODE_IMAGE line — the same single-source derivation
+          # cve-tripwire.yaml landed in 43af4cf. This workflow was born reading
+          # a hardcoded node:24-slim literal (rm-166-era) while the Dockerfile
+          # pins node:24-trixie-slim, so the comparison was structurally empty
+          # (different tag, different digest) and the watcher stayed blind while
+          # the real pin went dead (173f1258, authed 404). Deriving here removes
+          # the desync class at the root: a base-image family move only ever
+          # touches the Dockerfile. The dead-pin failure mode rm-166 designed
+          # for (digest-pinned inspect dying 404) is preserved — the tag is
+          # alive by construction, only the PIN can be dead, which is exactly
+          # the drift this workflow reports.
+          PINNED_REF="$(sed -nE 's/^ARG NODE_IMAGE=(node:[^@[:space:]]+@sha256:[0-9a-f]{64})$/\1/p' Dockerfile | head -n 1 || true)"
+          if [ -z "${PINNED_REF}" ]; then
+            echo '::error::no ARG NODE_IMAGE=<image>@sha256:<64-hex> pin found in Dockerfile — digest pinning is a precondition of this drift check'
+            exit 1
+          fi
+          PIN_TAG="${PINNED_REF%@sha256:*}"
+          PIN_DIGEST="${PINNED_REF##*@}"
+          echo "watching ${PIN_TAG} (pinned digest ${PIN_DIGEST})"
 
           # Digest readback (rm-166/rm-178 — cycle-11/12 landed this buildx
           # primary; rm-182 — the third same-day convergence — adds the
@@ -65,9 +86,9 @@ jobs:
           # each substitution so a CLI failure (e.g. anonymous manifest-auth
           # rate limiting) reaches the empty-digest guard instead of tripping
           # set -e first.
-          LIVE_DIGEST="$(docker buildx imagetools inspect node:24-slim | awk '/^Digest:/{print $2; exit}' || true)"
+          LIVE_DIGEST="$(docker buildx imagetools inspect "$PIN_TAG" | awk '/^Digest:/{print $2; exit}' || true)"
           if [ -z "$LIVE_DIGEST" ]; then
-            echo '::warning::buildx imagetools inspect yielded no Digest: line — trying the Docker Hub token + registry HEAD fallback (rm-182)'
+            echo "::warning::buildx imagetools inspect yielded no Digest: line — trying the Docker Hub token + registry HEAD fallback (rm-182)"
             # Fallback (proven 2026-09-24, research b27ad37b): anonymous token
             # from auth.docker.io, then a registry HEAD whose
             # docker-content-digest header is the live digest.
@@ -77,33 +98,23 @@ jobs:
               LIVE_DIGEST="$(curl -fsSI --max-time 20 \
                 -H "Authorization: Bearer $TOKEN" \
                 -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
-                'https://registry-1.docker.io/v2/library/node/manifests/24-slim' \
+                "https://registry-1.docker.io/v2/library/node/manifests/${PIN_TAG#node:}" \
                 | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:"{print $2; exit}' || true)"
             fi
           fi
           if [ -z "$LIVE_DIGEST" ]; then
-            echo '::error::live digest EXTRACTION FAILED (empty) — this is a readback/extraction failure (rm-166/rm-178/rm-182), NOT drift: buildx imagetools inspect produced no Digest: line and the auth.docker.io/registry-1.docker.io HEAD fallback failed too. Re-run this workflow before drawing any drift conclusion.'
+            echo "::error::live digest EXTRACTION FAILED (empty) — this is a readback/extraction failure (rm-166/rm-178/rm-182), NOT drift: buildx imagetools inspect produced no Digest: line and the auth.docker.io/registry-1.docker.io HEAD fallback failed too. Re-run this workflow before drawing any drift conclusion."
             exit 1
           fi
-          echo "live node:24-slim digest: $LIVE_DIGEST"
-
-          PINNED="$(grep -oE 'sha256:[0-9a-f]{64}' Dockerfile | sort -u)"
-          if [ -z "$PINNED" ]; then
-            echo '::error::no pinned digests found in Dockerfile'
-            exit 1
-          fi
-          echo "pinned digests:"
-          echo "$PINNED"
+          echo "live ${PIN_TAG} digest: $LIVE_DIGEST"
 
           DRIFT=0
-          for pin in $PINNED; do
-            if [ "$pin" != "$LIVE_DIGEST" ]; then
-              echo "drift: pin $pin != live $LIVE_DIGEST"
-              DRIFT=1
-            else
-              echo "current: $pin"
-            fi
-          done
+          if [ "$PIN_DIGEST" != "$LIVE_DIGEST" ]; then
+            echo "drift: pin $PIN_DIGEST != live $LIVE_DIGEST"
+            DRIFT=1
+          else
+            echo "current: $PIN_DIGEST"
+          fi
 
           if [ "$DRIFT" = '0' ]; then
             echo 'no drift — Dockerfile is current'
@@ -125,14 +136,11 @@ jobs:
               gh issue create \
                 --repo "$GITHUB_REPOSITORY" \
                 --label base-image-drift \
-                --title 'Base image drift: Dockerfile pins behind node:24-slim' \
-                --body "The weekly drift check found pinned digests that no longer match the live \`node:24-slim\` tag.
+                --title "Base image drift: Dockerfile pin behind ${PIN_TAG}" \
+                --body "The weekly drift check found the Dockerfile's pinned digest no longer matches the live \`${PIN_TAG}\` tag.
 
             Live digest: \`$LIVE_DIGEST\`
-            Pinned digests (from \`Dockerfile\`):
-            \`\`\`
-            $PINNED
-            \`\`\`
+            Pinned digest (from \`Dockerfile\` ARG NODE_IMAGE): \`$PIN_DIGEST\`
 
             Action: re-pin in a PR that goes through the normal Release scan gate. Do not auto-bump." >/dev/null
             else

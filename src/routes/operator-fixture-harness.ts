@@ -220,6 +220,38 @@ interface QuestionRunState {
 }
 const questionRunState = new Map<string, QuestionRunState>()
 
+// rm-1489 (2026-10-17): bounded retention for the in-memory state above. Without a bound the five
+// maps/sets grew for process lifetime — restart was the only clear. Sessions are capped at
+// FIXTURE_SESSION_CAP; when a new mint pushes past the cap the OLDEST sessions (by mint time,
+// insertion order breaking ties) are evicted together with every state entry they own. The
+// session that just minted (the caller of the eviction) is never evicted, so a live operator tab
+// always keeps its scenario playback. The bound is deliberately generous: this is a dev/demo
+// surface gated behind DASHBOARD_FIXTURE_HARNESS_ENABLED, and eviction exists so a long-lived
+// process cannot accumulate unbounded stale sessions, not to ration normal fixture use.
+const FIXTURE_SESSION_CAP = 50
+
+function evictOldestFixtureSessions(keepSessionId: string): void {
+  // Map/Set insertion order is deterministic, so oldest-by-mint-time is a stable sort here.
+  const sessionsByAge = [...sessionStartedAtMs.keys()]
+  let excess = sessionsByAge.length - FIXTURE_SESSION_CAP
+  for (const sessionId of sessionsByAge) {
+    if (excess <= 0) break
+    if (sessionId === keepSessionId) continue
+    validFixtureSessionIds.delete(sessionId)
+    sessionStartedAtMs.delete(sessionId)
+    for (const key of [...idempotencyMap.keys()]) {
+      if (key.startsWith(`${sessionId}:`)) idempotencyMap.delete(key)
+    }
+    for (const [runId, ownerSessionId] of [...runSessionMap.entries()]) {
+      if (ownerSessionId !== sessionId) continue
+      runSessionMap.delete(runId)
+      runScenarioMap.delete(runId)
+      questionRunState.delete(runId)
+    }
+    excess--
+  }
+}
+
 // A held-open stream ends after this long if the browser never closes it (the gateway's own cap is 30 minutes).
 const FIXTURE_HELD_OPEN_MS = 30 * 60 * 1000
 
@@ -393,6 +425,8 @@ export function buildFixtureHarnessRouter(): Hono {
     const fixtureSessionId = generateFixtureSessionId()
     validFixtureSessionIds.add(fixtureSessionId)
     sessionStartedAtMs.set(fixtureSessionId, Date.now())
+    // rm-1489: enforce the session cap at mint time — the only growth path for session-scoped state.
+    evictOldestFixtureSessions(fixtureSessionId)
     const res = c.json({...FIXTURE_SESSION, fixtureMode: true, fixtureSessionId})
     setNoStore(res.headers)
     return res
@@ -485,7 +519,11 @@ export function buildFixtureHarnessRouter(): Hono {
       return res
     }
 
-    if (!isValidFixtureSessionId(req.fixtureSessionId)) {
+    // rm-1489: a well-formed fixtureSessionId is not enough at launch time — the session must
+    // still be live. Without the membership half, a session evicted by the cap could keep minting
+    // runs whose state nothing would ever reclaim (its owner is no longer in
+    // sessionStartedAtMs, so session-cap eviction would skip those entries forever).
+    if (!isValidFixtureSessionId(req.fixtureSessionId) || !validFixtureSessionIds.has(req.fixtureSessionId)) {
       logger.debug('fixture-harness: POST /runs', {status: 400, errorClass: 'invalid-fixture-session'})
       const res = c.json({error: 'invalid-fixture-session'}, 400)
       setNoStore(res.headers)
