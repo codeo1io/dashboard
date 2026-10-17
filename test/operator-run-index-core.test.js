@@ -1023,6 +1023,23 @@ describe('markRunStreamAttached — A → B clears A, only B is inert', () => {
     cardB.dispatchEvent({type: 'click'})
     expect(onSelectRun).toHaveBeenCalledWith(runIdB)
   })
+
+  // rm-1522 browser-memory half: fetched/converged run cards never carry a
+  // prompt echo — the echo exists only on the optimistic card in the launching
+  // browser's memory and disappears on reload.
+  it('fetched run cards never carry a prompt echo', async () => {
+    const runId = 'run-no-prompt-echo-001'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, status: 200, json: async () => ({runs: [makeValidSummary({runId})]}),
+    }))
+    const cards = []
+    stubDOMWithCards(cards)
+
+    await initOperatorRunIndex({endpointBase: '/operator'})
+
+    expect(cards).toHaveLength(1)
+    expect(cards[0].querySelector('[data-role="run-prompt"]')).toBeNull()
+  })
 })
 
 // ---------------------------------------------------------------------------

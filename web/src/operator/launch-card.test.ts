@@ -83,7 +83,7 @@ describe('optimistic launch card', () => {
 
     const roles = Array.from(card.children).map(child => (child as HTMLElement).dataset.role)
     const at = roles.indexOf('run-checkout-detail')
-    expect(roles[at - 1]).toBe('run-updated-at')
+    expect(roles[at - 1]).toBe('run-prompt') // checkout detail stays the first hidden region
     expect(roles[at + 1]).toBe('run-waiting')
   })
 
@@ -125,7 +125,8 @@ describe('optimistic launch card', () => {
 
     const roles = Array.from(card.children).map(child => (child as HTMLElement).dataset.role)
     expect(roles.indexOf('run-updated-at')).toBe(roles.indexOf('run-repo') + 1)
-    expect(roles.indexOf('run-updated-at')).toBe(roles.indexOf('run-checkout-detail') - 1)
+    expect(roles.indexOf('run-prompt')).toBe(roles.indexOf('run-updated-at') + 1)
+    expect(roles.indexOf('run-prompt')).toBe(roles.indexOf('run-checkout-detail') - 1)
   })
 
   it('the seeded <time> is plain text with no child nodes, and the card gains no other time-related attribute', async () => {
@@ -152,5 +153,35 @@ describe('optimistic launch card', () => {
     const at = roles.indexOf('run-questions')
     expect(roles[at - 1]).toBe('run-approvals')
     expect(roles[at + 1]).toBe('approval-badge')
+  })
+})
+
+describe('launch-card prompt echo (rm-1522 browser-memory half)', () => {
+  it('renders the prompt on the optimistic card from browser memory only', async () => {
+    const { module, card, fetchMock } = await launchOptimisticCard('ship the release')
+    expect(module).toBeTruthy()
+    const echoes = Array.from(card.querySelectorAll('[data-role="run-prompt"]'))
+    expect(echoes.length).toBe(1)
+    const echo = echoes[0]
+    expect(echo.textContent).toBe('ship the release')
+    expect(echo.className).toBe('run-prompt')
+    // textContent only: a single text node, never markup
+    expect(echo.childNodes.length).toBe(1)
+    expect(echo.childNodes[0].nodeType).toBe(Node.TEXT_NODE)
+    const roles = Array.from(card.children).map((child) => child.getAttribute('data-role'))
+    expect(roles.indexOf('run-prompt')).toBe(roles.indexOf('run-updated-at') + 1)
+    expect(roles.indexOf('run-prompt')).toBe(roles.indexOf('run-checkout-detail') - 1)
+    // The POST body stays the only other place the prompt exists
+    expect(fetchMock.mock.calls[0][1].body).toBe(JSON.stringify({ repo: 'demo-repo', prompt: 'ship the release' }))
+    // Browser memory only: exactly one echo in the whole document
+    expect(document.querySelectorAll('[data-role="run-prompt"]').length).toBe(1)
+  })
+
+  it('caps the echo for display while sending the full prompt in the POST body', async () => {
+    const long = 'p'.repeat(400)
+    const { card, fetchMock } = await launchOptimisticCard(long)
+    const echo = card.querySelector('[data-role="run-prompt"]')
+    expect(echo.textContent).toBe('p'.repeat(300) + '\u2026')
+    expect(fetchMock.mock.calls[0][1].body).toBe(JSON.stringify({ repo: 'demo-repo', prompt: long }))
   })
 })

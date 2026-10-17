@@ -18,7 +18,12 @@
  * - All 400s collapse to one generic failure; 404 → one uniform unavailable state.
  * - No cause inference from body or timing.
  * - credentials:'include', redirect:'error' on all fetch calls.
- * - The prompt is user-typed and goes only in the POST body — never in logs or DOM.
+ * - The prompt is user-typed and goes only in the POST body — never in logs,
+ *   telemetry, or persisted state. Its single sanctioned DOM surface is the
+ *   optimistic run card built in the operator's own browser memory
+ *   (p[data-role="run-prompt"] in the launched branch): that echo is
+ *   textContent-only, capped like other free-form strings, and disappears on
+ *   reload because fetched run data never carries the prompt.
  * - runId appears only in the data-run-id attribute and the stream URL.
  */
 
@@ -690,6 +695,16 @@ export async function initOperatorLaunch(opts) {
           timeEl.setAttribute('datetime', launchedAt)
           timeEl.textContent = formatRelativeTime(launchedAt)
           card.append(timeEl)
+
+          // The prompt echo is browser memory only: built from the in-memory submit
+          // text, never from fetched run data, so it disappears on reload or adopt.
+          // textContent only (never innerHTML), capped like other free-form strings.
+          const promptEl = document.createElement('p')
+          promptEl.className = 'run-prompt'
+          promptEl.dataset.role = 'run-prompt'
+          promptEl.textContent =
+            prompt.length > TRIM ? prompt.slice(0, TRIM).trimEnd() + '\u2026' : prompt
+          card.append(promptEl)
 
           // Hidden per-card substructure for the stream renderer.
 
