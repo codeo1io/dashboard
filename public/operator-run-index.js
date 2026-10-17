@@ -16,10 +16,12 @@ export const FETCH_TIMEOUT_MS = 10_000
 const MAX_ID_LENGTH = 512
 const MAX_DATE_LENGTH = 128
 
-/** 'blocked' and 'waiting_for_approval' are stream-only — never produced by the run-summary projector. */
+/** 'blocked' is stream-only — a run summary never carries it. The waiting statuses are gateway overlays on a running run. */
 export const VALID_RUN_SUMMARY_STATUSES = new Set([
   'queued',
   'running',
+  'waiting_for_approval',
+  'waiting_for_question',
   'succeeded',
   'failed',
   'cancelled',
@@ -29,9 +31,37 @@ export const VALID_RUN_SUMMARY_STATUSES = new Set([
 const STATUS_LABELS = {
   queued: 'Queued',
   running: 'Running',
+  waiting_for_approval: 'Waiting for approval',
+  waiting_for_question: 'Waiting for answer',
   succeeded: 'Succeeded',
   failed: 'Failed',
   cancelled: 'Cancelled',
+}
+
+/**
+ * Run-summary status ↔ CSS class token, the single two-way map for the run-list card badge.
+ *
+ * Tokens are hyphenated (`waiting_for_question` → `status-waiting-for-question`), matching the
+ * stream emitter (operator-stream.js) and the rules in web/src/index.css. The card emitter below
+ * writes through this map, and web/src/operator/runtime.ts reads a card's class back through its
+ * mirror (STATUS_CLASS_TOKENS; a parity test pins the two together). Underscore tokens are not
+ * in the map, so they never read back as a status.
+ */
+export const RUN_STATUS_CLASS_TOKENS = Object.freeze({
+  queued: 'status-queued',
+  running: 'status-running',
+  waiting_for_approval: 'status-waiting-for-approval',
+  waiting_for_question: 'status-waiting-for-question',
+  succeeded: 'status-succeeded',
+  failed: 'status-failed',
+  cancelled: 'status-cancelled',
+})
+
+const STATUS_BY_CLASS_TOKEN = new Map(Object.entries(RUN_STATUS_CLASS_TOKENS).map(([status, token]) => [token, status]))
+
+/** The summary status a class token stands for, or undefined for any token the map does not own. */
+function summaryStatusFromClassToken(token) {
+  return typeof token === 'string' ? STATUS_BY_CLASS_TOKEN.get(token) : undefined
 }
 
 /**
@@ -233,20 +263,36 @@ export async function fetchRunIndex(opts) {
     ? `${endpointBase}/runs`
     : `${endpointBase}/runs?fixtureSessionId=${encodeURIComponent(fixtureSessionId)}`
 
+  // One timer bounds the whole request: the headers AND the body read. It aborts the fetch and also
+  // wins a race against the request, so a body that never settles (stalled, or ignoring the abort)
+  // still resolves as unavailable and cannot wedge the single-flight refresh.
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+  let timeoutId
+  const timedOut = new Promise(resolve => {
+    timeoutId = setTimeout(() => {
+      controller.abort()
+      resolve({kind: 'unavailable'})
+    }, FETCH_TIMEOUT_MS)
+  })
 
+  try {
+    return await Promise.race([requestRunIndex(url, controller.signal), timedOut])
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
+/** The request half of fetchRunIndex: fetch, status check, body read, parse. Never rejects. */
+async function requestRunIndex(url, signal) {
   let res
   try {
     res = await globalThis.fetch(url, {
       credentials: 'include',
       redirect: 'error',
-      signal: controller.signal,
+      signal,
     })
   } catch {
     return {kind: 'unavailable'}
-  } finally {
-    clearTimeout(timeoutId)
   }
 
   if (!res.ok) {
@@ -297,6 +343,14 @@ let _expandedRunId = null
 // deliberately does not import this one, so it cannot reach toggleCardExpansion.
 let _onSelectRun
 
+// Single-flight refresh state (see refreshOperatorRunIndex). The context is what the last init
+// that finished its fetch was configured with; it is the only thing a refresh needs from init, and
+// its presence is what "init has loaded" means. A reset or an auth failure clears it.
+let _refreshContext = null
+// The refresh cycle currently fetching/applying, and the one deferred cycle waiting behind it.
+let _refreshInFlight = null
+let _refreshTrailing = null
+
 function isRunIndexInitStale(generation) {
   return generation !== _runIndexGeneration
 }
@@ -330,8 +384,22 @@ export function resetRunIndexState() {
   _activeStreamRunId = null
   _expandedRunId = null
   _onSelectRun = undefined
+  // Settle any request waiting behind an in-flight refresh; the in-flight cycle itself notices the
+  // reset when its fetch returns and discards the response.
+  _refreshContext = null
+  _refreshInFlight = null
+  if (_refreshTrailing !== null) {
+    _refreshTrailing.resolve(false)
+    _refreshTrailing = null
+  }
 }
 
+/**
+ * Load the run list and render it. Resolves with how the load ended, so the caller never has to read
+ * it back from the DOM: 'loaded' (cards shown), 'empty' (no runs), 'unavailable' (a non-auth failure,
+ * or no document), 'auth-required' (401/403, after onAuthRequired), 'stale' (a reset or a newer init
+ * replaced this one while it fetched; it rendered no result and left the loading state to the newer owner).
+ */
 export async function initOperatorRunIndex(opts) {
   const myGeneration = ++_runIndexGeneration
 
@@ -346,8 +414,8 @@ export async function initOperatorRunIndex(opts) {
   const onRestoreMiss = opts?.onRestoreMiss
   const onAuthRequired = opts?.onAuthRequired
 
-  if (isRunIndexInitStale(myGeneration)) return
-  if (typeof document === 'undefined') return
+  if (isRunIndexInitStale(myGeneration)) return 'stale'
+  if (typeof document === 'undefined') return 'unavailable'
 
   if (typeof onSelectRun === 'function') _onSelectRun = onSelectRun
 
@@ -366,21 +434,25 @@ export async function initOperatorRunIndex(opts) {
   const result = await fetchRunIndex({endpointBase, fixtureSessionId})
 
   // Guard: bail if reset/replaced while awaiting fetch.
-  if (isRunIndexInitStale(myGeneration)) return
+  if (isRunIndexInitStale(myGeneration)) return 'stale'
 
   if (runIndexLoading !== null) runIndexLoading.hidden = true
+
+  // Init has loaded (or failed non-auth): from here a refresh may run, configured as this init was.
+  // An auth failure below clears it again — there is no session to refresh against.
+  _refreshContext = {endpointBase, fixtureSessionId, onSelectRun, onAuthRequired}
 
   if (result.kind === 'unavailable') {
     // The /operator/runs fetch itself is the auth re-classification point: a stale
     // or expired session must not resurrect a restored ready view. Report it and
     // skip any restore attempt entirely.
     if (result.authFailure === true && typeof onAuthRequired === 'function') {
+      _refreshContext = null
       onAuthRequired()
-      return
+      return 'auth-required'
     }
-    if (runIndexUnavailable !== null) runIndexUnavailable.hidden = false
-    if (runIndexSection !== null) runIndexSection.dataset.state = 'unavailable'
-    return
+    showRunIndexUnavailable({runIndexSection, runIndexUnavailable})
+    return 'unavailable'
   }
 
   const {summaries} = result
@@ -396,22 +468,13 @@ export async function initOperatorRunIndex(opts) {
     remaining = runIndexList.children?.length ?? 0
   }
 
+  showRunIndexResult({runIndexSection, runIndexList, runIndexEmpty, runIndexUnavailable}, remaining)
+
   if (remaining === 0) {
-    if (runIndexList !== null) runIndexList.hidden = true
-    if (runIndexEmpty !== null) runIndexEmpty.hidden = false
-    if (runIndexSection !== null) runIndexSection.dataset.state = 'empty'
     if (restoreRunId !== undefined && restoreRunId !== null && typeof onRestoreMiss === 'function') {
       onRestoreMiss()
     }
-    return
-  }
-
-  if (runIndexList !== null) {
-    runIndexList.hidden = false
-  }
-
-  if (runIndexSection !== null) {
-    runIndexSection.dataset.state = 'loaded'
+    return 'empty'
   }
 
   // Reload restore: only after the list has resolved and been diffed. Presence in
@@ -441,6 +504,140 @@ export async function initOperatorRunIndex(opts) {
       }
     }
   }
+
+  return 'loaded'
+}
+
+/** The unavailable treatment: the unavailable notice up, section state to match. */
+function showRunIndexUnavailable({runIndexSection, runIndexUnavailable}) {
+  if (runIndexUnavailable !== null) runIndexUnavailable.hidden = false
+  if (runIndexSection !== null) runIndexSection.dataset.state = 'unavailable'
+}
+
+/**
+ * Show a diffed list's outcome: the empty state when no card remains, the list otherwise, and the
+ * unavailable notice down either way. Shared by init and refresh so the two cannot disagree about
+ * what a populated or empty list looks like.
+ */
+function showRunIndexResult({runIndexSection, runIndexList, runIndexEmpty, runIndexUnavailable}, remaining) {
+  const isEmpty = remaining === 0
+  if (runIndexList !== null) runIndexList.hidden = isEmpty
+  if (runIndexEmpty !== null) runIndexEmpty.hidden = !isEmpty
+  if (runIndexUnavailable !== null) runIndexUnavailable.hidden = true
+  if (runIndexSection !== null) runIndexSection.dataset.state = isEmpty ? 'empty' : 'loaded'
+}
+
+/**
+ * One refresh cycle: fetch, then diff the list in place. Never rejects; resolves true only when
+ * fetched data was applied.
+ *
+ * Differences from init, on purpose: no loading toggle (the visible list stays put), no restore
+ * handling, and a non-auth failure — 429, network, bad body, any other status — keeps the current
+ * list untouched instead of showing the unavailable state. The stream-attached card is never written:
+ * diffRunIndexList protects it. A DOM move blurs a focused node, so the focused card is refocused
+ * afterwards with preventScroll.
+ *
+ * It does not touch _runIndexGeneration, so it cannot invalidate an in-flight init; it captures the
+ * generation and context instead, and drops its response if either changed (a reset or a new init)
+ * while it was fetching.
+ */
+async function applyRefresh() {
+  const context = _refreshContext
+  if (context === null || typeof document === 'undefined') return false
+  const generation = _runIndexGeneration
+
+  try {
+    const result = await fetchRunIndex({endpointBase: context.endpointBase, fixtureSessionId: context.fixtureSessionId})
+    if (isRunIndexInitStale(generation) || _refreshContext !== context) return false
+
+    if (result.kind === 'unavailable') {
+      if (result.authFailure === true) {
+        // No session: stop refreshing and let the shell reclassify, exactly as init does.
+        _refreshContext = null
+        if (typeof context.onAuthRequired === 'function') context.onAuthRequired()
+      }
+      return false
+    }
+
+    const runIndexSection = document.querySelector('[data-role="run-index"]')
+    const runIndexList = document.querySelector('[data-role="run-index-list"]')
+    const runIndexEmpty = document.querySelector('[data-role="run-index-empty"]')
+    const runIndexUnavailable = document.querySelector('[data-role="run-index-unavailable"]')
+
+    const focused = runIndexList !== null && runIndexList !== undefined ? focusedElementWithin(runIndexList) : null
+
+    let remaining = 0
+    if (runIndexList !== null) {
+      const views = result.summaries.map(buildRunSafeView)
+      diffRunIndexList(runIndexList, views, {onSelectRun: context.onSelectRun, activeStreamRunId: _activeStreamRunId})
+      remaining = runIndexList.children?.length ?? 0
+    }
+
+    showRunIndexResult({runIndexSection, runIndexList, runIndexEmpty, runIndexUnavailable}, remaining)
+    if (focused !== null) restoreFocus(runIndexList, focused)
+    return true
+  } catch {
+    // Keep the current list. Nothing here is logged: errors can carry run data.
+    return false
+  }
+}
+
+/** The document's focused element when it lives inside the list, else null. */
+function focusedElementWithin(list) {
+  const active = document.activeElement
+  if (active === null || active === undefined) return null
+  return typeof list.contains === 'function' && list.contains(active) ? active : null
+}
+
+/** Put focus back on an element a DOM move blurred, without scrolling. A removed element stays unfocused. */
+function restoreFocus(list, element) {
+  if (document.activeElement === element) return
+  if (typeof list.contains !== 'function' || !list.contains(element)) return
+  if (typeof element.focus === 'function') element.focus({preventScroll: true})
+}
+
+/**
+ * Refresh the run list in place. Single-flight: at most one fetch runs at a time, and a request
+ * that arrives meanwhile joins ONE deferred refresh that starts when the running one finishes — so
+ * responses can never be applied out of order, and a request is never answered with data fetched
+ * before it was made. Every request during the same flight shares the deferred refresh's promise.
+ *
+ * The promise settles once its data has been applied (or dropped): true when fresh data was
+ * applied, false on a failure, a stale generation, or when init has not loaded yet (a no-op that
+ * does not fetch). It never rejects.
+ *
+ * Callers (runtime.ts): the 30-second interval, becoming visible, expand, and a notification jump.
+ */
+export function refreshOperatorRunIndex() {
+  if (_refreshContext === null) return Promise.resolve(false)
+  if (_refreshInFlight === null) return startRefreshCycle()
+
+  if (_refreshTrailing === null) {
+    let resolve
+    const promise = new Promise(res => {
+      resolve = res
+    })
+    _refreshTrailing = {promise, resolve}
+  }
+  return _refreshTrailing.promise
+}
+
+function startRefreshCycle() {
+  const cycle = applyRefresh()
+  _refreshInFlight = cycle
+  cycle.then(() => {
+    // A reset replaced the state while this cycle ran; it has already settled the trailing waiter.
+    if (_refreshInFlight !== cycle) return
+    const trailing = _refreshTrailing
+    _refreshTrailing = null
+    if (trailing === null) {
+      _refreshInFlight = null
+      return
+    }
+    _refreshInFlight = null
+    trailing.resolve(_refreshContext === null ? false : startRefreshCycle())
+  })
+  return cycle
 }
 
 /** Terminal run-summary statuses — a card in one of these will not progress further. */
@@ -592,8 +789,9 @@ function cardShowsTerminalStatus(card) {
   const statusEl = card.querySelector('[data-role="run-status"]')
   if (statusEl === null || statusEl === undefined) return false
   const className = typeof statusEl.className === 'string' ? statusEl.className : ''
-  for (const status of TERMINAL_RUN_STATUSES) {
-    if (className.includes(`status-${status}`)) return true
+  for (const token of className.split(/\s+/)) {
+    const status = summaryStatusFromClassToken(token)
+    if (status !== undefined && TERMINAL_RUN_STATUSES.has(status)) return true
   }
   return false
 }
@@ -604,8 +802,17 @@ function cardShowsTerminalStatus(card) {
  * Never touches data-run-id or data-expanded on the card itself. The one structural
  * addition is a missing <time> (see below), built with the same safe-DOM shape as renderRunCard.
  * Never called for the active-stream card (the diff write-protects it).
+ *
+ * Terminal is sticky: a card already showing succeeded/failed/cancelled never takes a
+ * non-terminal view. A run ID never returns to a non-terminal status once terminal (a launch
+ * mints a fresh ID), so such a view is stale — a list fetched before the run finished, or one
+ * racing the stream's own terminal write. The whole update is skipped: the label, aria-label and
+ * reason all describe the terminal status and must stay together. Terminal → terminal and
+ * non-terminal → anything still update.
  */
 function updateCardInPlace(card, view) {
+  if (!TERMINAL_RUN_STATUSES.has(view.status) && cardShowsTerminalStatus(card)) return
+
   card.setAttribute(
     'aria-label',
     `Run, status: ${view.statusLabel}${view.reasonLabel === undefined ? '' : `, reason: ${view.reasonLabel}`}`,
@@ -614,7 +821,7 @@ function updateCardInPlace(card, view) {
   if (typeof card.querySelector === 'function') {
     const statusEl = card.querySelector('[data-role="run-status"]')
     if (statusEl !== null && statusEl !== undefined) {
-      statusEl.className = `run-status status-${view.status}`
+      statusEl.className = statusClassName(view.status)
       statusEl.textContent = view.statusLabel
     }
 
@@ -649,6 +856,11 @@ function updateCardInPlace(card, view) {
   }
 }
 
+/** The card badge's class list: the base class plus the status token from the map. */
+function statusClassName(status) {
+  return Object.hasOwn(RUN_STATUS_CLASS_TOKENS, status) ? `run-status ${RUN_STATUS_CLASS_TOKENS[status]}` : 'run-status'
+}
+
 /** Safe DOM writes only — no innerHTML for Gateway content. */
 function renderRunCard(view, onSelectRun) {
   const card = document.createElement('div')
@@ -667,7 +879,7 @@ function renderRunCard(view, onSelectRun) {
   statusGroup.dataset.role = 'run-status-group'
 
   const statusSpan = document.createElement('span')
-  statusSpan.className = `run-status status-${view.status}`
+  statusSpan.className = statusClassName(view.status)
   statusSpan.dataset.role = 'run-status'
   statusSpan.textContent = view.statusLabel
   statusGroup.append(statusSpan)
