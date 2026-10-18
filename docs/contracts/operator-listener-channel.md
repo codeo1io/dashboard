@@ -120,6 +120,17 @@ Report keyed on the run date — from stacking duplicates, and keeps webhook
 replays from resetting operator progress. Without a `dedupeKey`, every POST is
 a new message.
 
+**Producer guidance (rm-2103):** any producer doing replay-class sends —
+HTTP client retries, at-least-once webhook delivery, scheduled jobs that may
+re-fire — MUST set a stable `dedupeKey` (e.g. `daily-maintenance-2026-10-20`
+keyed on the report date, not a per-attempt UUID). A null-key replay is not
+an error: it is stored as a fresh row, so a retried POST without a key
+surfaces as a duplicate message. Note also that a replay (dedupe hit)
+refreshes `receivedAt` — ordering and retention follow the server-stamped
+clock — so a late replay of a keyed message re-orders it to newest; that is
+intentional (it marks the event as most recently seen), and keyed,
+date-shaped keys keep recurring reports from flapping.
+
 ### Responses
 
 | Status | Meaning | Body |

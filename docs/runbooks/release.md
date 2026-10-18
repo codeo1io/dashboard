@@ -17,8 +17,11 @@ docker buildx imagetools inspect ghcr.io/codeo1io/dashboard:latest
 
 The top-level `Digest:` line is the index digest the workflow compares against
 `steps.build.outputs.digest`. `:latest` should match the most recent green
-release run's build step; per-run tags (`vYYYY.MM.DD-N`, `sha-<short>`) are
-immutable snapshots.
+release run's build step; per-run tags (CalVer `YYYY.MM.PATCH` and `sha-<short>`,
+both App-gated) are immutable snapshots. The CalVer tag is computed by
+`scripts/compute-release-tag.ts` (month-scoped patch counter, no `v` prefix —
+rm-882: the git tag reuses the build-stamp tag, so footer chip and tag are the
+same string by construction).
 
 ## Failure triage — observed classes
 

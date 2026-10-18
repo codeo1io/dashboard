@@ -93,3 +93,30 @@ describe('base-drift digest readback — workflow statics (rm-166)', () => {
     ).toBe(true)
   })
 })
+
+describe('rm-856: base-drift derives the inspected ref from the Dockerfile ARG', () => {
+  const wfEntry = readWorkflowFiles().find(f => f.name === 'base-drift.yaml')
+  if (!wfEntry) throw new Error('base-drift.yaml not found')
+  const wf = wfEntry.text
+
+  it('carries an ARG NODE_IMAGE derivation step instead of a hardcoded node image ref', () => {
+    expect(wf).toContain('ARG NODE_IMAGE=')
+    expect(wf).toMatch(/sed -nE 's\/\^ARG NODE_IMAGE=\/\/p' Dockerfile/)
+    expect(
+      wf.includes('imagetools inspect node:'),
+      'no hardcoded node:<tag> inspect literal may remain — the ref must come from the Dockerfile ARG',
+    ).toBe(false)
+  })
+
+  it('builds the registry fallback path from the derived tag, not a hardcoded 24-slim path', () => {
+    expect(wf).not.toMatch(/manifests\/[0-9][^"']*/)
+    expect(wf).toMatch(/manifests\/\$\{BASE_TAG#:}/)
+  })
+
+  it('Dockerfile ARG shape the derivation relies on', () => {
+    const dockerfile = readFileSync(join(process.cwd(), 'Dockerfile'), 'utf8')
+    const argLine = dockerfile.match(/^ARG NODE_IMAGE=(.+)$/m)
+    expect(argLine).not.toBeNull()
+    expect(argLine?.[1]).toMatch(/^node:[^@\s]+@sha256:[0-9a-f]{64}$/)
+  })
+})
