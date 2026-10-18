@@ -64,6 +64,89 @@ function makeSnapshot(): AggregatorSnapshot {
   }
 }
 
+function writePlatformStatusCache(file: string, platformStatus: unknown): void {
+  writeFileSync(file, JSON.stringify({...makeSnapshot(), platformStatus}))
+}
+
+describe('createFileSnapshotStore — platformStatus shape gate (rm-1934)', () => {
+  const dirs: string[] = []
+
+  function makeStore(): {store: SnapshotStore; file: string} {
+    const dir = mkdtempSync(join(tmpdir(), 'snapshot-store-rm1934-'))
+    dirs.push(dir)
+    const file = join(dir, 'snapshot.json')
+    return {store: createFileSnapshotStore(file) as SnapshotStore, file}
+  }
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, {recursive: true, force: true})
+  })
+
+  it('absent platformStatus still loads (older cache, pre-annotation persist)', () => {
+    const {store, file} = makeStore()
+    writeFileSync(file, JSON.stringify(makeSnapshot()))
+    expect(store.load()).not.toBeNull()
+  })
+
+  it('null platformStatus still loads', () => {
+    const {store, file} = makeStore()
+    writePlatformStatusCache(file, null)
+    expect(store.load()).not.toBeNull()
+  })
+
+  it('well-formed platformStatus loads (clamped vocabulary, numeric fetchedAt)', () => {
+    const {store, file} = makeStore()
+    writePlatformStatusCache(file, {
+      overall: 'minor',
+      overallDescription: 'Ongoing GitHub incident',
+      actions: null,
+      fetchedAt: 1697548800000,
+    })
+    expect(store.load()).not.toBeNull()
+  })
+
+  it('well-formed platformStatus with an in-set actions string loads', () => {
+    const {store, file} = makeStore()
+    writePlatformStatusCache(file, {
+      overall: 'none',
+      overallDescription: 'All systems operational',
+      actions: 'under_maintenance',
+      fetchedAt: 1,
+    })
+    expect(store.load()).not.toBeNull()
+  })
+
+  it('non-number fetchedAt → null (fail-open recompute, not client contract-drift)', () => {
+    const {store, file} = makeStore()
+    writePlatformStatusCache(file, {overall: 'none', overallDescription: 'x', actions: null, fetchedAt: '2026-10-17'})
+    expect(store.load()).toBeNull()
+  })
+
+  it('out-of-vocabulary overall → null', () => {
+    const {store, file} = makeStore()
+    writePlatformStatusCache(file, {overall: 'severe', overallDescription: 'x', actions: null, fetchedAt: 1})
+    expect(store.load()).toBeNull()
+  })
+
+  it('out-of-vocabulary actions → null', () => {
+    const {store, file} = makeStore()
+    writePlatformStatusCache(file, {overall: 'none', overallDescription: 'x', actions: 'on_fire', fetchedAt: 1})
+    expect(store.load()).toBeNull()
+  })
+
+  it('missing required key (no overall) → null', () => {
+    const {store, file} = makeStore()
+    writePlatformStatusCache(file, {overallDescription: 'x', actions: null, fetchedAt: 1})
+    expect(store.load()).toBeNull()
+  })
+
+  it('non-object platformStatus → null', () => {
+    const {store, file} = makeStore()
+    writePlatformStatusCache(file, 'minor')
+    expect(store.load()).toBeNull()
+  })
+})
+
 describe('createFileSnapshotStore — enablement', () => {
   it('returns undefined (disabled) for unset, empty, and blank paths', () => {
     expect(createFileSnapshotStore(undefined)).toBeUndefined()
