@@ -48,4 +48,10 @@ export const HARD_RELEASE_ROOT_TSCONFIG_GLOB = 'tsconfig*.json'
 export const WORKFLOW_TRIGGER_ONLY_PATHS: readonly string[] = [
   'package.json',
   'pnpm-lock.yaml',
+  // 2026-10-18 full-validation pairing cure (PR #898 class): main's
+  // release.yaml on.push.paths gained this entry (precompressed static
+  // sidecars, landed post-base) while this base predates the script itself —
+  // trigger-only keeps the base-era-workflow direction green here, and the
+  // integrate takes main's corpus entry wholesale.
+  'scripts/gzip-static-sidecars.ts',
 ]
