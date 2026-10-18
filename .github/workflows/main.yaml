@@ -78,8 +78,11 @@ jobs:
 
       - name: 🎨 Detect UI anti-patterns
         run: |
-          # Pinned: an older major ignores .impeccable/config.json ignoreValues and would fail the gate on intentional brand tokens.
-          findings=$(npx --yes impeccable@3.2.1 detect --json web/src web/privacy.html)
+          # Pinned at 4.6.0: v4 honors .impeccable/config.json (ignoreValues verified — the
+          # --ease-spring bounce-easing token passes). v4's new flat-type-hierarchy rule
+          # flags privacy.html's intentional uniform 16px reading style, so that file is
+          # scoped out via detector.ignoreFiles; the rule stays active everywhere else.
+          findings=$(npx --yes impeccable@4.6.0 detect --json web/src web/privacy.html)
           if [ "$findings" != "[]" ]; then
             echo "$findings"
             echo "Impeccable detected UI anti-patterns. Address them or, for an intentional brand choice, add a scoped ignore via 'impeccable ignores add-value'."
