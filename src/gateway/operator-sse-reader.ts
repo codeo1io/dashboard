@@ -19,6 +19,10 @@
  * - Content-Type must be text/event-stream on 200; otherwise fail closed.
  * - Path must be a relative /operator/runs/ path; absolute URLs rejected.
  * - Buffer is capped at MAX_SSE_BUFFER_BYTES; overflow → fail closed.
+ * - rm-1485: every non-completion exit releases the body reader (cancel) —
+ *   returning a live reader strands the stream and its socket until the
+ *   gateway's max stream duration (the vendored twin's rm-261 release
+ *   discipline, ported to this seam).
  */
 
 import type {Logger} from '../logger.ts'
@@ -535,8 +539,19 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
       return true // continue
     }
 
+    let liveReader: {cancel: (reason?: unknown) => Promise<void>} | undefined
+
+    // rm-1485: every non-completion exit releases the body. Best-effort:
+    // cancelling an already-errored or done stream is a harmless no-op, and
+    // the fail-closed state has been dispatched before the release call.
+    const releaseBody = (reason: string): void => {
+      const target = liveReader
+      if (target) target.cancel(new Error(reason)).catch(() => {})
+    }
+
     try {
       const reader = response.body.getReader()
+      liveReader = reader
 
       while (true) {
         let done: boolean
@@ -550,6 +565,7 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
           logger?.error('sse-reader: stream read error', {route: ROUTE_TEMPLATE})
           onError(new Error('network error reading stream'))
           onClose()
+          releaseBody('sse-reader: stream read error (body released, rm-1485)')
           return
         }
 
@@ -561,17 +577,33 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
           // opens the NEXT chunk forges a phantom record boundary and the frame
           // is dropped without even a parse error. Hold a trailing CR back and
           // let it normalize together with the following chunk.
-          let text = buffer + decoder.decode(value, {stream: true})
+          const heldBefore = buffer.endsWith('\r')
+          const resident = heldBefore ? buffer.slice(0, -1) : buffer
+          const pending = (heldBefore ? '\r' : '') + decoder.decode(value, {stream: true})
+          let fragment = pending
           let held = ''
-          if (text.endsWith('\r')) {
+          if (fragment.endsWith('\r')) {
             held = '\r'
-            text = text.slice(0, -1)
+            fragment = fragment.slice(0, -1)
           }
           // normalizeCrlf is idempotent on already-normalized text, so
           // re-normalizing the concatenation is safe; only the junction
-          // between a held CR and a following LF changes.
-          buffer = normalizeCrlf(text) + held
-          bufferBytes = encoder.encode(buffer).length
+          // between a held CR and a following LF changes. The resident buffer
+          // holds no CR (any earlier one was normalized or held back), so
+          // normalizeCrlf(resident + fragment) === resident + normalizeCrlf(fragment).
+          const normalizedFragment = normalizeCrlf(fragment)
+          buffer = resident + normalizedFragment + held
+          // rm-1485: maintain the byte count per fragment instead of re-encoding
+          // the whole buffer on every chunk (O(buffer × chunks) — ~62 MB of
+          // encoder work for a 1 MB frame read in 8 KB chunks). Only the
+          // previously-held CR (1 byte) plus the decoded chunk can change the
+          // length, and UTF-8 byte length is additive across a concatenation
+          // of complete code points, so the fragment encode is exact.
+          bufferBytes =
+            bufferBytes -
+            (heldBefore ? 1 : 0) +
+            encoder.encode(normalizedFragment).length +
+            (held ? 1 : 0)
         }
 
         // Hard buffer cap (UTF-8 bytes, rm-114) — fail closed if exceeded without a boundary
@@ -579,6 +611,7 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
           logger?.error('sse-reader: buffer overflow', {route: ROUTE_TEMPLATE})
           onError(new Error('network error: stream buffer overflow'))
           onClose()
+          releaseBody('sse-reader: buffer overflow (body released, rm-1485)')
           return
         }
 
@@ -592,7 +625,12 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
           const results = parseSseChunk(`${record}\n\n`)
           for (const result of results) {
             const shouldContinue = handleFrame(result)
-            if (!shouldContinue) return
+            if (!shouldContinue) {
+              // rm-1485: the stream is still live when a mid-loop contract gate
+              // (first frame / version) fails — release it before returning.
+              releaseBody('sse-reader: contract drift (first frame / version gate) — body released (rm-1485)')
+              return
+            }
           }
 
           boundary = buffer.indexOf('\n\n')
@@ -605,6 +643,7 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
         const results = parseSseChunk(`${buffer}\n\n`)
         for (const result of results) {
           const shouldContinue = handleFrame(result)
+          // rm-1485: the stream is already at EOF here — nothing to release.
           if (!shouldContinue) return
         }
       }
@@ -612,6 +651,7 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
       logger?.error('sse-reader: unexpected stream error', {route: ROUTE_TEMPLATE})
       onError(new Error('network error: unexpected stream failure'))
       onClose()
+      releaseBody('sse-reader: unexpected stream error (body released, rm-1485)')
       return
     }
 

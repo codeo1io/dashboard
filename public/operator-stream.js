@@ -20,7 +20,8 @@
  * - Same-origin: credentials:'include', no URL rewriting.
  * - redirect:'error' prevents auth-redirect loops from being parsed as streams.
  * - Content-Type must be text/event-stream on 200; otherwise fail closed.
- * - Buffer is capped at MAX_SSE_BUFFER_BYTES; overflow → abort + failed state.
+ * - Buffer is capped at MAX_SSE_BUFFER_BYTES, measured in UTF-8 bytes (rm-1484);
+ *   overflow → abort + failed state.
  * - status/phase/surface are allowlist-gated; out-of-set values → parse failure.
  * - Status labels are rendered from a local map, never from the raw wire string.
  */
@@ -45,6 +46,19 @@ export const RETRY_MAX_COUNT = 5
 
 /** Hard cap on the incremental SSE buffer in bytes. Overflow → abort + failed. */
 export const MAX_SSE_BUFFER_BYTES = 1_000_000
+
+const sseTextEncoder = new TextEncoder()
+
+/**
+ * rm-1484 (2026-10-17): UTF-8 byte length of the stream buffer. The cap
+ * constant is BYTES-named; a UTF-16 `.length` undercounts astral content
+ * (2 units / 4 bytes) and CJK (1 unit / 3 bytes) 2-3x, so emoji-laden agent
+ * output buffered 2-3 MB before the cap tripped. Shared units rule with the
+ * server twin (src/gateway/operator-sse-reader.ts, rm-114).
+ */
+export function sseBufferByteLength(text) {
+  return sseTextEncoder.encode(text).length
+}
 
 /**
  * Hard cap on cumulative accumulated run-output characters. The raw SSE buffer cap
@@ -4886,7 +4900,9 @@ export function initOperatorStream(opts) {
 
               // Hard buffer cap — abort the reader and fail closed terminally
               // (no reconnect) if exceeded without a record boundary.
-              if (buffer.length > MAX_SSE_BUFFER_BYTES) {
+              // rm-1484: the cap is byte-true — see sseBufferByteLength. A UTF-16
+              // `.length` here undercounted astral/CJK content 2-3x.
+              if (sseBufferByteLength(buffer) > MAX_SSE_BUFFER_BYTES) {
                 clearFirstFrameTimer()
                 if (abortController) {
                   abortController.abort()
