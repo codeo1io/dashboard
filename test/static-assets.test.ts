@@ -14,6 +14,7 @@
  */
 import type {GitHubOAuthClient} from '../src/auth/oauth.ts'
 import {Buffer} from 'node:buffer'
+import {execFileSync} from 'node:child_process'
 import {existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join, resolve} from 'node:path'
@@ -1678,4 +1679,37 @@ describe('static response compression — gzip sidecars (rm-602)', () => {
     expect(res.headers.get('etag')).not.toBeNull() // rm-478 policy intact
     expect(existsSync('public/operator-stream.js.gz')).toBe(false)
   })
+})
+
+describe('stale gzip sidecar cleanup (rm-2049)', () => {
+  const scriptPath = resolve('scripts/gzip-static-sidecars.ts')
+
+  it('the sidecar pass unlinks orphaned and no-longer-shrinking sidecars, keeps fresh ones', () => {
+    // serveStatic({precompressed: true}) serves any present .gz variant
+    // regardless of freshness, so for unhashed filenames (index.html, sw.js,
+    // manifest.webmanifest) a stale sidecar shadows the real file indefinitely
+    // on a dirty-dist rebuild. The pass must unlink what it does not rewrite.
+    const root = mkdtempSync(join(tmpdir(), 'sidecars-rm2049-'))
+    try {
+      mkdirSync(join(root, 'assets'), {recursive: true})
+      // Still shrinks: sidecar (re)written and kept this pass.
+      writeFileSync(join(root, 'assets', 'shrinks.js'), 'console.log("line");\n'.repeat(400))
+      // No longer shrinks (1 byte cannot beat gzip framing): its planted
+      // sidecar is stale by construction — unlinked, source kept for identity.
+      writeFileSync(join(root, 'assets', 'grown.js'), 'x')
+      writeFileSync(join(root, 'assets', 'grown.js.gz'), 'stale-but-larger-than-truth')
+      // Source deleted since the last build: orphan sidecar must be unlinked.
+      writeFileSync(join(root, 'assets', 'orphan.js.gz'), 'stale')
+
+      execFileSync('node', [scriptPath, root], {stdio: 'pipe'})
+
+      expect(existsSync(join(root, 'assets', 'shrinks.js.gz'))).toBe(true)
+      expect(existsSync(join(root, 'assets', 'shrinks.js'))).toBe(true)
+      expect(existsSync(join(root, 'assets', 'grown.js'))).toBe(true)
+      expect(existsSync(join(root, 'assets', 'grown.js.gz'))).toBe(false)
+      expect(existsSync(join(root, 'assets', 'orphan.js.gz'))).toBe(false)
+    } finally {
+      rmSync(root, {recursive: true, force: true})
+    }
+  }, 60_000)
 })
