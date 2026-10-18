@@ -16,6 +16,7 @@ function daysAgo(days: number): string {
 function verdictFor(options: {
   workflows?: {id: number; path: string; name: string}[]
   runs?: {workflowId: number; createdAt: string}[]
+  neverRan?: number[]
   triggers?: Record<string, string[]>
   pushedAt?: string
   now?: string
@@ -26,6 +27,7 @@ function verdictFor(options: {
       {id: 2, path: '.github/workflows/manual.yaml', name: 'Manual'},
     ],
     runs: options.runs ?? [{workflowId: 1, createdAt: daysAgo(0.1)}],
+    neverRan: options.neverRan ?? [],
     triggers: options.triggers ?? {
       '.github/workflows/main.yaml': ['push'],
       '.github/workflows/manual.yaml': ['workflow_dispatch'],
@@ -86,10 +88,49 @@ describe('computeDarkness', () => {
     expect(result.darkWorkflows[0]?.ageDays).toBe(6)
   })
 
-  it('treats a candidate that never ran as dark once anything was pushed', () => {
-    const result = verdictFor({runs: []})
+  it('treats a VERIFIED never-ran candidate (probe observed zero runs) as dark once anything was pushed', () => {
+    const result = verdictFor({runs: [], neverRan: [1]})
     expect(result.verdict).toBe('DARK')
     expect(result.darkWorkflows[0]?.lastRun).toBe('never')
+  })
+
+  it('rm-1956: a candidate absent from the sampled window WITHOUT a verified probe is NOT auto-dark', () => {
+    // The sampled 100-run window is crowded out by a busy sibling workflow
+    // (id 9, running constantly); the workflow under test (canary, id 3) is
+    // absent from the sample and its probe did not report zero runs either —
+    // last run unknown, so no "never ran" claim and no dark verdict.
+    const result = verdictFor({
+      workflows: [
+        {id: 1, path: '.github/workflows/main.yaml', name: 'Main'},
+        {id: 3, path: '.github/workflows/canary.yaml', name: 'Canary'},
+        {id: 9, path: '.github/workflows/busy.yaml', name: 'Busy'},
+      ],
+      triggers: {
+        '.github/workflows/main.yaml': ['push'],
+        '.github/workflows/canary.yaml': ['schedule'],
+        '.github/workflows/busy.yaml': ['push'],
+      },
+      runs: [
+        {workflowId: 9, createdAt: daysAgo(0.01)},
+        {workflowId: 1, createdAt: daysAgo(0.1)},
+      ],
+      neverRan: [],
+      pushedAt: daysAgo(3),
+    })
+    expect(result.candidates).toBe(3)
+    expect(result.verdict).toBe('GREEN')
+    expect(result.darkWorkflows).toEqual([])
+  })
+
+  it('rm-1956: a schedule-only workflow whose true latest run post-dates the last push is not dark', () => {
+    const result = verdictFor({
+      triggers: {'.github/workflows/main.yaml': ['schedule']},
+      runs: [{workflowId: 1, createdAt: daysAgo(0.5)}],
+      pushedAt: daysAgo(1),
+    })
+    expect(result.candidates).toBe(1)
+    expect(result.verdict).toBe('GREEN')
+    expect(result.darkWorkflows).toEqual([])
   })
 
   it('does not flag staleness at exactly the threshold (strictly greater)', () => {
@@ -144,6 +185,7 @@ describe('computeDarkness', () => {
         '.github/workflows/canary.yaml': ['schedule'],
       },
       runs: [{workflowId: 1, createdAt: daysAgo(6)}],
+      neverRan: [3],
       pushedAt: daysAgo(1),
     })
     expect(result.verdict).toBe('DARK')
@@ -154,6 +196,7 @@ describe('computeDarkness', () => {
     const result = verdictFor({
       triggers: {'.github/workflows/main.yaml': ['schedule']},
       runs: [],
+      neverRan: [1],
     })
     expect(result.candidates).toBe(1)
     expect(result.verdict).toBe('DARK')

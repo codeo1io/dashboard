@@ -413,6 +413,15 @@ export interface OperatorSseReaderOptions {
  * Security: never logs the dynamic runId or path — only the route template.
  * Never includes response body text in errors (no-oracle).
  */
+/**
+ * rm-261: release an unread response body on fail-closed HTTP-status exits
+ * so the underlying connection is not held open until GC. Best-effort by
+ * design — a failing release must never mask the error it follows.
+ */
+function releaseBody(body: Response['body']): void {
+  body?.cancel().catch(() => {})
+}
+
 export function createOperatorSseReader(options: OperatorSseReaderOptions = {}): OperatorSseReader {
   const {fetchImpl = fetch, logger} = options
 
@@ -456,6 +465,7 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
       logger?.error('sse-reader: stream not found', {route: ROUTE_TEMPLATE, status: 404})
       onError(new Error('not-found: stream endpoint returned 404'))
       onClose()
+      releaseBody(response.body)
       return
     }
 
@@ -463,6 +473,7 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
       logger?.error('sse-reader: rate limited', {route: ROUTE_TEMPLATE, status: 429})
       onError(new Error('rate-limited: stream endpoint returned 429'))
       onClose()
+      releaseBody(response.body)
       return
     }
 
@@ -470,6 +481,7 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
       logger?.error('sse-reader: unexpected status', {route: ROUTE_TEMPLATE, status: response.status})
       onError(new Error('network error: unexpected stream status'))
       onClose()
+      releaseBody(response.body)
       return
     }
 
@@ -479,6 +491,7 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
       logger?.error('sse-reader: unexpected content-type', {route: ROUTE_TEMPLATE})
       onError(new Error('network error: unexpected content-type'))
       onClose()
+      releaseBody(response.body)
       return
     }
 
@@ -535,8 +548,9 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
       return true // continue
     }
 
+    let reader: ReadableStreamDefaultReader<Uint8Array<ArrayBuffer>> | undefined
     try {
-      const reader = response.body.getReader()
+      reader = response.body.getReader()
 
       while (true) {
         let done: boolean
@@ -544,7 +558,7 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
         try {
           const result = await reader.read()
           done = result.done
-          value = result.value as Uint8Array<ArrayBuffer> | undefined
+          value = result.value
         } catch {
           // Stream read error — fail closed
           logger?.error('sse-reader: stream read error', {route: ROUTE_TEMPLATE})
@@ -613,6 +627,15 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
       onError(new Error('network error: unexpected stream failure'))
       onClose()
       return
+    } finally {
+      // rm-261: release the stream on EVERY exit from the read loop — a
+      // fail-closed return with unread data (drift, overflow, read error)
+      // strands the connection until GC. cancel() is idempotent and a no-op
+      // on an exhausted (done) reader, so clean paths are unaffected, and a
+      // failing release must not mask the error it follows (hence the catch).
+      if (reader !== undefined) {
+        reader.cancel().catch(() => {})
+      }
     }
 
     // rm-851 (2026-10-10): a 200 stream that reaches clean EOF without ever

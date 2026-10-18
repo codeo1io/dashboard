@@ -132,5 +132,64 @@ describe('monitoring API', () => {
       const res = await fetchMonitoring()
       expect(res).toEqual({ ok: false, reason: 'contract-drift' })
     })
+
+    // rm-709 client twin: a check-run details_url is an operator-clickable
+    // link, so a non-empty non-https value is contract drift — the whole feed
+    // is dropped rather than rendering an unvetted href. Empty stays legal
+    // ("no link"). The server gates the same rule at extraction time.
+    const repoWithDetail = (detailsUrl: string) => ({
+      repos: [
+        {
+          full_name: 'org/repo',
+          discovery_channel: 'installation',
+          status: {
+            rollupState: 'red',
+            failingChecks: 1,
+            failingCheckDetails: [
+              {workflowTitle: null, runAttempt: null, checkName: 'build', detailsUrl},
+            ],
+            openPrCount: 0,
+            openIssueCount: 0,
+            openAlertCount: null,
+            stale: false,
+          },
+        },
+      ],
+      staleBanner: false,
+      driftCount: 0,
+      enumerationIncomplete: null,
+      refreshedAt: null,
+    })
+
+    it('rm-709: drops the feed to contract-drift on a javascript: detailsUrl', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(
+        new Response(JSON.stringify(repoWithDetail('javascript:alert(document.domain)')), { status: 200 }),
+      )
+      const res = await fetchMonitoring()
+      expect(res).toEqual({ ok: false, reason: 'contract-drift' })
+    })
+
+    it('rm-709: drops the feed to contract-drift on data:, http:, and relative detailsUrls', async () => {
+      for (const detailsUrl of ['data:text/html;base64,PHNjcmlwdD4=', 'http://github.com/x', '/org/repo/actions/runs/1']) {
+        vi.mocked(fetch).mockResolvedValueOnce(
+          new Response(JSON.stringify(repoWithDetail(detailsUrl)), { status: 200 }),
+        )
+        const res = await fetchMonitoring()
+        expect(res).toEqual({ ok: false, reason: 'contract-drift' })
+      }
+    })
+
+    it('rm-709: an empty detailsUrl (no link) and an https detailsUrl both parse', async () => {
+      for (const detailsUrl of ['', 'https://github.com/org/repo/actions/runs/1']) {
+        vi.mocked(fetch).mockResolvedValueOnce(
+          new Response(JSON.stringify(repoWithDetail(detailsUrl)), { status: 200 }),
+        )
+        const res = await fetchMonitoring()
+        expect(res.ok).toBe(true)
+        if (res.ok) {
+          expect(res.data.repos[0]?.status.failingCheckDetails[0]?.detailsUrl).toBe(detailsUrl)
+        }
+      }
+    })
   })
 })

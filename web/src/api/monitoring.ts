@@ -73,7 +73,21 @@ function parseFailingCheckDetail(item: unknown): FailingCheckDetail | null {
   if (workflowTitle !== null && typeof workflowTitle !== 'string') return null
   if (runAttempt !== null && typeof runAttempt !== 'number') return null
   if (typeof checkName !== 'string' || typeof detailsUrl !== 'string') return null
+  // rm-709 client twin: a non-empty detailsUrl must be an absolute https URL.
+  // The server gates the same rule at extraction time; a feed that still
+  // carries a javascript:/data:/http:/relative value is contract drift, so
+  // the whole feed is dropped rather than rendering an unvetted href.
+  if (detailsUrl !== '' && !isHttpsUrl(detailsUrl)) return null
   return {workflowTitle, runAttempt, checkName, detailsUrl}
+}
+
+/** Absolute-https gate for operator-clickable links (rm-709). */
+function isHttpsUrl(url: string): boolean {
+  try {
+    return new URL(url).protocol === 'https:'
+  } catch {
+    return false
+  }
 }
 
 const ROLLUP_STATES: readonly string[] = ['green', 'red', 'pending', 'unknown']

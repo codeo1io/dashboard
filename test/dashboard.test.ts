@@ -395,6 +395,24 @@ describe('/api/monitoring — BFF aggregation endpoint', () => {
       expect(Object.keys(status)).not.toContain('fetchedAt')
     })
 
+    // rm-156 TRIM (run a31293fd): refreshDurationMs/refreshDegraded were the
+    // only DTO fields with ZERO web consumers — the client never modeled
+    // them. The minimized whitelist pins their absence (the raw watchdog
+    // signals stay on /api/status via the shared AggregatorSnapshot).
+    it('response JSON does NOT contain refreshDurationMs or refreshDegraded (rm-156 trim)', async () => {
+      const repo = makeRepo()
+      const snapshot = makeSnapshot({repos: [repo], refreshedAt: 1_700_000_000_000})
+      const app = await buildTestApp(snapshot)
+      const res = await authedGet(app, '/api/monitoring')
+
+      expect(res.status).toBe(200)
+      const body = await res.json() as Record<string, unknown>
+      expect(Object.keys(body)).not.toContain('refreshDurationMs')
+      expect(Object.keys(body)).not.toContain('refreshDegraded')
+      expect(JSON.stringify(body)).not.toContain('refreshDurationMs')
+      expect(JSON.stringify(body)).not.toContain('refreshDegraded')
+    })
+
     it('response JSON does NOT contain installation_id, redactedNodeIds, or redactedDatabaseIds', async () => {
       const repo = makeRepo()
       const snapshot = makeSnapshot({repos: [repo], refreshedAt: 1_700_000_000_000})
