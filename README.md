@@ -33,9 +33,12 @@ and names every by-design deviation in [docs/runbooks/security-posture.md](docs/
   (`src/read-body.ts` — 16 KiB wire-byte cap, ingest + logout; rm-497).
 - **Client** — [Vite](https://vite.dev) + [React 19](https://react.dev) +
   [Tailwind CSS v4](https://tailwindcss.com), shipped as an installable PWA via
-  [vite-plugin-pwa](https://vite-pwa-org.netlify.app). The service worker is a
-  kill-switch (`web/src/sw.ts`): it purges caches and unregisters itself — the
-  app does no offline caching.
+  [vite-plugin-pwa](https://vite-pwa-org.netlify.app). The service worker
+  (`web/src/sw.ts`) precaches the hashed assets emitted by `pnpm build:web`
+  and serves the push-notification UI; a new worker installs in the background
+  but only activates once the page posts `SKIP_WAITING` (the Reload button in
+  `web/src/pwa/ReloadPrompt.tsx`). The activation contract is pinned by
+  `test/sw.test.ts`; the served form by `web/src/pwa/static-assets.test.ts`.
 - pnpm, [Vitest](https://vitest.dev).
 
 ## Quick Start
