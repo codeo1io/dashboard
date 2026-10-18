@@ -79,9 +79,10 @@ Engine release 753f4642, verified during the outage window:
 ## When the lights come back on
 
 - Re-run the canonical validation for anything that shipped on local proof alone.
-- The `Fro Bot` workflow on this fork stays `disabled_manually` until a `FRO_BOT_PAT` secret is
-  provisioned — the outage ending is not a reason to re-enable it (re-enabling resurrects a
-  failing cron). Check `gh workflow list` and `gh secret list` before flipping anything.
+- The `Fro Bot` workflow on this fork is `active` and gate-guarded, not `disabled_manually`:
+  while no `FRO_BOT_PAT` secret is provisioned, fro-bot.yaml's `HAS_FRO_BOT_PAT` gate skips the
+  scheduled run with a visible warning (verified 2026-10-19). Nothing needs flipping when the
+  lights come back on; check `gh workflow list` and `gh secret list` before changing either side.
 
 ## Provenance
 
