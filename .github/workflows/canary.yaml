@@ -1,12 +1,13 @@
-# rm-179 reality canary — weekly read-only proof that the EXACT query the
-# aggregator ships is accepted by the real GitHub GraphQL API.
+# rm-179/rm-225 reality canary — weekly read-only proof that EVERY query
+# template the aggregator ships is accepted by the real GitHub GraphQL API.
 #
 # Class guard, not a required check: this workflow exists because a live-syntax
 # error (rm-177: //-comments inside the templates) shipped for four days with
 # CI green — every aggregator test fakes the transport. A red run here means
 # "the real API would reject our query today". Read-only, GITHUB_TOKEN only,
 # never writes, never gates merges. The structural offline half of the guard
-# lives in test/query-shape-guard.test.ts.
+# lives in test/query-shape-guard.test.ts, which also asserts the canary's
+# template set (the registry) is complete (rm-225).
 name: GraphQL canary
 
 on:
@@ -35,17 +36,40 @@ jobs:
     # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
     # at the rm-139 Node-26 window (2026-10-28).
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    # rm-280 (2026-10-01): 5 → 10 — the rm-280 install (below) adds the cold
+    # pnpm-install spread on top of the seconds-scale canary run itself. Cold
+    # installs measured 5-84s at aa9937f (run 35688534671 — the setup action's
+    # own rm-145 note) and the pnpm-store cache only helps from the second run
+    # on, so 10 covers a slow cold runner without inviting a silent hang.
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Node 24 (native TS, no install needed)
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '24'
+          persist-credentials: false
 
-      - name: Execute the live REPO_STATUS_QUERY
+      # rm-280 (2026-10-01): the canary was born NOT zero-install. At that
+      # point the script imported the production chain (scripts/graphql-canary.ts
+      # → src/github/aggregator.ts → src/result.ts → bare npm specifier
+      # @bfra.me/es/result), so without node_modules it died ~10s in with
+      # ERR_MODULE_NOT_FOUND: the workflow's only run ever (36417620616, a
+      # 2026-09-28 dispatch) did exactly that, and the weekly cron had never
+      # produced a run. rm-280's acceptance offered install-vs-inline and chose
+      # INSTALL, via the same digest-pinned composite every Main job runs
+      # (pnpm + Node 24 + cache: pnpm + `pnpm install --frozen-lockfile`).
+      # rm-288 (2026-10-03, run 7ce48fe5 integrate) landed the sibling half:
+      # the registry moved to zero-import src/github/query-registry.ts and
+      # scripts/graphql-canary.ts now imports only it, so the script itself no
+      # longer needs node_modules. The install step STAYS — both halves of the
+      # rm-280/rm-288 family on one tree (see the rm-280/rm-288 riders): parity
+      # with every Main job's composite, a scheduled frozen-lockfile check, and
+      # no path back to the 36417620616 failure if the script or the registry
+      # module ever regains a package import (the rot class the zero-install
+      # solution doc in docs/solutions/workflow-issues/ warns about).
+      - name: 📦 Setup
+        uses: ./.github/actions/setup
+
+      - name: Execute every registered query template (rm-225)
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/graphql-canary.ts

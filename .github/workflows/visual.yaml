@@ -21,6 +21,16 @@ on:
       - tests/visual/**
       - playwright.config.ts
       - .github/workflows/visual.yaml
+      # rm-420 (renumbered from rm-208 at the 2026-09-25 ci-gate merge, then
+      # from rm-223 at the 2026-10-03 integrate — main's landed ledger owns
+      # rm-223 for the DASHBOARD_MONITORING_REFRESH gate): render inputs
+      # beyond web/src. package.json + pnpm-lock.yaml pin the dependency
+      # versions that ship the rendered bundle — a dep bump can shift rendered
+      # output without touching web/src, and must still run the visual gate.
+      # Guarded by test/visual-trigger-paths.test.ts. web/index.html and
+      # web/vite.config.ts were deduped here (both lineages had added them).
+      - package.json
+      - pnpm-lock.yaml
   push:
     branches: [main]
   workflow_dispatch:
@@ -45,7 +55,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     # Deterministic render environment (rm-142): the pinned Playwright image
-    # bundles the chromium build that matches the @playwright/test 1.63.0 pin,
+    # bundles the chromium build that matches the @playwright/test pin,
     # so baselines render identically across runner generations. The rolling
     # ubuntu-latest + runtime `playwright install` mix already reddened this
     # gate once (run 35678222963, cloud font stack vs workstation-captured
@@ -57,14 +67,28 @@ jobs:
     # bit-identical forever. Dependabot (docker ecosystem) owns bumping the
     # tag+digest pair together; on landing, regenerate all baselines in the
     # new image (see the provenance spec in the rm-142 acceptance).
+    # 2026-10-17 lockstep repair (rm-142): the lockfile moved to
+    # @playwright/test 1.64.0 on 2026-10-11 (6179cb7 block-union splice;
+    # re-floated by the 2d67bd5 adoption lockfile-regen under the old caret
+    # specifier) while this image stayed at 1.63.0 — every paths-triggered
+    # fire since then died at browserType.launch
+    # (chromium_headless_shell-1248 missing; e.g. runs 38976055481/
+    # 38968814103; sibling 38970619626 died one step later at the
+    # stale-baseline compare). Three-part forward move: image bumped to the
+    # matching v1.64.0-noble (digest resolved from mcr 2026-10-17), npm side
+    # exact-pinned 1.64.0, baselines regenerated inside this image (see the
+    # provenance header in tests/visual/dashboard.spec.ts); guarded by
+    # test/visual-playwright-image-lockstep.test.ts.
     container:
-      image: mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27
+      image: mcr.microsoft.com/playwright:v1.64.0-noble@sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # pnpm via pnpm/action-setup (repo convention, see .github/actions/setup).
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: pnpm
@@ -86,7 +110,7 @@ jobs:
 
       - name: Upload report on failure
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playwright-report
           path: playwright-report/
@@ -94,7 +118,7 @@ jobs:
 
       - name: Upload baselines (update mode)
         if: github.event_name == 'workflow_dispatch' && inputs.update-baselines
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: visual-baselines
           path: tests/visual/__screenshots__/
