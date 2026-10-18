@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * rm-742 — stale conductor/* validation-ref sweep (drift repair, dry-run by default).
+ * rm-742 + rm-1975 — stale conductor/* validation-ref sweep (drift repair,
+ * dry-run by default).
  *
  * Context: the in-repo validation process (github_ci_validate.py's ephemeral
  * remote-CI route) CREATES `conductor/ci-*` refs and DELETES them in a
@@ -10,14 +11,22 @@
  * cleanup), not work in flight. This script enumerates that drift and, only
  * under an explicit --apply, deletes it from origin.
  *
+ * rm-1975 (2026-10-18): the sweep also covers `conductor/run-*` — run-worktree
+ * refs left behind by mergeless landings. The fleet lands run-direct to main
+ * (squash, no PR merge), so delete_branch_on_merge never fires for them and
+ * every delegated run leaves one ref behind (~15/day, 229 standing at mint
+ * time, oldest 2026-09-21). No conductor session outlives the 14-day cutoff,
+ * so a run-* ref past the cutoff is residue of a finished or reaped run, not
+ * work in flight.
+ *
  * Safety posture (this is the ONE script in the batch that can push):
  * - DEFAULT IS DRY-RUN: with no flags it lists and exits 0, touching nothing.
  * - `--apply` is required to delete anything; apply is PUSH-GATED in this
  *   repo's process (the roadmap def defers it to a push-authorized phase —
  *   conductor work orders prohibit push outside the ship gate).
- * - Only refs matching `refs/heads/conductor/ci-*` or
- *   `refs/heads/conductor/ci-base-*` are ever considered (the ephemeral
- *   validation namespaces — nothing else).
+ * - Only refs matching `refs/heads/conductor/ci-*`, `refs/heads/conductor/ci-base-*`,
+ *   or `refs/heads/conductor/run-*` are ever considered (the ephemeral
+ *   namespaces — nothing else).
  * - `--cutoff-days N` (default 14): only refs whose newest commit is older
  *   than N days are candidates. Validations live <1 day; 14d is a generous
  *   drift window that cannot race an in-flight validation.
@@ -35,7 +44,11 @@ import {spawnSync} from 'node:child_process'
 import process from 'node:process'
 import {pathToFileURL} from 'node:url'
 
-export const SWEEP_NAMESPACES = ['refs/heads/conductor/ci-', 'refs/heads/conductor/ci-base-'] as const
+export const SWEEP_NAMESPACES = [
+  'refs/heads/conductor/ci-',
+  'refs/heads/conductor/ci-base-',
+  'refs/heads/conductor/run-',
+] as const
 export const TEMP_NAMESPACE = 'refs/conductor-sweep/'
 export const DEFAULT_CUTOFF_DAYS = 14
 

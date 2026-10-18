@@ -23,8 +23,11 @@ import {describe, expect, it} from 'vitest'
  *  - allowlist entries must still exist at runtime, so the allowlist cannot
  *    go stale: shrinking it is always allowed, growing it is always a test
  *    failure away from a deliberate decision;
- *  - type-only declaration counts (export type/interface) are pinned so any
- *    .d.ts type edit requires a deliberate guard update.
+ *  - type-only declaration NAMES (export type/interface) are pinned as sorted
+ *    lists, so any add, remove, or RENAME requires a deliberate guard update
+ *    (rm-1976: the count-only pin went stale within a day — a rename keeps the
+ *    count and passes silently, and public/ is excluded from web type-checking
+ *    above, so nothing else would catch it).
  */
 const repoRoot = process.cwd()
 
@@ -46,34 +49,70 @@ const ALLOWED_UNDECLARED: Readonly<Record<string, readonly string[]>> = {
   'operator-run-index': ['formatRelativeTime', 'markCardExpandedForLaunch'],
 }
 
-/** Pinned type-only declaration counts (export type + export interface). */
-const TYPE_ONLY_COUNTS: Readonly<
-  Record<string, {readonly type: number; readonly interface: number}>
+/**
+ * Pinned type-only declaration NAMES, sorted (rm-1976). Sorted lists rather
+ * than counts: a rename keeps every count and would pass silently while
+ * breaking every downstream importer of the old name. Derived from the .d.ts
+ * content at base 505cc466 (== origin/main's d.ts at mint time: stream 32
+ * type + 35 interface, run-index 4 type — matching main's post-d2a976dc count
+ * bump that this base's stale 31/34 + 3 pin predates).
+ */
+const TYPE_ONLY_NAMES: Readonly<
+  Record<string, {readonly type: readonly string[]; readonly interface: readonly string[]}>
 > = {
-  'operator-stream': {type: 31, interface: 34},
-  'operator-launch': {type: 1, interface: 2},
-  'operator-run-index': {type: 3, interface: 2},
+  'operator-stream': {
+    type: [
+      'ApprovalFrameData', 'CancelControlState', 'CancelRunError', 'CancelRunOutcome',
+      'CancelTerminalPhase', 'CheckoutHead', 'CheckoutLayoutReason', 'CheckoutObstructionKind',
+      'CheckoutOperation', 'CheckoutPreparation', 'CheckoutPreparationRefused',
+      'CheckoutProvenance', 'CheckoutRefusalReason', 'CheckoutRemote',
+      'CheckoutUpdateFailureReason', 'CheckoutWorktree', 'ConnectionStatus', 'FailureKind',
+      'OperatorWebStatus', 'QuestionDecision', 'QuestionDecisionOutcome',
+      'QuestionDecisionState', 'QuestionFrameData', 'QuestionInvalidReason',
+      'QuestionListResult', 'QuestionRequestStatus', 'RunPhase', 'RunSummaryStatus',
+      'SseParseResult', 'StreamConnectionStatus', 'StreamEvent', 'StreamFrame',
+    ],
+    interface: [
+      'ApprovalClient', 'ApprovalFrameDataOpen', 'ApprovalFrameDataSettle',
+      'ApprovalReconcileEvent', 'CancelActionEvent', 'CancelClient', 'CancelClientLogger',
+      'CancelControlClient', 'CancelControlHandle', 'CancelRunResult', 'CheckoutBoundedList',
+      'CheckoutPreparationFailed', 'FinishedRunRecord', 'InitOptions', 'OutputFrameData',
+      'QuestionClaimedEvent', 'QuestionClient', 'QuestionFrameDataOpen', 'QuestionFrameDataSettle',
+      'QuestionNote', 'QuestionOption', 'QuestionPageRecord', 'QuestionPrompt',
+      'QuestionReconcileEvent', 'QuestionReconcileResetEvent', 'QuestionRequest',
+      'QuestionRequestView', 'QuestionResolvedEvent', 'ReadyFrameData', 'ResetFrameData',
+      'RunEntry', 'SafeRunView', 'StatusFrameData', 'StreamHandle', 'StreamState',
+    ],
+  },
+  'operator-launch': {
+    type: ['LaunchOutcome'],
+    interface: ['LaunchClient', 'PendingCardHooks'],
+  },
+  'operator-run-index': {
+    type: ['FailureKind', 'RunIndexInitOutcome', 'RunIndexResult', 'RunSummaryStatus'],
+    interface: ['ParsedRunSummary', 'RunSafeView'],
+  },
 }
 
 interface DeclaredExports {
   readonly values: string[]
-  readonly typeOnly: {readonly type: number; readonly interface: number}
+  readonly typeOnly: {readonly type: string[]; readonly interface: string[]}
 }
 
 function parseDeclaredExports(source: string): DeclaredExports {
   const values: string[] = []
-  let typeCount = 0
-  let interfaceCount = 0
+  const typeNames: string[] = []
+  const interfaceNames: string[] = []
   for (const match of source.matchAll(
     /^export (?:declare )?(function|const|class|let|var|type|interface) ([\w$]+)/gm,
   )) {
     const [, kind, name] = match
     if (kind === undefined || name === undefined) continue
-    if (kind === 'type') typeCount += 1
-    else if (kind === 'interface') interfaceCount += 1
+    if (kind === 'type') typeNames.push(name)
+    else if (kind === 'interface') interfaceNames.push(name)
     else values.push(name)
   }
-  return {values, typeOnly: {type: typeCount, interface: interfaceCount}}
+  return {values, typeOnly: {type: typeNames, interface: interfaceNames}}
 }
 
 describe('public/*.d.ts ↔ .js value-export parity (rm-1462)', () => {
@@ -112,9 +151,13 @@ describe('public/*.d.ts ↔ .js value-export parity (rm-1462)', () => {
         `${base}: allowlist names that no longer exist at runtime (shrink the allowlist):`,
       ).toEqual([])
 
-      expect(declared.typeOnly, `${base} type-only declaration counts changed (deliberate update required):`).toEqual(
-        TYPE_ONLY_COUNTS[base],
-      )
+      expect(
+        {
+          type: [...declared.typeOnly.type].sort(),
+          interface: [...declared.typeOnly.interface].sort(),
+        },
+        `${base} type-only declaration names changed (deliberate update required — add/remove/rename must edit the pinned list):`,
+      ).toEqual(TYPE_ONLY_NAMES[base])
     })
   }
 })

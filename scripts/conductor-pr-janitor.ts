@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 import {spawnSync} from 'node:child_process'
 /**
- * rm-1463: fork-own conductor PR-residue janitor.
+ * rm-1463 + rm-1975: fork-own conductor PR-residue janitor.
  *
  * Conductor CI validation PRs (head refs matching conductor/ci-*) accumulate
  * on codeo1io/dashboard when their runs land or abort: as of 2026-10-16 eight
  * PRs sat open, including four leaked drafts (#729/#732/#734/#735). This tool
  * triages them without mutating anything by default.
+ *
+ * rm-1975 (2026-10-18): run-worktree PRs (heads matching conductor/run-*) are
+ * triaged identically — mergeless landings leave their worktree PRs open with
+ * empty checks (four standing at mint time: #860/#798/#790/#787), the same
+ * landed/aborted/live disposition the ci-* population gets.
  *
  * Usage:
  *   node scripts/conductor-pr-janitor.ts [--repo owner/name] [--json]
@@ -62,7 +67,7 @@ export interface TriageRow {
   readonly reason: string
 }
 
-const CONDUCTOR_HEAD_PATTERN = /^conductor\/ci-/i
+const CONDUCTOR_HEAD_PATTERN = /^conductor\/(?:ci|run)-/i
 
 /** gh pr list caps at 30 results by default; the residue fleet is past that. */
 export const OPEN_PR_LIMIT = 200
@@ -73,12 +78,19 @@ export function isConductorPr(headRefName: string): boolean {
 
 /**
  * Extract the run id from a conductor head ref, e.g. conductor/ci-7a0e2163-foo
- * -> '7a0e2163'. Returns null for non-conductor heads.
+ * -> '7a0e2163', or conductor/run-0790be13ff88…-worktree -> the hex run id.
+ * Returns null for non-conductor heads.
  */
 export function runIdFromHead(headRefName: string): string | null {
-  const match = /^conductor\/ci-([0-9a-f]+)/i.exec(headRefName)
+  const match = /^conductor\/(?:ci|run)-([0-9a-f]+)/i.exec(headRefName)
   const runId = match?.[1]
   return runId === undefined ? null : runId
+}
+
+/** Which conductor namespace a head belongs to: 'ci' (validation), 'run' (run worktree), or null. */
+export function conductorHeadKind(headRefName: string): 'ci' | 'run' | null {
+  const match = /^conductor\/(ci|run)-/i.exec(headRefName)
+  return match?.[1] === undefined ? null : match[1].toLowerCase() as 'ci' | 'run'
 }
 
 export function classifyConductorPr(
@@ -100,7 +112,7 @@ export function classifyConductorPr(
       headRefName: pr.headRefName,
       runState,
       action: 'close',
-      reason: `conductor validation PR whose run ${runState} — superseded, residue`,
+      reason: `conductor ${conductorHeadKind(pr.headRefName) === 'run' ? 'run' : 'validation'} PR whose run ${runState} — superseded, residue`,
     }
   }
   if (runState === 'live') {
@@ -109,7 +121,7 @@ export function classifyConductorPr(
       headRefName: pr.headRefName,
       runState,
       action: 'keep',
-      reason: 'conductor validation PR whose run is live — still needed',
+      reason: `conductor ${conductorHeadKind(pr.headRefName) === 'run' ? 'run' : 'validation'} PR whose run is live — still needed`,
     }
   }
   return {
@@ -223,7 +235,7 @@ export function supersededComment(
   row: TriageRow,
   supersedingCommit: string,
 ): string {
-  return `superseded by ${supersedingCommit}: conductor validation PR whose run ${row.runState} (janitor rm-1463)`
+  return `superseded by ${supersedingCommit}: conductor ${conductorHeadKind(row.headRefName) === 'run' ? 'run' : 'validation'} PR whose run ${row.runState} (janitor rm-1463/rm-1975)`
 }
 
 export function closeCommand(

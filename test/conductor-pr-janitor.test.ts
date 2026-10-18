@@ -2,6 +2,7 @@ import {describe, expect, it} from 'vitest'
 import {
   classifyConductorPr,
   closeCommand,
+  conductorHeadKind,
   ghPrListArgs,
   isConductorPr,
   parseRunStateArgs,
@@ -30,6 +31,29 @@ describe('conductor-pr-janitor policy (rm-1463)', () => {
     )
     expect(row.action).toBe('keep')
     expect(row.reason).toContain('non-conductor head')
+  })
+
+  it('rm-1975: run-worktree heads are in scope and extract their run id', () => {
+    const head = 'conductor/run-0790be13ff884b6d8cb2c11706df1e44-main'
+    expect(isConductorPr(head)).toBe(true)
+    expect(runIdFromHead(head)).toBe('0790be13ff884b6d8cb2c11706df1e44')
+    expect(conductorHeadKind(head)).toBe('run')
+    expect(conductorHeadKind('conductor/ci-7a0e2163-x')).toBe('ci')
+    expect(conductorHeadKind('renovate/hono-4.x')).toBe(null)
+    // Near-miss: run must be the literal namespace, not a longer word.
+    expect(isConductorPr('conductor/runtime-x')).toBe(false)
+    expect(runIdFromHead('conductor/runtime-x')).toBe(null)
+  })
+
+  it('rm-1975: run-worktree PR triage reuses the landed/aborted/live disposition', () => {
+    const head = 'conductor/run-0bc68dbef3194619b5e7ca9592090b35-c6dd-main'
+    expect(classifyConductorPr(pr({headRefName: head}), 'landed').reason)
+      .toContain('conductor run PR whose run landed')
+    expect(classifyConductorPr(pr({headRefName: head}), 'live').action).toBe('keep')
+    expect(classifyConductorPr(pr({headRefName: head}), 'unknown').action).toBe('report')
+    // ci-* keeps its existing vocabulary.
+    expect(classifyConductorPr(pr(), 'landed').reason)
+      .toContain('conductor validation PR whose run landed')
   })
 
   it('conductor head whose run landed: close (residue)', () => {

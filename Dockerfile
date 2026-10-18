@@ -18,6 +18,9 @@ ARG NODE_IMAGE=node:24-trixie-slim@sha256:7f486cabe892bff8fef04c0f7da8dba84a560b
 # rm-1483 (#641 residual, run 9511a1b5): release-channel tag baked into the
 # SPA at build time. release.yaml passes the calver tag as a build-arg; 'dev'
 # keeps local builds from showing a bogus version in the footer.
+# Bakes into the client bundle via ENV VITE_DASHBOARD_VERSION below — rendered
+# by web/src/shell/AppShell.tsx; operator docs: docs/runbooks/gateway-access.md
+# (rm-1977).
 ARG DASHBOARD_VERSION=dev
 
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS builder

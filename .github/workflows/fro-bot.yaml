@@ -259,6 +259,17 @@ jobs:
   fro-bot:
     name: Fro Bot
     runs-on: ubuntu-latest
+    # 2026-10-18: secret-presence gate re-landed after the 2026.10.43 adoption
+    # merge (c51597ad) silently stripped it — the fork carries no FRO_BOT_PAT and
+    # the daily cron must green-skip instead of running agent steps on an empty
+    # token (rm-252 rider mandate, cycle:6 batch B1). Gate lives as job-level env
+    # + per-step if: neither the secrets nor env context is available in the
+    # job-level if (actionlint rejects that placement), mirroring release.yaml's
+    # HAS_RELEASE_APP contract. HARDENING-SURVIVAL MARKER: every future absorb
+    # must grep-count HAS_FRO_BOT_PAT before and after the merge — fewer than
+    # 5 occurrences means the gate was stripped again.
+    env:
+      HAS_FRO_BOT_PAT: ${{ secrets.FRO_BOT_PAT != '' }}
     if: >-
       (
         github.event.pull_request == null ||
@@ -288,7 +299,15 @@ jobs:
         )
       )
     steps:
+      - name: ⚠️ Fro Bot skipped (FRO_BOT_PAT not configured)
+        if: github.event_name == 'schedule' && env.HAS_FRO_BOT_PAT != 'true'
+        run: >-
+          echo "::warning title=Fro Bot skipped::FRO_BOT_PAT is not configured in
+          this repository — skipping the scheduled run. Provision the secret to
+          restore the daily cron (see AGENTS.md's Fro Bot workflow state note)."
+
       - name: Checkout repository
+        if: github.event_name != 'schedule' || env.HAS_FRO_BOT_PAT == 'true'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
@@ -306,9 +325,11 @@ jobs:
           token: ${{ secrets.FRO_BOT_PAT }}
 
       - name: 📦 Setup
+        if: github.event_name != 'schedule' || env.HAS_FRO_BOT_PAT == 'true'
         uses: ./.github/actions/setup
 
       - name: Run Fro Bot
+        if: github.event_name != 'schedule' || env.HAS_FRO_BOT_PAT == 'true'
         id: fro-bot-agent
         uses: fro-bot/agent@7d273ac643c8f9c0dc8615222677693dc337adef # v0.122.3
         env:

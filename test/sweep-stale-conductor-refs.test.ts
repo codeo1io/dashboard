@@ -1,9 +1,10 @@
 /**
- * rm-742 — stale conductor/* validation-ref sweep selection (fixture unit
+ * rm-742 + rm-1975 — stale conductor/* validation-ref sweep selection (fixture unit
  * tests). Pins the pure selection/parsing core of
  * scripts/sweep-stale-conductor-refs.ts:
- * 1. namespace containment (only conductor/ci-* and conductor/ci-base-* —
- *    never main, never conductor branches outside the ephemeral namespaces);
+ * 1. namespace containment (only conductor/ci-*, conductor/ci-base-* and
+ *    conductor/run-* — never main, never conductor branches outside the
+ *    ephemeral namespaces);
  * 2. the age cutoff (stale = newest commit older than --cutoff-days);
  * 3. --exclude globs protecting named refs from deletion;
  * 4. for-each-ref output parsing (temp-namespace → origin-ref mapping);
@@ -32,18 +33,21 @@ const ref = (name: string, daysAgo: number, email = 'conductor@example.com'): Co
 })
 
 describe('rm-742: namespace containment', () => {
-  it('accepts both ephemeral validation namespaces', () => {
+  it('accepts all ephemeral namespaces (validation + run worktrees)', () => {
     expect(isInSweepNamespace('refs/heads/conductor/ci-20261001-abc')).toBe(true)
     expect(isInSweepNamespace('refs/heads/conductor/ci-base-20261001-abc')).toBe(true)
+    // rm-1975: run-worktree refs are mergeless-landing residue, same sweep.
+    expect(isInSweepNamespace('refs/heads/conductor/run-0790be13ff884b6d8cb2c11706df1e44-main')).toBe(true)
   })
 
   it('rejects everything else — main, other conductor branches, tags', () => {
     expect(isInSweepNamespace('refs/heads/main')).toBe(false)
-    expect(isInSweepNamespace('refs/heads/conductor/run-x')).toBe(false)
     expect(isInSweepNamespace('refs/heads/renovate/pnpm-12')).toBe(false)
     expect(isInSweepNamespace('refs/tags/2026.08.15')).toBe(false)
-    // Near-miss: the ci- prefix must be exact, not merely contained.
+    // Near-miss: the ci-/run- prefixes must be exact, not merely contained.
     expect(isInSweepNamespace('refs/heads/conductor/x-ci-thing')).toBe(false)
+    expect(isInSweepNamespace('refs/heads/conductor/runtime-x')).toBe(false)
+    expect(isInSweepNamespace('refs/heads/conductor/runner-2')).toBe(false)
   })
 
   it('selectStaleRefs never returns an out-of-namespace ref however old', () => {
@@ -53,6 +57,16 @@ describe('rm-742: namespace containment', () => {
       14,
     )
     expect(candidates.map(candidate => candidate.ref)).toEqual(['refs/heads/conductor/ci-old'])
+  })
+
+  it('rm-1975: a stale run-worktree ref is a candidate like any other', () => {
+    const candidates = selectStaleRefs(
+      [ref('refs/heads/conductor/run-0790be13ff884b6d8cb2c11706df1e44-main', 20), ref('refs/heads/conductor/run-0dc68dbef3194619b5e7ca9592090b35', 2)],
+      NOW,
+      14,
+    )
+    expect(candidates.map(candidate => candidate.ref))
+      .toEqual(['refs/heads/conductor/run-0790be13ff884b6d8cb2c11706df1e44-main'])
   })
 })
 

@@ -116,6 +116,24 @@ client address (`X-Forwarded-For`) instead of the proxy's own address.
 
 ---
 
+## Dashboard version (`DASHBOARD_VERSION`, rm-1977)
+
+The client footer's `v…` badge is baked at image build time, not discovered at
+runtime: `Dockerfile` declares `ARG DASHBOARD_VERSION=dev` (:21), redeclares it
+in the web build stage (:26), and exports it as `ENV VITE_DASHBOARD_VERSION=`
+(:43), which `pnpm build:web` inlines into the bundle and
+`web/src/shell/AppShell.tsx:163` renders in the shell footer (defaulting to
+`dev` when unset). Consequences for operators:
+
+- A footer reading `dev` means the image was built without the override — not
+  that the deployed code is a dev build. Pass the CalVer explicitly when a
+  versioned image matters: `docker build --build-arg DASHBOARD_VERSION=2026.10.18 …`
+- Changing the badge requires REBUILDING the image (the value is compiled into
+  the client bundle); restarting the container alone never changes it.
+- `test/runbook-dashboard-version-guard.test.ts` pins that this section keeps
+  documenting the ARG — if that guard goes red after a Dockerfile edit, this
+  runbook and the Dockerfile pointer comment drifted apart.
+
 ## Traps
 
 **Wrong remote user.** `ssh "$GATEWAY_HOST"` uses your local username. With several keys in your
