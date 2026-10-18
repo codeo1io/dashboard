@@ -25,6 +25,17 @@
 # ref can never undercount the window the way the 2026-10-14 run did
 # (2 recorded vs 4 real). This workflow stays the scheduled alert; the
 # script is the truth source for absorb planning.
+#
+# Absorb-parity companion (rm-1972, 2026-10-18): scripts/absorb-verify.ts
+# gates every absorbed window for dependency drops — for each dependency
+# the window moved (manifest specifier OR lockfile resolution), the landed
+# tip must carry both the specifier and the resolution the window landed,
+# and upstream-added dependencies must exist here at all. Born from the
+# PR #644 silent drop: 8d867b9b is an ancestor of main while the fork tip
+# resolved @hono/node-server 2.1.3 for days after the window closed.
+# REQUIRED ABSORB STEP (rm-252 convention): run it in the absorb worktree
+# before folding and again against the landed tip in the integrate
+# evidence, recording its probe lines there.
 name: Upstream drift check
 
 on:
