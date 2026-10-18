@@ -1,11 +1,18 @@
 /**
- * rm-183 — XFF-collapse detector (log-once) for the default limiter topology.
+ * rm-183 / rm-1984 — XFF-collapse detector (quorum-armed, log-once) for the
+ * default limiter topology.
  *
- * Unit level (observeXffCollapse): the detector fires exactly ONCE per process
- * on the first observation of two distinct X-Forwarded-For fingerprints against
- * the same direct address; its bookkeeping is bounded (one sample per tracked
- * address, capped address table, truncated fingerprints); blank XFF values and
- * XFF differences beyond the sample truncation window never fire it.
+ * Unit level (observeXffCollapse): the detector spends its one warning only
+ * on a QUORUM of distinct X-Forwarded-For fingerprints — three distinct
+ * values at ONE direct address (same-address), or a pair of distinct values
+ * at each of TWO direct addresses (cross-address). Adversarial core (rm-1984):
+ * one direct client sits at one direct address, so a single address forging
+ * two distinct XFF values — the pre-rm-1984 trip wire, burnable by any
+ * unauthenticated client — arms nothing; XFF remains client-forgeable end to
+ * end (RFC 7239 section 8.1), which is why the warning text and the runbook
+ * both demand out-of-band corroboration. Bookkeeping stays bounded (capped
+ * per-address fingerprint sets, capped address table, truncated samples);
+ * blank XFF values and differences beyond the truncation window never fire.
  *
  * Middleware level: the detector is wired ONLY into the default
  * (rateLimitTrustedProxy=off) path of the limiter middleware, never into
@@ -30,7 +37,7 @@ const PROXY_A = '10.0.0.7'
 const CLIENT_1 = '203.0.113.9'
 const CLIENT_2 = '198.51.100.7'
 
-describe('XFF-collapse detector, unit level (rm-183)', () => {
+describe('XFF-collapse detector, unit level (rm-183 quorum-armed by rm-1984)', () => {
   beforeEach(() => {
     resetXffCollapseForTesting()
   })
@@ -46,38 +53,65 @@ describe('XFF-collapse detector, unit level (rm-183)', () => {
     expect(xffCollapseTrackedKeys()).toBe(1)
   })
 
-  it('two distinct XFF values at one direct address fire EXACTLY ONCE per process', () => {
+  it('ADVERSARIAL (rm-1984): a single address forging two distinct XFF values never fires — the pre-rm-1984 trip wire is dead', () => {
+    // One client, one direct address, TWO forged fingerprints (including
+    // sustained oscillation between them): under the pre-rm-1984 detector
+    // this burned the once-per-process warning; the quorum leaves it inert.
     expect(observeXffCollapse(PROXY_A, CLIENT_1)).toBeNull()
-    const detected = observeXffCollapse(PROXY_A, CLIENT_2)
+    expect(observeXffCollapse(PROXY_A, CLIENT_2)).toBeNull()
+    expect(observeXffCollapse(PROXY_A, CLIENT_1)).toBeNull()
+    expect(observeXffCollapse(PROXY_A, CLIENT_2)).toBeNull()
+    expect(observeXffCollapse(PROXY_A, CLIENT_1)).toBeNull()
+    expect(xffCollapseTrackedKeys()).toBe(1)
+  })
+
+  it('same-address quorum: a THIRD distinct fingerprint at one direct address fires EXACTLY ONCE per process', () => {
+    expect(observeXffCollapse(PROXY_A, CLIENT_1)).toBeNull()
+    expect(observeXffCollapse(PROXY_A, CLIENT_2)).toBeNull() // pair alone arms nothing
+    const detected = observeXffCollapse(PROXY_A, '192.0.2.50')
     expect(detected).not.toBeNull()
     expect(detected?.directAddress).toBe(PROXY_A)
     expect(detected?.firstXff).toBe(CLIENT_1)
-    expect(detected?.secondXff).toBe(CLIENT_2)
+    expect(detected?.secondXff).toBe('192.0.2.50')
+    expect(detected?.trigger).toBe('same-address')
     // Log-once: EVERYTHING after the first detection is null — same address
     // with further values, other addresses collapsing, repeat observations.
-    expect(observeXffCollapse(PROXY_A, '192.0.2.50')).toBeNull()
-    expect(observeXffCollapse('10.0.0.8', '192.0.2.51')).toBeNull()
+    expect(observeXffCollapse(PROXY_A, '192.0.2.51')).toBeNull()
     expect(observeXffCollapse('10.0.0.8', '192.0.2.52')).toBeNull()
+    expect(observeXffCollapse('10.0.0.8', '192.0.2.53')).toBeNull()
+    expect(observeXffCollapse('10.0.0.8', '192.0.2.54')).toBeNull()
     expect(observeXffCollapse(PROXY_A, CLIENT_2)).toBeNull()
     expect(xffCollapseTrackedKeys()).toBe(0)
   })
 
-  it('distinct direct addresses each keep their own first sample — no cross-address firing', () => {
+  it('cross-address quorum: a fingerprint PAIR at each of two distinct direct addresses fires; one paired address alone does not', () => {
+    // Address one shows a pair — a single client could be sitting there
+    // forging exactly this, so it arms nothing.
     expect(observeXffCollapse('10.0.0.1', CLIENT_1)).toBeNull()
-    expect(observeXffCollapse('10.0.0.2', CLIENT_2)).toBeNull()
-    expect(observeXffCollapse('10.0.0.3', '192.0.2.10')).toBeNull()
-    expect(xffCollapseTrackedKeys()).toBe(3)
-    // Each address still only collapses on ITS OWN second distinct value.
-    expect(observeXffCollapse('10.0.0.2', CLIENT_1)).not.toBeNull()
     expect(observeXffCollapse('10.0.0.1', CLIENT_2)).toBeNull()
+    expect(xffCollapseTrackedKeys()).toBe(1)
+    // A SECOND address reaching its own pair is corroboration a single
+    // client cannot produce — this fires (rm-1984 cross-address quorum).
+    expect(observeXffCollapse('10.0.0.2', '192.0.2.10')).toBeNull()
+    const detected = observeXffCollapse('10.0.0.2', '192.0.2.11')
+    expect(detected).not.toBeNull()
+    expect(detected?.directAddress).toBe('10.0.0.2')
+    expect(detected?.firstXff).toBe('192.0.2.10')
+    expect(detected?.secondXff).toBe('192.0.2.11')
+    expect(detected?.trigger).toBe('cross-address')
+    // Log-once: the detector is spent for the process.
+    expect(observeXffCollapse('10.0.0.3', '192.0.2.20')).toBeNull()
+    expect(observeXffCollapse('10.0.0.3', '192.0.2.21')).toBeNull()
+    expect(xffCollapseTrackedKeys()).toBe(0)
   })
 
-  it('an appending chain still fires: the forwarded value varies with the real client', () => {
+  it('an appending chain still fires at the quorum: the forwarded value varies with the real client', () => {
     // Behind an appending proxy the header is `client, proxy, ...` — the
     // full-string fingerprint still differs per client, which is the
     // misconfiguration the detector exists to surface.
     expect(observeXffCollapse(PROXY_A, `${CLIENT_1}, 10.0.0.7`)).toBeNull()
-    expect(observeXffCollapse(PROXY_A, `${CLIENT_2}, 10.0.0.7`)).not.toBeNull()
+    expect(observeXffCollapse(PROXY_A, `${CLIENT_2}, 10.0.0.7`)).toBeNull()
+    expect(observeXffCollapse(PROXY_A, '192.0.2.70, 10.0.0.7')).not.toBeNull()
   })
 
   it('blank/whitespace-only XFF never fires and never tracks', () => {
@@ -92,6 +126,18 @@ describe('XFF-collapse detector, unit level (rm-183)', () => {
     expect(observeXffCollapse(PROXY_A, long1)).toBeNull()
     // Differ only past the truncation window → same fingerprint → no fire.
     expect(observeXffCollapse(PROXY_A, long2)).toBeNull()
+  })
+
+  it('bounded per address: a forged pair oscillating forever arms nothing', () => {
+    // A pair at one address sits below the same-address quorum — further
+    // repeats and oscillation between the SAME two fingerprints cannot arm
+    // anything, so the per-address fingerprint set stays at two samples.
+    expect(observeXffCollapse(PROXY_A, CLIENT_1)).toBeNull()
+    expect(observeXffCollapse(PROXY_A, CLIENT_2)).toBeNull()
+    for (let i = 0; i < 5; i++) {
+      expect(observeXffCollapse(PROXY_A, i % 2 === 0 ? CLIENT_1 : CLIENT_2)).toBeNull()
+    }
+    expect(xffCollapseTrackedKeys()).toBe(1)
   })
 
   it('the tracked-address table is bounded — untracked addresses cannot fire the detector', () => {
@@ -175,25 +221,45 @@ describe('XFF-collapse detector, middleware wiring (rm-183)', () => {
   const collapseWarnings = (): [string, LogContext | undefined][] =>
     warningCalls.filter(([message]) => message.includes('Rate limiter client collapse'))
 
-  it('default topology: two distinct XFF values → exactly one collapse warning, requests still allowed', async () => {
+  it('ADVERSARIAL (rm-1984): default topology, two distinct XFF values → NO warning, requests still allowed', async () => {
+    const app = await buildTestApp()
+    const first = await app.request('/api/healthz', {headers: {'x-forwarded-for': CLIENT_1}})
+    expect(first.status).toBe(200)
+    const second = await app.request('/api/healthz', {headers: {'x-forwarded-for': CLIENT_2}})
+    expect(second.status).toBe(200)
+    // The pre-rm-1984 detector burned its only warning here; the quorum
+    // holds the warning back for corroborated evidence.
+    expect(collapseWarnings()).toHaveLength(0)
+  })
+
+  it('default topology: three distinct XFF values (same-address quorum) → exactly one collapse warning, requests still allowed', async () => {
     const app = await buildTestApp()
     const first = await app.request('/api/healthz', {headers: {'x-forwarded-for': CLIENT_1}})
     expect(first.status).toBe(200)
     const second = await app.request('/api/healthz', {headers: {'x-forwarded-for': CLIENT_2}})
     expect(second.status).toBe(200) // collapse signals misconfiguration, not client fault
+    expect(collapseWarnings()).toHaveLength(0)
+    const third = await app.request('/api/healthz', {headers: {'x-forwarded-for': '192.0.2.99'}})
+    expect(third.status).toBe(200)
 
     const collapses = collapseWarnings()
     expect(collapses).toHaveLength(1)
-    const payload = (collapses[0]?.[1] ?? {}) as {directAddress?: string; firstXff?: string; secondXff?: string}
+    const payload = (collapses[0]?.[1] ?? {}) as {
+      directAddress?: string
+      firstXff?: string
+      secondXff?: string
+      trigger?: string
+    }
     expect(payload.firstXff).toBe(CLIENT_1)
-    expect(payload.secondXff).toBe(CLIENT_2)
+    expect(payload.secondXff).toBe('192.0.2.99')
+    expect(payload.trigger).toBe('same-address')
     // In the test context getConnInfo throws, so the direct address is the
     // shared fallback — still a single shared bucket, which is the point.
     expect(payload.directAddress).toBe('unknown')
 
-    // Log-once at the middleware too: a third distinct client re-warns nothing.
-    const third = await app.request('/api/healthz', {headers: {'x-forwarded-for': '192.0.2.99'}})
-    expect(third.status).toBe(200)
+    // Log-once at the middleware too: a fourth distinct client re-warns nothing.
+    const fourth = await app.request('/api/healthz', {headers: {'x-forwarded-for': '192.0.2.100'}})
+    expect(fourth.status).toBe(200)
     expect(collapseWarnings()).toHaveLength(1)
   })
 

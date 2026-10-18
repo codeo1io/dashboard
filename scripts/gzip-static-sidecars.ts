@@ -21,8 +21,19 @@
 // Zero-dependency by design (node:fs/node:path/node:zlib + process only) so it
 // runs in any stage that has Node — including the Docker builder stage, which
 // is what makes the sidecars ship inside the image.
+//
+// rm-1986 (repository-maintenance cycle 3, run b7188a701a7a): the generator
+// also keeps the sidecar set TRUSTWORTHY across incremental builds —
+// serveStatic({precompressed: true}) PREFERS a `.gz` sibling over newer
+// identity bytes under Accept-Encoding: gzip, so a sidecar left behind by an
+// older build would shadow fresh content. Two invariants (nginx's gzip_static
+// docs say the same: keep the compressed and uncompressed files in sync):
+// - not-worth-compressing file with a pre-existing sidecar → the sidecar is
+//   PRUNED (the previous build's bytes are stale by construction);
+// - sidecar whose identity sibling is gone (deleted/renamed source) → swept
+//   as an orphan before the compress pass.
 
-import {readdirSync, readFileSync, statSync, writeFileSync} from 'node:fs'
+import {existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync} from 'node:fs'
 import {join} from 'node:path'
 import process from 'node:process'
 import {gzipSync} from 'node:zlib'
@@ -74,7 +85,17 @@ function main(): number {
     return 1
   }
 
-  const stats = {files: 0, filesCompressed: 0, originalBytes: 0, sidecarBytes: 0}
+  const stats = {files: 0, filesCompressed: 0, originalBytes: 0, sidecarBytes: 0, prunedStale: 0, sweptOrphans: 0}
+  // rm-1986 — orphan sweep first: a `.gz` with no identity sibling is residue
+  // from a deleted or renamed source. It shadows nothing, but it ships bytes
+  // and can outlive many builds, so remove it before the compress pass.
+  for (const file of walk(root)) {
+    if (!file.endsWith('.gz')) continue
+    if (!existsSync(file.slice(0, -'.gz'.length))) {
+      rmSync(file, {force: true})
+      stats.sweptOrphans++
+    }
+  }
   for (const file of walk(root)) {
     if (!isCompressible(file)) continue
     stats.files++
@@ -82,7 +103,16 @@ function main(): number {
     const compressed = gzipSync(original, {level: GZIP_LEVEL})
     // Skip a sidecar that would not shrink the transfer (tiny files can
     // outgrow their gzip framing) — identity fallback serves those fine.
-    if (compressed.byteLength >= original.byteLength) continue
+    // rm-1986: a sidecar from an OLDER build must not survive this skip —
+    // precompressed serving prefers it over these fresher identity bytes.
+    if (compressed.byteLength >= original.byteLength) {
+      const sidecar = `${file}.gz`
+      if (existsSync(sidecar)) {
+        rmSync(sidecar, {force: true})
+        stats.prunedStale++
+      }
+      continue
+    }
     writeFileSync(`${file}.gz`, compressed)
     stats.filesCompressed++
     stats.originalBytes += original.byteLength
@@ -93,7 +123,8 @@ function main(): number {
     stats.originalBytes > 0 ? ((1 - stats.sidecarBytes / stats.originalBytes) * 100).toFixed(1) : '0.0'
   console.log(
     `gzip-static-sidecars: ${stats.filesCompressed}/${stats.files} compressible files in ${root}` +
-    ` (${stats.originalBytes} → ${stats.sidecarBytes} bytes, -${ratio}%)`,
+    ` (${stats.originalBytes} → ${stats.sidecarBytes} bytes, -${ratio}%)` +
+    `, pruned ${stats.prunedStale} stale sidecar(s), swept ${stats.sweptOrphans} orphan(s)`,
   )
   return 0
 }
