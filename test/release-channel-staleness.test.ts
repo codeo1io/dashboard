@@ -33,24 +33,68 @@ const tags = (entries: [name: string, dateUnix: number][]): CalverTagInfo[] =>
 
 describe('rm-740: calver tag parsing and newest selection', () => {
   it('parses this repo calver shapes and rejects non-calver tags', () => {
-    expect(parseCalverTag('2026.08.9')).toEqual({year: 2026, month: 8, day: 9})
-    expect(parseCalverTag('2026.10.28')).toEqual({year: 2026, month: 10, day: 28})
+    expect(parseCalverTag('2026.08.9')).toEqual({year: 2026, month: 8, patch: 9})
+    expect(parseCalverTag('2026.10.28')).toEqual({year: 2026, month: 10, patch: 28})
     expect(parseCalverTag('v1.2.3')).toBeNull()
     expect(parseCalverTag('2026.13.1')).toBeNull() // month out of range
-    expect(parseCalverTag('2026.08.32')).toBeNull() // day out of range
+    // rm-740 amendment (2026-10-18): the third component is the minter's
+    // per-month PATCH counter (scripts/compute-release-tag.ts), not a day —
+    // patch-shaped tags above .31 MUST parse. Review fix (2026-10-19): the
+    // minter's grammar is ANY non-negative integer (it validates
+    // ^[0-9]+$ and starts a fresh month at 0), so the digit bound and the
+    // patch >= 1 floor are gone — a .0-only or 4+-digit month must not go
+    // invisible to newest-selection.
+    expect(parseCalverTag('2026.08.32')).toEqual({year: 2026, month: 8, patch: 32})
+    expect(parseCalverTag('2026.10.47')).toEqual({year: 2026, month: 10, patch: 47})
+    expect(parseCalverTag('2026.08.0')).toEqual({year: 2026, month: 8, patch: 0}) // fresh-month start — the minter emits it (2026.10.0 observed live)
+    expect(parseCalverTag('2026.10.1234')).toEqual({year: 2026, month: 10, patch: 1234}) // no digit bound
     expect(parseCalverTag('2026.8')).toBeNull() // not the three-part shape
   })
 
   it('selects the newest tag NUMERICALLY — 2026.08.10 beats 2026.08.9 despite lexical order', () => {
     // Refname STRING sort puts '2026.08.9' after '2026.08.10' ('9' > '1') — a
-    // lexical sort would wrongly crown 2026.08.9. Numeric day compare crowns
-    // 2026.08.10 (August 10 is newer than August 9).
+    // lexical sort would wrongly crown 2026.08.9. Numeric patch compare crowns
+    // 2026.08.10 (patch 10 is newer than patch 9).
     const set = tags([
       ['2026.08.10', 1],
       ['2026.08.9', 2],
       ['2026.07.31', 3],
     ])
     expect(selectNewestCalverTag(set)?.name).toBe('2026.08.10')
+  })
+
+  it('newest selection sees patch-shaped tags above .31 (rm-740 amendment regression)', () => {
+    // Live-observed 2026-10-18: the checker reported newest 2026.10.31 while
+    // the tree held 2026.10.47 — the old day ≤ 31 cap made every tag above
+    // .31 invisible to newest-selection, arming a silent dormancy blindness.
+    const set = tags([
+      ['2026.10.31', 1],
+      ['2026.10.47', 2],
+      ['2026.10.5', 3],
+    ])
+    expect(selectNewestCalverTag(set)?.name).toBe('2026.10.47')
+  })
+
+  it('a month whose newest tag is the fresh-month .0 still wins newest-selection (review-fix regression)', () => {
+    // Review fix 2026-10-19: the interim patch >= 1 floor made a .0-only
+    // month read as tagless — newest-selection would crown an OLDER month
+    // (or throw no-calver-tags) while the channel had tagged THIS month.
+    // The minter starts every fresh month at 0.
+    const set = tags([
+      ['2026.09.7', 1],
+      ['2026.10.0', 2],
+    ])
+    expect(selectNewestCalverTag(set)?.name).toBe('2026.10.0')
+  })
+
+  it('4+-digit patch counters order numerically, not lexically', () => {
+    // '2026.10.999' sorts after '2026.10.1234' as a string ('9' > '1'); the
+    // numeric patch compare must crown the 4-digit counter.
+    const set = tags([
+      ['2026.10.999', 1],
+      ['2026.10.1234', 2],
+    ])
+    expect(selectNewestCalverTag(set)?.name).toBe('2026.10.1234')
   })
 
   it('multi-digit days across the series still select numerically (the CI-observed shape)', () => {
