@@ -48,4 +48,10 @@ export const HARD_RELEASE_ROOT_TSCONFIG_GLOB = 'tsconfig*.json'
 export const WORKFLOW_TRIGGER_ONLY_PATHS: readonly string[] = [
   'package.json',
   'pnpm-lock.yaml',
+  // Mixed-tree companion cure (PR #898 class, 2026-10-18): origin/main's
+  // release.yaml on.push.paths gained this entry after this batch's base;
+  // the validation tree pairs main's workflows with this tree's lists, so
+  // it must be trigger-only here to keep the PR-safety leg green. At
+  // integrate, main's HARD pairing wins (bidirectional sync note there).
+  'scripts/gzip-static-sidecars.ts',
 ]
