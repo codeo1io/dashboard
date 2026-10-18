@@ -16,19 +16,29 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  # Mint-family match (AGENTS.md invariant 1): the aggregator's installation
-  # tokens carry pull_requests/checks/issues/contents/metadata read, and the
-  # query reads statusCheckRollup (checks family) and checkWorkflowRuns
-  # (actions family) — so the canary must hold the same read-only scope
-  # profile, not a narrower one, to verify the production contract. Workflow
-  # scope names are hyphenated and `metadata` is not a GITHUB_TOKEN scope
-  # (it is an installation-token mint-family permission), so the closest
-  # schema-valid set is used; all read-only.
+  # Truthed 2026-10-18 (rm-1973, run 743f2e47 review-fix) field-by-field
+  # against BOTH registered templates in src/github/query-registry.ts:
+  #   statusCheckRollup / checkSuites / checkRuns -> checks: read
+  #   checkSuites.nodes.workflowRun             -> actions: read (workflow-run reads)
+  #   pullRequests                              -> pull-requests: read
+  #   issues                                    -> issues: read
+  #   vulnerabilityAlerts (primary template     -> security-events: read — now
+  #   only; the NO_ALERTS fallback omits it)       explicitly granted so the
+  #                                                canary can prove the FULL
+  #                                                production template, not
+  #                                                merely the fallback
+  #   repository / defaultBranchRef             -> contents: read
+  # The old comment claimed a `checkWorkflowRuns` field that no template
+  # selects and omitted the alerts scope the primary template does select
+  # (run-template parity gap, rm-1973). Workflow scope names are hyphenated
+  # and `metadata` is not a GITHUB_TOKEN scope (it is an installation-token
+  # mint-family permission), so no metadata line appears; all read-only.
   contents: read
   checks: read
   actions: read
   pull-requests: read
   issues: read
+  security-events: read
 
 jobs:
   canary:

@@ -19,8 +19,11 @@
  * required check, never a write) and dispatchable on demand.
  */
 import {createHash} from 'node:crypto'
+import {realpathSync} from 'node:fs'
 import process from 'node:process'
+import {fileURLToPath} from 'node:url'
 
+import {isVulnerabilityAlertsPermissionError} from '../src/github/aggregator.ts'
 import {REPO_STATUS_QUERY_REGISTRY} from '../src/github/query-registry.ts'
 
 const rawRepository = process.env.GITHUB_REPOSITORY ?? ''
@@ -30,6 +33,37 @@ const rawRepository = process.env.GITHUB_REPOSITORY ?? ''
 const repositoryMatches = /^([\w.-]+)\/([\w.-]+)$/.exec(rawRepository)
 const owner = repositoryMatches?.[1] ?? 'codeo1io'
 const name = repositoryMatches?.[2] ?? 'dashboard'
+
+/**
+ * Best-effort message extraction for a raw GraphQL `errors[]` entry: they
+ * arrive as plain objects (no Error class), unlike the Octokit
+ * GraphqlResponseError the aggregator's classifier was built around — so
+ * wrap them in an Error before reusing that classifier.
+ */
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'object' && error !== null && 'message' in error && typeof (error).message === 'string') {
+    return (error as {message: string}).message
+  }
+  return String(error)
+}
+
+/**
+ * Classify a template run's GraphQL errors (ledger rm-1973, cycle-18 batch
+ * run 743f2e47 — the canary credential-parity half). 'scope-limited' means
+ * EVERY error is a vulnerability-alerts permission denial — the exact class
+ * the aggregator's own classifier recognizes (rm-170/rm-168) and the exact
+ * reason the NO_ALERTS fallback template exists (rm-171): the template is
+ * fine, the credential just lacks the optional alerts scope, and the weekly
+ * canary must not go red over it. Anything else — or an empty error set,
+ * which is not evidence of a scope limit — is 'query-drift', the red
+ * outcome that means the shipped template and the live schema disagree.
+ * Exported so it can be unit-tested offline (test/graphql-canary.test.ts).
+ */
+export function classifyGraphqlErrors(errors: readonly unknown[]): 'scope-limited' | 'query-drift' {
+  if (errors.length === 0) return 'query-drift'
+  return errors.every(error => isVulnerabilityAlertsPermissionError(new Error(errorMessage(error)))) ? 'scope-limited' : 'query-drift'
+}
 
 async function runTemplate(token: string, entry: {readonly name: string; readonly query: string}): Promise<void> {
   const query = entry.query
@@ -63,6 +97,15 @@ async function runTemplate(token: string, entry: {readonly name: string; readonl
     process.exit(1)
   }
   if (errors && errors.length > 0) {
+    const classification = classifyGraphqlErrors(errors)
+    if (classification === 'scope-limited') {
+      // rm-1973: every error is a vulnerability-alerts permission denial —
+      // the aggregator serves these targets via the NO_ALERTS fallback
+      // (rm-171), so the primary template itself is proven sound; the
+      // credential lacks the optional alerts scope. WARN, not a page.
+      console.warn(`canary: WARN ${entry.name} scope-limited — every GraphQL error is a vulnerability-alerts permission denial (the aggregator would fall back to NO_ALERTS); not a template defect (rm-1973)`)
+      return
+    }
     console.error(`canary: ${entry.name} GraphQL errors — the real API would reject this query today (rm-177 class):`)
     console.error(JSON.stringify(errors, null, 2))
     process.exit(1)
@@ -96,10 +139,34 @@ async function main(): Promise<void> {
     console.error('GITHUB_TOKEN is required (read-only metadata is sufficient for a public repo)')
     process.exit(1)
   }
+  // rm-1973 registry-emptiness failsafe: an empty registry would loop zero
+  // times and report success without proving anything.
+  if (REPO_STATUS_QUERY_REGISTRY.length === 0) {
+    console.error('canary: FAIL — REPO_STATUS_QUERY_REGISTRY is empty; no template was proven against the live API (failsafe, rm-1973)')
+    process.exit(1)
+  }
   console.log(`canary: target ${owner}/${name} — ${REPO_STATUS_QUERY_REGISTRY.length} registered template(s)`)
   for (const entry of REPO_STATUS_QUERY_REGISTRY) {
     await runTemplate(token, entry)
   }
 }
 
-await main()
+/**
+ * Direct-invocation guard (rm-1973; the round's P3-2 cure): importing this
+ * module — e.g. from a unit test — must NOT fire the live run (which would
+ * demand GITHUB_TOKEN and process.exit on it). Only a direct
+ * `node scripts/graphql-canary.ts` invocation runs main().
+ */
+function isDirectInvocation(): boolean {
+  const argvPath = process.argv[1]
+  if (argvPath === undefined) return false
+  try {
+    return realpathSync(argvPath) === realpathSync(fileURLToPath(import.meta.url))
+  } catch {
+    return false
+  }
+}
+
+if (isDirectInvocation()) {
+  await main()
+}

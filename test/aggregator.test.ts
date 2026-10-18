@@ -81,6 +81,7 @@ function makeGraphqlResponse(overrides: {
   rollupState?: string
   failingChecks?: number
   checkSuites?: {
+    updatedAt?: string | null
     workflowRun?: {displayTitle: string | null; runAttempt: number} | null
     checkRuns: {totalCount: number; nodes?: {name: string | null; detailsUrl: string | null}[] | null}
   }[]
@@ -3117,5 +3118,78 @@ describe('aggregator — rm-1447 platform status annotation', () => {
     expect(snap.staleBanner).toBe(true)
     expect(snap.repos).toEqual([])
     expect(snap.platformStatus).toEqual(FAKE_STATUS)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Scorecard posture columns (rm-1974, cycle-18 batch run 743f2e47): the
+// per-repo OpenSSF Scorecard column is ABSENT-tolerant end to end — absent
+// dep => column omitted entirely (hermetic default), per-repo failure =>
+// column omitted for that repo only, success => column attached verbatim.
+// ---------------------------------------------------------------------------
+
+describe('aggregator — scorecard posture columns (rm-1974)', () => {
+  it('attaches the scorecard column to repos when the fetch dep is provided', async () => {
+    const repo = makeRepo({node_id: 'NODE_SC1', owner: 'org', name: 'repo-sc1'})
+    const scorecard = {score: 7.7, analyzedAt: '2026-10-17T22:25:51Z', checks: [{name: 'Branch-Protection', score: -1}]}
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_SC1', owner: 'org', name: 'repo-sc1'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+      fetchScorecard: vi.fn().mockResolvedValue(scorecard),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos).toHaveLength(1)
+    expect(snap.repos[0]?.scorecard).toEqual(scorecard)
+    expect(deps.fetchScorecard).toHaveBeenCalledWith('org', 'repo-sc1')
+  })
+
+  it('omits the scorecard column entirely when the dep is absent (hermetic default)', async () => {
+    const repo = makeRepo({node_id: 'NODE_SC2', owner: 'org', name: 'repo-sc2'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_SC2', owner: 'org', name: 'repo-sc2'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos).toHaveLength(1)
+    expect('scorecard' in (snap.repos[0] ?? {})).toBe(false)
+  })
+
+  it('omits the column per repo when the fetch resolves undefined (fail-soft, per repo)', async () => {
+    const repoA = makeRepo({node_id: 'NODE_SC3', owner: 'org', name: 'repo-sc3'})
+    const repoB = makeRepo({node_id: 'NODE_SC4', owner: 'org', name: 'repo-sc4'})
+    const scorecardB = {score: 5.5, analyzedAt: '2026-10-17T22:25:51Z', checks: []}
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repoA, repoB])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [
+          makePublicRepo({node_id: 'NODE_SC3', owner: 'org', name: 'repo-sc3'}),
+          makePublicRepo({node_id: 'NODE_SC4', owner: 'org', name: 'repo-sc4'}),
+        ],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({rollupState: 'SUCCESS'})),
+      fetchScorecard: vi.fn(async (_owner: string, name: string) => (name === 'repo-sc4' ? scorecardB : undefined)),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    const byName = new Map(snap.repos.map(row => [row.name, row]))
+    expect('scorecard' in (byName.get('repo-sc3') ?? {})).toBe(false)
+    expect(byName.get('repo-sc4')?.scorecard).toEqual(scorecardB)
   })
 })

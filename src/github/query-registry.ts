@@ -24,6 +24,11 @@ export const REPO_STATUS_QUERY = `
             # GraphQL max page size; repos with >100 suites still understate failingChecks (documented ceiling, rm-110)
             checkSuites(first: 100) {
               nodes {
+                # rm-192 review-fix (2026-10-18): the API returns this page in
+                # no newest-first order (is_desc false, proven live 2026-10-17),
+                # so the field below is selected for client-side freshest-first
+                # ordering of the capped drill-down sample
+                updatedAt
                 # rm-192 drill-down: workflow identity + failing check names/URLs
                 # (additive selection only — read-only query, no mutations)
                 workflowRun {
@@ -72,6 +77,11 @@ export const REPO_STATUS_QUERY_NO_ALERTS = `
             # GraphQL max page size; repos with >100 suites still understate failingChecks (documented ceiling, rm-110)
             checkSuites(first: 100) {
               nodes {
+                # rm-192 review-fix (2026-10-18): the API returns this page in
+                # no newest-first order (is_desc false, proven live 2026-10-17),
+                # so the field below is selected for client-side freshest-first
+                # ordering of the capped drill-down sample
+                updatedAt
                 # rm-192 drill-down: workflow identity + failing check names/URLs
                 # (additive selection only — read-only query, no mutations)
                 workflowRun {

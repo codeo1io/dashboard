@@ -19,6 +19,7 @@ import type {GatewaySessionCache} from './gateway/session-cache.ts'
 import type {AggregatorSnapshot, SnapshotStore} from './github/aggregator.ts'
 import type {MetadataReader} from './github/metadata.ts'
 import type {PlatformStatus} from './github/platform-status.ts'
+import type {ScorecardInfo} from './github/scorecard.ts'
 import type {ListenerStore} from './listener/store.ts'
 import {Buffer} from 'node:buffer'
 import {existsSync} from 'node:fs'
@@ -54,6 +55,7 @@ import {
 import {buildInstallationsClient, enumerateRepos, mintReadOnlyToken} from './github/installations.ts'
 import {makeNotFoundError, readRepoMetadata} from './github/metadata.ts'
 import {fetchPlatformStatus} from './github/platform-status.ts'
+import {fetchScorecard} from './github/scorecard.ts'
 import {createFileSnapshotStore} from './github/snapshot-store.ts'
 import {readListenerDbPath, readListenerIngestKey} from './listener/config.ts'
 import {createListenerStore} from './listener/store.ts'
@@ -1484,6 +1486,12 @@ export interface SnapshotProviderDeps {
    * tests); createDashboardServer injects the real fetchPlatformStatus.
    */
   readonly platformStatusFetch?: () => Promise<PlatformStatus | null>
+  /**
+   * rm-1974: per-repo OpenSSF Scorecard fetch. Absent → the aggregator omits
+   * the scorecard column entirely (hermetic default for tests);
+   * createDashboardServer injects the real fetchScorecard.
+   */
+  readonly fetchScorecardFor?: (owner: string, name: string) => Promise<ScorecardInfo | undefined>
 }
 
 /**
@@ -1584,6 +1592,7 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
     resolveInstallationIdForRepo,
     snapshotStore: deps.snapshotStore ?? createFileSnapshotStore(process.env.DASHBOARD_SNAPSHOT_CACHE),
     platformStatusFetch: deps.platformStatusFetch,
+    fetchScorecard: deps.fetchScorecardFor,
   })
 
   return {
@@ -1696,7 +1705,7 @@ async function createDashboardServer(): Promise<ServerType> {
     // Construct the provider synchronously — no network calls yet.
     // start() (which triggers the first refresh) runs in the background after
     // the server is already listening.
-    provider = buildSnapshotProvider({appId, privateKey, platformStatusFetch: async () => fetchPlatformStatus()})
+    provider = buildSnapshotProvider({appId, privateKey, platformStatusFetch: async () => fetchPlatformStatus(), fetchScorecardFor: fetchScorecard})
     getSnapshot = provider.getSnapshot
     stopAggregator = provider.stop
   } else {
