@@ -1,8 +1,8 @@
 /**
  * Pure, Node-testable core of the Impeccable OpenCode bridge.
  *
- * Mirrors `.github/hooks/impeccable.json`: after a file-mutating tool call,
- * pipe a hook.mjs-shaped event to `.agents/skills/impeccable/scripts/hook.mjs`
+ * After a file-mutating tool call, pipe a claude-shaped hook event to the
+ * vendored Impeccable launcher (`.agents/skills/impeccable/scripts/impeccable hook`)
  * over stdin and surface any findings back to the agent in the same turn.
  *
  * Advisory only — never blocks a tool call. Fail-loud: each kind of degraded
@@ -18,23 +18,70 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process'
+import { lstatSync, readdirSync, readFileSync, unlinkSync } from 'node:fs'
 import { access } from 'node:fs/promises'
+import { join, dirname } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 
 /**
- * The value `hook.mjs`'s `resolveHarness()` reads via the `IMPECCABLE_HOOK_HARNESS`
- * env override. Our payload is claude-shaped
- * (`tool_name`/`tool_input.file_path`/`tool_input.command`), and
- * `normalizeHookEvent(event, cwd, 'claude')` passes claude-harness events
- * through UNCHANGED (hook-lib.mjs: `if (harness !== 'cursor') return event`).
- * 'github' would instead route through `normalizeGitHubEvent`, which expects
- * camelCase `toolName`/`toolArgs` and would only work by incidental spread of
- * our pre-set `tool_input` — silently dropping apply_patch multi-file parsing.
+ * The value the hook reads from the `IMPECCABLE_HOOK_HARNESS` env override. Our
+ * payload is claude-shaped (`tool_name`/`tool_input.file_path`/`tool_input.command`),
+ * and the claude harness takes it as-is. Another harness value would parse the
+ * payload as that harness's event shape and drop the apply_patch multi-file input.
  */
 export const IMPECCABLE_HOOK_HARNESS = 'claude'
 
-/** Absolute-worktree-relative path to the shared hook script, matching `.github/hooks/impeccable.json`. */
-export const HOOK_SCRIPT_RELATIVE_PATH = '.agents/skills/impeccable/scripts/hook.mjs'
+/**
+ * The environment the engine child gets, and nothing else: these exact names,
+ * every name with one of these prefixes, and the harness and quiet signals the
+ * bridge sets. Tokens and other secrets in the host's environment never reach
+ * the child.
+ */
+export const CHILD_ENV_ALLOWLIST = {
+  names: [
+    'PATH',
+    'HOME',
+    'TMPDIR',
+    'USER',
+    'LOGNAME',
+    'LANG',
+    // The launcher's curl or wget needs these behind a proxy or a TLS-intercepting CA. A proxy URL
+    // with embedded credentials therefore reaches the engine. Exact names only, never prefixes.
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'NO_PROXY',
+    'ALL_PROXY',
+    'http_proxy',
+    'https_proxy',
+    'no_proxy',
+    'all_proxy',
+    'SSL_CERT_FILE',
+    'SSL_CERT_DIR',
+    'CURL_CA_BUNDLE',
+  ],
+  prefixes: ['LC_', 'IMPECCABLE_'],
+  /** Names the prefixes would let through that the child must never get: either one makes the hook a no-op. */
+  denied: ['IMPECCABLE_HOOK_DEPTH', 'CLAUDE_HOOK_DEPTH'],
+} as const
+
+/** Builds the child's environment from `source` by the allow-list, then sets the harness and quiet signals. */
+export function buildChildEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {}
+  for (const [name, value] of Object.entries(source)) {
+    if (value === undefined) continue
+    const denied = (CHILD_ENV_ALLOWLIST.denied as readonly string[]).includes(name)
+    const allowed =
+      CHILD_ENV_ALLOWLIST.names.includes(name as (typeof CHILD_ENV_ALLOWLIST.names)[number]) ||
+      CHILD_ENV_ALLOWLIST.prefixes.some((prefix) => name.startsWith(prefix))
+    if (allowed && !denied) env[name] = value
+  }
+  env.IMPECCABLE_HOOK_HARNESS = IMPECCABLE_HOOK_HARNESS
+  env.IMPECCABLE_HOOK_QUIET = '1'
+  return env
+}
+
+/** Worktree-relative path to the vendored launcher. It is a POSIX shell script that execs the engine binary for the host platform. */
+export const HOOK_LAUNCHER_RELATIVE_PATH = '.agents/skills/impeccable/scripts/impeccable'
 
 /** Matches the Copilot hook's `timeoutSec: 5`. */
 export const DETECTOR_TIMEOUT_MS = 5000
@@ -75,12 +122,12 @@ function parseApplyPatchPaths(patchText: string): string[] {
 }
 
 /**
- * The vendored `hook-lib.mjs` `parseApplyPatchPaths` recognizes only
+ * The vendored hook recognizes only
  * `*** Add File:` and `*** Update File:` markers, not `*** Move to:`, so a
  * rename's destination would never be scanned. This appends one synthetic
  * `*** Update File: <dest>` marker per distinct Move-to destination that no
  * Add or Update marker already covers. The original patch text is kept
- * verbatim and the markers are appended after it, so the vendored script's
+ * verbatim and the markers are appended after it, so the vendored hook's
  * own parsing of the patch is not disturbed.
  */
 function withMoveToScanMarkers(patchText: string): string {
@@ -119,7 +166,7 @@ export function extractTouchedPaths(tool: string, args: unknown): string[] {
   return []
 }
 
-/** Strips an MCP namespace prefix (`aft_edit`→`edit`) so `tool_name` matches the bare form hook.mjs's `resolveTargetFiles` special-cases (`tool_name === 'apply_patch'` exactly). Passes bare names and non-mutating names through unchanged. */
+/** Strips an MCP namespace prefix (`aft_edit`→`edit`) so `tool_name` matches the bare form the hook special-cases (`tool_name === 'apply_patch'` exactly). Passes bare names and non-mutating names through unchanged. */
 export function bareToolName(tool: string): string {
   const match = MUTATING_SUFFIX_RE.exec(tool)
   return match?.[1] ?? tool
@@ -133,10 +180,10 @@ export interface BuildHookPayloadInput {
 }
 
 /**
- * Shapes the stdin JSON `hook.mjs` reads. `tool_name` is normalized to its
+ * Shapes the stdin JSON the hook reads. `tool_name` is normalized to its
  * bare form. For `apply_patch` (bare or MCP-suffixed), `tool_input.command`
- * carries the raw patch text so hook.mjs's own `parseApplyPatchPaths` can
- * extract every touched file — hook.mjs only reads `tool_input.command` when
+ * carries the raw patch text so the hook can
+ * extract every touched file — the hook only reads `tool_input.command` when
  * `tool_name === 'apply_patch'` exactly, so a `file_path`-only payload would
  * silently drop all but incidental files. Rename destinations are appended as
  * Update markers (see `withMoveToScanMarkers`). For edit/write, `tool_input.file_path`
@@ -190,13 +237,28 @@ export type DetectorRunner = (
   opts: { worktree: string },
 ) => Promise<DetectorRunResult>
 
+/** Resolves true once the engine binary is fetched and answers its handshake. Never rejects when built by `createEngineWarmup`; `createHook` treats a rejection or throw as a failed warm-up. */
+export type EngineWarmup = () => Promise<boolean>
+
 export interface CreateHookOptions {
   runDetector: DetectorRunner
   worktree: string
+  /**
+   * Makes the engine ready before any scan. It runs once per hook instance,
+   * on the first call that needs a scan, and its result is shared by every
+   * call. When omitted, scans run without waiting for an engine.
+   */
+  warmEngine?: EngineWarmup
+  /** Longest a single call waits for a pending warm-up. Defaults to `DETECTOR_TIMEOUT_MS`. */
+  engineReadyWaitMs?: number
+  /** Shortest time between a failed warm-up and the next attempt. Defaults to `ENGINE_RETRY_INTERVAL_MS`. */
+  engineRetryMs?: number
+  /** Clock in milliseconds. Defaults to `Date.now`. */
+  now?: () => number
 }
 
 export interface CreateSpawnRunnerOptions {
-  /** Absolute path to `hook.mjs` (or an ephemeral test fixture). */
+  /** Absolute path to the file the run executes (the launcher, or an ephemeral test fixture). It must exist before the child is spawned. */
   scriptPath: string
   /** Time before the child is sent SIGTERM. Defaults to `DETECTOR_TIMEOUT_MS`. */
   timeoutMs?: number
@@ -206,13 +268,18 @@ export interface CreateSpawnRunnerOptions {
   deadlineSlackMs?: number
   /** Most bytes kept from each of stdout and stderr. Defaults to `DETECTOR_MAX_OUTPUT_BYTES`. */
   maxOutputBytes?: number
-  /** Node executable to spawn. Defaults to literal `node`; override only for tests. */
-  nodeExecutable?: string
+  /** Executable to spawn. Defaults to literal `node`. */
+  command?: string
+  /** Arguments for the executable. Defaults to `[scriptPath]`. */
+  args?: string[]
   /** Pre-spawn check that the script exists; rejecting means it cannot run. Defaults to `fs.access`; override only for tests. */
   checkScript?: (scriptPath: string) => Promise<unknown>
 }
 
 function noop(): void {}
+
+/** True where the child can lead its own process group and the group can be signalled (POSIX). */
+const SUPPORTS_PROCESS_GROUPS = process.platform !== 'win32'
 
 interface RunLimits {
   timeoutMs: number
@@ -348,9 +415,27 @@ class HookRun {
     return currentBytes + chunk.length
   }
 
+  /**
+   * Signals the child's whole process group, so grandchildren in that group
+   * (the launcher's `curl` and `sh`) receive it too. Falls back to the direct
+   * child when the child has no pid, the platform has no process groups, or
+   * the group signal fails (for example ESRCH once the group is empty).
+   */
   private signal(name: NodeJS.Signals): void {
+    const child = this.child
+    if (!child) return
+
+    if (SUPPORTS_PROCESS_GROUPS && child.pid !== undefined) {
+      try {
+        process.kill(-child.pid, name)
+        return
+      } catch {
+        // Fall through to the direct child.
+      }
+    }
+
     try {
-      this.child?.kill(name)
+      child.kill(name)
     } catch {
       // The process may already have exited.
     }
@@ -382,13 +467,15 @@ function decode(chunks: Buffer[]): string {
 }
 
 /**
- * Real `node:child_process.spawn` runner: `node <scriptPath>` (no shell, a
- * literal `node` rather than `process.execPath`, which under a Bun host would
- * be Bun) with the payload piped over stdin and cwd at the worktree.
+ * Real `node:child_process.spawn` runner: `<command> <args>` with no shell, the
+ * payload piped over stdin and cwd at the worktree. The defaults run
+ * `node <scriptPath>`, a literal `node` rather than `process.execPath`, which
+ * under a Bun host would be Bun.
  *
- * The child inherits the environment minus both depth variables, with
- * `IMPECCABLE_HOOK_HARNESS=claude` and `IMPECCABLE_HOOK_QUIET=1` set. A depth
- * variable makes `hook.mjs` a no-op, so the bridge never sets one.
+ * The child gets only the environment `buildChildEnv` builds from
+ * `CHILD_ENV_ALLOWLIST`, with `IMPECCABLE_HOOK_HARNESS=claude` and
+ * `IMPECCABLE_HOOK_QUIET=1` set. A depth variable makes the hook a no-op, so
+ * the bridge never forwards or sets one.
  *
  * Each of stdout and stderr is capped at `maxOutputBytes` of UTF-8. Excess
  * bytes are discarded as they arrive, and the run resolves `overflow`.
@@ -396,7 +483,11 @@ function decode(chunks: Buffer[]): string {
  * This runner is the sole authority over the run's lifetime: SIGTERM at the
  * timeout, SIGKILL after the grace period, and a final deadline just past
  * both at which it resolves even if a child or grandchild still holds the
- * pipes open. The deadline starts before the script existence check, so a
+ * pipes open. On POSIX each signal goes to the child's whole process group
+ * (the child is spawned with `detached: true` so it leads one) and the final
+ * deadline SIGKILLs the group, so a launcher's `curl` and `sh` die with it.
+ * A grandchild that leaves the group (`setsid`, `detached`) is out of reach.
+ * On Windows only the direct child is signalled. The deadline starts before the script existence check, so a
  * check that never settles resolves `spawn-error` at the deadline and the
  * child is never spawned after the run has resolved. A tool call therefore
  * waits at most timeout + grace + slack. Callers must not layer a second
@@ -409,7 +500,8 @@ export function createSpawnRunner(options: CreateSpawnRunnerOptions): DetectorRu
     deadlineSlackMs: options.deadlineSlackMs ?? DETECTOR_DEADLINE_SLACK_MS,
     maxOutputBytes: options.maxOutputBytes ?? DETECTOR_MAX_OUTPUT_BYTES,
   }
-  const nodeExecutable = options.nodeExecutable ?? 'node'
+  const command = options.command ?? 'node'
+  const args = options.args ?? [options.scriptPath]
   const checkScript = options.checkScript ?? ((path: string) => access(path))
 
   return (payload, opts) =>
@@ -421,15 +513,17 @@ export function createSpawnRunner(options: CreateSpawnRunnerOptions): DetectorRu
         // A check that settles after the run resolved must not start a child.
         if (run.settled) return
 
-        const env: NodeJS.ProcessEnv = { ...process.env }
-        delete env.IMPECCABLE_HOOK_DEPTH
-        delete env.CLAUDE_HOOK_DEPTH
-        env.IMPECCABLE_HOOK_HARNESS = IMPECCABLE_HOOK_HARNESS
-        env.IMPECCABLE_HOOK_QUIET = '1'
+        const env = buildChildEnv(process.env)
 
         try {
           run.attach(
-            spawn(nodeExecutable, [options.scriptPath], { cwd: opts.worktree, env, stdio: ['pipe', 'pipe', 'pipe'] }),
+            spawn(command, args, {
+              cwd: opts.worktree,
+              env,
+              stdio: ['pipe', 'pipe', 'pipe'],
+              // On POSIX the child leads its own process group, so a timeout can signal it and its grandchildren together.
+              detached: SUPPORTS_PROCESS_GROUPS,
+            }),
             payload,
           )
         } catch {
@@ -444,6 +538,112 @@ export function createSpawnRunner(options: CreateSpawnRunnerOptions): DetectorRu
           run.settle({ by: 'spawn-error' })
         })
     })
+}
+
+/**
+ * The production runner: executes the vendored launcher directly (no `node`,
+ * no shell) with the `hook` subcommand. The launcher resolves the engine
+ * binary for the host platform and execs it, so it needs no Node runtime.
+ */
+export function createLauncherRunner(launcherPath: string): DetectorRunner {
+  return createSpawnRunner({ scriptPath: launcherPath, command: launcherPath, args: ['hook'] })
+}
+
+/** Budget for the first-use engine fetch, sized for a slow network. */
+export const ENGINE_WARMUP_TIMEOUT_MS = 120_000
+
+/** Shortest time between a failed engine warm-up and the next attempt. */
+export const ENGINE_RETRY_INTERVAL_MS = 60_000
+
+const ENGINE_HANDSHAKE_PREFIX = 'impeccable-engine'
+
+export interface CreateEngineWarmupOptions {
+  /** Time before the launcher is sent SIGTERM. Defaults to `ENGINE_WARMUP_TIMEOUT_MS`. */
+  timeoutMs?: number
+  /** Time between SIGTERM and SIGKILL. Defaults to `DETECTOR_KILL_GRACE_MS`. */
+  killGraceMs?: number
+  /** Time past timeout plus grace at which the run resolves regardless of the child's pipes. Defaults to `DETECTOR_DEADLINE_SLACK_MS`. */
+  deadlineSlackMs?: number
+}
+
+/**
+ * Runs the launcher's `engine-probe` subcommand through the same spawn runner
+ * as the hook, with the long first-use budget. On a cold machine the launcher
+ * downloads the engine binary into `~/.impeccable/bin/<version>/` and verifies
+ * its sha256 before answering; on a warm cache it answers at once. The result
+ * is true only for a clean exit whose stdout starts with the engine handshake.
+ * A timeout kills the launcher's whole process group, so a stalled `curl` goes
+ * with it. It never rejects.
+ */
+export function createEngineWarmup(launcherPath: string, worktree: string, options: CreateEngineWarmupOptions = {}): EngineWarmup {
+  const run = createSpawnRunner({
+    scriptPath: launcherPath,
+    command: launcherPath,
+    args: ['engine-probe'],
+    timeoutMs: options.timeoutMs ?? ENGINE_WARMUP_TIMEOUT_MS,
+    killGraceMs: options.killGraceMs,
+    deadlineSlackMs: options.deadlineSlackMs,
+  })
+  // engine-probe ignores stdin; the runner still writes a payload to it.
+  const payload = buildHookPayload({ tool: 'edit', args: {}, cwd: worktree, sessionID: 'engine-warmup' })
+
+  return async () => {
+    let ready = false
+    try {
+      const result = await run(payload, { worktree })
+      ready = result.kind === 'ok' && result.stdout.startsWith(ENGINE_HANDSHAKE_PREFIX)
+    } catch {
+      ready = false
+    }
+    if (!ready) removeEngineStagingFiles(launcherPath)
+    return ready
+  }
+}
+
+const ENGINE_STAGING_FILE_RE = /^\.impeccable\.part\.(\d+)(\.sha256)?$/
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    // EPERM means the process exists but belongs to someone else.
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+/**
+ * Removes the download staging files a failed or timed-out warm-up leaves in
+ * the launcher's cache directory: `<cache root>/bin/<version>/.impeccable.part.<pid>`
+ * and its `.sha256` sidecar. The cache root is `IMPECCABLE_HOME`, or
+ * `$HOME/.impeccable`; the version is the skill's `scripts/VERSION`. Only
+ * regular files with exactly those names are removed (a symlink or directory is
+ * skipped), and a file named for a process that is still running is skipped,
+ * because that process may be mid-download. It never throws.
+ */
+function removeEngineStagingFiles(launcherPath: string): void {
+  try {
+    const env = buildChildEnv(process.env)
+    // An empty IMPECCABLE_HOME falls back to $HOME/.impeccable, as the launcher's `${IMPECCABLE_HOME:-…}` does.
+    const cacheRoot = env.IMPECCABLE_HOME || (env.HOME ? join(env.HOME, '.impeccable') : undefined)
+    if (!cacheRoot) return
+    const version = readFileSync(join(dirname(launcherPath), 'VERSION'), 'utf-8').trim()
+    if (!version || version.includes('/') || version.includes('\\')) return
+
+    const stagingDir = join(cacheRoot, 'bin', version)
+    for (const name of readdirSync(stagingDir)) {
+      const match = ENGINE_STAGING_FILE_RE.exec(name)
+      if (!match || processIsAlive(Number(match[1]))) continue
+      try {
+        const path = join(stagingDir, name)
+        if (lstatSync(path).isFile()) unlinkSync(path)
+      } catch {
+        // The file may already be gone, or not ours to remove.
+      }
+    }
+  } catch {
+    // No cache directory, no VERSION file, or an unreadable directory: nothing to clean.
+  }
 }
 
 /** Most UTF-16 code units of feedback appended to a tool's output; longer feedback is truncated. */
@@ -470,7 +670,7 @@ const FEEDBACK_OPEN = '\n\n<impeccable_feedback>\n'
 const FEEDBACK_CLOSE = '\n</impeccable_feedback>'
 
 /**
- * Strictly extracts the human-readable feedback text from hook.mjs's stdout.
+ * Strictly extracts the human-readable feedback text from the hook's stdout.
  * Accepts ONLY the nested Claude-harness `PostToolUse` envelope:
  * `{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"…"}}`
  * with a non-empty string `additionalContext`.
@@ -522,6 +722,8 @@ type WarningKind =
   | 'stderr-on-clean'
   | 'malformed'
   | 'no-path'
+  | 'engine-pending'
+  | 'engine-unavailable'
   | 'bridge-error'
 
 const WARNING_MESSAGES = {
@@ -532,6 +734,8 @@ const WARNING_MESSAGES = {
   'stderr-on-clean': '[impeccable] design hook produced unexpected diagnostic output',
   malformed: '[impeccable] design hook returned unrecognized output',
   'no-path': '[impeccable] design hook skipped a file-changing tool call with no extractable path',
+  'engine-pending': '[impeccable] design engine is still downloading; scans resume when it is ready',
+  'engine-unavailable': '[impeccable] design engine could not be fetched or started; scans are skipped and the fetch is retried periodically',
   'bridge-error': '[impeccable] design hook bridge hit an internal error',
 } as const satisfies Record<WarningKind, string>
 
@@ -552,6 +756,12 @@ const WARNING_MESSAGES = {
  *  - a built-in `edit`/`write`/`apply_patch`, or a mutating tool with a path-like
  *    arg key, yielding no path: `no-path`, and the hook is not run. A mutating
  *    tool with no path-like arg key is silent and not run.
+ *  - the engine warm-up still pending after `engineReadyWaitMs`: `engine-pending`,
+ *    the hook is not run, and the warm-up keeps running. Calls after that skip
+ *    at once, without waiting, until the warm-up settles.
+ *  - the engine warm-up failed: `engine-unavailable`, the hook is not run, and
+ *    the warm-up is attempted again no sooner than `engineRetryMs` after the
+ *    failure.
  *  - the runner rejecting, or any other bridge fault: `bridge-error`.
  *
  * Each warning kind shows once per hook instance (one plugin process). Warning
@@ -560,6 +770,70 @@ const WARNING_MESSAGES = {
  */
 export function createHook(options: CreateHookOptions) {
   const warned = new Set<WarningKind>()
+  const readyWaitMs = options.engineReadyWaitMs ?? DETECTOR_TIMEOUT_MS
+  const retryMs = options.engineRetryMs ?? ENGINE_RETRY_INTERVAL_MS
+  const now = options.now ?? Date.now
+
+  // One warm-up is in flight at a time. A hook call that stops waiting for it
+  // does not stop it.
+  type EngineState = 'idle' | 'warming' | 'ready' | 'failed'
+  let engine: EngineState = options.warmEngine ? 'idle' : 'ready'
+  // Read through a function so the state set by the warm-up is not narrowed away across an await.
+  const engineState = (): EngineState => engine
+  let warming: Promise<void> | undefined
+  let failedAt = 0
+  // Set once a call has waited out the budget on the current warm-up; later calls then skip without waiting.
+  let seenPending = false
+
+  const startWarmup = (warmEngine: EngineWarmup): Promise<void> => {
+    engine = 'warming'
+    seenPending = false
+    const settled = (async () => warmEngine())().then(
+      ready => ({ ready }),
+      () => ({ ready: false }),
+    )
+    warming = settled.then(({ ready }) => {
+      engine = ready ? 'ready' : 'failed'
+      seenPending = false
+      if (!ready) failedAt = now()
+    })
+    return warming
+  }
+
+  /** Whether the engine is ready, still warming after the wait, or unavailable. */
+  const awaitEngine = async (): Promise<'ready' | 'pending' | 'unavailable'> => {
+    const warmEngine = options.warmEngine
+    if (!warmEngine) return 'ready'
+
+    if (seenPending && engineState() === 'warming') {
+      // Yield one macrotask so a warm-up that settled a moment ago is seen as settled.
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0)
+      })
+      if (engineState() === 'warming') return 'pending'
+    }
+
+    if (engineState() === 'ready') return 'ready'
+    if (engineState() === 'failed' && now() - failedAt < retryMs) return 'unavailable'
+    if (engineState() === 'idle' || engineState() === 'failed') startWarmup(warmEngine)
+
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const waited = new Promise<'pending'>(resolve => {
+      timer = setTimeout(() => {
+        resolve('pending')
+      }, readyWaitMs)
+    })
+    try {
+      const outcome = await Promise.race([warming, waited])
+      if (outcome === 'pending') {
+        seenPending = true
+        return 'pending'
+      }
+    } finally {
+      clearTimeout(timer)
+    }
+    return engineState() === 'ready' ? 'ready' : 'unavailable'
+  }
 
   return async function toolExecuteAfter(
     input: { tool: string; sessionID: string; callID: string; args: unknown },
@@ -588,6 +862,12 @@ export function createHook(options: CreateHookOptions) {
       if (touchedPaths.length === 0) {
         // Silence is only right for an MCP tool that never carried a path.
         if (expectsPath(input.tool, input.args)) warnOnce('no-path')
+        return
+      }
+
+      const engineReadiness = await awaitEngine()
+      if (engineReadiness !== 'ready') {
+        warnOnce(engineReadiness === 'pending' ? 'engine-pending' : 'engine-unavailable')
         return
       }
 

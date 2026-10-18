@@ -6,15 +6,38 @@
  * Runs under Vitest on Node. The runner spawns a literal `node`, so every test
  * here depends on the host being Node and fails loudly otherwise.
  */
+import { execFileSync, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
+import { createServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 
-import { buildHookPayload, createHook, createSpawnRunner, HOOK_SCRIPT_RELATIVE_PATH } from './hook-bridge.ts'
+import {
+  buildHookPayload,
+  createEngineWarmup,
+  createHook,
+  createLauncherRunner,
+  createSpawnRunner,
+  ENGINE_WARMUP_TIMEOUT_MS,
+  HOOK_LAUNCHER_RELATIVE_PATH,
+  type DetectorRunner,
+} from './hook-bridge.ts'
 
 // Split across two literals so this test source does not itself trip the
 // per-line detector; the written fixture line carries both on one line.
@@ -24,6 +47,7 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 let tmpDir: string | undefined
 const trackedPidFiles: string[] = []
+const trackedProcessMarkers: string[] = []
 
 function worktree(): string {
   tmpDir ??= mkdtempSync(join(tmpdir(), 'impeccable-bridge-'))
@@ -33,6 +57,13 @@ function worktree(): string {
 function fixture(script: string): string {
   const path = join(worktree(), `${randomUUID()}.mjs`)
   writeFileSync(path, script, 'utf-8')
+  return path
+}
+
+/** Writes an executable `sh` launcher stand-in and returns its path. */
+function launcherFixture(body: string): string {
+  const path = join(worktree(), `launcher-${randomUUID()}`)
+  writeFileSync(path, `#!/bin/sh\n${body}\n`, { encoding: 'utf-8', mode: 0o755 })
   return path
 }
 
@@ -65,8 +96,42 @@ async function expectProcessGone(pid: number, budgetMs = 1000): Promise<void> {
   expect(() => process.kill(pid, 0)).toThrow()
 }
 
+/** True when a process whose command line contains `marker` is running. */
+function markerProcessAlive(marker: string): boolean {
+  try {
+    execFileSync('pgrep', ['-f', marker], { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Polls until no process carries `marker`, up to a bounded budget. */
+async function expectMarkerProcessesGone(marker: string, budgetMs = 1000): Promise<void> {
+  const deadline = Date.now() + budgetMs
+  while (markerProcessAlive(marker) && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  expect(markerProcessAlive(marker)).toBe(false)
+}
+
+/** Polls until `condition` holds, up to a bounded budget, so a slow process start is not mistaken for a missing one. */
+async function waitUntil(condition: () => boolean, budgetMs = 1000): Promise<void> {
+  const deadline = Date.now() + budgetMs
+  while (!condition() && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+}
+
 afterEach(() => {
   // Safety net: no test may leave a child behind, even when an assertion fails first.
+  for (const marker of trackedProcessMarkers.splice(0)) {
+    try {
+      execFileSync('pkill', ['-f', marker], { stdio: 'ignore' })
+    } catch {
+      // Nothing matched.
+    }
+  }
   for (const file of trackedPidFiles.splice(0)) {
     if (!existsSync(file)) continue
     const pid = Number(readFileSync(file, 'utf-8'))
@@ -175,6 +240,61 @@ describe('createSpawnRunner', () => {
     }
   })
 
+  it('passes the child only the allow-listed environment', async () => {
+    const scriptPath = fixture('process.stdout.write(JSON.stringify(process.env));\nprocess.exit(0);\n')
+    const runner = createSpawnRunner({ scriptPath })
+
+    await withEnv(
+      {
+        GITHUB_TOKEN: 'ghp_not-for-the-engine',
+        FAKE_SECRET: 'not-for-the-engine',
+        NODE_OPTIONS: '--max-old-space-size=64',
+        LC_ALL: 'C',
+        LANG: 'en_US.UTF-8',
+        IMPECCABLE_HOME: '/tmp/impeccable-home',
+        IMPECCABLE_HOOK_DEPTH: '1',
+        CLAUDE_HOOK_DEPTH: '1',
+        HTTPS_PROXY: 'http://proxy.invalid:3128',
+        https_proxy: 'http://proxy.invalid:3128',
+        NO_PROXY: 'localhost',
+        SSL_CERT_FILE: '/tmp/ca.pem',
+        CURL_CA_BUNDLE: '/tmp/ca.pem',
+      },
+      async () => {
+        const result = await runner(payload, { worktree: worktree() })
+        expect(result.kind).toBe('ok')
+        if (result.kind !== 'ok') return
+        const env = JSON.parse(result.stdout) as Record<string, string | undefined>
+
+        for (const name of ['GITHUB_TOKEN', 'FAKE_SECRET', 'NODE_OPTIONS', 'IMPECCABLE_HOOK_DEPTH', 'CLAUDE_HOOK_DEPTH']) {
+          expect(env).not.toHaveProperty(name)
+        }
+        expect(env.PATH).toBe(process.env.PATH)
+        expect(env.HOME).toBe(process.env.HOME)
+        expect(env.LC_ALL).toBe('C')
+        expect(env.LANG).toBe('en_US.UTF-8')
+        expect(env.IMPECCABLE_HOME).toBe('/tmp/impeccable-home')
+        // The launcher's curl needs these behind a proxy or a TLS-intercepting CA.
+        expect(env.HTTPS_PROXY).toBe('http://proxy.invalid:3128')
+        expect(env.https_proxy).toBe('http://proxy.invalid:3128')
+        expect(env.NO_PROXY).toBe('localhost')
+        expect(env.SSL_CERT_FILE).toBe('/tmp/ca.pem')
+        expect(env.CURL_CA_BUNDLE).toBe('/tmp/ca.pem')
+        expect(env.IMPECCABLE_HOOK_HARNESS).toBe('claude')
+        expect(env.IMPECCABLE_HOOK_QUIET).toBe('1')
+        // Nothing outside the allow-list and the IMPECCABLE_ prefix gets through. macOS adds
+        // __CF_USER_TEXT_ENCODING to every process it starts, so it is not the bridge's doing.
+        const unexpected = Object.keys(env).filter(
+          name =>
+            name !== '__CF_USER_TEXT_ENCODING' &&
+            !/^(PATH|HOME|TMPDIR|USER|LOGNAME|LANG|LC_.*|IMPECCABLE_.*)$/.test(name) &&
+            !/^(HTTP_PROXY|HTTPS_PROXY|NO_PROXY|ALL_PROXY|http_proxy|https_proxy|no_proxy|all_proxy|SSL_CERT_FILE|SSL_CERT_DIR|CURL_CA_BUNDLE)$/.test(name),
+        )
+        expect(unexpected).toEqual([])
+      },
+    )
+  })
+
   it('sends the payload over stdin without cross-contaminating stdout/stderr', async () => {
     const scriptPath = fixture(
       [
@@ -202,7 +322,7 @@ describe('createSpawnRunner', () => {
 
   it('resolves spawn-error, without throwing, when the node executable does not exist', async () => {
     const scriptPath = fixture('process.exit(0);\n')
-    const runner = createSpawnRunner({ scriptPath, nodeExecutable: `/does-not-exist-${randomUUID()}/node` })
+    const runner = createSpawnRunner({ scriptPath, command: `/does-not-exist-${randomUUID()}/node` })
     const result = await runner(payload, { worktree: worktree() })
     expect(result.kind).toBe('spawn-error')
   })
@@ -259,14 +379,61 @@ describe('createSpawnRunner', () => {
     await expectProcessGone(readPid(pidFile))
   }, 15_000)
 
+  it('kills the whole process group on timeout: a grandchild in the child\'s group is gone, even when both ignore SIGTERM', async () => {
+    const childPidFile = trackedFile('child-pid')
+    const grandchildPidFile = trackedFile('grandchild-pid')
+    const grandchildCode = `process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`
+    const scriptPath = fixture(
+      [
+        `import {spawn} from 'node:child_process';`,
+        `import {writeFileSync} from 'node:fs';`,
+        `writeFileSync(${JSON.stringify(childPidFile)}, String(process.pid));`,
+        // A plain spawn: the grandchild stays in this process's group and holds the pipes.
+        `const grandchild = spawn(process.execPath, ['-e', ${JSON.stringify(grandchildCode)}], {stdio: ['ignore', 'inherit', 'inherit']});`,
+        `writeFileSync(${JSON.stringify(grandchildPidFile)}, String(grandchild.pid));`,
+        `process.on('SIGTERM', () => {});`,
+        `setInterval(() => {}, 1000);`,
+      ].join('\n'),
+    )
+    const runner = createSpawnRunner({ scriptPath, timeoutMs: 1000, killGraceMs: 100 })
+    const result = await runner(payload, { worktree: worktree() })
+
+    expect(result.kind).toBe('timeout')
+    await expectProcessGone(readPid(childPidFile))
+    await expectProcessGone(readPid(grandchildPidFile))
+  }, 15_000)
+
+  it('kills a grandchild in the child\'s group that outlives an exited child and holds the pipes', async () => {
+    const grandchildPidFile = trackedFile('grandchild-pid')
+    const grandchildCode = `process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`
+    const scriptPath = fixture(
+      [
+        `import {spawn} from 'node:child_process';`,
+        `import {writeFileSync} from 'node:fs';`,
+        `const grandchild = spawn(process.execPath, ['-e', ${JSON.stringify(grandchildCode)}], {stdio: ['ignore', 'inherit', 'inherit']});`,
+        `writeFileSync(${JSON.stringify(grandchildPidFile)}, String(grandchild.pid));`,
+        `process.exit(0);`,
+      ].join('\n'),
+    )
+    const runner = createSpawnRunner({ scriptPath, timeoutMs: 400, killGraceMs: 100 })
+    const start = Date.now()
+    const result = await runner(payload, { worktree: worktree() })
+    const elapsedMs = Date.now() - start
+
+    expect(result.kind).toBe('timeout')
+    expect(elapsedMs).toBeLessThan(400 + 100 + 2000)
+    await expectProcessGone(readPid(grandchildPidFile))
+  }, 15_000)
+
   it('resolves timeout at the final deadline when an exited child leaves stdout open through a grandchild', async () => {
     const grandchildPidFile = trackedFile('grandchild-pid')
     const scriptPath = fixture(
       [
         `import {spawn} from 'node:child_process';`,
         `import {writeFileSync} from 'node:fs';`,
-        // The detached grandchild inherits stdout/stderr, so the pipes stay
-        // open after this process exits 0 and 'close' never fires on its own.
+        // The detached grandchild leads its own process group and inherits
+        // stdout/stderr, so the pipes stay open after this process exits 0
+        // and 'close' never fires on its own.
         `const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {detached: true, stdio: ['ignore', 'inherit', 'inherit']});`,
         `writeFileSync(${JSON.stringify(grandchildPidFile)}, String(grandchild.pid));`,
         `grandchild.unref();`,
@@ -282,7 +449,7 @@ describe('createSpawnRunner', () => {
     // Resolved by the deadline, not by waiting for the grandchild to release the pipes.
     expect(elapsedMs).toBeLessThan(400 + 100 + 2000)
     expect(elapsedMs).toBeGreaterThanOrEqual(400)
-    // The grandchild is outside the runner's reach; the afterEach safety net reaps it.
+    // A grandchild that leaves the child's process group is outside the group kill's reach; the afterEach safety net reaps it.
     expect(isAlive(readPid(grandchildPidFile))).toBe(true)
   }, 15_000)
 
@@ -401,8 +568,9 @@ describe('createSpawnRunner', () => {
         `import {spawn} from 'node:child_process';`,
         `import {writeFileSync} from 'node:fs';`,
         `process.stdout.write("x".repeat(200));`,
-        // The detached grandchild inherits stdout/stderr, so the pipes stay
-        // open after this process exits and 'close' never fires on its own.
+        // The detached grandchild leads its own process group and inherits
+        // stdout/stderr, so the pipes stay open after this process exits and
+        // 'close' never fires on its own.
         `const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {detached: true, stdio: ['ignore', 'inherit', 'inherit']});`,
         `writeFileSync(${JSON.stringify(grandchildPidFile)}, String(grandchild.pid));`,
         `grandchild.unref();`,
@@ -420,7 +588,7 @@ describe('createSpawnRunner', () => {
     // Resolved by the deadline, not by waiting for the grandchild to release the pipes.
     expect(elapsedMs).toBeGreaterThanOrEqual(400)
     expect(elapsedMs).toBeLessThan(400 + 100 + 2000)
-    // The grandchild is outside the runner's reach; the afterEach safety net reaps it.
+    // A grandchild that leaves the child's process group is outside the group kill's reach; the afterEach safety net reaps it.
     expect(isAlive(readPid(grandchildPidFile))).toBe(true)
   }, 15_000)
 
@@ -505,7 +673,333 @@ describe('createSpawnRunner + createHook end-to-end', () => {
   })
 })
 
-describe('real vendored hook.mjs', () => {
+/** Runs `body` with the given process env overrides (`undefined` deletes a name), then restores the previous values. */
+async function withEnv(overrides: Record<string, string | undefined>, body: () => Promise<void>): Promise<void> {
+  const previous: Record<string, string | undefined> = {}
+  for (const [key, value] of Object.entries(overrides)) {
+    previous[key] = process.env[key]
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+  try {
+    await body()
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+}
+
+interface StalledDownload {
+  /** A copy of the vendored launcher with no engine binary beside it. */
+  launcher: string
+  /** A string unique to this download's URL, for `pgrep -f`. */
+  marker: string
+  /** How many download requests the server has accepted. */
+  requests: () => number
+  /** The launcher's staging directory for this download, `<cache>/bin/<version>`. */
+  stagingDir: string
+}
+
+/**
+ * Runs `body` against a launcher whose first-use engine download never
+ * finishes: the server accepts the request and never answers, so the
+ * launcher's curl waits. Only the launcher and its VERSION file are copied, so
+ * the sibling engine binary is absent and the launcher takes its download
+ * path. HOME and the cache root are temporary so a cached engine on this
+ * machine is not used.
+ */
+async function withStalledDownload(body: (download: StalledDownload) => Promise<void>): Promise<void> {
+  const marker = `cold-download-${randomUUID()}`
+  trackedProcessMarkers.push(marker)
+
+  let requestCount = 0
+  const server: Server = createServer(() => {
+    requestCount += 1
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+
+  const scriptsDir = join(worktree(), 'cold-skill', 'scripts')
+  mkdirSync(scriptsDir, { recursive: true })
+  const launcher = join(scriptsDir, 'impeccable')
+  copyFileSync(join(REPO_ROOT, HOOK_LAUNCHER_RELATIVE_PATH), launcher)
+  writeFileSync(join(scriptsDir, 'VERSION'), '0.0.0\n', 'utf-8')
+  const home = join(worktree(), 'cold-home')
+  mkdirSync(home, { recursive: true })
+
+  const overrides: Record<string, string | undefined> = {
+    HOME: home,
+    IMPECCABLE_HOME: join(home, '.impeccable'),
+    IMPECCABLE_DOWNLOAD_BASE: `http://127.0.0.1:${(server.address() as AddressInfo).port}/${marker}`,
+    IMPECCABLE_BIN: undefined,
+    IMPECCABLE_LAUNCHER_PROBE: undefined,
+    PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
+  }
+
+  try {
+    await withEnv(overrides, () =>
+      body({ launcher, marker, requests: () => requestCount, stagingDir: join(home, '.impeccable', 'bin', '0.0.0') }),
+    )
+  } finally {
+    server.closeAllConnections()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+}
+
+describe('createLauncherRunner', () => {
+  it('runs the launcher directly with the hook subcommand and the claude harness and quiet env', async () => {
+    const launcher = launcherFixture(
+      'printf \'{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"argv=%s harness=%s quiet=%s"}}\' "$*" "$IMPECCABLE_HOOK_HARNESS" "$IMPECCABLE_HOOK_QUIET"',
+    )
+    const result = await createLauncherRunner(launcher)(payload, { worktree: worktree() })
+
+    expect(result.kind).toBe('ok')
+    if (result.kind !== 'ok') return
+    expect(result.stdout).toContain('argv=hook harness=claude quiet=1')
+  })
+
+  it('hands the payload to the launcher over stdin', async () => {
+    const launcher = launcherFixture('cat')
+    const result = await createLauncherRunner(launcher)(payload, { worktree: worktree() })
+
+    expect(result).toEqual({ kind: 'ok', stdout: JSON.stringify(payload), stderr: '' })
+  })
+
+  it('leaves no curl behind when the launcher times out during a first-use engine download', async () => {
+    await withStalledDownload(async ({ launcher, marker, requests }) => {
+      const runner = createSpawnRunner({
+        scriptPath: launcher,
+        command: launcher,
+        args: ['hook'],
+        timeoutMs: 1500,
+        killGraceMs: 200,
+      })
+      const result = await runner(payload, { worktree: worktree() })
+
+      expect(result.kind).toBe('timeout')
+      // The download really started, so the assertion below is not vacuous.
+      expect(requests()).toBeGreaterThan(0)
+      await expectMarkerProcessesGone(marker)
+    })
+  }, 15_000)
+
+  it('resolves spawn-error, without throwing, when the launcher does not exist', async () => {
+    const result = await createLauncherRunner(join(tmpdir(), `no-launcher-${randomUUID()}`))(payload, { worktree: worktree() })
+
+    expect(result).toEqual({ kind: 'spawn-error' })
+  })
+})
+
+describe('createEngineWarmup', () => {
+  const warmupOptions = { timeoutMs: 1000, killGraceMs: 100 }
+
+  it('is ready when the launcher answers engine-probe with the engine handshake', async () => {
+    const launcher = launcherFixture('[ "$1" = engine-probe ] && printf "impeccable-engine 1.2.3\\n"')
+    expect(await createEngineWarmup(launcher, worktree(), warmupOptions)()).toBe(true)
+  })
+
+  it('is not ready for output that is not the engine handshake', async () => {
+    const launcher = launcherFixture('printf "something else\\n"')
+    expect(await createEngineWarmup(launcher, worktree(), warmupOptions)()).toBe(false)
+  })
+
+  it('is not ready when the launcher exits nonzero or does not exist', async () => {
+    const failing = launcherFixture('printf "impeccable-engine 1.2.3\\n"; exit 3')
+    expect(await createEngineWarmup(failing, worktree(), warmupOptions)()).toBe(false)
+    expect(await createEngineWarmup(join(tmpdir(), `no-launcher-${randomUUID()}`), worktree(), warmupOptions)()).toBe(false)
+  })
+
+  describe('staging files of a failed warm-up', () => {
+    const PART = '.impeccable.part.'
+
+    /** A skill dir whose launcher fails, a cache root, and the staging dir the launcher would use. */
+    function failingSkill(): { launcher: string; stagingDir: string; cacheRoot: string } {
+      const scriptsDir = join(worktree(), 'staging-skill', 'scripts')
+      mkdirSync(scriptsDir, { recursive: true })
+      const launcher = join(scriptsDir, 'impeccable')
+      writeFileSync(launcher, '#!/bin/sh\nexit 7\n', { encoding: 'utf-8', mode: 0o755 })
+      writeFileSync(join(scriptsDir, 'VERSION'), '9.9.9\n', 'utf-8')
+      const cacheRoot = join(worktree(), 'staging-cache')
+      const stagingDir = join(cacheRoot, 'bin', '9.9.9')
+      mkdirSync(stagingDir, { recursive: true })
+      return { launcher, stagingDir, cacheRoot }
+    }
+
+    function deadPid(): number {
+      const pid = spawnSync('true').pid
+      expect(pid).toBeGreaterThan(0)
+      return pid
+    }
+
+    it('removes leftover .impeccable.part files of dead processes and leaves everything else alone', async () => {
+      const { launcher, stagingDir, cacheRoot } = failingSkill()
+      const dead = deadPid()
+      const victim = join(worktree(), 'victim.txt')
+      writeFileSync(victim, 'keep me', 'utf-8')
+
+      writeFileSync(join(stagingDir, `${PART}${dead}`), 'partial', 'utf-8')
+      writeFileSync(join(stagingDir, `${PART}${dead}.sha256`), 'abc', 'utf-8')
+      // Left alone: a staging file of a live process, a symlink with a matching name, a directory, and non-matching names.
+      writeFileSync(join(stagingDir, `${PART}${process.pid}`), 'in flight', 'utf-8')
+      symlinkSync(victim, join(stagingDir, `${PART}${dead + 1}`))
+      mkdirSync(join(stagingDir, `${PART}${dead + 2}`))
+      writeFileSync(join(stagingDir, `${PART}notes.txt`), 'x', 'utf-8')
+      writeFileSync(join(stagingDir, 'impeccable'), 'engine', 'utf-8')
+      writeFileSync(join(stagingDir, `other${PART}${dead}`), 'x', 'utf-8')
+
+      await withEnv({ IMPECCABLE_HOME: cacheRoot }, async () => {
+        expect(await createEngineWarmup(launcher, worktree(), warmupOptions)()).toBe(false)
+      })
+
+      expect(readdirSync(stagingDir).sort()).toEqual(
+        [
+          `${PART}${dead + 1}`,
+          `${PART}${dead + 2}`,
+          `${PART}notes.txt`,
+          `${PART}${process.pid}`,
+          'impeccable',
+          `other${PART}${dead}`,
+        ].sort(),
+      )
+      expect(lstatSync(join(stagingDir, `${PART}${dead + 1}`)).isSymbolicLink()).toBe(true)
+      expect(readFileSync(victim, 'utf-8')).toBe('keep me')
+    })
+
+    it('uses $HOME/.impeccable when IMPECCABLE_HOME is not set', async () => {
+      const { launcher } = failingSkill()
+      const home = join(worktree(), 'staging-home')
+      const stagingDir = join(home, '.impeccable', 'bin', '9.9.9')
+      mkdirSync(stagingDir, { recursive: true })
+      writeFileSync(join(stagingDir, `${PART}${deadPid()}`), 'partial', 'utf-8')
+
+      await withEnv({ HOME: home, IMPECCABLE_HOME: undefined }, async () => {
+        expect(await createEngineWarmup(launcher, worktree(), warmupOptions)()).toBe(false)
+      })
+
+      expect(readdirSync(stagingDir)).toEqual([])
+    })
+
+    it('falls back to $HOME/.impeccable when IMPECCABLE_HOME is set but empty, as the launcher does', async () => {
+      const { launcher } = failingSkill()
+      const home = join(worktree(), 'staging-empty-home')
+      const stagingDir = join(home, '.impeccable', 'bin', '9.9.9')
+      mkdirSync(stagingDir, { recursive: true })
+      writeFileSync(join(stagingDir, `${PART}${deadPid()}`), 'partial', 'utf-8')
+
+      await withEnv({ HOME: home, IMPECCABLE_HOME: '' }, async () => {
+        expect(await createEngineWarmup(launcher, worktree(), warmupOptions)()).toBe(false)
+      })
+
+      expect(readdirSync(stagingDir)).toEqual([])
+    })
+
+    it('never throws when the staging directory or the VERSION file is missing', async () => {
+      const { launcher, cacheRoot } = failingSkill()
+      rmSync(join(cacheRoot, 'bin'), { recursive: true })
+      await withEnv({ IMPECCABLE_HOME: cacheRoot }, async () => {
+        expect(await createEngineWarmup(launcher, worktree(), warmupOptions)()).toBe(false)
+      })
+
+      rmSync(join(launcher, '..', 'VERSION'))
+      await withEnv({ IMPECCABLE_HOME: cacheRoot }, async () => {
+        expect(await createEngineWarmup(launcher, worktree(), warmupOptions)()).toBe(false)
+      })
+    })
+
+    it('does not clean up after a warm-up that succeeds', async () => {
+      const { stagingDir, cacheRoot } = failingSkill()
+      const launcher = launcherFixture('printf "impeccable-engine 1.2.3\\n"')
+      writeFileSync(join(launcher, '..', 'VERSION'), '9.9.9\n', 'utf-8')
+      const part = join(stagingDir, `${PART}${deadPid()}`)
+      writeFileSync(part, 'partial', 'utf-8')
+
+      await withEnv({ IMPECCABLE_HOME: cacheRoot }, async () => {
+        expect(await createEngineWarmup(launcher, worktree(), warmupOptions)()).toBe(true)
+      })
+
+      expect(existsSync(part)).toBe(true)
+    })
+  })
+
+  it('is not ready, and leaves no child behind, when the launcher stalls past the warm-up budget', async () => {
+    const pidFile = trackedFile('stalled-child-pid')
+    // The launcher's own child stays in its process group, as the real launcher's curl does.
+    const launcher = launcherFixture(`sleep 60 &\necho $! > ${JSON.stringify(pidFile)}\nwait`)
+    const start = Date.now()
+    expect(await createEngineWarmup(launcher, worktree(), warmupOptions)()).toBe(false)
+
+    expect(Date.now() - start).toBeLessThan(5000)
+    await expectProcessGone(readPid(pidFile))
+  }, 15_000)
+})
+
+describe('engine warm-up through createHook, with a stalled first-use download', () => {
+  it('skips the scan with engine-pending without spawning the hook, then reports engine-unavailable once the warm-up times out, with no curl left', async () => {
+    await withStalledDownload(async ({ launcher, marker, requests, stagingDir }) => {
+      let hookSpawns = 0
+      const spawnCounting: DetectorRunner = (hookPayload, opts) => {
+        hookSpawns += 1
+        return createSpawnRunner({ scriptPath: launcher, command: launcher, args: ['hook'] })(hookPayload, opts)
+      }
+      const hook = createHook({
+        runDetector: spawnCounting,
+        worktree: worktree(),
+        warmEngine: createEngineWarmup(launcher, worktree(), { timeoutMs: 1500, killGraceMs: 200 }),
+        engineReadyWaitMs: 300,
+      })
+      const edit = { tool: 'edit', sessionID: 's', callID: 'c', args: { filePath: '/repo/src/App.tsx' } }
+
+      const first = { title: 't', output: 'ok', metadata: {} }
+      const start = Date.now()
+      await hook(edit, first)
+
+      expect(Date.now() - start).toBeLessThan(1500)
+      expect(first.output).toContain('design engine is still downloading')
+      expect(hookSpawns).toBe(0)
+      // The download starts in the background; under load the first hook call can return before curl connects.
+      await waitUntil(() => requests() > 0)
+      expect(requests()).toBeGreaterThan(0)
+      // The launcher has begun staging the download.
+      expect(readdirSync(stagingDir).some(name => name.startsWith('.impeccable.part.'))).toBe(true)
+
+      // The warm-up keeps running past the hook's wait, and its group is killed at its own timeout.
+      await expectMarkerProcessesGone(marker, 5000)
+
+      const second = { title: 't', output: 'ok', metadata: {} }
+      await hook(edit, second)
+      expect(second.output).toContain('design engine could not be fetched or started')
+      expect(hookSpawns).toBe(0)
+      // The failed warm-up removed its staging files.
+      expect(readdirSync(stagingDir).filter(name => name.startsWith('.impeccable.part.'))).toEqual([])
+
+      const third = { title: 't', output: 'ok', metadata: {} }
+      await hook(edit, third)
+      expect(third.output).toBe('ok')
+    })
+  }, 20_000)
+})
+
+/**
+ * The launcher fetches the engine binary for the host platform into
+ * `~/.impeccable/bin/<version>/` the first time it runs, and verifies its sha256.
+ * A cold machine would spend that download inside the 5 s hook timeout, so the
+ * suites below fetch it first through the bridge's own warm-up, with its long
+ * budget. The cache is the real HOME cache, because that is what the launcher
+ * uses in production.
+ */
+async function warmEngineCache(): Promise<void> {
+  const ready = await createEngineWarmup(join(REPO_ROOT, HOOK_LAUNCHER_RELATIVE_PATH), worktree())()
+  if (!ready) {
+    throw new Error(
+      'The Impeccable engine could not be fetched or started. The launcher needs network access to download the engine into ~/.impeccable/bin on first use, or IMPECCABLE_BIN pointing at an installed engine.',
+    )
+  }
+}
+
+describe('real vendored hook', () => {
+  beforeAll(warmEngineCache, ENGINE_WARMUP_TIMEOUT_MS + 10_000)
+
   // The vendored detector flags `background-clip: text` together with a gradient
   // on one line as `gradient-text`. A crash inside the hook library that exits 0
   // with no output would look like a clean scan at runtime, so this canary pins
@@ -522,7 +1016,7 @@ describe('real vendored hook.mjs', () => {
       cwd: projectDir,
       sessionID: `canary-${randomUUID()}`,
     })
-    const runner = createSpawnRunner({ scriptPath: join(REPO_ROOT, HOOK_SCRIPT_RELATIVE_PATH) })
+    const runner = createLauncherRunner(join(REPO_ROOT, HOOK_LAUNCHER_RELATIVE_PATH))
     const result = await runner(hookPayload, { worktree: projectDir })
 
     expect(result.kind).toBe('ok')
@@ -547,7 +1041,7 @@ describe('real vendored hook.mjs', () => {
       cwd: projectDir,
       sessionID: `clean-${randomUUID()}`,
     })
-    const runner = createSpawnRunner({ scriptPath: join(REPO_ROOT, HOOK_SCRIPT_RELATIVE_PATH) })
+    const runner = createLauncherRunner(join(REPO_ROOT, HOOK_LAUNCHER_RELATIVE_PATH))
     const result = await runner(hookPayload, { worktree: projectDir })
 
     expect(result).toEqual({ kind: 'ok', stdout: '', stderr: '' })
@@ -563,7 +1057,7 @@ describe('real vendored hook.mjs', () => {
     const patchText = ['*** Begin Patch', '*** Update File: old/name.tsx', '*** Move to: new/name.tsx', '*** End Patch'].join('\n')
     const sessionID = `rename-${randomUUID()}`
     const hookPayload = buildHookPayload({ tool: 'apply_patch', args: { patchText }, cwd: projectDir, sessionID })
-    const runner = createSpawnRunner({ scriptPath: join(REPO_ROOT, HOOK_SCRIPT_RELATIVE_PATH) })
+    const runner = createLauncherRunner(join(REPO_ROOT, HOOK_LAUNCHER_RELATIVE_PATH))
     const result = await runner(hookPayload, { worktree: projectDir })
 
     expect(result.kind).toBe('ok')
@@ -582,7 +1076,7 @@ describe('real vendored hook.mjs', () => {
     writeFileSync(join(projectDir, 'new', 'name.tsx'), `${GRADIENT_TEXT_LINE}\n`, 'utf-8')
 
     const hook = createHook({
-      runDetector: createSpawnRunner({ scriptPath: join(REPO_ROOT, HOOK_SCRIPT_RELATIVE_PATH) }),
+      runDetector: createLauncherRunner(join(REPO_ROOT, HOOK_LAUNCHER_RELATIVE_PATH)),
       worktree: projectDir,
     })
     const output = { title: 't', output: 'ok', metadata: {} }
@@ -609,7 +1103,7 @@ describe('real vendored hook.mjs', () => {
       '*** End Patch',
     ].join('\n')
     const hookPayload = buildHookPayload({ tool: 'apply_patch', args: { patchText }, cwd: projectDir, sessionID: `multi-${randomUUID()}` })
-    const runner = createSpawnRunner({ scriptPath: join(REPO_ROOT, HOOK_SCRIPT_RELATIVE_PATH) })
+    const runner = createLauncherRunner(join(REPO_ROOT, HOOK_LAUNCHER_RELATIVE_PATH))
     const result = await runner(hookPayload, { worktree: projectDir })
 
     expect(result.kind).toBe('ok')
