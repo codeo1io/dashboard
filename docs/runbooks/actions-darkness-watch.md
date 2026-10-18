@@ -24,8 +24,10 @@ Optional environment: `ACTIONS_DARKNESS_REPO` (default `codeo1io/dashboard`),
 
 ## Verdict semantics
 
-- **GREEN** (exit 0) — every push/schedule-triggered workflow has a run newer
-  than its staleness budget.
+- **GREEN** (exit 0) — no push/schedule-triggered workflow is both stale and
+  owed: a workflow more than 48 hours without a run still reads GREEN when
+  nothing newer has been pushed (`pushed_at` is not newer than its last
+  run) — staleness alone never trips the probe.
 - **DARK** (exit 3) — at least one push/schedule-triggered workflow has gone
   more than 48 hours without any run while the repository's `pushed_at` is
   newer than that workflow's last run: a run was owed and never created. The
@@ -69,3 +71,10 @@ out-of-band signal: repository tests cannot run while Actions is dark.
   schedule-only lanes (audit, base-drift, canary, fro-bot, upstream-drift)
   dark with no runs in the window. The outage state this runbook was written
   under.
+- Live DARK, 2026-10-18T04:08Z (exit 3, 6/12 candidates dark): the six
+  schedule-only lanes audit/base-drift/canary/cve-tripwire/release-channel/
+  upstream-drift all reported `never-ran`, live-demonstrating the pagination
+  bound below — audit's true last run is 2026-10-05T10:48:22Z (first-hand
+  `gh run list --workflow=audit.yaml`, conclusion `failure`), correctly DARK
+  as stale-plus-owed but printed `never` because that run falls outside the
+  100-run window; cve-tripwire has genuinely never run.

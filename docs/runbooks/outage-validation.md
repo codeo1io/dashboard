@@ -79,9 +79,20 @@ Engine release 753f4642, verified during the outage window:
 ## When the lights come back on
 
 - Re-run the canonical validation for anything that shipped on local proof alone.
-- The `Fro Bot` workflow on this fork stays `disabled_manually` until a `FRO_BOT_PAT` secret is
-  provisioned — the outage ending is not a reason to re-enable it (re-enabling resurrects a
-  failing cron). Check `gh workflow list` and `gh secret list` before flipping anything.
+- The `Fro Bot` workflow on this fork is ACTIVE with an armed-to-fail nightly cron (re-probed
+  2026-10-18): `gh workflow list` shows `Fro Bot  active`, `gh secret list` shows no
+  `FRO_BOT_PAT`, and the cron has already fired and failed — schedule run 39093521474
+  (2026-10-18T03:24:43Z) died in 7s at the `Checkout repository` step with the annotation
+  `Input required and not supplied: token`, because the workflow's checkout and agent steps
+  consume `${{ secrets.FRO_BOT_PAT }}` (`fro-bot.yaml` `token:`/`github-token:` inputs). The
+  2026-09-19 `disabled_manually` posture recorded in AGENTS.md is stale — the workflow was
+  re-enabled without the secret, so every nightly cron fails at checkout while
+  pull_request-event runs skip green in seconds (1-9s observed across the last
+  twelve). Re-probe before relying on any state here
+  (`gh workflow list`, `gh secret list`, `gh run list --workflow=fro-bot.yaml --limit 10`);
+  provisioning `FRO_BOT_PAT` or disabling the workflow again is the only lever that changes
+  this. Probe table and command transcripts:
+  `docs/solutions/workflow-issues/runbook-truth-sweep-fro-bot-armed-gate-2026-10-18.md`.
 
 ## Provenance
 
