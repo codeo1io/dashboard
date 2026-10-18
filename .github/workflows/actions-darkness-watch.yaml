@@ -1,0 +1,44 @@
+---
+name: Actions darkness watch
+
+# 2026-10-18 (rm-1520): scheduled lane for scripts/actions-darkness-watch.ts. The script detects
+# GitHub Actions run-creation darkness (workflows owed a run whose run was never created, and
+# firings running late) from the REST API. A scheduled CI lane cannot detect a TOTAL Actions
+# blackout (if run creation is dead, so is this lane) — for that case the script remains a
+# runbook-driven local probe (docs/runbooks/actions-darkness-watch.md); what this lane adds is
+# per-workflow darkness and late-firing surfacing in-band.
+#
+# ALERT-ONLY BY DESIGN: the script exits 3 (DARK) deliberately, mirroring upstream-drift.yaml's
+# alert-only exit-1 contract — a red run here is a signal, not a gate failure. Cadence is Monday
+# 09:07Z, shortly after the Monday sentinel family (03:37 audit → 04:13 base-drift → 05:17
+# upstream-drift → 05:23 canary → 06:27 scorecard → 06:53 cve-tripwire → 07:23 release-channel)
+# so every sentinel's latest run is fresh when the census runs; mid-week cadences would
+# false-positive on the >48h-stale weekly crons. A forced-dark dry-run is available via
+# workflow_dispatch with ACTIONS_DARKNESS_NOW pinned to a timestamp between sentinel weeks.
+on:
+  schedule:
+    - cron: '7 9 * * 1' # Mondays at 09:07 UTC — post-family census (sentinels end 07:23Z)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  darkness-watch:
+    name: Actions darkness watch
+    runs-on: ubuntu-24.04 # 2026-09-20: pinned runner (rm-188) to decouple from default-fleet churn.
+    timeout-minutes: 10 # rm-1520: bound the census (360m default is excessive).
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 📦 Setup
+        uses: ./.github/actions/setup
+
+      - name: Run darkness watch
+        env:
+          ACTIONS_DARKNESS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/actions-darkness-watch.ts

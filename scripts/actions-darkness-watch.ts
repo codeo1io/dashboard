@@ -196,7 +196,8 @@ interface ApiRuns {
 async function fetchJson<T>(url: string, token: string | undefined): Promise<T> {
   const headers: Record<string, string> = {Accept: 'application/vnd.github+json'}
   if (token !== undefined && token.length > 0) headers.Authorization = `Bearer ${token}`
-  const response = await fetch(url, {headers})
+  // 2026-10-18 (rm-1520): 20s transport bound so a stalled socket fails loudly instead of hanging the census.
+  const response = await fetch(url, {headers, signal: AbortSignal.timeout(20_000)})
   if (!response.ok) {
     throw new Error(`GET ${url} -> HTTP ${response.status}`)
   }
@@ -209,23 +210,34 @@ async function main(): Promise<number> {
   const token = process.env.ACTIONS_DARKNESS_TOKEN ?? process.env.GITHUB_TOKEN
   try {
     const triggers = readLocalTriggers()
-    const [apiWorkflows, apiRuns, repoInfo] = await Promise.all([
+    const [apiWorkflows, repoInfo] = await Promise.all([
       fetchJson<ApiWorkflows>(
         `https://api.github.com/repos/${repo}/actions/workflows?per_page=100`,
         token,
       ),
-      fetchJson<ApiRuns>(
-        `https://api.github.com/repos/${repo}/actions/runs?per_page=100`,
-        token,
-      ),
       fetchJson<{pushed_at: string}>(`https://api.github.com/repos/${repo}`, token),
     ])
+    const workflows = apiWorkflows.workflows.map(w => ({id: w.id, path: w.path, name: w.name}))
+    // 2026-10-18 (rm-1520): query each candidate workflow's latest run directly instead of one
+    // global /actions/runs page — the global page is capped (per_page=100) and truncates older
+    // workflows' latest runs during busy weeks, reading them as never-ran/stale (false DARK).
+    const candidateWorkflows = workflows.filter(w => {
+      const triggerList = triggers[w.path] ?? []
+      return triggerList.some(t => PUSH_SCHEDULE_TRIGGERS.has(t))
+    })
+    const runs: RunSummary[] = []
+    for (const workflow of candidateWorkflows) {
+      const apiRuns = await fetchJson<ApiRuns>(
+        `https://api.github.com/repos/${repo}/actions/workflows/${workflow.id}/runs?per_page=1`,
+        token,
+      )
+      for (const run of apiRuns.workflow_runs) {
+        runs.push({workflowId: run.workflow_id, createdAt: run.created_at})
+      }
+    }
     const verdict = computeDarkness({
-      workflows: apiWorkflows.workflows.map(w => ({id: w.id, path: w.path, name: w.name})),
-      runs: apiRuns.workflow_runs.map(r => ({
-        workflowId: r.workflow_id,
-        createdAt: r.created_at,
-      })),
+      workflows,
+      runs,
       triggers,
       pushedAt: repoInfo.pushed_at,
       now,
