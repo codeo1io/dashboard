@@ -139,8 +139,12 @@ addEventListener('message', (event: Event) => {
   // without a real push subscription/relay round-trip. `payload` has the wire
   // shape {title, body, data: {type, route, failureLabel?}} and is routed
   // through the same safe-copy mapping as a real push — never renders raw
-  // payload text.
-  if (messageType === 'MOCK_SYNTHETIC_PUSH') {
+  // payload text. Gated by the same build-time DEV flag as the poster button
+  // (web/src/views/Notifications.tsx): this file compiles through the Vite
+  // injectManifest pipeline, so prod builds statically replace DEV with false
+  // and eliminate this branch — and its token — from web/dist/sw.js
+  // (test/sw-prod-bundle-guard.test.ts pins that absence).
+  if (import.meta.env.DEV && messageType === 'MOCK_SYNTHETIC_PUSH') {
     const {title, body, data} = buildNotification((e.data as {payload?: unknown} | null)?.payload)
     e.waitUntil(registration.showNotification(title, {body, data}))
   }
