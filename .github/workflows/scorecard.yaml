@@ -12,7 +12,8 @@ permissions: {}
 jobs:
   analysis:
     name: Scorecard analysis
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 # 2026-09-20: pinned runner (rm-188) to decouple from default-fleet churn.
+    timeout-minutes: 15 # 2026-09-20 (rm-603): bound scorecard runs (360m default is excessive). Both lost in the 2026.10.43 adoption merge; re-restored 2026-10-18 (rm-1520).
     permissions:
       contents: read
       security-events: write

@@ -91,10 +91,14 @@ view of Fro Bot's cross-repo footprint.
   workflow now sets `branch-pr` for those triggers; verify delivery by confirming a
   fro-bot-authored PR exists, not by reading run status. See
   `docs/solutions/workflow-issues/workflow-output-mode-auto-discarded-agent-fixes-2026-08-31.md`.
-- The `Fro Bot` workflow on this fork is `disabled_manually` (verified 2026-09-19):
-  codeo1io/dashboard has no `FRO_BOT_PAT` secret, so the daily cron would fail on
-  every run. Re-enabling it without provisioning that secret resurrects the failing
-  cron — check `gh workflow list` state and secret presence before flipping it back on.
+- The `Fro Bot` workflow on this fork is `active` with no `FRO_BOT_PAT` secret
+  provisioned (live state 2026-10-18). The 2026.10.43 adoption merge reverted the
+  secret-presence skip gate that let scheduled runs skip green when the secret is
+  absent; the gate was re-restored 2026-10-18 (rm-1518) as job-level
+  `env.HAS_FRO_BOT_PAT` + per-step `if:` guards (the secrets context is not
+  available in a job-level `if:`). Check `gh workflow list` state and secret
+  presence before changing the trigger set — provisioning `FRO_BOT_PAT` re-arms
+  real scheduled runs.
 
 ## Cloned Dependency Source
 
@@ -102,8 +106,9 @@ Read-only dependency source repositories are available under
 `.slim/clonedeps/repos/` for inspection. Do not edit these clones.
 
 - `.slim/clonedeps/repos/fro-bot__agent/` — `fro-bot/agent` at the CI-pinned
-  tag `v0.122.1` (pin source: `.github/workflows/fro-bot.yaml`; mirror
-  re-provisioned 2026-10-15 — provision with `git clone --depth 1 --branch
+  tag `v0.122.3` (pin source: `.github/workflows/fro-bot.yaml`; mirror
+  re-provisioned 2026-10-18 and `.slim/clonedeps.json` re-anchored to the same
+  pin, rm-1521; provision with `git clone --depth 1 --branch
   <pin>` if absent); the gateway's operator OAuth return path contract, GitHub
   App client, secret readers, Hono build/serve split, and runtime
   logger/Result primitives that this app mirrors.
