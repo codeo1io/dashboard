@@ -1,0 +1,60 @@
+name: Contract Estate
+# rm-2063 operator-contract estate tripwire (repository-maintenance cycle:3, minted at ROADMAP
+# extension #45 from research 2fcfeaa613784cb583470b17dc17d6e7).
+#
+# Why a dedicated lane: fro-bot/agent v0.124.0 (2026-10-18T22:04Z) ships gateway operator
+# contract 1.12.0 while this fork pins 1.11.0 in two declarations (src/gateway/operator-contract/
+# version.ts + public/operator-stream.js, exact-match ready-frame reject). A deployed-gateway
+# upgrade ahead of the fork twin darkens /operator BY DESIGN, and no other workflow compares the
+# two sides — the unit tests prove the close, not the warning, and reading releases/latest by
+# hand conflates upstream-latest with the deployed estate (the documented 2026-10-15 incident).
+# cve-tripwire watches the Dockerfile pin, release-channel watches the release channel; neither
+# owns the gateway contract estate.
+#
+# Gate semantics: node scripts/operator-contract-estate.ts exits 0 while the upstream
+# latest-release contract equals both fork pins; exit 1 on drift (RED-BY-DESIGN while upstream is
+# ahead — that red IS the rm-252 port-vs-hold decision demand, not a regression); exit 2 on any
+# fetch/parse failure (never silent-green). The script derives both pins from the checked-out
+# tree, never from hardcoded copies (rm-779 hardcode-desync lesson).
+#
+# Slot: Mondays 07:53 UTC — off-hour per the cve-tripwire convention, after the existing Monday
+# cluster (03:37 audit, 04:13 base-drift, 05:17 upstream-drift, 05:23 canary, 06:27 scorecard,
+# 06:53 cve-tripwire, 07:23 release-channel) so unrelated failures do not stack in one window.
+# Manual confirmation arm for a red verdict: the infra-checkout estate read per
+# docs/runbooks/gateway-access.md.
+on:
+  schedule:
+    - cron: '53 7 * * 1'
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: contract-estate
+  cancel-in-progress: false
+jobs:
+  tripwire:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      # Zero-import script (node:fs/node:path + global fetch only — no pnpm, no
+      # node_modules), so the setup-node-only shape is the precedent (audit.yaml
+      # documents it; the ./.github/actions/setup composite's frozen install is
+      # heavyweight for a weekly watch). Node is PINNED to 24, never the runner
+      # default: the script is strip-only native TS, and an un-pinned default
+      # node below the strip-only floor would die as a syntax error — a false
+      # UNKNOWN red that poisons the signal this tripwire exists to carry.
+      # setup-node at the FLEET digest v7.1.0 — release-channel.yaml's v7.0.0 is
+      # the lone split-pin site (rm-2064), and new sites must not widen it.
+      - name: Set up Node 24
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Run operator-contract estate tripwire (rm-2063)
+        env:
+          GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
+        run: node scripts/operator-contract-estate.ts
