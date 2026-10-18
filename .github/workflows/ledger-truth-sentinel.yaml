@@ -1,0 +1,62 @@
+name: Ledger truth sentinel
+
+# rm-2091 — the ledger's truth gate, in CI at last.
+#
+# scripts/roadmap-ledger-check.ts (rm-1486) fails on any PROVEN-STALE
+# 'pending landing' claim in ROADMAP.md — a claim citing a commit that is
+# already an ancestor of origin/main. Until this workflow existed the check
+# ran only when a delegate remembered to run it by hand: its bite is proven
+# by the rm-843 stale tail, live on main for nine days while main CI stayed
+# green (closed by the same landing that carries this sentinel).
+#
+# Deliberately a scheduled workflow, NOT a main.yaml job: main.yaml's job
+# set is bound to branch protection's required contexts (rm-878's subject),
+# and a job added there runs un-required until the protection object is
+# edited; a sentinel that nothing requires still sees everything. The red
+# run itself is the signal surface — issues: write NOT granted (the
+# release-channel.yaml posture).
+#
+# fetch-depth: 0 is load-bearing: the check resolves cited refs and runs
+# `git merge-base --is-ancestor` against origin/main — a shallow checkout
+# makes every ref unresolvable, and unresolvable refs fail OPEN by design
+# (the script's own contract), which would silently disarm this sentinel.
+
+on:
+  schedule:
+    # Weekly, Monday 07:43 UTC — off-hour vs the Monday cron cluster
+    # (03:37 audit, 04:13 base-drift, 05:17 upstream-drift, 05:23 canary,
+    # 06:27 scorecard, 06:53 cve-tripwire on main, 07:23 release-channel)
+    # so unrelated failures do not stack in one window.
+    - cron: '43 7 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ledger-truth-sentinel
+  cancel-in-progress: false
+
+jobs:
+  ledger-truth:
+    name: Fail on provably-stale pending-landing claims
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+
+      - name: Ledger truth check
+        # Exit 0 = no pending-landing claim cites a commit already on
+        # origin/main; 1 = PROVEN-STALE claim(s) listed per def; 2 = ROADMAP
+        # unreadable. Reads ROADMAP.md and runs git rev-parse / git
+        # merge-base only — no network beyond the checkout.
+        run: node --experimental-strip-types scripts/roadmap-ledger-check.ts

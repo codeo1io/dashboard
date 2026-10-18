@@ -128,7 +128,13 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
       path: '/auth',
     })
 
-    const authURL = oauthClient.createAuthorizationURL(state, ['read:user'], {
+    // rm-2092: zero-scope sign-in, upstream verbatim (fro-bot/agent
+    // v0.123.1 #1856) — the token is spent only on fetching the operator's
+    // own id/login for the allowlist check, which needs no OAuth scope.
+    // Existing grants are NOT auto-revoked: previously-authorized operators
+    // keep their grant scopes until re-authorized (README names the caveat;
+    // test/auth-zero-scope.test.ts pins the request shape).
+    const authURL = oauthClient.createAuthorizationURL(state, [], {
       codeChallenge,
       codeChallengeMethod: 'S256',
     })

@@ -76,6 +76,11 @@ Access is single-operator: GitHub OAuth authenticates the request and an exact, 
 login allowlist gates every non-public route. Sessions are HttpOnly, Secure, SameSite=Lax signed
 cookies; logout is CSRF-protected.
 
+The OAuth sign-in requests NO scopes (upstream verbatim, fro-bot/agent
+v0.123.1 #1856): the token is spent only on fetching the operator's own
+id/login for the allowlist check. Existing grants are not auto-revoked —
+previously-authorized operators keep their grant scopes until re-authorized.
+
 The `Secure` attribute on the OAuth state and session cookies is set when the request URL is
 `https://` **or** the `x-forwarded-proto` request header is exactly `https` (rm-604). This makes
 TLS-terminating reverse proxies work without extra configuration, but it means the proxy must
