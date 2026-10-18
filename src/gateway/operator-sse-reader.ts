@@ -107,6 +107,39 @@ function normalizeCrlf(text: string): string {
 }
 
 /**
+ * rm-1492: UTF-8 byte length of `text` WITHOUT materializing the encoded
+ * bytes (no TextEncoder allocation). The streaming read loop calls this once
+ * per incoming chunk and once per released record, so byte accounting stays
+ * a scan — never a re-encode of the whole held buffer (the pre-rm-1492
+ * `encoder.encode(buffer).length` per chunk was quadratic up to the 1MB
+ * cap). Surrogate handling matches TextEncoder exactly (a lone surrogate
+ * encodes as U+FFFD, 3 bytes) so the count stays true to the wire.
+ */
+function utf8ByteLength(text: string): number {
+  let bytes = 0
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i)
+    if (code < 0x80) {
+      bytes += 1
+    } else if (code < 0x800) {
+      bytes += 2
+    } else if (code >= 0xD800 && code <= 0xDBFF) {
+      const low = text.charCodeAt(i + 1)
+      if (low >= 0xDC00 && low <= 0xDFFF) {
+        bytes += 4
+        i += 1
+      } else {
+        bytes += 3
+      }
+    } else {
+      // 3-byte BMP code point, or a lone low surrogate (U+FFFD, 3 bytes)
+      bytes += 3
+    }
+  }
+  return bytes
+}
+
+/**
  * Parse a single SSE record (the text between two blank lines) into a
  * typed RunStreamFrame or a typed parse failure.
  *
@@ -491,7 +524,6 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
     }
 
     const decoder = new TextDecoder()
-    const encoder = new TextEncoder()
     let buffer = ''
     let bufferBytes = 0
     let contractVerified = false
@@ -561,17 +593,40 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
           // opens the NEXT chunk forges a phantom record boundary and the frame
           // is dropped without even a parse error. Hold a trailing CR back and
           // let it normalize together with the following chunk.
-          let text = buffer + decoder.decode(value, {stream: true})
-          let held = ''
-          if (text.endsWith('\r')) {
-            held = '\r'
-            text = text.slice(0, -1)
+          //
+          // rm-1492 INVARIANT: byte accounting below is incremental — one
+          // utf8ByteLength scan of the incoming text plus junction deltas.
+          // The held buffer is NEVER re-encoded inside this loop, and the
+          // released record is charged exactly once, at release.
+          let incoming = decoder.decode(value, {stream: true})
+          if (incoming !== '') {
+            let junctionDeltaBytes = 0
+            // Resolve the previously held trailing CR against this chunk's
+            // first char — the only place the held CR can meet its partner.
+            if (buffer.endsWith('\r')) {
+              if (incoming.startsWith('\n')) {
+                // CRLF junction collapses to one LF: drop the held CR's byte;
+                // the incoming LF (counted below) is the survivor.
+                buffer = buffer.slice(0, -1)
+                junctionDeltaBytes = -1
+              } else {
+                // Lone held CR normalizes to LF — same single-byte weight.
+                buffer = `${buffer.slice(0, -1)}\n`
+              }
+            }
+            // Hold back a NEW trailing CR (rm-477) before normalizing.
+            let held = ''
+            if (incoming.endsWith('\r')) {
+              held = '\r'
+              incoming = incoming.slice(0, -1)
+            }
+            // normalizeCrlf is idempotent on already-normalized text, so only
+            // the fresh text is normalized; interior CRLF collapses (−1 byte
+            // each) are captured by measuring the normalized text directly.
+            const normalizedIncoming = normalizeCrlf(incoming)
+            buffer += normalizedIncoming + held
+            bufferBytes += junctionDeltaBytes + utf8ByteLength(normalizedIncoming) + (held === '' ? 0 : 1)
           }
-          // normalizeCrlf is idempotent on already-normalized text, so
-          // re-normalizing the concatenation is safe; only the junction
-          // between a held CR and a following LF changes.
-          buffer = normalizeCrlf(text) + held
-          bufferBytes = encoder.encode(buffer).length
         }
 
         // Hard buffer cap (UTF-8 bytes, rm-114) — fail closed if exceeded without a boundary
@@ -587,7 +642,9 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
         while (boundary !== -1) {
           const record = buffer.slice(0, boundary)
           buffer = buffer.slice(boundary + 2)
-          bufferBytes -= encoder.encode(`${record}\n\n`).length
+          // rm-1492: charge the released record once — its own scan plus the
+          // two LF terminators; never a re-encode of the held buffer.
+          bufferBytes -= utf8ByteLength(record) + 2
 
           const results = parseSseChunk(`${record}\n\n`)
           for (const result of results) {

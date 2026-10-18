@@ -26,6 +26,7 @@ import {existsSync, readFileSync, statSync} from 'node:fs'
 import {readFile} from 'node:fs/promises'
 import {join} from 'node:path'
 import process from 'node:process'
+import {fileURLToPath} from 'node:url'
 import {serve} from '@hono/node-server'
 import {getConnInfo} from '@hono/node-server/conninfo'
 import {serveStatic} from '@hono/node-server/serve-static'
@@ -519,6 +520,21 @@ export interface DashboardAppConfig {
 }
 
 /**
+ * rm-1490: resolve the operator runtime public-asset root (public/, served at
+ * /static/*). Every consumer used to hardcode './public', which resolves
+ * against the process CWD — starting the server from any directory other
+ * than the repo root silently 404'd /static/operator-*.js (and the ETag
+ * middleware's statSync catch no-op'd on the same moved root). The default is
+ * anchored to THIS MODULE's own directory (src/../public — import.meta.dirname
+ * semantics, spelled via URL so it is identical under node's native-TS loader
+ * and the test transform), with an explicit override mirroring the
+ * DASHBOARD_WEB_DIST convention: DASHBOARD_PUBLIC_ROOT (README env table).
+ */
+export function resolveOperatorPublicRoot(): string {
+  return process.env.DASHBOARD_PUBLIC_ROOT?.trim() ?? fileURLToPath(new URL('../public', import.meta.url))
+}
+
+/**
  * Constructs the Hono app with all middleware and routes mounted.
  * Separated from port binding so tests can call app.request() without a live server.
  *
@@ -699,6 +715,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       'DASHBOARD_WEB_DIST=./web/dist-fixture is not allowed in production (dist-fixture is a dev-only build artifact)',
     )
   }
+
+  // rm-1490: operator runtime asset root — module-anchored so it resolves
+  // identically regardless of process CWD; DASHBOARD_PUBLIC_ROOT overrides.
+  const operatorPublicRoot = resolveOperatorPublicRoot()
 
   // Resolve the trusted gateway operator origin — SECURITY CRITICAL.
   // Must be a configured, trusted value; never derived from the inbound request Host.
@@ -1212,7 +1232,7 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     if (c.res.status !== 200) return
     let etag: string | undefined
     try {
-      const absolutePath = join('./public', c.req.path.replace(/^\/static\//, ''))
+      const absolutePath = join(operatorPublicRoot, c.req.path.replace(/^\/static\//, ''))
       const stats = statSync(absolutePath)
       const cached = operatorRuntimeAssetCache.get(absolutePath)
       if (cached !== undefined && cached.mtimeMs === stats.mtimeMs) {
@@ -1221,8 +1241,15 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
         etag = `"${createHash('sha256').update(readFileSync(absolutePath)).digest('hex').slice(0, 32)}"`
         operatorRuntimeAssetCache.set(absolutePath, {etag, mtimeMs: stats.mtimeMs})
       }
-    } catch {
-      return // unreadable file — serveStatic's own not-found path already ran
+    } catch (error) {
+      // rm-1490: the root is module-anchored, so a stat failure here is a real
+      // per-file problem (e.g. deleted mid-flight), not a CWD accident — log it
+      // instead of silently no-op'ing; serving proceeds without the ETag
+      // (serveStatic's own not-found path already ran).
+      logger.debug('operator runtime asset stat failed; serving without ETag', {
+        error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
+      })
+      return
     }
     c.res.headers.set('Cache-Control', 'no-cache')
     c.res.headers.set('ETag', etag)
@@ -1233,17 +1260,17 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   app.use(
     '/static/operator-stream.js',
     operatorRuntimeCaching,
-    serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}),
+    serveStatic({root: operatorPublicRoot, rewriteRequestPath: path => path.replace(/^\/static/, '')}),
   )
   app.use(
     '/static/operator-launch.js',
     operatorRuntimeCaching,
-    serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}),
+    serveStatic({root: operatorPublicRoot, rewriteRequestPath: path => path.replace(/^\/static/, '')}),
   )
   app.use(
     '/static/operator-run-index.js',
     operatorRuntimeCaching,
-    serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}),
+    serveStatic({root: operatorPublicRoot, rewriteRequestPath: path => path.replace(/^\/static/, '')}),
   )
 
   // ── Operator UI skeleton route ────────────────────────────────────────────────
@@ -1257,7 +1284,7 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     // /static/ is in isPublicPath so unauthenticated browsers can load assets.
     // Note: operator-stream.js and operator-launch.js are already mounted above;
     // this catch-all additionally serves operator.css and any other static assets.
-    app.use('/static/*', serveStatic({root: './public', rewriteRequestPath: path => path.replace(/^\/static/, '')}))
+    app.use('/static/*', serveStatic({root: operatorPublicRoot, rewriteRequestPath: path => path.replace(/^\/static/, '')}))
   }
 
   // ── Fixture harness routes (DEV-ONLY) ─────────────────────────────────────

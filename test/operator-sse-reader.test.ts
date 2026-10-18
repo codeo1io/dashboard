@@ -14,6 +14,8 @@
 
 import type {RunStreamFrame} from '../src/gateway/operator-contract/sse-frames.ts'
 import type {Logger} from '../src/logger.ts'
+import {readFile} from 'node:fs/promises'
+import {fileURLToPath} from 'node:url'
 import fc from 'fast-check'
 import {describe, expect, it, vi} from 'vitest'
 import {OPERATOR_CONTRACT_VERSION} from '../src/gateway/operator-contract/version.ts'
@@ -2949,5 +2951,110 @@ describe('createOperatorSseReader — question frames', () => {
     expect(errors).toHaveLength(0)
     const status = events.find(e => e.type === 'status')
     expect(status?.type === 'status' ? status.data.status : undefined).toBe('waiting_for_question')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-1492: incremental byte accounting
+// ---------------------------------------------------------------------------
+
+describe('createOperatorSseReader — incremental byte accounting (rm-1492)', () => {
+  it('is equivalent to single-chunk delivery for EVERY split point of a CRLF + multibyte payload', async () => {
+    const statusPayload = {
+      runId: 'run-001',
+      entityRef: 'fro-bot/agent',
+      surface: 'github',
+      phase: 'EXECUTING',
+      status: 'running',
+      startedAt: '2026-06-18T20:00:00Z',
+      stale: false,
+    }
+    // CRLF delimiters, a multibyte comment line (astral chars live only in a
+    // comment: comments are skipped by the parser, so even a surrogate-cut
+    // split cannot change frame equivalence), and a data record.
+    const payload =
+      `event: ready\r\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\r\n\r\n` +
+      `: \u{1F6A8}\u{00E9}x heartbeat padding\r\n` +
+      `event: status\r\ndata: ${JSON.stringify(statusPayload)}\r\n\r\n`
+
+    const whole = await collectFrames([payload])
+    expect(whole.errors).toHaveLength(0)
+    expect(whole.events.map(e => e.type)).toEqual(['ready', 'status'])
+
+    // Exhaustive sweep: every possible two-chunk split, including cuts landing
+    // between \r and \n, on a surrogate pair, inside the JSON, and at the
+    // record boundary. The incremental junction/byte math must reproduce the
+    // single-chunk result exactly.
+    for (let splitAt = 1; splitAt < payload.length; splitAt += 1) {
+      const split = await collectFrames([payload.slice(0, splitAt), payload.slice(splitAt)])
+      expect(split.errors, `split at ${splitAt}`).toHaveLength(0)
+      expect(split.events.map(e => e.type), `split at ${splitAt}`).toEqual(['ready', 'status'])
+      expect(JSON.stringify(split.events), `split at ${splitAt}`).toEqual(JSON.stringify(whole.events))
+    }
+
+    // Multi-way splits with the same awkward shapes (held CR meets an empty
+    // chunk, then its LF partner arrives later).
+    const readyText = `event: ready\r\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\r\n`
+    const threeWay = await collectFrames([readyText, '', `\r\nevent: status\r\ndata: ${JSON.stringify(statusPayload)}\r\n\r\n`])
+    expect(threeWay.errors).toHaveLength(0)
+    expect(threeWay.events.map(e => e.type)).toEqual(['ready', 'status'])
+  })
+
+  it('a buffer of exactly MAX_SSE_BUFFER_BYTES does NOT trip the cap; one byte more does', async () => {
+    // Exactly at cap (ASCII): the check is strictly greater-than. Chunked
+    // delivery exercises the incremental adds.
+    const atCap = 'x'.repeat(MAX_SSE_BUFFER_BYTES)
+    const chunksAtCap = [atCap.slice(0, 65536), atCap.slice(65536, 131072), atCap.slice(131072)]
+    const exact = await collectFrames(chunksAtCap)
+    expect(exact.errors).toHaveLength(0)
+
+    const over = await collectFrames([...chunksAtCap, 'x'])
+    expect(over.errors).toHaveLength(1)
+    expect(over.errors[0]?.message).toBe('network error: stream buffer overflow')
+  })
+
+  it('the incremental counter counts UTF-8 bytes on multibyte chunked delivery', async () => {
+    // 'é' is 1 UTF-16 unit but 2 UTF-8 bytes: 500_000 chars = exactly 1MB.
+    const twoByte = 'é'.repeat(MAX_SSE_BUFFER_BYTES / 2)
+    const atCap = await collectFrames([twoByte.slice(0, 65536), twoByte.slice(65536)])
+    expect(atCap.errors).toHaveLength(0)
+
+    const overCap = await collectFrames([twoByte.slice(0, 65536), twoByte.slice(65536), 'é'])
+    expect(overCap.errors).toHaveLength(1)
+    expect(overCap.errors[0]?.message).toBe('network error: stream buffer overflow')
+  })
+
+  it('released records are charged: total stream larger than the cap streams fine frame-by-frame', async () => {
+    const statusPayload = {
+      runId: 'run-001',
+      entityRef: 'fro-bot/agent',
+      surface: 'github',
+      phase: 'EXECUTING',
+      status: 'running',
+      startedAt: '2026-06-18T20:00:00Z',
+      stale: false,
+    }
+    // 8 blocks of ~160KB each (multibyte comment padding + one status frame):
+    // ~1.3MB total — over the cap in aggregate, but never held at once. If the
+    // release path stopped subtracting bytes, the cap would trip mid-stream.
+    const blocks: string[] = [`event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\n`]
+    for (let i = 0; i < 8; i += 1) {
+      blocks.push(`: ${'𝕏'.repeat(40_000)}\r\nevent: status\r\ndata: ${JSON.stringify(statusPayload)}\r\n\r\n`)
+    }
+    const {events, errors} = await collectFrames(blocks)
+    expect(errors).toHaveLength(0)
+    expect(events).toHaveLength(9)
+    expect(events.filter(e => e.type === 'status')).toHaveLength(8)
+  })
+
+  it('rm-1492 invariant: the chunk loop never re-encodes the held buffer', async () => {
+    const source = await readFile(fileURLToPath(new URL('../src/gateway/operator-sse-reader.ts', import.meta.url)), 'utf8')
+    // The pre-rm-1492 shapes must stay gone AS CODE — match call shapes (an =
+    // or ( before the encode), not the backtick-quoted mentions in comments.
+    expect(source).not.toMatch(/[=(]\s*encoder\.encode\(\s*buffer\s*\)/)
+    expect(source).not.toMatch(/encoder\.encode\(\s*`\$\{record\}/)
+    // The incremental accounting calls themselves.
+    expect(source).toContain('utf8ByteLength(normalizedIncoming)')
+    expect(source).toContain('utf8ByteLength(record) + 2')
   })
 })
