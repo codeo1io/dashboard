@@ -114,6 +114,10 @@ const TOLERATED_MISSING = new Map([
     'src/web/sse/manager.ts',
     'upstream tree path quoted for comparison in the gate doc — never a fork deliverable',
   ],
+  [
+    'test/visual-parity-guard.test.ts',
+    'recorded DROPPED by the 2026-10-17 cycle:1 batch doc itself (run 47f9aaefa379 supersession record — single-source rule: main adopted the sibling visual-playwright-image-lockstep.test.ts instead, owner rm-881); the run’s branch predated this tripwire, so the cohort claim first became visible at the 40bc52f7 integrate',
+  ],
 ])
 
 function newestCohortDocs(): string[] {
