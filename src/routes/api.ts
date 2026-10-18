@@ -91,6 +91,8 @@ export function buildApiRouter(getSnapshot?: SnapshotProvider): Hono {
   const api = new Hono()
 
   api.get('/healthz', c => {
+    // rm-107: liveness-only by design — lastFetch/rateLimit are reserved
+    // placeholders (README.md 'Endpoints'); the data-bearing shape is /api/status.
     return c.json({ok: true, lastFetch: null, rateLimit: null})
   })
 
