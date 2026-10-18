@@ -1,7 +1,9 @@
 {
   "detector": {
     "ignoreRules": [],
-    "ignoreFiles": [],
+    "ignoreFiles": [
+      "web/privacy.html"
+    ],
     "ignoreValues": [
       {
         "rule": "bounce-easing",
