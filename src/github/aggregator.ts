@@ -28,7 +28,7 @@ import type {Result} from '../result.ts'
 import type {EnumerateReposResult, InstallationsClient} from './installations.ts'
 import type {MetadataError, MetadataReader, MetadataResult} from './metadata.ts'
 import type {PlatformStatus} from './platform-status.ts'
-
+import type {ScorecardInfo} from './scorecard.ts'
 import {logger, sanitizeErrorMessage, type LogContext} from '../logger.ts'
 import {isErr, isOk} from '../result.ts'
 import {deriveDatabaseId, redactedDatabaseIdIn} from './metadata.ts'
@@ -129,6 +129,8 @@ export interface DashboardRepo {
    */
   readonly discovery_channel: string
   readonly status: RepoCiStatus
+  /** OpenSSF Scorecard posture (rm-1974); ABSENT (not null) on any failure — the column is omitted per repo, per cycle. */
+  readonly scorecard?: ScorecardInfo
 }
 
 /**
@@ -346,6 +348,8 @@ export interface AggregatorDeps {
    * server.ts injects the real fetchPlatformStatus, tests inject stubs.
    */
   readonly platformStatusFetch?: () => Promise<PlatformStatus | null>
+  /** Optional OpenSSF Scorecard fetch (rm-1974); absent dep -> the column is simply omitted, and per-repo failures resolve to absence. */
+  readonly fetchScorecard?: (owner: string, name: string) => Promise<ScorecardInfo | undefined>
 }
 
 // ---------------------------------------------------------------------------
@@ -627,7 +631,7 @@ export function escapeRegExp(text: string): string {
  * Detect whether a GraphQL error is specifically about the vulnerabilityAlerts
  * field being inaccessible (permission/scope error).
  */
-function isVulnerabilityAlertsPermissionError(error: unknown): boolean {
+export function isVulnerabilityAlertsPermissionError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
   const msg = error.message.toLowerCase()
   // GitHub GraphQL returns errors like:
@@ -1261,6 +1265,10 @@ export function createAggregator(
     // fetchRepoStatus call is deadline-bounded internally, so every worker
     // slot is guaranteed to free up; Promise.all can never hang.
     const statuses: (RepoCiStatus | undefined)[] = Array.from({length: workingSet.length})
+    // rm-1974: same fixed-index pattern as `statuses` — absent dep or any
+    // per-repo failure leaves the slot undefined, and the push loop omits
+    // the scorecard column for that repo this cycle (fail-soft, never null).
+    const scorecards: (ScorecardInfo | undefined)[] = Array.from({length: workingSet.length})
     let nextIndex = 0
     const workerCount = Math.max(1, Math.min(refreshConcurrency, workingSet.length))
     const workers: Promise<void>[] = []
@@ -1274,6 +1282,7 @@ export function createAggregator(
             const entry = workingSet[index]
             if (entry === undefined) continue
             statuses[index] = await fetchRepoStatus(entry, graphqlQueryForInstallation, now, fetchDeadlineMs)
+            scorecards[index] = await (deps.fetchScorecard?.(entry.owner, entry.name) ?? Promise.resolve(undefined))
           }
         })(),
       )
@@ -1292,6 +1301,7 @@ export function createAggregator(
         // noUncheckedIndexedAccess. failingCheckDetails required here too —
         // the drill-down sample is empty on an unfetched repo (rm-192).
         status: statuses[index] ?? {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, stale: true, fetchedAt: now()},
+        ...(scorecards[index] ? {scorecard: scorecards[index]} : {}),
       })
     }
 
