@@ -2193,6 +2193,23 @@ describe('URL-hash restore — expand sets hash, remount restores', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Run-card scroll margin: programmatic scrollIntoView must not pin a card under
+// the sticky page header (upstream #634 line; the margin itself landed on main
+// via the 2026.10.43 adoption, this guard is the port's surviving test — the
+// deferred-reveal suite was subsumed by the evolved scrollRunCardIntoView tests
+// above and the jump/reveal describes below).
+// ---------------------------------------------------------------------------
+
+describe('run-card scroll margin below the sticky header', () => {
+  it('index.css gives run cards a scroll margin below the sticky header', async () => {
+    const {readFileSync} = await import('node:fs')
+    const {resolve} = await import('node:path')
+    const text = readFileSync(resolve(import.meta.dirname, '..', 'index.css'), 'utf8')
+    expect(text).toMatch(/\.run-card\s*\{[^}]*scroll-margin-top:\s*calc\(var\(--space-12\) \+ var\(--space-4\)\)/s)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // In-page jump to a run (a question notification tapped with the dashboard open)
 // ---------------------------------------------------------------------------
 
