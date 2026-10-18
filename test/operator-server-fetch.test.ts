@@ -10,7 +10,9 @@
  * - Relative /operator/* paths are resolved to absolute same-origin URLs.
  * - Caller-supplied init.headers are merged but the forwarded cookie wins.
  * - redirect:'error' is always set so the cookie is never forwarded across a redirect.
- * - A 10-second AbortSignal timeout is applied to every outgoing request.
+ * - A 10-second AbortSignal timeout is applied to every outgoing request, COMBINED
+ *   with any caller-supplied init.signal via AbortSignal.any — caller aborts are
+ *   honored, never dropped (mirrors src/github/app-client.ts).
  */
 
 import {describe, expect, it} from 'vitest'
@@ -404,6 +406,111 @@ describe('createOperatorServerFetch — fetch timeout', () => {
 
     // The adapter must propagate the AbortError (operator client maps it to GatewayNetworkError → deny)
     await expect(fetch('/operator/session')).rejects.toThrow()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Security: caller-supplied init.signal is combined with the timeout via
+// AbortSignal.any — the gateway-fetch half of the operator client contract
+// ---------------------------------------------------------------------------
+
+describe('createOperatorServerFetch — caller abort signal is honored', () => {
+  it('aborts the outgoing fetch when the caller aborts mid-flight', async () => {
+    // A fetchImpl that hangs until its (combined) signal aborts, then rejects —
+    // exactly how a real fetch behaves on abort.
+    const hangingFetch = async (_url: string, init?: RequestInit): Promise<Response> =>
+      new Promise((_resolve, reject) => {
+        const signal = init?.signal
+        if (!signal) {
+          reject(new Error('expected a signal on the outgoing init'))
+          return
+        }
+        signal.addEventListener(
+          'abort',
+          () => {
+            reject(signal.reason ?? new DOMException('The operation was aborted.', 'AbortError'))
+          },
+          {once: true},
+        )
+      })
+
+    const fetch = createOperatorServerFetch({
+      origin: 'https://dashboard.fro.bot',
+      cookie: 'gw=abc',
+      fetchImpl: hangingFetch,
+    })
+
+    const controller = new AbortController()
+    const pending = fetch('/operator/session', {signal: controller.signal})
+    // Give the adapter a tick to dispatch, then abort the CALLER signal.
+    await new Promise(resolve => setTimeout(resolve, 10))
+    controller.abort()
+
+    // The caller abort must propagate through the combined signal. The old
+    // behavior (signal overwritten by the standalone timeout) left this fetch
+    // pending for the full GATEWAY_FETCH_TIMEOUT_MS.
+    await expect(pending).rejects.toThrow()
+  })
+
+  it('sees an already-aborted outgoing signal when the caller signal aborted before the call', async () => {
+    const {fetchImpl, calls} = makeFakeFetch()
+    const fetch = createOperatorServerFetch({
+      origin: 'https://dashboard.fro.bot',
+      cookie: 'gw=abc',
+      fetchImpl,
+    })
+
+    const controller = new AbortController()
+    controller.abort()
+    await fetch('/operator/session', {signal: controller.signal})
+
+    // AbortSignal.any propagates a pre-aborted source instantly: the outgoing
+    // signal must already be aborted at dispatch.
+    expect(calls[0]?.init?.signal?.aborted).toBe(true)
+  })
+
+  it('sends a NEW combined signal — never the raw caller signal', async () => {
+    const {fetchImpl, calls} = makeFakeFetch()
+    const fetch = createOperatorServerFetch({
+      origin: 'https://dashboard.fro.bot',
+      cookie: 'gw=abc',
+      fetchImpl,
+    })
+
+    const controller = new AbortController()
+    await fetch('/operator/session', {signal: controller.signal})
+
+    // If the adapter passed the caller signal through unchanged, the timeout
+    // bound would be lost for that request. The outgoing signal must be a
+    // distinct combined signal still carrying the timeout leg…
+    const outgoing = calls[0]?.init?.signal
+    expect(outgoing).toBeInstanceOf(AbortSignal)
+    expect(outgoing).not.toBe(controller.signal)
+    // …live (not yet aborted — the timeout has not fired)…
+    expect(outgoing?.aborted).toBe(false)
+    // …and the adapter must not have aborted or mutated the caller signal.
+    expect(controller.signal.aborted).toBe(false)
+  })
+
+  it('without a caller signal the standalone timeout path is unchanged', async () => {
+    const {fetchImpl, calls} = makeFakeFetch()
+    const fetch = createOperatorServerFetch({
+      origin: 'https://dashboard.fro.bot',
+      cookie: 'gw=abc',
+      fetchImpl,
+    })
+
+    await fetch('/operator/session')
+    await fetch('/operator/session/csrf')
+
+    // Every call still carries its own live AbortSignal bound to
+    // GATEWAY_FETCH_TIMEOUT_MS — a fresh timeout per request, never shared.
+    const first = calls[0]?.init?.signal
+    const second = calls[1]?.init?.signal
+    expect(first).toBeInstanceOf(AbortSignal)
+    expect(second).toBeInstanceOf(AbortSignal)
+    expect(first).not.toBe(second)
+    expect(first?.aborted).toBe(false)
   })
 })
 
