@@ -79,9 +79,12 @@ Engine release 753f4642, verified during the outage window:
 ## When the lights come back on
 
 - Re-run the canonical validation for anything that shipped on local proof alone.
-- The `Fro Bot` workflow on this fork stays `disabled_manually` until a `FRO_BOT_PAT` secret is
-  provisioned — the outage ending is not a reason to re-enable it (re-enabling resurrects a
-  failing cron). Check `gh workflow list` and `gh secret list` before flipping anything.
+- The `Fro Bot` workflow stays ACTIVE with a secret-presence gate (2026-10-18, cycle:2):
+  the schedule/dispatch arms of its job `if` require `FRO_BOT_PAT`, so while the secret is
+  unprovisioned the daily cron lands as skipped/neutral instead of failing — no manual
+  disable is needed and none should be done. Provision the PAT when a working oversight
+  pass is wanted; a scheduled FAILURE at the Checkout step (`Input required and not
+  supplied: token`) is the regression signature for the gate, not a reason to disable.
 
 ## Provenance
 

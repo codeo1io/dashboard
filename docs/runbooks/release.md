@@ -43,6 +43,14 @@ run at the Trivy step, so the failing step alone distinguishes all three.
   trusted across buildx versions (v0.30.1 silently printed the default dump on
   attestation-bearing indexes) — parse the default output's `Digest:` line
   instead (NOTE in the workflow).
+- The `DASHBOARD_VERSION` build-arg is App-gated too (rm-1489, 2026-10-18):
+  the stamp is `${{ env.HAS_RELEASE_APP == 'true' && steps.version.outputs.tag || 'dev' }}`,
+  so while the release App is unprovisioned every image carries the Dockerfile
+  `dev` default and the footer chip renders linkless (`AppShell.tsx` builds the
+  release-notes link only for CalVer `YYYY.M.D` versions; both paths are pinned
+  in `web/src/shell/AppShell.test.tsx`). Local image builds reproduce the chain
+  with `--build-arg DASHBOARD_VERSION=<tag>`; the dev server renders the
+  linkless fallback with no build-arg at all.
 
 ## Container HEALTHCHECK semantics (rm-743)
 
