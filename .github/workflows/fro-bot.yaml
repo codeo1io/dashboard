@@ -11,7 +11,14 @@ on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened, review_requested]
   schedule:
-    - cron: '0 0 * * *'
+    # Daily 03:43 UTC, off the hour per the fleet cron convention (audit
+    # 03:37, base-drift 04:13, upstream-drift 05:17, canary 05:23,
+    # scorecard 06:27, cve-tripwire 06:53, release-channel 07:23, codeql
+    # 07:31 — no top-of-hour slots). State truth (rm-879/rm-889): this
+    # workflow is disabled_manually (2026-10-19) until FRO_BOT_PAT is
+    # provisioned — with the secret absent the scheduled run dies at the
+    # empty-token checkout (runs 39093521474, 39195483154).
+    - cron: '43 3 * * *'
   workflow_dispatch:
     inputs:
       prompt:
@@ -310,7 +317,11 @@ jobs:
 
       - name: Run Fro Bot
         id: fro-bot-agent
-        uses: fro-bot/agent@7d273ac643c8f9c0dc8615222677693dc337adef # v0.122.3
+        # v0.124.0 (from v0.122.3): #1863 NODE_OPTIONS env-scrub security
+        # fix. CI-side pin only — the operator-contract floor the dashboard
+        # speaks stays 1.11.0 until the rm-1486 1.12.0 adoption window opens
+        # (deploy-together constraint in the v0.124.0 release notes).
+        uses: fro-bot/agent@65481810674416d28c213b8f80c6683f9d0b51a9 # v0.124.0
         env:
           OPENCODE_PROMPT_ARTIFACT: 'true'
           TASK_PROMPT: >-

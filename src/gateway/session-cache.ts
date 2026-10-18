@@ -22,6 +22,16 @@
  * - Revocation bound: a session revoked upstream may still pass for up to the
  *   15s TTL. This is the accepted trade (the gateway's own session expiry and
  *   the 302 redirect on the next miss are the recovery paths).
+ *
+ * Durable-session note (2026-10-19, rm-1487 review of fro-bot/agent v0.123.0
+ * #1855): upstream operator sessions now survive gateway restarts for 7 days
+ * with persisted revocation. This cache's bound is independent of session
+ * lifetime and was re-derived, not assumed: the 15s TTL dominates regardless
+ * of a 7-day expiresAt (freshness consults session.expiresAt, so a
+ * longer-lived session can never lengthen the window), the map dies with the
+ * process (a restarted dashboard revalidates every cookie — the safe
+ * direction), and the revocation bound stays the accepted ≤15s trade with
+ * revalidation on the next miss. No code change needed — note only.
  */
 import type {SessionDto} from './operator-client.ts'
 
