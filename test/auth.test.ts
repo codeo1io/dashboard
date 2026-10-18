@@ -107,7 +107,7 @@ describe('auth middleware', () => {
     it('GET / with invalid session cookie → denied', async () => {
       const app = await buildTestApp({operatorLogin: 'octocat'})
       const res = await app.request('/', {
-        headers: {cookie: 'session=invalid.garbage'},
+        headers: {cookie: '__Host-session=invalid.garbage'},
       })
       expect([401, 302, 303]).toContain(res.status)
     })
@@ -120,7 +120,7 @@ describe('auth middleware', () => {
       const fakeSig = Buffer.from('deadbeef'.repeat(8), 'hex').toString('base64url')
       const tampered = `${payload ?? ''}.${fakeSig}`
       const res = await app.request('/', {
-        headers: {cookie: `session=${tampered}`},
+        headers: {cookie: `__Host-session=${tampered}`},
       })
       expect([401, 302, 303]).toContain(res.status)
     })
@@ -136,7 +136,7 @@ describe('auth middleware', () => {
 
       const app = await buildTestApp({operatorLogin: 'octocat'})
       const res = await app.request('/', {
-        headers: {cookie: `session=${expiredCookie}`},
+        headers: {cookie: `__Host-session=${expiredCookie}`},
       })
       expect([401, 302, 303]).toContain(res.status)
     })
@@ -220,7 +220,7 @@ describe('auth middleware', () => {
       const attackerCookie = attackerSm.sign('attacker')
 
       const res = await app.request('/', {
-        headers: {cookie: `session=${attackerCookie}`},
+        headers: {cookie: `__Host-session=${attackerCookie}`},
       })
       // Must be denied — redirect to login or 401
       expect([401, 302, 303]).toContain(res.status)
@@ -304,6 +304,11 @@ describe('OAuth flow', () => {
   // asymmetry vs rm-129's opt-in RATE_LIMIT_TRUSTED_PROXY is deliberate and
   // documented in src/routes/auth.ts + README. These tests pin the matrix
   // so the two sites cannot drift apart silently.
+  //
+  // rm-1490 supersession (2026-10-19): the SESSION cookie has since moved to
+  // a `__Host-` prefix with UNCONDITIONAL Secure (see the rm-1490 describe
+  // below) — the matrix now pins the conditional rule for the state/PKCE
+  // cookies and the always-Secure floor for the session cookie.
   describe('cookie Secure attribution — three deployment topologies (rm-604)', () => {
     it('proxy-terminated TLS: plain-HTTP origin + x-forwarded-proto: https → Secure on BOTH cookie sites', async () => {
       const app = await buildTestApp({operatorLogin: 'octocat', githubLogin: 'octocat'})
@@ -315,7 +320,7 @@ describe('OAuth flow', () => {
 
       expect(cookieAttributes(getSetCookie(loginRes, 'oauth_state'))).toContain('secure')
       expect(callbackRes.status).toBe(302)
-      expect(cookieAttributes(getSetCookie(callbackRes, 'session'))).toContain('secure')
+      expect(cookieAttributes(getSetCookie(callbackRes, '__Host-session'))).toContain('secure')
     })
 
     it('direct TLS: https:// request URL, no XFP header → Secure on BOTH cookie sites', async () => {
@@ -329,10 +334,10 @@ describe('OAuth flow', () => {
 
       expect(cookieAttributes(getSetCookie(loginRes, 'oauth_state'))).toContain('secure')
       expect(callbackRes.status).toBe(302)
-      expect(cookieAttributes(getSetCookie(callbackRes, 'session'))).toContain('secure')
+      expect(cookieAttributes(getSetCookie(callbackRes, '__Host-session'))).toContain('secure')
     })
 
-    it('plain HTTP, no XFP → NOT Secure on either site (Secure would break cookie delivery); XFP: http is exactly-not-https → NOT Secure', async () => {
+    it('plain HTTP, no XFP → state/PKCE cookies NOT Secure (rm-604); session cookie STILL Secure (rm-1490 __Host- requires it); XFP: http is exactly-not-https → NOT Secure', async () => {
       const app = await buildTestApp({operatorLogin: 'octocat', githubLogin: 'octocat'})
       const {loginRes, callbackRes} = await runOAuthFlow(
         app,
@@ -340,14 +345,60 @@ describe('OAuth flow', () => {
         {},
       )
 
+      // rm-604 conditional rule still governs the short-TTL state/PKCE cookies.
       expect(cookieAttributes(getSetCookie(loginRes, 'oauth_state'))).not.toContain('secure')
       expect(callbackRes.status).toBe(302)
-      expect(cookieAttributes(getSetCookie(callbackRes, 'session'))).not.toContain('secure')
+      // rm-1490: the session cookie is `__Host-`-prefixed, so Secure is
+      // UNCONDITIONAL — a browser refuses the prefixed cookie without it,
+      // which also means a plain-HTTP non-localhost client cannot receive a
+      // session at all (fail-closed). The session site can no longer be
+      // WEAKER than the state site — only stronger — so the rm-604
+      // no-drift invariant is superseded, not violated.
+      expect(cookieAttributes(getSetCookie(callbackRes, '__Host-session'))).toContain('secure')
 
       // The XFP rule is an exact 'https' match — a proxy forwarding an
       // plaintext hop as 'http' must not mark the cookie Secure.
       const xfpHttpLogin = await app.request('/auth/login', {headers: {'x-forwarded-proto': 'http'}})
       expect(cookieAttributes(getSetCookie(xfpHttpLogin, 'oauth_state'))).not.toContain('secure')
+    })
+  })
+
+  // rm-1490 (repository-maintenance cycle 4): the session cookie is
+  // `__Host-`-prefixed with UNCONDITIONAL Secure. Browsers enforce the
+  // cookie's shape BY NAME — Secure required, Path=/ required, no Domain
+  // allowed — so a cookie minted by a sibling subdomain or with a Domain
+  // scope can never override or shadow the operator session. These tests pin
+  // the name contract at both mint sites (OAuth callback + dev auto-login).
+  describe('session cookie __Host- hardening (rm-1490)', () => {
+    it('/auth/callback issues a cookie literally named __Host-session with Path=/ and no Domain', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat', githubLogin: 'octocat'})
+      const {callbackRes} = await runOAuthFlow(
+        app,
+        async () => app.request('/auth/login', {headers: {'x-forwarded-proto': 'https'}}),
+        {'x-forwarded-proto': 'https'},
+      )
+
+      expect(callbackRes.status).toBe(302)
+      const header = getSetCookie(callbackRes, '__Host-session')
+      expect(header).toBeDefined()
+      const attributes = cookieAttributes(header)
+      expect(attributes).toContain('path=/')
+      // A __Host- cookie carrying a Domain attribute is browser-rejected —
+      // the mint sites must never emit one.
+      expect(attributes.some(attr => attr.startsWith('domain='))).toBe(false)
+      expect(attributes).toContain('httponly')
+      expect(attributes).toContain('samesite=lax')
+    })
+
+    it('the OLD unprefixed session cookie is no longer minted (a stale name would re-open the subdomain-shadowing vector)', async () => {
+      const app = await buildTestApp({operatorLogin: 'octocat', githubLogin: 'octocat'})
+      const {callbackRes} = await runOAuthFlow(
+        app,
+        async () => app.request('/auth/login', {headers: {'x-forwarded-proto': 'https'}}),
+        {'x-forwarded-proto': 'https'},
+      )
+
+      expect(callbackRes.headers.getSetCookie?.().some(c => c.startsWith('session='))).toBe(false)
     })
   })
 
@@ -375,7 +426,7 @@ describe('OAuth flow', () => {
       // Should redirect to / with a session cookie
       expect([302, 303]).toContain(res.status)
       expect(res.headers.get('location')).toBe('/')
-      const sessionCookie = getSetCookie(res, 'session')
+      const sessionCookie = getSetCookie(res, '__Host-session')
       expect(sessionCookie).toBeDefined()
       expect(sessionCookie?.toLowerCase()).toContain('httponly')
       expect(sessionCookie?.toLowerCase()).toContain('samesite=lax')
@@ -394,7 +445,7 @@ describe('OAuth flow', () => {
 
       // /api/healthz is public — verify it works with or without auth
       const res = await app.request('/api/healthz', {
-        headers: {cookie: `session=${sessionCookie}`},
+        headers: {cookie: `__Host-session=${sessionCookie}`},
       })
       expect(res.status).toBe(200)
     })
@@ -434,7 +485,7 @@ describe('OAuth flow', () => {
       })
 
       expect(res.status).toBe(401)
-      expect(getSetCookie(res, 'session')).toBeUndefined()
+      expect(getSetCookie(res, '__Host-session')).toBeUndefined()
       expect(fetchUserLoginCalls).toBe(0)
     })
 
@@ -458,7 +509,7 @@ describe('OAuth flow', () => {
 
       expect([401, 403]).toContain(res.status)
       // Must NOT set a session cookie
-      const sessionCookie = getSetCookie(res, 'session')
+      const sessionCookie = getSetCookie(res, '__Host-session')
       expect(sessionCookie).toBeUndefined()
     })
 
@@ -475,7 +526,7 @@ describe('OAuth flow', () => {
       })
 
       expect([401, 403]).toContain(res.status)
-      expect(getSetCookie(res, 'session')).toBeUndefined()
+      expect(getSetCookie(res, '__Host-session')).toBeUndefined()
     })
 
     it('rejects missing state cookie (CSRF protection)', async () => {
@@ -510,7 +561,7 @@ describe('OAuth flow', () => {
       const res = await app.request('/auth/logout', {
         method: 'POST',
         headers: {
-          cookie: `session=${sessionCookie}`,
+          cookie: `__Host-session=${sessionCookie}`,
           'content-type': 'application/x-www-form-urlencoded',
         },
         body: body.toString(),
@@ -519,7 +570,7 @@ describe('OAuth flow', () => {
       expect([302, 303]).toContain(res.status)
       expect(res.headers.get('location')).toContain('/auth/login')
       // Session cookie should be cleared (Max-Age=0 or Expires in past)
-      const clearedCookie = getSetCookie(res, 'session')
+      const clearedCookie = getSetCookie(res, '__Host-session')
       expect(clearedCookie).toBeDefined()
       expect(clearedCookie?.toLowerCase()).toMatch(/max-age=0|expires=.*1970/)
     })
@@ -532,7 +583,7 @@ describe('OAuth flow', () => {
       const res = await app.request('/auth/logout', {
         method: 'POST',
         headers: {
-          cookie: `session=${sessionCookie}`,
+          cookie: `__Host-session=${sessionCookie}`,
           'content-type': 'application/x-www-form-urlencoded',
         },
         body: '',
@@ -550,7 +601,7 @@ describe('OAuth flow', () => {
       const res = await app.request('/auth/logout', {
         method: 'POST',
         headers: {
-          cookie: `session=${sessionCookie}`,
+          cookie: `__Host-session=${sessionCookie}`,
           'content-type': 'application/x-www-form-urlencoded',
         },
         body: body.toString(),
@@ -566,7 +617,7 @@ describe('OAuth flow', () => {
       const res = await app.request('/auth/logout', {
         method: 'POST',
         headers: {
-          cookie: `session=${sessionCookie}`,
+          cookie: `__Host-session=${sessionCookie}`,
           'content-type': 'application/x-www-form-urlencoded',
         },
         body: 'x'.repeat(17_000),
@@ -599,7 +650,7 @@ describe('OAuth flow', () => {
       const req = new Request('http://localhost/auth/logout', {
         method: 'POST',
         headers: {
-          cookie: `session=${sessionCookie}`,
+          cookie: `__Host-session=${sessionCookie}`,
           'content-type': 'application/x-www-form-urlencoded',
         },
         body: endless,
@@ -634,7 +685,7 @@ describe('OAuth flow', () => {
       const req = new Request('http://localhost/auth/logout', {
         method: 'POST',
         headers: {
-          cookie: `session=${sessionCookie}`,
+          cookie: `__Host-session=${sessionCookie}`,
           'content-type': 'application/x-www-form-urlencoded',
         },
         body: finite,
@@ -669,7 +720,7 @@ describe('OAuth flow', () => {
       const req = new Request('http://localhost/auth/logout', {
         method: 'POST',
         headers: {
-          cookie: `session=${sessionCookie}`,
+          cookie: `__Host-session=${sessionCookie}`,
           'content-type': 'application/x-www-form-urlencoded',
           'content-length': '10',
         },
@@ -691,7 +742,7 @@ describe('OAuth flow', () => {
       const res = await app.request('/auth/logout', {
         method: 'POST',
         headers: {
-          cookie: `session=${sessionCookie}`,
+          cookie: `__Host-session=${sessionCookie}`,
           'content-type': 'multipart/form-data; boundary=x',
         },
         body: '--x\r\nContent-Disposition: form-data; name="csrf_token"\r\n\r\nnope\r\n--x--\r\n',
@@ -707,7 +758,7 @@ describe('OAuth flow', () => {
 
       const res = await app.request('/auth/logout', {
         method: 'GET',
-        headers: {cookie: `session=${sessionCookie}`},
+        headers: {cookie: `__Host-session=${sessionCookie}`},
       })
 
       // Hono returns 404 for unregistered routes; 405 would also be acceptable
@@ -725,7 +776,7 @@ describe('OAuth flow', () => {
       const res = await app.request('/auth/logout', {
         method: 'POST',
         headers: {
-          cookie: `session=${sessionCookie}`,
+          cookie: `__Host-session=${sessionCookie}`,
           'content-type': 'application/x-www-form-urlencoded',
         },
         body: body.toString(),
@@ -745,7 +796,7 @@ describe('OAuth flow', () => {
       const res = await app.request('/auth/logout', {
         method: 'POST',
         headers: {
-          cookie: `session=${sessionCookie}`,
+          cookie: `__Host-session=${sessionCookie}`,
           'content-type': 'application/x-www-form-urlencoded',
         },
         body: body.toString(),

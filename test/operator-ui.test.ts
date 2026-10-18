@@ -142,7 +142,7 @@ async function buildTestApp(opts: TestAppOpts | boolean) {
 
 async function authedGet(app: Awaited<ReturnType<typeof buildTestApp>>, path: string): Promise<Response> {
   const cookie = makeSessionCookie()
-  return app.request(path, {headers: {cookie: `session=${cookie}`}})
+  return app.request(path, {headers: {cookie: `__Host-session=${cookie}`}})
 }
 
 /**
@@ -385,7 +385,7 @@ describe('operator UI — flag ON + unauthenticated', () => {
 
   it('GET /operator with invalid session → redirect or denied', async () => {
     const app = await buildTestApp(true)
-    const res = await app.request('/operator', {headers: {cookie: 'session=invalid.garbage'}})
+    const res = await app.request('/operator', {headers: {cookie: '__Host-session=invalid.garbage'}})
     expect([302, 303, 401]).toContain(res.status)
   })
 })
@@ -858,8 +858,8 @@ describe('operator UI — /operator/ trailing-slash: same behavior as /operator 
     const app = await buildTestApp(true)
     const cookie = makeSessionCookie()
     const [exactRes, trailingRes] = await Promise.all([
-      app.request('/operator', {headers: {cookie: `session=${cookie}`}}),
-      app.request('/operator/', {headers: {cookie: `session=${cookie}`}}),
+      app.request('/operator', {headers: {cookie: `__Host-session=${cookie}`}}),
+      app.request('/operator/', {headers: {cookie: `__Host-session=${cookie}`}}),
     ])
     expect(exactRes.status).toBe(302)
     expect(exactRes.headers.get('location')).toBe('/')
@@ -870,7 +870,7 @@ describe('operator UI — /operator/ trailing-slash: same behavior as /operator 
   it('/operator/ redirect is flag-independent (flag OFF also redirects to /)', async () => {
     const app = await buildTestApp(false)
     const cookie = makeSessionCookie()
-    const res = await app.request('/operator/', {headers: {cookie: `session=${cookie}`}})
+    const res = await app.request('/operator/', {headers: {cookie: `__Host-session=${cookie}`}})
     // /operator/ redirects unconditionally regardless of operatorUiEnabled
     expect([302, 303]).toContain(res.status)
     if (res.status === 302 || res.status === 303) {

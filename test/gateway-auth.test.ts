@@ -134,7 +134,7 @@ describe('flag-OFF: Arctic branch parity', () => {
   it('valid Arctic session → 200 on protected route', async () => {
     const app = await buildArcticApp()
     const cookie = signArcticCookie()
-    const res = await app.request('/', {headers: {cookie: `session=${cookie}`}})
+    const res = await app.request('/', {headers: {cookie: `__Host-session=${cookie}`}})
     expect(res.status).toBe(200)
   })
 
@@ -147,7 +147,7 @@ describe('flag-OFF: Arctic branch parity', () => {
 
   it('invalid session cookie → redirect to /auth/login', async () => {
     const app = await buildArcticApp()
-    const res = await app.request('/', {headers: {cookie: 'session=invalid.garbage'}})
+    const res = await app.request('/', {headers: {cookie: '__Host-session=invalid.garbage'}})
     expect([302, 303]).toContain(res.status)
   })
 
@@ -162,7 +162,7 @@ describe('flag-OFF: Arctic branch parity', () => {
     })
     // Make a request (even with a valid Arctic cookie)
     const cookie = signArcticCookie()
-    await app.request('/', {headers: {cookie: `session=${cookie}`}})
+    await app.request('/', {headers: {cookie: `__Host-session=${cookie}`}})
     // getCurrentSession must NEVER be called in flag-OFF mode
     expect(getCurrentSessionSpy).not.toHaveBeenCalled()
   })

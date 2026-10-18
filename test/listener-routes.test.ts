@@ -48,7 +48,7 @@ async function buildTestApp(opts: {listenerStore?: ListenerStore; listenerIngest
 
 function sessionCookieHeader(): string {
   const sm = new SessionManager(TEST_KEY)
-  return `session=${sm.sign('octocat')}`
+  return `__Host-session=${sm.sign('octocat')}`
 }
 
 function ackHeaders(now: number = Date.now()): Record<string, string> {
@@ -335,7 +335,7 @@ describe('operator listener channel routes', () => {
       })
 
       const csrfRes = await app.request('/api/listener/csrf', {
-        headers: {cookie: `session=${new SessionManager(TEST_KEY).sign('env-operator')}`},
+        headers: {cookie: `__Host-session=${new SessionManager(TEST_KEY).sign('env-operator')}`},
       })
       expect(csrfRes.status).toBe(200)
       const csrfJson = (await csrfRes.json()) as {csrfToken: string}
@@ -354,7 +354,7 @@ describe('operator listener channel routes', () => {
       const ackRes = await app.request(`/api/listener/messages/${id}/ack`, {
         method: 'POST',
         headers: {
-          cookie: `session=${new SessionManager(TEST_KEY).sign('env-operator')}`,
+          cookie: `__Host-session=${new SessionManager(TEST_KEY).sign('env-operator')}`,
           'x-csrf-token': deriveAckCsrfToken({cookieKey: TEST_KEY, operatorLogin: 'env-operator'}),
         },
       })

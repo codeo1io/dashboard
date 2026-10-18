@@ -63,7 +63,7 @@ async function buildTestApp(operatorUiEnabled: boolean) {
 
 async function authedGet(app: Awaited<ReturnType<typeof buildTestApp>>, path: string): Promise<Response> {
   const cookie = makeSessionCookie()
-  return app.request(path, {headers: {cookie: `session=${cookie}`}})
+  return app.request(path, {headers: {cookie: `__Host-session=${cookie}`}})
 }
 
 async function authedGetWithHeaders(
@@ -72,7 +72,7 @@ async function authedGetWithHeaders(
   headers: Record<string, string>,
 ): Promise<Response> {
   const cookie = makeSessionCookie()
-  return app.request(path, {headers: {cookie: `session=${cookie}`, ...headers}})
+  return app.request(path, {headers: {cookie: `__Host-session=${cookie}`, ...headers}})
 }
 
 /** The Vite content-hashed SPA bundle filename in web/dist/assets. */
