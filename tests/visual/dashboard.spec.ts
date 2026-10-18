@@ -25,6 +25,16 @@ import AxeBuilder from '@axe-core/playwright'
  * grew the operator page 3178px→3294px past the morning capture; listener
  * and privacy stayed byte-identical and the in-image clean compare re-ran
  * 3/3 green.
+ * 2026-10-18 third regen (integrate conflict case b21ecdf5, run 3d12d72f
+ * landing): dashboard-operator-dark.png rewritten again in the same image —
+ * main's 2026.10.43 adoption (#636 containment + #639/#640/#641/#643 UI
+ * batch) plus the AppShell release-link union grew the operator page
+ * 3294px→3410px after the 2026-10-17 captures; three independent visual runs
+ * on main's tip (39035335916/39039230117/39053384731) all failed 3294-vs-3410
+ * with byte-identical 153655-px diffs while listener/privacy stayed green.
+ * Regen ran twice in-image (both rounds md5 56b8f398…, 346452 B, 1280x3410)
+ * and a no-flag compare round re-verified 3/3 green; listener and privacy
+ * baselines untouched.
  * Axe: fails only on `critical`/`serious` impact violations (moderate/minor are
  * logged for visibility). Any pre-existing fixture-page violations are scoped
  * or disabled inline with a justification — see `axeCommon()` below.

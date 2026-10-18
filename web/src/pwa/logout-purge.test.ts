@@ -1,13 +1,14 @@
 /**
- * logout-purge tests — verifies the page-side SW cache cleanup.
+ * logout-purge tests — verifies the page-side legacy-cache sweep.
  *
  * Mocks caches.delete and navigator.serviceWorker.controller.postMessage
- * to assert both purge paths are called with the correct arguments.
+ * to assert the purge paths are called with the correct arguments.
+ * rm-274 truthing: the sweep is legacy-monitoring-only (no runtime caches
+ * exist at head; operator responses are network-only/no-store).
  */
 
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {purgeOperatorCache} from './logout-purge.ts'
-import {OPERATOR_RUNTIME_CACHE} from './cache-names.ts'
 
 describe('purgeOperatorCache', () => {
   const mockCachesDelete = vi.fn().mockResolvedValue(true)
@@ -33,25 +34,15 @@ describe('purgeOperatorCache', () => {
     })
   })
 
-  it('calls caches.delete with the operator runtime cache name', () => {
+  it('calls caches.delete once, with the legacy monitoring-v1 cache name', () => {
     purgeOperatorCache()
-    expect(mockCachesDelete).toHaveBeenCalledWith(OPERATOR_RUNTIME_CACHE)
-  })
-
-  it('LEGACY PURGE: also calls caches.delete with the old monitoring-v1 cache name', () => {
-    purgeOperatorCache()
+    expect(mockCachesDelete).toHaveBeenCalledTimes(1)
     expect(mockCachesDelete).toHaveBeenCalledWith('monitoring-v1')
   })
 
   it('posts PURGE_RUNTIME to the SW controller', () => {
     purgeOperatorCache()
     expect(mockPostMessage).toHaveBeenCalledWith({type: 'PURGE_RUNTIME'})
-  })
-
-  it('calls caches.delete twice (operator-runtime-v1 + legacy monitoring-v1) in a single invocation', () => {
-    purgeOperatorCache()
-    expect(mockCachesDelete).toHaveBeenCalledTimes(2)
-    expect(mockPostMessage).toHaveBeenCalledTimes(1)
   })
 
   it('does not throw when caches is undefined', () => {
