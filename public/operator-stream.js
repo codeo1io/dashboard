@@ -41,7 +41,13 @@ export const RETRY_FACTOR = 2
 /** Maximum number of reconnect attempts before transitioning to failed. */
 export const RETRY_MAX_COUNT = 5
 
-/** Hard cap on the incremental SSE buffer in bytes. Overflow → abort + failed. */
+/**
+ * Hard cap on the incremental SSE buffer, enforced in TRUE UTF-8 bytes
+ * (rm-701: this was previously `buffer.length`, counting UTF-16 code units,
+ * so CJK/astral payloads under-enforced the cap by up to ~3x). Byte-true twin
+ * of the server cap in src/gateway/operator-sse-reader.ts (rm-114 units
+ * truth).
+ */
 export const MAX_SSE_BUFFER_BYTES = 1_000_000
 
 /**
@@ -4592,7 +4598,11 @@ export function initOperatorStream(opts) {
         }
 
         const decoder = new TextDecoder()
+        // rm-701: byte-true mirror of the server twin's encoder accounting —
+        // `buffer.length` counts UTF-16 code units, not bytes.
+        const sseBytes = new TextEncoder()
         let buffer = ''
+        let bufferBytes = 0
         const reader = response.body.getReader()
 
         function readChunk() {
@@ -4608,6 +4618,7 @@ export function initOperatorStream(opts) {
                     dispatch(flushResult.frame)
                   }
                   buffer = ''
+                  bufferBytes = 0
                 }
                 // Stream ended — check if we should reconnect
                 if (state.shouldReconnect) {
@@ -4624,11 +4635,13 @@ export function initOperatorStream(opts) {
                 // chunk would forge a phantom record boundary and silently
                 // drop the frame. The held CR normalizes with the next chunk.
                 buffer = appendStreamChunk(buffer, decoder.decode(value, {stream: true}))
+                bufferBytes = sseBytes.encode(buffer).length
               }
 
               // Hard buffer cap — abort the reader and fail closed terminally
-              // (no reconnect) if exceeded without a record boundary.
-              if (buffer.length > MAX_SSE_BUFFER_BYTES) {
+              // (no reconnect) if exceeded without a record boundary. rm-701:
+              // enforced on the UTF-8 byte count, mirroring the server twin.
+              if (bufferBytes > MAX_SSE_BUFFER_BYTES) {
                 clearFirstFrameTimer()
                 if (abortController) {
                   abortController.abort()
@@ -4642,6 +4655,7 @@ export function initOperatorStream(opts) {
               while (boundary !== -1) {
                 const record = buffer.slice(0, boundary)
                 buffer = buffer.slice(boundary + 2)
+                bufferBytes -= sseBytes.encode(`${record}\n\n`).length
 
                 const result = parseSseFrame(`${record}\n\n`)
                 if (result !== null && result.success) {

@@ -12023,3 +12023,103 @@ describe('stream handle — getConnectionStatus (what a re-open from a notificat
     expect(h.listCalls).toHaveLength(1)
   })
 })
+
+function makeControlledBody(): {
+  body: ReadableStream<Uint8Array>
+  controllerReady: Promise<ReadableStreamDefaultController<Uint8Array>>
+} {
+  let resolveController: (c: ReadableStreamDefaultController<Uint8Array>) => void
+  const controllerReady = new Promise<ReadableStreamDefaultController<Uint8Array>>(resolve => {
+    resolveController = resolve
+  })
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      resolveController(c)
+    },
+  })
+  return {body, controllerReady}
+}
+
+async function streamRm701Chunks(chunks: string[]): Promise<{noticeEl: FakeElement; handle: ReturnType<typeof initOperatorStream>}> {
+  const noticeEl = makeFakeEl('div')
+  const statusEl = makeFakeEl('span')
+  const readyFrame = `event: ready\ndata: {"contractVersion":"${PINNED_CONTRACT_VERSION}"}\n\n`
+  const {body, controllerReady} = makeControlledBody()
+  vi.stubGlobal('fetch', async () => ({
+    status: 200,
+    headers: {get: () => 'text/event-stream'},
+    body,
+  }))
+  const handle = initOperatorStream({runId: 'rm701-bytes-test', statusEl, noticeEl})
+
+  const controller = await controllerReady
+  const encoder = new TextEncoder()
+  controller.enqueue(encoder.encode(readyFrame))
+  await new Promise(resolve => setTimeout(resolve, 10))
+  expect(noticeEl.dataset.connectionState).toBe('live')
+  for (const chunk of chunks) {
+    controller.enqueue(encoder.encode(chunk))
+    await new Promise(resolve => setTimeout(resolve, 15))
+  }
+  return {noticeEl, handle}
+}
+
+describe('initOperatorStream — buffer cap counts UTF-8 bytes, not code units (rm-701 client twin)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('a multibyte payload under the code-unit limit but over the byte limit fails closed', async () => {
+    // 450_000 emoji (surrogate pairs): 900_000 UTF-16 code units — UNDER the
+    // old 1_000_000-unit check — but 1_800_000 UTF-8 bytes, far OVER
+    // MAX_SSE_BUFFER_BYTES. rm-701: the client cap must count bytes to stay
+    // the twin of src/gateway/operator-sse-reader.ts (rm-114).
+    const multibyte = '😀'.repeat(450_000)
+    const {noticeEl, handle} = await streamRm701Chunks([multibyte])
+    expect(noticeEl.dataset.connectionState).toBe('failed')
+    handle.close()
+  })
+
+  it('a 1.1M-ASCII-byte payload (code units == bytes) still fails closed', async () => {
+    const ascii = 'x'.repeat(1_100_000)
+    const {noticeEl, handle} = await streamRm701Chunks([ascii])
+    expect(noticeEl.dataset.connectionState).toBe('failed')
+    handle.close()
+  })
+
+  it('the cap is strictly greater-than: exactly MAX bytes survives, one byte more fails', async () => {
+    const {noticeEl, handle} = await streamRm701Chunks(['x'.repeat(MAX_SSE_BUFFER_BYTES)])
+    expect(noticeEl.dataset.connectionState).toBe('live')
+
+    // Same live stream, one more byte pushes it over.
+    const readyFrame = `event: ready\ndata: {"contractVersion":"${PINNED_CONTRACT_VERSION}"}\n\n`
+    const noticeEl2 = makeFakeEl('div')
+    const statusEl2 = makeFakeEl('span')
+    const {body, controllerReady} = makeControlledBody()
+    vi.stubGlobal('fetch', async () => ({
+      status: 200,
+      headers: {get: () => 'text/event-stream'},
+      body,
+    }))
+    const handle2 = initOperatorStream({runId: 'rm701-boundary-test', statusEl: statusEl2, noticeEl: noticeEl2})
+    const controller = await controllerReady
+    const encoder = new TextEncoder()
+    controller.enqueue(encoder.encode(readyFrame))
+    await new Promise(resolve => setTimeout(resolve, 10))
+    controller.enqueue(encoder.encode('x'.repeat(MAX_SSE_BUFFER_BYTES)))
+    await new Promise(resolve => setTimeout(resolve, 15))
+    expect(noticeEl2.dataset.connectionState).toBe('live')
+    controller.enqueue(encoder.encode('x'))
+    await new Promise(resolve => setTimeout(resolve, 15))
+    expect(noticeEl2.dataset.connectionState).toBe('failed')
+
+    handle.close()
+    handle2.close()
+  })
+
+  it('well-framed records below the cap keep the stream live (no false overflow)', async () => {
+    const {noticeEl, handle} = await streamRm701Chunks(['event: ping\ndata: {}\n\n'])
+    expect(noticeEl.dataset.connectionState).toBe('live')
+    handle.close()
+  })
+})

@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto'
 import {mkdirSync} from 'node:fs'
 import {dirname} from 'node:path'
 import {DatabaseSync} from 'node:sqlite'
+import {logger} from '../logger.ts'
 /**
  * `node:sqlite`-backed persistence for the operator listener channel.
  *
@@ -63,21 +64,46 @@ function parseLinksCell(raw: string, id: string): readonly ListenerLink[] {
     if (!validated.success) throw new Error(validated.error.message)
     return validated.data
   } catch (error) {
-    console.warn(
-      `[listener-store] degraded links cell on message ${id}: ${
-        error instanceof Error ? error.message : String(error)
-      } — serving empty links, other fields intact`,
-    )
+    // rm-187 (run a31293fd, logger routing): the degraded-read warning is an
+    // operator-visible reliability signal — it rides the structured logger
+    // (context redaction + rm-260 stderr routing), not a bare console.warn.
+    logger.warning('listener store: degraded links cell on message read', {
+      id,
+      reason: error instanceof Error ? error.message : String(error),
+    })
     return []
   }
 }
 
+// rm-187 (run a31293fd): runtime allowlists for the enum cells. The `as`
+// casts below trusted the DB union — a corrupt out-of-union cell (hand-edit,
+// torn write, schema drift) would flow an unknown string straight into the
+// client DTO. Both cells now degrade to a safe in-union value and log once
+// per degraded read (same pattern as the links cell); the raw value is
+// never echoed into the log.
+const LISTENER_SOURCES: ReadonlySet<string> = new Set<ListenerMessage['source']>(['infra', 'agent'])
+const LISTENER_SEVERITIES: ReadonlySet<string> = new Set<ListenerMessage['severity']>([
+  'info',
+  'warning',
+  'critical',
+])
+const DEGRADED_SOURCE: ListenerMessage['source'] = 'infra'
+const DEGRADED_SEVERITY: ListenerMessage['severity'] = 'info'
+
 function rowToMessage(row: MessageRow): ListenerMessage {
+  const sourceOk = typeof row.source === 'string' && LISTENER_SOURCES.has(row.source)
+  const severityOk = typeof row.severity === 'string' && LISTENER_SEVERITIES.has(row.severity)
+  if (!sourceOk) {
+    logger.warning('listener store: degraded source cell on message read', {id: row.id})
+  }
+  if (!severityOk) {
+    logger.warning('listener store: degraded severity cell on message read', {id: row.id})
+  }
   return {
     id: row.id,
-    source: row.source as ListenerMessage['source'],
+    source: sourceOk ? (row.source as ListenerMessage['source']) : DEGRADED_SOURCE,
     kind: row.kind,
-    severity: row.severity as ListenerMessage['severity'],
+    severity: severityOk ? (row.severity as ListenerMessage['severity']) : DEGRADED_SEVERITY,
     title: row.title,
     body: row.body,
     links: parseLinksCell(row.links, row.id),

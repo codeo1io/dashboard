@@ -231,4 +231,86 @@ describe('links cell wrong-shaped elements degrade to empty (rm-187 follow-up)',
     expect(warn).not.toHaveBeenCalled()
     warn.mockRestore()
   })
+
+  // rm-187 (run a31293fd): the enum cells degrade the same way as the links
+  // cell — an out-of-union source/severity must never flow an unknown string
+  // into the client DTO.
+  function setEnumCell(id: string, column: 'source' | 'severity', value: string): void {
+    const handle = new DatabaseSync(dbPath)
+    try {
+      handle.prepare(`UPDATE messages SET ${column} = ? WHERE id = ?`).run(value, id)
+    } finally {
+      handle.close()
+    }
+  }
+
+  function seedRow(title: string): string {
+    const store = createListenerStore(dbPath)
+    return store.insert({
+      source: 'infra',
+      kind: 'deploy-health',
+      severity: 'warning',
+      title,
+      body: 'b',
+      links: [{label: 'L', url: 'https://example.com'}],
+      dedupeKey: null,
+      createdAt: '2026-10-09T10:00:00Z',
+    }).id
+  }
+
+  it('degrades an out-of-union source cell to infra, keeps other fields, and warns once', () => {
+    const id = seedRow('corrupt enum row')
+    setEnumCell(id, 'source', 'rogue-source')
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = createListenerStore(dbPath)
+    const page = store.list({})
+
+    expect(page.messages).toHaveLength(1)
+    const degraded = page.messages.find(m => m.title === 'corrupt enum row')
+    if (degraded === undefined) throw new Error('expected degraded row')
+    expect(degraded.source).toBe('infra')
+    expect(degraded.kind).toBe('deploy-health')
+    expect(degraded.severity).toBe('warning')
+    expect(degraded.links).toEqual([{label: 'L', url: 'https://example.com'}])
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('degraded source cell on message read'))
+    warn.mockRestore()
+  })
+
+  it('degrades an out-of-union severity cell to info and warns once', () => {
+    const id = seedRow('corrupt severity row')
+    setEnumCell(id, 'severity', 'catastrophic')
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = createListenerStore(dbPath)
+    const page = store.list({})
+
+    const degraded = page.messages.find(m => m.title === 'corrupt severity row')
+    if (degraded === undefined) throw new Error('expected degraded row')
+    expect(degraded.severity).toBe('info')
+    expect(degraded.source).toBe('infra')
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('degraded severity cell on message read'))
+    warn.mockRestore()
+  })
+
+  it('degrades BOTH enum cells on the same row with one warning each', () => {
+    const id = seedRow('both cells row')
+    setEnumCell(id, 'source', 'weird')
+    setEnumCell(id, 'severity', 'apocalyptic')
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = createListenerStore(dbPath)
+    const page = store.list({})
+
+    const degraded = page.messages.find(m => m.title === 'both cells row')
+    if (degraded === undefined) throw new Error('expected degraded row')
+    expect(degraded.source).toBe('infra')
+    expect(degraded.severity).toBe('info')
+    const messages = warn.mock.calls.map(call => String(call[0]))
+    expect(messages.filter(m => m.includes('degraded source cell'))).toHaveLength(1)
+    expect(messages.filter(m => m.includes('degraded severity cell'))).toHaveLength(1)
+    warn.mockRestore()
+  })
 })
