@@ -44,6 +44,19 @@
 // darkness means no runs at all are being created, not that a particular
 // trigger misfired. Run counts for workflows that only ever run manually
 // (workflow_dispatch & friends) are not considered candidates.
+//
+// Run pagination + never-ran truth (run 09ea72cc7eb644818a10fe785e3498e1, T1):
+// /actions/runs is walked by page number until an EMPTY page (the definitive
+// list end — GitHub answers 200 with zero rows beyond the last page, verified
+// live) or a page's oldest run predates the coverage bound min(now -
+// threshold, pushed_at) (runsExhausted=false). The bound is sound: any run NOT
+// covered is older than both the staleness cutoff and the last push, so a
+// candidate with no covered run is stale AND owed regardless — reported as
+// lastRun 'pre-coverage' instead of 'never'. The Link header is NOT trusted:
+// live probes 2026-10-17 showed rel="next" vanishing mid-traversal on reused
+// connections while isolated requests keep it, so Link-driven termination
+// reports false exhaustion. If the walk cannot reach either stop within
+// MAX_RUN_PAGES the script answers UNKNOWN rather than guess.
 
 import {readdirSync, readFileSync} from 'node:fs'
 import process from 'node:process'
@@ -69,8 +82,55 @@ export type TriggerIndex = Record<string, string[]>
 export interface DarkWorkflow {
   name: string
   path: string
-  lastRun: string | 'never'
+  lastRun: string | 'never' | 'pre-coverage'
   ageDays: number
+}
+
+const FETCH_TIMEOUT_MS = 20_000
+const MAX_RUN_PAGES = 40
+
+/** One page of workflow runs as consumed by collectRuns. */
+export interface RunsPage {
+  runs: RunSummary[]
+  /** Oldest createdAt on the page (ms), null when the page holds no valid rows. */
+  oldestCreatedMs: number | null
+}
+
+/**
+ * Walk /actions/runs by page number until an EMPTY page (definitive list
+ * end) or a page whose oldest run predates boundMs. Throws when maxPages is
+ * exceeded before either stop — callers surface that as UNKNOWN instead of
+ * answering from partial coverage.
+ */
+export async function collectRuns(input: {
+  firstUrl: string
+  boundMs: number
+  maxPages: number
+  fetchPage: (url: string) => Promise<RunsPage>
+}): Promise<{runs: RunSummary[]; exhausted: boolean; pages: number}> {
+  const runs: RunSummary[] = []
+  for (let page = 1; page <= input.maxPages; page += 1) {
+    const result = await input.fetchPage(withPageNumber(input.firstUrl, page))
+    runs.push(...result.runs)
+    // An empty page is the definitive end of the list (GitHub answers 200
+    // with zero workflow_runs beyond the last page — verified live). The
+    // Link header is deliberately not trusted: rel="next" was observed
+    // vanishing mid-traversal on reused connections (2026-10-17).
+    if (result.runs.length === 0) return {runs, exhausted: true, pages: page}
+    if (result.oldestCreatedMs !== null && result.oldestCreatedMs < input.boundMs) {
+      return {runs, exhausted: false, pages: page}
+    }
+  }
+  throw new Error(
+    `runs pagination exceeded ${input.maxPages} pages without reaching the lookback bound`,
+  )
+}
+
+/** Rebuild the canonical URL family with an explicit page parameter. */
+function withPageNumber(firstUrl: string, page: number): string {
+  const url = new URL(firstUrl)
+  url.searchParams.set('page', String(page))
+  return url.toString()
 }
 
 export interface DarknessVerdict {
@@ -118,6 +178,8 @@ export function computeDarkness(input: {
   triggers: TriggerIndex
   pushedAt: string
   now: string
+  /** False when run pagination stopped at the coverage bound, not list end. */
+  runsExhausted?: boolean
 }): DarknessVerdict {
   const nowMs = Date.parse(input.now)
   const pushedMs = Date.parse(input.pushedAt)
@@ -135,12 +197,16 @@ export function computeDarkness(input: {
       if (createdMs > latestMs) latestMs = createdMs
     }
     if (latestMs === Number.NEGATIVE_INFINITY) {
-      // Never ran: dark as soon as anything was ever pushed.
+      // No covered run. With runsExhausted (list traversed to its end) this is
+      // a first-hand 'never'. Otherwise the coverage bound guarantees any
+      // uncovered run is older than both the staleness cutoff and pushed_at —
+      // stale AND owed by construction — so the row is still dark, labeled
+      // 'pre-coverage' instead of claiming never-ran.
       if (pushedMs > 0) {
         darkWorkflows.push({
           name: workflow.name,
           path: workflow.path,
-          lastRun: 'never',
+          lastRun: input.runsExhausted === false ? 'pre-coverage' : 'never',
           ageDays: Number.POSITIVE_INFINITY,
         })
       }
@@ -193,10 +259,13 @@ interface ApiRuns {
   workflow_runs: {workflow_id: number; created_at: string}[]
 }
 
-async function fetchJson<T>(url: string, token: string | undefined): Promise<T> {
+async function fetchApi<T>(
+  url: string,
+  token: string | undefined,
+): Promise<T> {
   const headers: Record<string, string> = {Accept: 'application/vnd.github+json'}
   if (token !== undefined && token.length > 0) headers.Authorization = `Bearer ${token}`
-  const response = await fetch(url, {headers})
+  const response = await fetch(url, {headers, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)})
   if (!response.ok) {
     throw new Error(`GET ${url} -> HTTP ${response.status}`)
   }
@@ -209,33 +278,54 @@ async function main(): Promise<number> {
   const token = process.env.ACTIONS_DARKNESS_TOKEN ?? process.env.GITHUB_TOKEN
   try {
     const triggers = readLocalTriggers()
-    const [apiWorkflows, apiRuns, repoInfo] = await Promise.all([
-      fetchJson<ApiWorkflows>(
+    const [apiWorkflows, repoInfo] = await Promise.all([
+      fetchApi<ApiWorkflows>(
         `https://api.github.com/repos/${repo}/actions/workflows?per_page=100`,
         token,
       ),
-      fetchJson<ApiRuns>(
-        `https://api.github.com/repos/${repo}/actions/runs?per_page=100`,
-        token,
-      ),
-      fetchJson<{pushed_at: string}>(`https://api.github.com/repos/${repo}`, token),
+      fetchApi<{pushed_at: string}>(`https://api.github.com/repos/${repo}`, token),
     ])
+    const nowMs = Date.parse(now)
+    const pushedMs = Date.parse(repoInfo.pushed_at)
+    const cutoffMs = nowMs - DARKNESS_THRESHOLD_MS
+    const boundMs = Number.isFinite(pushedMs) ? Math.min(cutoffMs, pushedMs) : cutoffMs
+    const collected = await collectRuns({
+      firstUrl: `https://api.github.com/repos/${repo}/actions/runs?per_page=100`,
+      boundMs,
+      maxPages: MAX_RUN_PAGES,
+      fetchPage: async url => {
+        const data = await fetchApi<ApiRuns>(url, token)
+        const runs = data.workflow_runs.map(r => ({
+          workflowId: r.workflow_id,
+          createdAt: r.created_at,
+        }))
+        let oldestCreatedMs: number | null = null
+        for (const run of runs) {
+          const createdMs = Date.parse(run.createdAt)
+          if (Number.isNaN(createdMs)) continue
+          if (oldestCreatedMs === null || createdMs < oldestCreatedMs) oldestCreatedMs = createdMs
+        }
+        return {runs, oldestCreatedMs}
+      },
+    })
     const verdict = computeDarkness({
       workflows: apiWorkflows.workflows.map(w => ({id: w.id, path: w.path, name: w.name})),
-      runs: apiRuns.workflow_runs.map(r => ({
-        workflowId: r.workflow_id,
-        createdAt: r.created_at,
-      })),
+      runs: collected.runs,
       triggers,
       pushedAt: repoInfo.pushed_at,
       now,
+      runsExhausted: collected.exhausted,
     })
     const pushedAt = repoInfo.pushed_at
     console.log(
-      `actions-darkness: verdict=${verdict.verdict} repo=${repo} now=${now} pushed_at=${pushedAt} candidates=${verdict.candidates}`,
+      `actions-darkness: verdict=${verdict.verdict} repo=${repo} now=${now} pushed_at=${pushedAt} candidates=${verdict.candidates} runs=${collected.runs.length} run_pages=${collected.pages} runs_exhausted=${collected.exhausted}`,
     )
     for (const dark of verdict.darkWorkflows) {
-      const age = Number.isFinite(dark.ageDays) ? `${dark.ageDays}d` : 'never-ran'
+      const age = Number.isFinite(dark.ageDays)
+        ? `${dark.ageDays}d`
+        : dark.lastRun === 'pre-coverage'
+          ? 'pre-coverage'
+          : 'never-ran'
       console.log(`  dark: ${dark.name} (${dark.path}) last_run=${dark.lastRun} age=${age}`)
     }
     return verdict.verdict === 'DARK' ? 3 : 0
