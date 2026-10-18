@@ -2,8 +2,9 @@
  * rm-742 — stale conductor/* validation-ref sweep selection (fixture unit
  * tests). Pins the pure selection/parsing core of
  * scripts/sweep-stale-conductor-refs.ts:
- * 1. namespace containment (only conductor/ci-* and conductor/ci-base-* —
- *    never main, never conductor branches outside the ephemeral namespaces);
+ * 1. namespace containment (only conductor/ci-*, conductor/ci-base-* and
+ *    conductor/run-* — never main, never conductor branches outside the
+ *    ephemeral namespaces, never conductor/visual-*);
  * 2. the age cutoff (stale = newest commit older than --cutoff-days);
  * 3. --exclude globs protecting named refs from deletion;
  * 4. for-each-ref output parsing (temp-namespace → origin-ref mapping);
@@ -37,13 +38,23 @@ describe('rm-742: namespace containment', () => {
     expect(isInSweepNamespace('refs/heads/conductor/ci-base-20261001-abc')).toBe(true)
   })
 
-  it('rejects everything else — main, other conductor branches, tags', () => {
+  it('accepts the run- namespace too (rm-2004 — the dominant live residue fleet)', () => {
+    expect(isInSweepNamespace('refs/heads/conductor/run-00f7bf29ef2a')).toBe(true)
+    expect(isInSweepNamespace('refs/heads/conductor/run-528f458d245a')).toBe(true)
+  })
+
+  it('rejects everything else — main, visual capture, other conductor branches, tags', () => {
     expect(isInSweepNamespace('refs/heads/main')).toBe(false)
-    expect(isInSweepNamespace('refs/heads/conductor/run-x')).toBe(false)
+    // rm-2004's recorded decision: visual-baseline capture refs are long-lived
+    // artifacts by design, NOT <1d validation residue — excluded, not silently
+    // uncovered.
+    expect(isInSweepNamespace('refs/heads/conductor/visual-capture-9698b395')).toBe(false)
     expect(isInSweepNamespace('refs/heads/renovate/pnpm-12')).toBe(false)
     expect(isInSweepNamespace('refs/tags/2026.08.15')).toBe(false)
     // Near-miss: the ci- prefix must be exact, not merely contained.
     expect(isInSweepNamespace('refs/heads/conductor/x-ci-thing')).toBe(false)
+    // Near-miss: runs- is not the run- namespace.
+    expect(isInSweepNamespace('refs/heads/conductor/runs-thing')).toBe(false)
   })
 
   it('selectStaleRefs never returns an out-of-namespace ref however old', () => {
@@ -53,6 +64,33 @@ describe('rm-742: namespace containment', () => {
       14,
     )
     expect(candidates.map(candidate => candidate.ref)).toEqual(['refs/heads/conductor/ci-old'])
+  })
+})
+
+describe('rm-2004: run- namespace sweep selection', () => {
+  it('stale run- refs are candidates; fresh ones and out-of-namespace visuals are not', () => {
+    const candidates = selectStaleRefs(
+      [
+        ref('refs/heads/conductor/run-00f7bf29ef2a', 30),
+        ref('refs/heads/conductor/run-1108172d68c2', 2),
+        ref('refs/heads/conductor/visual-capture-9698b395', 400),
+      ],
+      NOW,
+      DEFAULT_CUTOFF_DAYS,
+    )
+    expect(candidates.map(candidate => candidate.ref)).toEqual([
+      'refs/heads/conductor/run-00f7bf29ef2a',
+    ])
+  })
+
+  it('an exact-name exclude still protects a named run- ref (the --exclude escape hatch)', () => {
+    const candidates = selectStaleRefs(
+      [ref('refs/heads/conductor/run-keep', 30), ref('refs/heads/conductor/run-drop', 30)],
+      NOW,
+      14,
+      ['refs/heads/conductor/run-keep'],
+    )
+    expect(candidates.map(candidate => candidate.ref)).toEqual(['refs/heads/conductor/run-drop'])
   })
 })
 
@@ -128,11 +166,13 @@ describe('rm-742: for-each-ref parsing (temp namespace → origin ref)', () => {
     const sha = 'b'.repeat(40)
     const parsed = parseForEachRef(
       `refs/conductor-sweep/conductor/ci-20261001-abc ${sha} ${date} Conductor <conductor@example.com>\n` +
-      `refs/conductor-sweep/conductor/ci-base-20261001-def ${sha} ${date} <bot@example.com>\n`,
+      `refs/conductor-sweep/conductor/ci-base-20261001-def ${sha} ${date} <bot@example.com>\n` +
+      `refs/conductor-sweep/conductor/run-00f7bf29ef2a ${sha} ${date} <bot@example.com>\n`,
     )
     expect(parsed.map(entry => entry.ref)).toEqual([
       'refs/heads/conductor/ci-20261001-abc',
       'refs/heads/conductor/ci-base-20261001-def',
+      'refs/heads/conductor/run-00f7bf29ef2a',
     ])
     expect(parsed[0]?.committerEmail).toBe('Conductor <conductor@example.com>')
     expect(parsed[0]?.sha).toBe(sha)

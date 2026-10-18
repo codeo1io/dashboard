@@ -3,8 +3,8 @@
  * rm-742 — stale conductor/* validation-ref sweep (drift repair, dry-run by default).
  *
  * Context: the in-repo validation process (github_ci_validate.py's ephemeral
- * remote-CI route) CREATES `conductor/ci-*` refs and DELETES them in a
- * `finally` on every validation — a full 48-ref stale population was measured
+ * remote-CI route) CREATES `conductor/ci-*` and `conductor/run-*` refs and
+ * DELETES them in a `finally` on every validation — a full 48-ref stale population was measured
  * on 2026-10-08 (base-drift/full_tests residue). Cleanup-inside-the-route is
  * the NORM; anything still standing is DRIFT (a reaped run, a crashed
  * cleanup), not work in flight. This script enumerates that drift and, only
@@ -15,9 +15,12 @@
  * - `--apply` is required to delete anything; apply is PUSH-GATED in this
  *   repo's process (the roadmap def defers it to a push-authorized phase —
  *   conductor work orders prohibit push outside the ship gate).
- * - Only refs matching `refs/heads/conductor/ci-*` or
- *   `refs/heads/conductor/ci-base-*` are ever considered (the ephemeral
- *   validation namespaces — nothing else).
+ * - Only refs matching `refs/heads/conductor/ci-*`, `refs/heads/conductor/ci-base-*`
+ *   or `refs/heads/conductor/run-*` are ever considered (the ephemeral
+ *   validation namespaces — nothing else; rm-2004 added run-*, the dominant
+ *   live namespace). `conductor/visual-*` is deliberately OUT: visual-baseline
+ *   capture refs are long-lived artifacts by design, not <1d validation
+ *   residue (rm-2004's recorded decision).
  * - `--cutoff-days N` (default 14): only refs whose newest commit is older
  *   than N days are candidates. Validations live <1 day; 14d is a generous
  *   drift window that cannot race an in-flight validation.
@@ -35,7 +38,8 @@ import {spawnSync} from 'node:child_process'
 import process from 'node:process'
 import {pathToFileURL} from 'node:url'
 
-export const SWEEP_NAMESPACES = ['refs/heads/conductor/ci-', 'refs/heads/conductor/ci-base-'] as const
+/** rm-2004: run- joined ci-/ci-base- — the dominant live residue namespace. */
+export const SWEEP_NAMESPACES = ['refs/heads/conductor/ci-', 'refs/heads/conductor/ci-base-', 'refs/heads/conductor/run-'] as const
 export const TEMP_NAMESPACE = 'refs/conductor-sweep/'
 export const DEFAULT_CUTOFF_DAYS = 14
 
