@@ -8,7 +8,8 @@ import {DatabaseSync} from 'node:sqlite'
  * See docs/contracts/operator-listener-channel.md — retention policy (500 rows
  * / 30 days) and idempotency (dedupeKey upsert) are enforced here.
  */
-import {parseLinks, type IngestMessage, type ListenerLink, type ListenerMessage, type MessagesResponse} from './contract.ts'
+import {logger} from '../logger.ts'
+import {isListenerSeverity, isListenerSource, parseLinks, type IngestMessage, type ListenerLink, type ListenerMessage, type MessagesResponse} from './contract.ts'
 
 export interface ListenerStore {
   insert: (input: IngestMessage) => {id: string; receivedAt: string}
@@ -48,7 +49,9 @@ const MAX_LIST_LIMIT = 200
  * twin in src/github/snapshot-store.ts landed guarded; this closes the gap:
  * a corrupt cell degrades to "no links" with every other field intact, and
  * every degraded read logs once so silent data loss cannot recur (the
- * endpoint stays 200 with the healthy rows).
+ * endpoint stays 200 with the healthy rows). rm-1459 extends the same
+ * degrade-not-500 discipline to the source/severity cells via the shared
+ * ingest-side predicates — a drift-shaped cell skips its row visibly.
  */
 function parseLinksCell(raw: string, id: string): readonly ListenerLink[] {
   try {
@@ -63,7 +66,11 @@ function parseLinksCell(raw: string, id: string): readonly ListenerLink[] {
     if (!validated.success) throw new Error(validated.error.message)
     return validated.data
   } catch (error) {
-    console.warn(
+    // rm-1459 (assess-F5 fold): degradation logs ride the structured logger
+    // (redaction seam + level routing), not a bare console.warn — with this
+    // migration the listener store carries no console.* of its own
+    // (src/shutdown.ts's injected default remains the only one under src/).
+    logger.warning(
       `[listener-store] degraded links cell on message ${id}: ${
         error instanceof Error ? error.message : String(error)
       } — serving empty links, other fields intact`,
@@ -72,12 +79,26 @@ function parseLinksCell(raw: string, id: string): readonly ListenerLink[] {
   }
 }
 
-function rowToMessage(row: MessageRow): ListenerMessage {
+/**
+ * rm-1459: the `links` cell degrades per-field (empty links, other fields
+ * intact) via the ingest-side canonical validator. Source and severity are
+ * re-validated through the SAME shared predicates parseIngestBody uses — a
+ * drift-shaped cell (hand-edit, torn write, enum change from an older
+ * format) skips the row visibly with a structured warning instead of
+ * smuggling an invalid enum value into the typed message stream.
+ */
+function rowToMessage(row: MessageRow): ListenerMessage | null {
+  if (!isListenerSource(row.source) || !isListenerSeverity(row.severity)) {
+    logger.warning(
+      `[listener-store] degraded row on message ${row.id}: source/severity cell failed the ingest-side vocabulary (source=${String(row.source)} severity=${String(row.severity)}) — skipping the row`,
+    )
+    return null
+  }
   return {
     id: row.id,
-    source: row.source as ListenerMessage['source'],
+    source: row.source,
     kind: row.kind,
-    severity: row.severity as ListenerMessage['severity'],
+    severity: row.severity,
     title: row.title,
     body: row.body,
     links: parseLinksCell(row.links, row.id),
@@ -202,7 +223,7 @@ export function createListenerStore(dbPath: string): ListenerStore {
     const unreadCountRow = countUnreadStmt.get() as unknown as {n: number}
 
     return {
-      messages: rows.map(rowToMessage),
+      messages: rows.map(rowToMessage).filter((m): m is ListenerMessage => m !== null),
       unreadCount: unreadCountRow.n,
       prunedCount: prunedTotal,
     }
