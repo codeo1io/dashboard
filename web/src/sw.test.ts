@@ -3,7 +3,8 @@
  * - Pins the deny-by-default fetch router structure.
  * - Pins that /api/monitoring NetworkFirst route is ABSENT (monitoring removed).
  * - Pins the /operator navigation redirect handler is present BEFORE generic nav fallback.
- * - Pins the PURGE_RUNTIME message handler targets operator runtime caches only.
+ * - Pins the PURGE_RUNTIME message handler sweeps only the legacy monitoring-v1
+ *   cache (rm-274 truthing: no runtime caches exist at head).
  *
  * Build-output tests read the built artifact, not the source sw.ts, because the
  * injectManifest step substitutes self.__WB_MANIFEST and produces the final sw.js.
@@ -161,9 +162,9 @@ describe('sw.js build output', () => {
     expect(content).toContain('PURGE_RUNTIME')
   })
 
-  it('GUARD: purge handler targets operator-runtime-v1 (positive assertion)', () => {
+  it('GUARD: rm-274 truthing — purge handler no longer references the unwritten operator-runtime cache', () => {
     const content = readSW()
-    expect(content).toContain('operator-runtime-v1')
+    expect(content).not.toContain('operator-runtime')
   })
 
   it('GUARD: purge handler also deletes legacy monitoring-v1 cache (migration cleanup)', () => {
