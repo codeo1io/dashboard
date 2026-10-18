@@ -1023,17 +1023,32 @@ export function createAggregator(
    * fail-closed semantics — when metadata is UNavailable nothing changes
    * (we cannot know the current denylist without it).
    *
-   * Matches on node_id only (DashboardRepo rows carry no database_id); this
-   * is the primary denylist guard, same key buildWorkingSet applies.
+   * rm-601: dual-key membership — node_id OR the databaseId derived from
+   * the row's node_id — exactly the key pair buildWorkingSet applies on both
+   * the publicRepos and installation channels, so a repo redacted in
+   * repos.yaml under a different node_id format than the persisted row
+   * carries still scrubs (cross-format skew would otherwise serve the
+   * redacted name on every last-good path).
    */
   function scrubLastGoodAgainstDenylist(metadata: MetadataResult): void {
     if (lastGoodSnapshot === null || lastGoodSnapshot.repos.length === 0) return
-    const denylisted = lastGoodSnapshot.repos.filter(repo => metadata.redactedNodeIds.has(repo.node_id))
+    // rm-601 (2026-10-19 rider): DashboardRepo rows carry no database_id
+    // field, so the secondary key derives from the row's node_id string
+    // itself (legacy base64 decodes; new-format R_ returns null and relies on
+    // the primary key — the same asymmetry the buildWorkingSet publicRepo
+    // guard accepts). rm-151: membership goes through redactedDatabaseIdIn,
+    // never Set.has.
+    const denylistedBy = (repo: DashboardRepo): boolean =>
+      metadata.redactedNodeIds.has(repo.node_id) ||
+      redactedDatabaseIdIn(metadata.redactedDatabaseIds, deriveDatabaseId(repo.node_id))
+    const denylisted = lastGoodSnapshot.repos.filter(denylistedBy)
     if (denylisted.length === 0) return
-    const denylistedNodeIds = new Set(denylisted.map(repo => repo.node_id))
     setSnapshot({
       ...lastGoodSnapshot,
-      repos: lastGoodSnapshot.repos.filter(repo => !denylistedNodeIds.has(repo.node_id)),
+      // The removal filter reuses the SAME dual-key predicate — keying the
+      // removal on the matched node_ids alone would let a skew-caught row
+      // survive the very scrub that flagged it.
+      repos: lastGoodSnapshot.repos.filter(repo => !denylistedBy(repo)),
       // staleBanner untouched: scrubbing is a privacy repair, not a freshness
       // signal — it must not re-present a stale snapshot as fresh (nor flag
       // a fresh one stale).
