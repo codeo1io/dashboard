@@ -26,8 +26,23 @@ jobs:
     name: Lint
     permissions:
       contents: read
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # rm-188 (cycle 13, 2026-09-25): pinned ubuntu-24.04 — ubuntu-26.04 images are
+    # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
+    # at the rm-139 Node-26 window (2026-10-28).
+    runs-on: ubuntu-24.04
+    # rm-13640 rider (2026-09-29; wording made truthful by rm-486 — the
+    # cycle-2 comment-truth item, minted rm-281 and renumbered at the
+    # 2026-10-03 integrate; main's rm-281 is the CodeQL suppression
+    # recipe — 2026-09-30): the Lint job self-kills at 35 min — above the worst
+    # legitimate cold repo-wide eslint on the shared runner pool (the
+    # 2026-09-29 markdown paragraph-length cliff ran a single file past
+    # 35 min before the paragraph-split fix) and below the CI validator's
+    # ~36-minute poll window, so a wedged lint can never wedge validation.
+    # Every other job in this file — including Test, the heavyweight
+    # precedent for ordinary jobs — self-kills at 20. The 35 ceiling is
+    # load-bearing: raise it and validation's poll window closes first;
+    # lower it and a legitimate cold lint dies.
+    timeout-minutes: 35
     steps:
       - name: ⤵ Checkout Branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -48,7 +63,7 @@ jobs:
     name: Design Check
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch
@@ -76,7 +91,7 @@ jobs:
     name: Check Types
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch
@@ -96,7 +111,7 @@ jobs:
     name: Test
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch
@@ -118,7 +133,7 @@ jobs:
     name: Check Workflows
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch
@@ -143,7 +158,7 @@ jobs:
     name: Test Scripts Load
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: ⤵ Checkout Branch
