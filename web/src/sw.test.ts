@@ -291,11 +291,14 @@ describe('sw.js build output', () => {
     expect(changeHandlerSource).not.toContain('applicationServerKey')
   })
 
-  it('GUARD: SKIP_WAITING is handled in the message handler and never in an install listener (prompt-gated activation)', () => {
+  it("GUARD: auto-update activation (rm-1960) — top-level self.skipWaiting(), clients.claim() on activate, SKIP_WAITING message still routed", () => {
     const src = readFileSync(resolve(import.meta.dirname, 'sw.ts'), 'utf8')
     expect(src).toContain("'SKIP_WAITING'")
     expect(src).not.toContain("addEventListener('install'")
-    expect(src).not.toContain('clients.claim')
+    // Unconditional startup call on its own line (not just inside the message handler).
+    expect(src).toMatch(/^\s*self\.skipWaiting\(\)\s*$/m)
+    expect(src).toContain("addEventListener('activate'")
+    expect(src).toContain('clients.claim')
   })
 
   it('GUARD: the push/notificationclick/pushsubscriptionchange handlers are registered AFTER the message handler', () => {
@@ -308,12 +311,12 @@ describe('sw.js build output', () => {
   })
 })
 
-// vite-plugin-pwa's useRegisterSW → updateServiceWorker(true) → workbox-window
-// messageSkipWaiting() posts exactly {type: 'SKIP_WAITING'} to the waiting worker
-// (workbox-window 7.4.1 SKIP_WAITING_MESSAGE; vite-plugin-pwa 1.3.0 client/build/react.js).
-// The page's `controlling` listener then reloads. With injectManifest, the custom
-// worker must call skipWaiting() itself, or Refresh is a no-op and the old
-// worker keeps serving the old precached shell indefinitely.
+// workbox-window messageSkipWaiting() posts exactly {type: 'SKIP_WAITING'} to the
+// waiting worker (workbox-window 7.4.1 SKIP_WAITING_MESSAGE). Since rm-1960 the
+// worker no longer depends on that post: it skips waiting itself at startup and
+// claims clients on activate (registerType 'autoUpdate' reloads the claimed
+// pages). The message listener stays for compatibility — an explicit post from a
+// page still resolves immediately.
 describe('sw.ts message handler (behavioral)', () => {
   type MessageListener = (event: Event) => void
   let messageListener: MessageListener
@@ -338,6 +341,10 @@ describe('sw.ts message handler (behavioral)', () => {
     vi.stubGlobal('skipWaiting', skipWaiting)
     vi.stubGlobal('caches', {delete: vi.fn(() => Promise.resolve(true))})
     await import('./sw.ts')
+    // rm-1960: the module top level calls self.skipWaiting() once on import;
+    // clear it so the message-handler assertions below count handler calls only.
+    expect(skipWaiting).toHaveBeenCalledTimes(1)
+    skipWaiting.mockClear()
     const listener = captured.message
     if (listener === undefined) throw new Error('sw.ts did not register a message listener')
     messageListener = listener
@@ -355,9 +362,25 @@ describe('sw.ts message handler (behavioral)', () => {
     expect(waitUntil).toHaveBeenCalledWith(skipWaiting.mock.results[0]?.value)
   })
 
-  it('does NOT skip waiting on install — activation stays prompt-gated', () => {
-    expect(skipWaiting).not.toHaveBeenCalled()
-    expect(installListeners).toEqual([])
+  it('self-activates (rm-1960): top-level skipWaiting() plus activate → clients.claim()', async () => {
+    // beforeEach cleared the import-time call; re-import under fresh stubs to
+    // observe the unconditional startup activation and the activate listener.
+    vi.resetModules()
+    const calls = vi.fn(() => Promise.resolve())
+    const claim = vi.fn()
+    const activateEvents: string[] = []
+    const captured: Record<string, MessageListener> = {}
+    vi.spyOn(globalThis, 'addEventListener').mockImplementation(((type: string, listener: MessageListener) => {
+      captured[type] = listener
+      if (type === 'activate') activateEvents.push(type)
+    }) as typeof globalThis.addEventListener)
+    vi.stubGlobal('skipWaiting', calls)
+    vi.stubGlobal('clients', {claim})
+    await import('./sw.ts')
+    expect(calls).toHaveBeenCalledTimes(1)
+    expect(activateEvents).toEqual(['activate'])
+    captured.activate?.(new Event('activate'))
+    expect(claim).toHaveBeenCalledTimes(1)
   })
 
   it.each([
