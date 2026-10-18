@@ -113,9 +113,18 @@ describe('ROADMAP.md render-guard census (rm-1454)', () => {
     const lines = roadmapLines()
     const resolvable = new Set<number>([...defLineIds(lines), ...closedItemIds(lines)])
     const offenders: string[] = []
+    // rm-1460: long graft/cycle notes now wrap as multi-line <!-- --> comments
+    // (the 4000-char ceiling), so "line contains '<!--'" no longer identifies
+    // comment content — track open-comment state across lines instead. A
+    // single-line <!-- x --> comment still matches the contains check and
+    // leaves the state untouched.
+    let inComment = false
     lines.forEach((text, index) => {
       if (text.startsWith('- id: `rm-')) return
-      if (text.includes('<!--')) return
+      const wasInComment = inComment
+      if (text.includes('<!--') && !text.includes('-->')) inComment = true
+      else if (inComment && text.includes('-->')) inComment = false
+      if (text.includes('<!--') || wasInComment) return
       const unmarked = text.replaceAll(FOG_MARKED_RE, '')
       for (const match of unmarked.matchAll(RM_REF_RE)) {
         if (!resolvable.has(Number(match[1]))) {

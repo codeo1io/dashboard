@@ -11,8 +11,6 @@
  * - No console output of frame data.
  */
 
-import {Buffer} from 'node:buffer'
-
 import type {
   ApprovalFrameDataOpen,
   OutputFrameData,
@@ -25,6 +23,7 @@ import type {
   StreamHandle,
   StreamState,
 } from '../public/operator-stream.js'
+import {Buffer} from 'node:buffer'
 import fc from 'fast-check'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {
