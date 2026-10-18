@@ -17,6 +17,9 @@ The concrete case that minted this runbook (rm-246): PR #10, "land stranded
 cycle-4 truth batch", open since 2026-09-21 while eight younger PRs merged —
 its `base-drift.yaml` payload had already reached main through another
 landing, so every day it stayed open it cost the next cycle a re-triage.
+(Resolved: PR #10 is CLOSED, closedAt 2026-09-29T05:13:26Z — live probe
+`gh pr view 10 --repo codeo1io/dashboard` — so the minting case is history,
+not an open queue entry.)
 
 ---
 
