@@ -145,6 +145,30 @@ describe('buildPushClient', () => {
     expect(result).toEqual(ok({pushDisabled: false, vapidKey: {publicKey: 'BNc3xVwB', keyVersion: 'v1'}}))
   })
 
+  // rm-1508: the client previously hand-rolled a laxer shape check than the
+  // fail-closed parseVapidKeyResponse parser — empty strings passed. The
+  // parser is now the single source of truth; both empty-field cases must
+  // surface as {kind: 'protocol'}.
+  it('getVapidKey: empty-string publicKey -> protocol error (rm-1508 parser adoption)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, {publicKey: '', keyVersion: 'v1'}))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const client = buildPushClient()
+    const result = await client.getVapidKey()
+
+    expect(result).toEqual(err({kind: 'protocol'}))
+  })
+
+  it('getVapidKey: empty-string keyVersion -> protocol error (rm-1508 parser adoption)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, {publicKey: 'BNc3xVwB', keyVersion: ''}))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const client = buildPushClient()
+    const result = await client.getVapidKey()
+
+    expect(result).toEqual(err({kind: 'protocol'}))
+  })
+
   describe('getPushSubscriptionMetadata: gateway list wire shape', () => {
     const LOCAL_HASH = 'a'.repeat(64)
     const OTHER_HASH = 'b'.repeat(64)
@@ -372,6 +396,73 @@ describe('subscribeOptIn', () => {
     })
 
     expect(outcome).toEqual({kind: 'subscribed'})
+    expect(pushClient.subscribePush).toHaveBeenCalledTimes(1)
+  })
+
+  // rm-1508: sweep callers pass {prompt: false} — reconcile.ts's invariant
+  // says only the explicit opt-in button may surface the permission dialog.
+  // Undecided permission must stop BEFORE requestPermission (browsers would
+  // otherwise prompt with no user gesture), while granted permission must
+  // proceed normally without prompting.
+  it('rm-1508: prompt:false + permission default -> permission-required, requestPermission never called', async () => {
+    const requestPermission = vi.fn()
+    const pushClient = fakePushClient()
+
+    const outcome = await subscribeOptIn(
+      {
+        serviceWorkerReady: () => Promise.resolve(fakeRegistration(fakeSubscription())),
+        getSupport: () => ({supported: true, needsInstall: false}),
+        getPermission: () => 'default',
+        requestPermission,
+        pushClient,
+      },
+      {prompt: false},
+    )
+
+    expect(outcome).toEqual({kind: 'permission-required'})
+    expect(requestPermission).not.toHaveBeenCalled()
+    expect(pushClient.subscribePush).not.toHaveBeenCalled()
+  })
+
+  it('rm-1508: prompt:false + permission denied -> permission-required, no prompt, no subscribe', async () => {
+    const requestPermission = vi.fn()
+    const pushClient = fakePushClient()
+
+    const outcome = await subscribeOptIn(
+      {
+        serviceWorkerReady: () => Promise.resolve(fakeRegistration(fakeSubscription())),
+        getSupport: () => ({supported: true, needsInstall: false}),
+        getPermission: () => 'denied',
+        requestPermission,
+        pushClient,
+      },
+      {prompt: false},
+    )
+
+    expect(outcome).toEqual({kind: 'permission-required'})
+    expect(requestPermission).not.toHaveBeenCalled()
+    expect(pushClient.subscribePush).not.toHaveBeenCalled()
+  })
+
+  it('rm-1508: prompt:false + permission granted -> subscribes without prompting', async () => {
+    const subscription = fakeSubscription()
+    const registration = fakeRegistration(subscription)
+    const requestPermission = vi.fn()
+    const pushClient = fakePushClient()
+
+    const outcome = await subscribeOptIn(
+      {
+        serviceWorkerReady: () => Promise.resolve(registration),
+        getSupport: () => ({supported: true, needsInstall: false}),
+        getPermission: () => 'granted',
+        requestPermission,
+        pushClient,
+      },
+      {prompt: false},
+    )
+
+    expect(outcome).toEqual({kind: 'subscribed'})
+    expect(requestPermission).not.toHaveBeenCalled()
     expect(pushClient.subscribePush).toHaveBeenCalledTimes(1)
   })
 

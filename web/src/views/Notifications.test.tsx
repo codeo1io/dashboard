@@ -493,7 +493,30 @@ describe('Notifications Component', () => {
     })
 
     expect(subscribeOptIn).toHaveBeenCalledTimes(1)
+    // rm-1508: the sweep may never surface a permission prompt — the view
+    // must pass {prompt: false}; the unit suite pins the guard itself.
+    expect(subscribeOptIn).toHaveBeenCalledWith(expect.anything(), {prompt: false})
     expect(screen.getByTestId('notifications-headline')).toHaveTextContent('Alerts Active')
+  })
+
+  it('runs reconcile actions: register with permission-required outcome -> falls back to the enable affordance', async () => {
+    addMetaTag()
+    vi.mocked(runReconcileSweep).mockResolvedValue({
+      skipped: false,
+      action: 'register',
+      uiState: 'not-requested',
+      nextCache: {} as any,
+    })
+    vi.mocked(subscribeOptIn).mockResolvedValue({kind: 'permission-required'})
+
+    await act(async () => {
+      render(<Notifications />)
+    })
+
+    expect(subscribeOptIn).toHaveBeenCalledWith(expect.anything(), {prompt: false})
+    // 'not-requested' is the default enable affordance — the user decides via
+    // the button, never via an unprompted sweep prompt.
+    expect(screen.getByTestId('notifications-headline')).toHaveTextContent('Push Alerts')
   })
 
   it('runs reconcile actions: resubscribe', async () => {
@@ -848,6 +871,78 @@ describe('Notifications Component', () => {
 
       const secondDeps = vi.mocked(runReconcileSweep).mock.calls[1]?.[0]
       expect(secondDeps?.getCurrentKeyVersion?.()).toBeUndefined()
+    })
+  })
+
+  // rm-1446: gateway session push-health rendering — fail-open by contract:
+  // ready/degraded/unknown render (degraded visually distinct), anything
+  // else (absent field, non-OK, network failure) renders nothing and must
+  // never break the view.
+  describe('session push health (rm-1446)', () => {
+    const sessionJson = (push: unknown) =>
+      new Response(JSON.stringify({expiresAt: 1, login: 'ops', push}), {
+        status: 200,
+        headers: {'content-type': 'application/json'},
+      })
+
+    const healthBody = (status: string) =>
+      new Response(JSON.stringify({push: {status}}), {
+        status: 200,
+        headers: {'content-type': 'application/json'},
+      })
+
+    const renderView = async () => {
+      let view!: ReturnType<typeof render>
+      await act(async () => {
+        view = render(<Notifications />)
+      })
+      return view
+    }
+
+    it('renders the health badge for each status with degraded distinct', async () => {
+      addMetaTag()
+      for (const [status, distinct] of [
+        ['ready', false],
+        ['degraded', true],
+        ['unknown', false],
+      ] as const) {
+        vi.stubGlobal(
+          'fetch',
+          vi.fn().mockResolvedValue(healthBody(status)),
+        )
+        const {unmount} = await renderView()
+        const badge = await screen.findByTestId('push-health-badge')
+        expect(badge.getAttribute('data-health')).toBe(status)
+        expect(badge.className).toContain(distinct ? 'text-warning' : 'text-text-muted')
+        unmount()
+        vi.unstubAllGlobals()
+      }
+      removeMetaTag()
+    })
+
+    it('fail-open: session body without a push field renders no badge', async () => {
+      addMetaTag()
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sessionJson(undefined)))
+      await renderView()
+      // One paint + microtask drain — absence must be stable, not just late.
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(screen.queryByTestId('push-health-badge')).toBeNull()
+      removeMetaTag()
+      vi.unstubAllGlobals()
+    })
+
+    it('fail-open: a rejected session fetch renders no badge', async () => {
+      addMetaTag()
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')))
+      await renderView()
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(screen.queryByTestId('push-health-badge')).toBeNull()
+      removeMetaTag()
+      vi.unstubAllGlobals()
     })
   })
 })
