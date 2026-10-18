@@ -91,6 +91,151 @@ describe('monitoring API', () => {
       expect(res).toEqual({ ok: false, reason: 'contract-drift' })
     })
 
+    it('rm-1968: absent repo lifecycle fields parse to null/false and the counter to 0 (legacy payload fail-open)', async () => {
+      // A stale bundle or a degraded server path may omit the rm-1968 fields
+      // entirely — absence is NOT drift (mirrors rm-1447's optional-annotation
+      // semantics); the board then renders unknown-dormancy / active.
+      const mockData = {
+        repos: [
+          {
+            full_name: 'fro-bot/agent',
+            discovery_channel: 'installation',
+            status: {
+              rollupState: 'red',
+              failingChecks: 1,
+              failingCheckDetails: [],
+              openPrCount: 2,
+              openIssueCount: 3,
+              openAlertCount: null,
+              stale: false,
+            },
+          },
+        ],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+      const res = await fetchMonitoring()
+      expect(res.ok).toBe(true)
+      if (res.ok) {
+        expect(res.data.repos[0]?.status.pushedAt).toBeNull()
+        expect(res.data.repos[0]?.status.isArchived).toBe(false)
+        expect(res.data.archivedExcludedCount).toBe(0)
+      }
+    })
+
+    it('rm-1968: present lifecycle fields and counter are carried through verbatim', async () => {
+      const mockData = {
+        repos: [
+          {
+            full_name: 'fro-bot/legacy',
+            discovery_channel: 'installation',
+            status: {
+              rollupState: 'unknown',
+              failingChecks: 0,
+              failingCheckDetails: [],
+              openPrCount: 0,
+              openIssueCount: 0,
+              openAlertCount: null,
+              stale: true,
+              pushedAt: '2024-03-01T00:00:00.000Z',
+              isArchived: true,
+            },
+          },
+        ],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+        archivedExcludedCount: 1,
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+      const res = await fetchMonitoring()
+      expect(res.ok).toBe(true)
+      if (res.ok) {
+        expect(res.data.repos[0]?.status.pushedAt).toBe('2024-03-01T00:00:00.000Z')
+        expect(res.data.repos[0]?.status.isArchived).toBe(true)
+        expect(res.data.archivedExcludedCount).toBe(1)
+      }
+    })
+
+    it('rm-1968: a repo whose pushedAt is present but malformed fails closed as contract-drift', async () => {
+      const mockData = {
+        repos: [
+          {
+            full_name: 'fro-bot/bad-push',
+            discovery_channel: 'installation',
+            status: {
+              rollupState: 'red',
+              failingChecks: 1,
+              failingCheckDetails: [],
+              openPrCount: 0,
+              openIssueCount: 0,
+              openAlertCount: null,
+              stale: false,
+              pushedAt: 1742000000000,
+            },
+          },
+        ],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+      const res = await fetchMonitoring()
+      expect(res).toEqual({ ok: false, reason: 'contract-drift' })
+    })
+
+    it('rm-1968: a repo whose isArchived is present but malformed fails closed as contract-drift', async () => {
+      const mockData = {
+        repos: [
+          {
+            full_name: 'fro-bot/bad-arch',
+            discovery_channel: 'installation',
+            status: {
+              rollupState: 'red',
+              failingChecks: 1,
+              failingCheckDetails: [],
+              openPrCount: 0,
+              openIssueCount: 0,
+              openAlertCount: null,
+              stale: false,
+              isArchived: 'yes',
+            },
+          },
+        ],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+      const res = await fetchMonitoring()
+      expect(res).toEqual({ ok: false, reason: 'contract-drift' })
+    })
+
+    it('rm-1968: a top-level archivedExcludedCount present but malformed fails closed as contract-drift', async () => {
+      const mockData = {
+        repos: [],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+        archivedExcludedCount: 'three',
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+      const res = await fetchMonitoring()
+      expect(res).toEqual({ ok: false, reason: 'contract-drift' })
+    })
+
     it('rm-273: 401 maps to unauthenticated, not network (session expiry is not a transport failure)', async () => {
       vi.mocked(fetch).mockResolvedValueOnce(new Response('unauthorized', { status: 401 }))
       const res = await fetchMonitoring()

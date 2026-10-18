@@ -476,10 +476,12 @@ describe('Monitoring — rm-1967/rm-1968 lifecycle render', () => {
     })
 
     // The archived repo keeps its frozen red facts at GitHub forever — it must
-    // NOT be red-carded here.
-    expect(screen.queryAllByTestId('monitoring-red-repo')).toHaveLength(1)
-    expect(screen.getByText('fro-bot/active-red')).toBeInTheDocument()
-    expect(screen.queryByText('fro-bot/legacy')).not.toBeInTheDocument()
+    // NOT be red-carded here. (Scoped to the red card: the repo name DOES
+    // appear document-wide, in the muted archived section below.)
+    const redCards = screen.queryAllByTestId('monitoring-red-repo')
+    expect(redCards).toHaveLength(1)
+    expect(redCards[0]).toHaveTextContent('fro-bot/active-red')
+    expect(redCards[0]).not.toHaveTextContent('fro-bot/legacy')
     // It lives in the muted archived section instead.
     expect(screen.getByTestId('monitoring-archived')).toBeInTheDocument()
     expect(screen.getAllByTestId('monitoring-archived-repo')).toHaveLength(1)
