@@ -94,10 +94,12 @@ async function authedGet(app: Awaited<ReturnType<typeof buildTestApp>>, path: st
 // ---------------------------------------------------------------------------
 // PWA SW asset serving — /registerSW.js
 // ---------------------------------------------------------------------------
-// NOTE: vite-plugin-pwa only emits registerSW.js when using auto-register mode.
-// Since the app uses useRegisterSW() in a component (ReloadPrompt), the
-// registration code is bundled into the main JS chunk and registerSW.js is NOT
-// emitted. The route remains in isPublicPath for forward-compatibility.
+// NOTE (rm-274 truthing): registerSW.js IS emitted on every build. No component
+// imports the virtual register module (ReloadPrompt is a deliberate no-op
+// stub), so vite-plugin-pwa's 'auto' injectRegister falls back to the script-tag
+// form: <script id="vite-plugin-pwa:register-sw" src="/registerSW.js"> lands in
+// web/dist/index.html and registration runs on load. The public route is
+// load-bearing.
 
 // ---------------------------------------------------------------------------
 // PWA manifest serving — /manifest.webmanifest
