@@ -167,7 +167,7 @@ const defaultRateLimitTrustedProxy = (): boolean =>
 
 /**
  * rm-183 — XFF-collapse detector for the DEFAULT (untrusted-proxy) limiter
- * topology.
+ * topology. rm-1984 — quorum-armed since 2026-10-18.
  *
  * With trusted-proxy OFF, buckets key on the connection's direct address.
  * When the app nonetheless sits behind a proxy, EVERY proxied client shares
@@ -175,41 +175,72 @@ const defaultRateLimitTrustedProxy = (): boolean =>
  * bucket (a single client's 60 req/min is the whole deployment's). The only
  * in-band signal of that misconfiguration is the X-Forwarded-For header: a
  * request that arrives with XFF carries a value that VARIES with the real
- * client when the proxy forwards per-client identity. Observing two DISTINCT
- * XFF values against the SAME direct address therefore proves multiple real
- * clients are being keyed into one bucket.
+ * client when the proxy forwards per-client identity.
  *
- * The detector is deliberately cheap and log-once (rm-183):
+ * TRUTH ABOUT THE SIGNAL (rm-1984): XFF is client-forgeable end to end —
+ * RFC 7239 section 8.1 says the field "cannot be relied upon to be
+ * correct, as it may be modified ... by every node on the way to the
+ * server, including the client making the request". In the DEFAULT
+ * topology no proxy overwrites the header, so a direct client can forge
+ * any number of distinct values; no in-band rule can tell that apart from
+ * a real collapse. The detector therefore does not claim proof — it
+ * demands a QUORUM before spending its one warning, which raises the cost
+ * of a spoof/burn from a single stray pair (the pre-rm-1984 trip wire,
+ * burnable by one unauthenticated client) to a deliberate sustained
+ * forgery, and the runbook requires out-of-band corroboration before
+ * anyone acts on the warning:
+ * - same-address quorum — at least `XFF_COLLAPSE_SAME_ADDRESS_QUORUM`
+ *   distinct fingerprints against ONE direct address (a genuine proxy
+ *   fronts that many real clients almost immediately; one innocent or
+ *   hostile forged PAIR no longer suffices);
+ * - cross-address quorum — at least `XFF_COLLAPSE_CROSS_ADDRESS_QUORUM`
+ *   distinct direct addresses each showing a PAIR of distinct fingerprints
+ *   (a proxy pool collapsing its members; a single client sits at ONE
+ *   direct address and cannot produce this corroboration).
+ *
+ * The detector stays deliberately cheap and log-once (rm-183):
  * - it runs ONLY in default topology, ONLY on limiter-covered paths, and ONLY
  *   when an XFF header is present (un-proxied traffic pays nothing);
- * - bookkeeping is bounded: at most one XFF sample per tracked direct address,
- *   at most `XFF_COLLAPSE_MAX_TRACKED_KEYS` tracked addresses, each sample
+ * - bookkeeping is bounded: at most `XFF_COLLAPSE_SAME_ADDRESS_QUORUM`
+ *   distinct samples per tracked direct address (reaching the quorum clears
+ *   the whole table, so a per-address set can never outgrow it), at most
+ *   `XFF_COLLAPSE_MAX_TRACKED_KEYS` tracked addresses, each sample
  *   truncated to `XFF_COLLAPSE_SAMPLE_MAX_CHARS`;
  * - once a collapse is detected the state is cleared and the detector goes
  *   inert for the rest of the process lifetime — one warning, ever.
  */
 const XFF_COLLAPSE_MAX_TRACKED_KEYS = 1024
 const XFF_COLLAPSE_SAMPLE_MAX_CHARS = 128
+/** rm-1984 — distinct fingerprints from ONE direct address that arm the warning. */
+const XFF_COLLAPSE_SAME_ADDRESS_QUORUM = 3
+/** rm-1984 — direct addresses each showing a fingerprint PAIR that arm the warning. */
+const XFF_COLLAPSE_CROSS_ADDRESS_QUORUM = 2
 
 const xffCollapseState = {
   warned: false,
-  firstXffByDirectAddress: new Map<string, string>(),
+  fingerprintsByDirectAddress: new Map<string, string[]>(),
+  pairedAddresses: 0,
 }
 
 export interface XffCollapseDetected {
-  /** The direct connection address whose bucket collapsed (the proxy's). */
+  /** The direct connection address whose observation completed the quorum (a proxy's). */
   readonly directAddress: string
-  /** The two distinct XFF fingerprints that proved the collapse. */
+  /** The first fingerprint observed against that address. */
   readonly firstXff: string
+  /** The quorum-completing fingerprint (the newest distinct sample). */
   readonly secondXff: string
+  /** Which quorum armed the warning (rm-1984) — recorded for log truth. */
+  readonly trigger: 'same-address' | 'cross-address'
 }
 
 /**
  * Observe one default-topology limiter decision. Returns a
- * `XffCollapseDetected` exactly ONCE per process — on the first observation
- * of two distinct XFF fingerprints against the same direct address — and
- * `null` on every other observation, including after the warning fired.
- * Exported for the rm-183 unit suite.
+ * `XffCollapseDetected` exactly ONCE per process — when a quorum arms
+ * (rm-1984: `XFF_COLLAPSE_SAME_ADDRESS_QUORUM` distinct fingerprints at one
+ * direct address, or a distinct-fingerprint PAIR at each of
+ * `XFF_COLLAPSE_CROSS_ADDRESS_QUORUM` addresses) — and `null` on every
+ * other observation, including after the warning fired. Exported for the
+ * rm-183/rm-1984 unit suite.
  */
 export function observeXffCollapse(
   directAddress: string,
@@ -218,31 +249,56 @@ export function observeXffCollapse(
   if (xffCollapseState.warned) return null
   const fingerprint = xForwardedFor.trim().slice(0, XFF_COLLAPSE_SAMPLE_MAX_CHARS)
   if (fingerprint === '') return null
-  const seen = xffCollapseState.firstXffByDirectAddress.get(directAddress)
+  const seen = xffCollapseState.fingerprintsByDirectAddress.get(directAddress)
   if (seen === undefined) {
     // Bounded memory: once the address table is full, new addresses are
     // ignored (the detector never becomes a resource-exhaustion vector).
-    if (xffCollapseState.firstXffByDirectAddress.size >= XFF_COLLAPSE_MAX_TRACKED_KEYS) {
+    if (xffCollapseState.fingerprintsByDirectAddress.size >= XFF_COLLAPSE_MAX_TRACKED_KEYS) {
       return null
     }
-    xffCollapseState.firstXffByDirectAddress.set(directAddress, fingerprint)
+    xffCollapseState.fingerprintsByDirectAddress.set(directAddress, [fingerprint])
     return null
   }
-  if (seen === fingerprint) return null
-  xffCollapseState.warned = true
-  xffCollapseState.firstXffByDirectAddress.clear()
-  return {directAddress, firstXff: seen, secondXff: fingerprint}
+  if (seen.includes(fingerprint)) return null
+  // A NEW distinct fingerprint for an already-tracked address. The first
+  // such fingerprint completes this address's PAIR (counted once per
+  // address); a third always fires the same-address quorum below and
+  // clears the table, so `seen` can never outgrow the quorum.
+  if (seen.length === 1) xffCollapseState.pairedAddresses += 1
+  seen.push(fingerprint)
+  if (xffCollapseState.pairedAddresses >= XFF_COLLAPSE_CROSS_ADDRESS_QUORUM) {
+    return armXffCollapse(directAddress, seen[0] ?? fingerprint, fingerprint, 'cross-address')
+  }
+  if (seen.length >= XFF_COLLAPSE_SAME_ADDRESS_QUORUM) {
+    return armXffCollapse(directAddress, seen[0] ?? fingerprint, fingerprint, 'same-address')
+  }
+  return null
 }
 
-/** Test-only reset of the rm-183 collapse-detector state. */
+/** Spend the detector's one warning (rm-183) on an armed quorum (rm-1984). */
+function armXffCollapse(
+  directAddress: string,
+  firstXff: string,
+  secondXff: string,
+  trigger: 'same-address' | 'cross-address',
+): XffCollapseDetected {
+  const detected: XffCollapseDetected = {directAddress, firstXff, secondXff, trigger}
+  xffCollapseState.warned = true
+  xffCollapseState.fingerprintsByDirectAddress.clear()
+  xffCollapseState.pairedAddresses = 0
+  return detected
+}
+
+/** Test-only reset of the rm-183/rm-1984 collapse-detector state. */
 export function resetXffCollapseForTesting(): void {
   xffCollapseState.warned = false
-  xffCollapseState.firstXffByDirectAddress.clear()
+  xffCollapseState.fingerprintsByDirectAddress.clear()
+  xffCollapseState.pairedAddresses = 0
 }
 
 /** Test/observability accessor: direct addresses currently under watch. */
 export function xffCollapseTrackedKeys(): number {
-  return xffCollapseState.firstXffByDirectAddress.size
+  return xffCollapseState.fingerprintsByDirectAddress.size
 }
 
 /**
@@ -928,20 +984,24 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       } else {
         // rm-183 — default topology: keying IGNORES XFF, so if a proxy sits
         // in front anyway, every proxied client shares this direct address's
-        // per-class bucket. Watch (bounded, log-once) for two distinct XFF
-        // values against one address — the in-band proof that multiple real
-        // clients collapsed into one budget — and surface it exactly once
-        // per process. Un-proxied traffic (no XFF header) pays nothing.
+        // per-class bucket. Watch (bounded, log-once) for a QUORUM of
+        // distinct XFF fingerprints — rm-1984: three distinct values at one
+        // direct address, or a pair of distinct values at each of two
+        // addresses — because XFF is client-forgeable (RFC 7239 section 8.1)
+        // and a single forged pair must not be able to spend the detector's
+        // one warning or bait the flag flip below. Un-proxied traffic (no
+        // XFF header) pays nothing.
         const xff = c.req.header('x-forwarded-for')
         if (xff !== undefined && xff.trim() !== '') {
           const collapse = observeXffCollapse(ip, xff)
           if (collapse !== null) {
             logger.warning(
-              'Rate limiter client collapse: multiple X-Forwarded-For values hit one direct-address bucket — set RATE_LIMIT_TRUSTED_PROXY=1 ONLY if the proxy overwrites X-Forwarded-For with the real client (behind an appending proxy first-hop keying is client-spoofable)',
+              'Rate limiter client collapse: a quorum of distinct X-Forwarded-For values hit direct-address buckets — XFF is client-forgeable (RFC 7239 section 8.1): corroborate per docs/runbooks/gateway-access.md before acting, and set RATE_LIMIT_TRUSTED_PROXY=1 ONLY if the proxy overwrites X-Forwarded-For with the real client (behind an appending proxy first-hop keying is client-spoofable)',
               {
                 directAddress: collapse.directAddress,
                 firstXff: collapse.firstXff,
                 secondXff: collapse.secondXff,
+                trigger: collapse.trigger,
                 pathClass: classifyRateLimitPath(path),
               },
             )
@@ -1328,8 +1388,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   // — public/ is tracked source copied verbatim into the image (no build step
   // could emit sidecars), the rm-478 revalidation policy in src/static-files.ts
   // composes its ETag from the identity bytes and rewrites 304s, and this
-  // family stays separate from the operator-contract 1.8.0 work in flight on
-  // these files (run 28cd8f6c). Compressing the operator runtime JS is future
+  // family stays separate from the operator-contract work on these files
+  // (run 28cd8f6c's "1.8.0 work in flight" note is stale — that contract
+  // landed at 1.11.0, src/gateway/operator-contract/version.ts). Compressing
+  // the operator runtime JS is future
   // work that first needs a build step for public/ (see the rm-602 def-line in
   // ROADMAP.md).
 

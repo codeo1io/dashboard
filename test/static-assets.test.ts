@@ -14,6 +14,7 @@
  */
 import type {GitHubOAuthClient} from '../src/auth/oauth.ts'
 import {Buffer} from 'node:buffer'
+import {spawnSync} from 'node:child_process'
 import {existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join, resolve} from 'node:path'
@@ -1677,5 +1678,70 @@ describe('static response compression — gzip sidecars (rm-602)', () => {
     expect(res.headers.get('cache-control')).toBe('no-cache')
     expect(res.headers.get('etag')).not.toBeNull() // rm-478 policy intact
     expect(existsSync('public/operator-stream.js.gz')).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Sidecar staleness hygiene — rm-1986 (repository-maintenance cycle 3, run
+// b7188a701a7a): serveStatic({precompressed: true}) PREFERS a `.gz` sibling
+// over newer identity bytes under Accept-Encoding: gzip, so the generator
+// (scripts/gzip-static-sidecars.ts) must keep the sidecar set truthful across
+// incremental builds — prune a sidecar whose fresh file is no longer worth
+// compressing, and sweep sidecars whose identity sibling is gone. Fixtures
+// live in a temp dir and the generator runs as a subprocess, exactly as
+// `pnpm build:web` invokes it.
+// ---------------------------------------------------------------------------
+describe('gzip sidecar staleness hygiene (rm-1986)', () => {
+  const SCRIPT = resolve(import.meta.dirname, '../scripts/gzip-static-sidecars.ts')
+
+  function runGenerator(root: string): {status: number; stdout: string} {
+    const result = spawnSync(process.execPath, [SCRIPT, root], {encoding: 'utf8'})
+    return {status: result.status ?? -1, stdout: `${result.stdout}${result.stderr}`}
+  }
+
+  it('a stale sidecar for a now-uncompressed file is pruned, an orphaned sidecar is swept, fresh sidecars still emit', () => {
+    const root = mkdtempSync(join(tmpdir(), 'gzip-sidecars-rm1986-'))
+    try {
+      // big.js: compressible extension AND worth it (repetition → gzip
+      // shrinks it hard) — must still get a fresh, valid sidecar.
+      writeFileSync(join(root, 'big.js'), 'console.log("x")\n'.repeat(512))
+      // tiny.js: compressible extension but too small to beat its gzip
+      // framing → the not-worth-it skip path. A sidecar left by an OLDER
+      // build would shadow these fresher identity bytes under
+      // Accept-Encoding: gzip — it must be PRUNED.
+      writeFileSync(join(root, 'tiny.js'), 'const x=1\n')
+      writeFileSync(join(root, 'tiny.js.gz'), 'STALE-BYTES-NOT-EVEN-GZIP')
+      // gone.js.gz: orphan — its identity sibling was deleted or renamed
+      // between builds; it serves stale bytes for a path that no longer
+      // exists. It must be SWEPT.
+      writeFileSync(join(root, 'gone.js.gz'), 'ORPHAN')
+
+      const result = runGenerator(root)
+      expect(result.status).toBe(0)
+      expect(existsSync(join(root, 'big.js.gz'))).toBe(true)
+      expect(
+        gunzipSync(readFileSync(join(root, 'big.js.gz'))).equals(readFileSync(join(root, 'big.js'))),
+      ).toBe(true)
+      expect(existsSync(join(root, 'tiny.js.gz'))).toBe(false) // rm-1986 prune
+      expect(existsSync(join(root, 'gone.js.gz'))).toBe(false) // rm-1986 sweep
+      expect(result.stdout).toContain('pruned 1 stale sidecar(s), swept 1 orphan(s)')
+    } finally {
+      rmSync(root, {recursive: true, force: true})
+    }
+  })
+
+  it('a clean incremental re-run prunes and sweeps nothing and refreshes sidecars byte-identically', () => {
+    const root = mkdtempSync(join(tmpdir(), 'gzip-sidecars-rm1986-'))
+    try {
+      writeFileSync(join(root, 'big.js'), 'console.log("x")\n'.repeat(512))
+      expect(runGenerator(root).status).toBe(0)
+      const first = readFileSync(join(root, 'big.js.gz'))
+      const result = runGenerator(root)
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain('pruned 0 stale sidecar(s), swept 0 orphan(s)')
+      expect(readFileSync(join(root, 'big.js.gz')).equals(first)).toBe(true)
+    } finally {
+      rmSync(root, {recursive: true, force: true})
+    }
   })
 })

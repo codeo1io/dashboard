@@ -120,9 +120,11 @@ The gateway section above governs `GATEWAY_OPERATOR_TRUSTED_PROXIES` on the
 **gateway** deployment. The **dashboard** server has its own per-path-class
 limiter with its own proxy decision (`RATE_LIMIT_TRUSTED_PROXY`, default OFF —
 see README's rate-limit rows). Since 2026-10-09 the default topology carries a
-log-once collapse detector: the first time it observes two **different**
-`X-Forwarded-For` values arriving at the **same** direct connection address,
-it emits one `Rate limiter client collapse` warning and goes silent for the
+log-once collapse detector; since 2026-10-18 (rm-1984) it is quorum-armed: it
+warns only after observing either **three distinct** `X-Forwarded-For` values
+at the **same** direct connection address, or a **pair** of distinct values at
+each of **two different** direct addresses — then it emits one
+`Rate limiter client collapse` warning and goes silent for the
 process lifetime. That warning is the fastest two-source check available:
 
 1. From **two different client sources** (two machines, or one machine plus a
@@ -140,10 +142,13 @@ process lifetime. That warning is the fastest two-source check available:
    docker logs <dashboard-container> 2>&1 | grep 'Rate limiter client collapse' | tail -1
    ```
 
-   The warning carries `directAddress` (the proxy's address), `firstXff` and
-   `secondXff` (the two observed forwarded values), and the `pathClass`.
-3. **Interpret it** — the warning means all proxied clients currently share
-   ONE per-class bucket:
+   The warning carries `directAddress` (the address whose observation armed the
+   quorum), `firstXff` and `secondXff` (that address's first-observed and
+   quorum-completing forwarded values), a `trigger` (`same-address` or
+   `cross-address`), and the `pathClass`.
+3. **Interpret it** — the warning means proxied clients are being keyed into
+   direct-address buckets (with `trigger: cross-address`, a proxy POOL is
+   doing it at several addresses at once):
    - If the proxy **overwrites** `X-Forwarded-For` with the real client (verify
      with step 1: the two curls' forwarded values must equal the two sources'
      addresses), set `RATE_LIMIT_TRUSTED_PROXY=1` on the dashboard deployment
@@ -154,11 +159,23 @@ process lifetime. That warning is the fastest two-source check available:
      overwrite, or accept the shared budget for the single-operator traffic
      pattern this deployment runs.
 
-Two-source discipline matters: a single source can never produce two distinct
-forwarded values, so one client alone cannot fire (or verify) the detector —
-which is also why a false positive requires two genuinely distinct forwarded
-values, not one client retrying. Full background — the shared-key failure mode
-behind the gateway variant of this trap — in
+Two-source discipline matters — and has hard limits (rm-1984). The quorum
+exists so that a single stray **pair** of forwarded values cannot spend the
+detector's one warning: one direct client sits at one direct address, and one
+address showing two distinct values no longer arms anything. But
+`X-Forwarded-For` is client-forgeable end to end — RFC 7239 section 8.1 says
+the field "cannot be relied upon to be correct, as it may be modified ... by
+every node on the way to the server, including the client making the
+request" — and in the default topology (no proxy overwriting the header) a
+determined client can forge three distinct values from one address and still
+burn the once-per-process diagnostic, or bait the `RATE_LIMIT_TRUSTED_PROXY=1`
+flip the warning mentions. Treat the warning as a PROMPT for the step-1
+two-source corroboration (the forwarded values must match the two sources'
+own addresses), never as proof: with a genuine proxy behind the app, two real
+sources corroborate in seconds; with a forger, the forwarded values will not
+match the curl sources and step 3's flag guidance must NOT be applied. Full
+background — the shared-key failure mode behind the gateway variant of this
+trap — in
 `docs/solutions/security-issues/gateway-operator-oauth-rate-limit-shared-key-behind-caddy-2026-09-21.md`.
 
 ---

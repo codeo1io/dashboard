@@ -161,8 +161,11 @@ export async function fetchPlatformStatus(opts: PlatformStatusOptions = {}): Pro
     }
 
     // Nothing usable at all → annotation absent (fail-open), never a
-    // fabricated "operational".
-    if (overall === 'unknown' && actions === null && statusBody === null) {
+    // fabricated "operational". rm-1985: "usable" means a FIELD was
+    // extracted (an indicator that parsed, or a real Actions component
+    // status) — a 200 body whose shape we did not recognize contributes
+    // nothing, so it must not keep an all-unknown annotation alive.
+    if (overall === 'unknown' && actions === null) {
       return null
     }
 

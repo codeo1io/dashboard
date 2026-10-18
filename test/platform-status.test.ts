@@ -110,17 +110,57 @@ describe('fetchPlatformStatus (rm-1447)', () => {
     expect(await fetchPlatformStatus({fetchFn})).toBeNull()
   })
 
-  it('unknown third-party vocabulary clamps server-side: indicator → unknown, component status → null', async () => {
+  it('unknown third-party vocabulary clamps server-side, but BOTH holes unusable → null (rm-1985)', async () => {
     const fetchFn = vi.fn(async (input: string | URL) => {
       if (String(input).endsWith('/status.json')) {
         return jsonResponse({status: {indicator: 'brand-new-severity', description: 'future value'}})
       }
       return jsonResponse({components: [{name: 'Actions', status: 'novel-outage-kind'}]})
     }) as unknown as typeof fetch
+    // rm-1985: "usable" means a FIELD was extracted, not that a 200 body
+    // arrived — unknown vocabulary on BOTH feeds leaves nothing usable, so
+    // the annotation is absent rather than all-unknown.
+    expect(await fetchPlatformStatus({fetchFn})).toBeNull()
+  })
+
+  it('one-sided unknown vocabulary still clamps into a present annotation with a clamped hole', async () => {
+    const fetchFn = vi.fn(async (input: string | URL) => {
+      if (String(input).endsWith('/status.json')) {
+        return jsonResponse({status: {indicator: 'brand-new-severity', description: 'future value'}})
+      }
+      return jsonResponse(HEALTHY_COMPONENTS)
+    }) as unknown as typeof fetch
     const status = await fetchPlatformStatus({fetchFn})
-    // A usable read happened, so the annotation is present — with clamped holes.
+    // The Actions field IS usable, so the annotation is present — with the
+    // clamped overall hole (this is the rm-1447 clamp, preserved by rm-1985).
+    expect(status).not.toBeNull()
     expect(status?.overall).toBe('unknown')
-    expect(status?.actions).toBeNull()
+    expect(status?.actions).toBe('operational')
+  })
+
+  it('rm-1985: a 200 status.json with an unrecognized shape (no field extracted) → null', async () => {
+    // The status feed answered 200 with a JSON object, but the shape is not
+    // the Statuspage contract — indicator unparseable, description absent —
+    // and the components read failed, so Actions is absent too. The old
+    // guard's `statusBody !== null` term kept an all-unknown annotation
+    // alive here; the documented "nothing usable → absent" contract wins.
+    const fetchFn = vi.fn(async (input: string | URL) => {
+      if (String(input).endsWith('/status.json')) {
+        return jsonResponse({hello: 'world', meta: {unexpected: true}})
+      }
+      return jsonResponse({message: 'server error'}, 503)
+    }) as unknown as typeof fetch
+    expect(await fetchPlatformStatus({fetchFn})).toBeNull()
+  })
+
+  it('rm-1985: empty-but-shaped status body with Actions absent → null', async () => {
+    const fetchFn = vi.fn(async (input: string | URL) => {
+      if (String(input).endsWith('/status.json')) {
+        return jsonResponse({status: {}})
+      }
+      return jsonResponse({components: [{name: 'API', status: 'operational'}]})
+    }) as unknown as typeof fetch
+    expect(await fetchPlatformStatus({fetchFn})).toBeNull()
   })
 
   it('Actions component absent from the components list → actions null, overall still served', async () => {
