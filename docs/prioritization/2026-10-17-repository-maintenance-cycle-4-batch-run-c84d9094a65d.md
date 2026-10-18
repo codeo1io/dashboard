@@ -86,3 +86,35 @@ the same landing) per the standard pipeline.
 - test/roadmap-render-guard.test.ts 4/4 green; pnpm lint rc=0 (sequential, never parallel).
 - Selection delta mirrored to spool: prioritize-c84d9094a65d-0463abe2.patch — the full ROADMAP.md delta vs pristine edf948de (roadmap-phase extension + the 4 selection riders), i.e. exactly what implement/fold applies to a clean main; the selection component is the final 4 rider lines.
 - Worktree state: ` M ROADMAP.md` + this new untracked doc; no other tracked file touched.
+
+## Implement outcome (2026-10-18, attempt 425318eeedfb467d91256ff47d135f0d)
+
+**Salvage adoption, verified — nothing redone.** The conductor preserved the reaped implement
+attempt's tree as salvage commit `46bc60bc` (11 paths, content-preservation only, no validation
+claim). This attempt audited every hunk against the four acceptance cards and validated the whole
+batch first-hand:
+
+- **Gates (node v24.21.0; `pnpm install --frozen-lockfile` 7.2s from the shared store):**
+  `pnpm check-types` rc=0; `pnpm lint` rc=0; focused impacted battery `vitest run` over the 9
+  touched-seam suites (operator-stream-core, operator-sse-reader, listener-store-degradation,
+  listener-store, listener-contract.property, operator-fixture-harness, roadmap-render-guard,
+  roadmap-length-guard, sse-parser.property) = **1307/1307 green**.
+- **Red-first, re-proven this attempt (each reverted to its edf948de shape, expected red, restored):**
+  rm-1457 units-blind `.length` cap → flood test fails `'closed' ≠ 'failed'`;
+  rm-1458 pre-fix reader → 3 cancel tests red (clean-completion control + 7-byte-offset exactness
+  test stay green both ways, as designed); rm-1459 pre-fix store → 3 drift tests red (no-log
+  control green). Post-restore porcelain clean (byte-exact `git checkout --`).
+- **rm-1458 exactness audit:** the incremental `bufferBytes` is decremented at every record split
+  (`bufferBytes -= encoder.encode(\`${record}\\n\\n\`).length`, src/gateway/operator-sse-reader.ts:623)
+  so long multi-frame streams cannot false-trip the cap; the held-CR ±1 and code-point additivity
+  argument was re-derived and is behaviorally pinned by the 7-byte-offset chunk-split reassembly
+  test. `releaseBody` fires on all four non-completion exits; EOF exits release nothing.
+- **rm-1460 round-trip, re-verified programmatically:** both rewrapped comments (43af4cf graft,
+  extension #44) are whitespace-collapsed EQUAL to their edf948de single-line blobs; pre-change
+  `awk length>4000` = exactly :1507 (4463) + :1553 (4453); post-change = 0 lines. Render-tail
+  marker remains the last non-empty line; census 260 defs / 0 dups.
+- **Deferred by design (recorded, not blocking):** the client twin's cap check re-encodes the whole
+  buffer per chunk — bounded by the 1 MB frame cap, exact, and rm-253's fold inherits the helper at
+  the same seam if it ever wants the incremental treatment. The `validation:v1` executable-surface
+  digest is work-order-declared and consumed by the later full_tests gate against the batch-applied
+  tree; no in-repo digest file exists to update.
