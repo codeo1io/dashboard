@@ -13,16 +13,6 @@
       "groupName": "Bun"
     }
   ],
-  "customManagers": [
-    {
-      // Tracks the `packageManager` pin in package.json.
-      "customType": "regex",
-      "managerFilePatterns": ["/^package\\.json$/"],
-      "matchStrings": ["\"packageManager\":\\s*\"bun@(?<currentValue>[^\"]+)\""],
-      "depNameTemplate": "bun",
-      "datasourceTemplate": "npm"
-    }
-  ],
   "postUpgradeTasks": {
     "commands": ["bun install", "bun run fix"],
     "executionMode": "branch"
