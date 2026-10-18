@@ -1326,16 +1326,17 @@ export function createAggregator(
             const archivedRow = lastGoodSnapshot?.repos.find(repo => repo.node_id === entry.node_id)
             if (entry.archived) {
               archivedExcludedCount += 1
-              statuses[index] =
-                archivedRow === undefined
-                  ? // Never seen before: synthesize a muted placeholder.
-                    // Identity is enumeration-proven; the counts are unknown,
-                    // not zero — hence 'unknown' rollup + stale, isArchived
-                    // true so the UI mutes it instead of guessing red.
-                    {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, pushedAt: null, isArchived: true, stale: true, fetchedAt: now()}
-                  : // Seen before: reuse the frozen facts, refresh only the
-                    // stamp (this cycle re-validated the row via enumeration).
-                    {...archivedRow.status, fetchedAt: now()}
+              if (archivedRow === undefined) {
+                // Never seen before: synthesize a muted placeholder.
+                // Identity is enumeration-proven; the counts are unknown,
+                // not zero — hence 'unknown' rollup + stale, isArchived
+                // true so the UI mutes it instead of guessing red.
+                statuses[index] = {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], openPrCount: 0, openIssueCount: 0, openAlertCount: null, pushedAt: null, isArchived: true, stale: true, fetchedAt: now()}
+              } else {
+                // Seen before: reuse the frozen facts, refresh only the
+                // stamp (this cycle re-validated the row via enumeration).
+                statuses[index] = {...archivedRow.status, fetchedAt: now()}
+              }
               continue
             }
             statuses[index] = await fetchRepoStatus(entry, graphqlQueryForInstallation, now, fetchDeadlineMs)

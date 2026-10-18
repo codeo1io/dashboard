@@ -101,8 +101,8 @@ function makeGraphqlResponse(overrides: {
   }
   return {
     repository: {
-      ...(overrides.pushedAt !== undefined ? {pushedAt: overrides.pushedAt} : {}),
-      ...(overrides.isArchived !== undefined ? {isArchived: overrides.isArchived} : {}),
+      ...(overrides.pushedAt === undefined ? {} : {pushedAt: overrides.pushedAt}),
+      ...(overrides.isArchived === undefined ? {} : {isArchived: overrides.isArchived}),
       defaultBranchRef: {
         target: {
           statusCheckRollup: overrides.rollupState === undefined ? null : {state: overrides.rollupState},

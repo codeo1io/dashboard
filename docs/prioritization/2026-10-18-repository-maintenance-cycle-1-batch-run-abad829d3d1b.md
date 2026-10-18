@@ -1,30 +1,40 @@
 ---
 module: dashboard
-tags: [repository-maintenance, cycle-1, batch, rm-1967, rm-1968]
+tags: `[repository-maintenance, cycle-1, batch, rm-1967, rm-1968]`
 problem_type: maintenance-batch
 ---
 
 # Repository-maintenance cycle 1 — batch record (2026-10-18, run abad829d)
 
-Batch "monitoring board truth pass": [rm-1967, rm-1968], selected by prioritize
+Batch "monitoring board truth pass": legs `rm-1967` + `rm-1968`, selected by prioritize
 `698583f1` from this run's ledger. Cycle lineage: assess `38c9667f` (gates
 RC0 ×4 at base `54ea2657`, 36 files / 1428 tests) → research `a9cb3bba` →
 roadmap `bb8f3e23` (minted rm-1967/1968/1969; spool postimage census
 271 defs / 0 dups / max rm-1969) → prioritize `698583f1` → stewardship
-`cf08c352` → implement `c3b310c9` (this record's phase).
+`cf08c352` → implement `c3b310c9` (salvaged; see provenance) → implement
+`8f92f8f4` (this record's phase: salvage verification, focused gates, lint
+cures, doc truing).
 
 ## Provenance — salvage adoption (read before reviewing the diff)
 
-The first implement attempt(s) died to provider-family infra failures before
-any PhaseResult could be written (event log `4b4ab394…` dies at
-message-count 2). The landing fleet preserved their tree state as
-`conductor-salvage` commit `22f8a07a` (15 paths, +616/−15) directly on base
-`54ea2657`. This attempt verified that delta line-by-line against the
-prioritize/stewardship acceptance before adopting it: every leg of rm-1967
-and rm-1968 described below was already present and complete in the salvage;
-nothing was redone. This attempt's own increments: the
-`web/src/api/monitoring.test.ts` client-parse characterization legs and this
-batch doc (both were absent from the salvage).
+The first implement attempts died to provider-family infra failures before
+any PhaseResult could be written. The landing fleet preserved their tree
+state as TWO `conductor-salvage` commits directly on base `54ea2657`:
+`22f8a07a` (15 paths, +616/−15, 2026-10-17 23:28Z — every code leg and test
+below) and `43ff4a9` (3 paths, 2026-10-18 07:11Z — the
+`web/src/api/monitoring.test.ts` client-parse legs, a scoping fix in
+`Monitoring.test.tsx`, and this batch doc). Neither salvage carries a
+validation claim ("content preservation only"). Attempt `8f92f8f4` verified
+both deltas line-by-line against the prioritize/stewardship acceptance
+before adopting them: every leg of rm-1967 and rm-1968 described below was
+already present and complete; nothing was redone. That attempt's own
+increments: running the focused gate battery the salvages never had (initial
+`pnpm lint` was RED with 5 errors carried in the salvage), curing them —
+`@stylistic/operator-linebreak` ×2 in `src/github/aggregator.ts` (ternary →
+if/else, behavior-identical), `unicorn/no-negated-condition` ×2 in
+`test/aggregator.test.ts` (inverted fixture conditions), and
+`markdown/no-missing-label-refs` ×1 in this doc's frontmatter (house
+backticked-tags form) — plus the doc corrections below.
 
 ## rm-1967 — render openAlertCount (operator-experience 44.0)
 
@@ -94,14 +104,21 @@ via `vitest run`, web suites
 `pnpm check-types`. Full battery is deferred to the full_tests gate per the
 phase budget.
 
+Results (attempt `8f92f8f4`, post-lint-cure): server focused battery 6 files /
+246 tests passed; web focused battery 2 files / 34 tests passed; `pnpm lint`
+RC0; `pnpm check-types` RC0 (server + `web/` + `.opencode`).
+
 ## Fold notes
 
 - All batch CODE surfaces are byte-identical between base `54ea2657` and
-  origin/main `64cd2f6a` (verified first-hand this phase) — the delta is
+  origin/main — verified first-hand by attempt `c3b310c9` at `64cd2f6a` and
+  re-verified by attempt `8f92f8f4` at `c02f90d` (744 commits ahead of base;
+  the drift landed entirely outside these files) — the delta is
   content-fold-clean with zero rework.
 - Compose by content with the unlanded snapshot-validation sibling legs
   (43cf6bc3 platformStatus validation; ed8f47e0 in-flight): both extend
   `isValidSnapshotShape`/`DashboardRepo` — first-landed-wins, renumber-free
   merge expected since the branches are disjoint.
-- `web/dist` must be rebuilt at fold (`pnpm test` pretest does this) — the
-  checked-in dist predates the Monitoring.tsx change.
+- `web/dist` is NOT tracked (gitignored build artifact) — nothing to fold
+  there; `pnpm test`'s pretest builds it fresh in every environment that
+  needs it.
