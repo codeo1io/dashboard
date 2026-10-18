@@ -13,7 +13,12 @@
 # --platform flag and COPY cannot express deletions, so this is the minimal
 # target-executed step the design allows — see the rm-558 CI-time note in
 # .github/workflows/release.yaml).
-ARG NODE_IMAGE=node:24-trixie-slim@sha256:7f486cabe892bff8fef04c0f7da8dba84a560be3e4e2740b7a86afc57ebec315
+# rm-648 digest refresh (2026-10-19, run eb13ca8a implement 05d868a7): the
+# 2026-10-14 node 24.22.0 release was twin-pushed — 24-slim and 24-trixie-slim
+# carry separate manifest indexes built 7s apart (a5f4366e vs 7f486cab, same
+# node build) — which armed the base-drift tripwire red. Pinned to the 24-slim
+# twin so the tag matches the tripwire's own comparison target exactly.
+ARG NODE_IMAGE=node:24-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5
 
 # rm-1483 (#641 residual, run 9511a1b5): release-channel tag baked into the
 # SPA at build time. release.yaml passes the calver tag as a build-arg; 'dev'

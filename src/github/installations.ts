@@ -19,7 +19,7 @@ import type {DashboardAppClient} from './app-client.ts'
 import {Octokit} from '@octokit/core'
 import {logger} from '../logger.ts'
 import {err, ok} from '../result.ts'
-import {createBoundedFetch, GITHUB_REQUEST_TIMEOUT_MS, safeErrorMessage} from './app-client.ts'
+import {createBoundedFetch, GITHUB_API_VERSION, GITHUB_REQUEST_TIMEOUT_MS, safeErrorMessage} from './app-client.ts'
 
 // ---------------------------------------------------------------------------
 // Read-only permissions
@@ -454,6 +454,11 @@ async function listInstallationReposWithToken(token: string): Promise<readonly O
       timeout: GITHUB_REQUEST_TIMEOUT_MS,
       fetch: createBoundedFetch(GITHUB_REQUEST_TIMEOUT_MS),
     },
+  })
+  // rm-855: REST version pin — same request.defaults seam as app-client
+  // (constructor-level default headers are dropped by @octokit/core 7.x).
+  installOctokit.request = installOctokit.request.defaults({
+    headers: {'X-GitHub-Api-Version': GITHUB_API_VERSION},
   })
 
   return collectInstallationRepoPages(async page => {
