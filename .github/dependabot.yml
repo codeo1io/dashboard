@@ -6,6 +6,10 @@
 # .github/renovate.json5 was deleted 2026-09-22 (rm-136). This dependabot
 # config IS the fork's dependency automation: weekly grouped PRs, with the
 # first expected from the 2026-09-19 enable window (~2026-10-03).
+# Unstall touch 2026-10-18 (run a59702724522, rm-102 rider): the config had
+# produced no PR since enablement while the registry moved — this dated edit
+# re-arms the weekly cycle; expect new grouped PRs within 48h, else record
+# a dated no-op and investigate the install.
 #
 # Conventions honored:
 # - GitHub Actions updates preserve the repo's commit-SHA pinning style.
