@@ -191,7 +191,7 @@ jobs:
       # target dies exec-format-error at that RUN (local builds only pass
       # because this host has binfmt-registered qemu).
       - name: 🐋 Set up QEMU (arm64 target emulation)
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
       - name: 🏗️ Build and push candidate image
         id: build
@@ -214,8 +214,16 @@ jobs:
           tags: ghcr.io/${{ github.repository }}:ci-${{ github.run_id }}-${{ github.run_attempt }}
           # rm-882: the precomputed CalVer tag rides into the image so the
           # footer chip and the promote-job tag can never disagree.
+          # rm-1979: gate that stamp on the same env every promote-side tag
+          # gate keys (HAS_RELEASE_APP, staged at job level from Application
+          # ID + private key secret presence). Without a release App the
+          # stamp falls back to 'dev': Dockerfile's ARG default and the
+          # client's plain-text fallback render it with no release-notes
+          # link, so no image ever advertises a tag no job will create — the
+          # fork shares upstream's CalVer tag namespace via adoption, so a
+          # bare stamp names a phantom release.
           build-args: |
-            DASHBOARD_VERSION=${{ steps.version.outputs.tag }}
+            DASHBOARD_VERSION=${{ env.HAS_RELEASE_APP == 'true' && steps.version.outputs.tag || 'dev' }}
           # rm-105: registry-side supply-chain attestations. Provenance v1 ships
           # by default at mode=min; mode=max adds full materials/builder data and
           # sbom adds the SPDX attestation the image was missing (verified absent
