@@ -14,6 +14,13 @@ on:
   schedule:
     - cron: '23 5 * * 1' # Mondays 05:23 UTC — after the 04:13 base-drift check
   workflow_dispatch: {}
+  # rm-1961 (cycle 3, 2026-10-17): the shared scheduler silently misses cron
+  # fires — this canary is 0/2 lifetime (both deaths at the frozen install) and
+  # its Monday cron has never produced a run. A completed Main run re-arms
+  # this workflow; the fallback-gate job keeps the weekly cadence.
+  workflow_run:
+    workflows: [Main]
+    types: [completed]
 
 permissions:
   # Mint-family match (AGENTS.md invariant 1): the aggregator's installation
@@ -31,7 +38,42 @@ permissions:
   issues: read
 
 jobs:
+  fallback-gate:
+    # rm-1961: gate for the workflow_run fallback trigger above. Fallback
+    # fires that are off-main (PR-triggered Main runs) or already covered by
+    # a success inside the recency window are skipped; scheduled and manual
+    # fires always pass (skip=false).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      skip: ${{ steps.recency.outputs.skip }}
+    steps:
+      - name: Fallback-fire recency dedupe
+        id: recency
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" != 'workflow_run' ]; then
+            echo 'skip=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${{ github.event.workflow_run.head_branch }}" != 'main' ]; then
+            echo 'skip=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          since="$(date -u -d '6 days ago' +%Y-%m-%d)"
+          recent="$(gh run list -R "$GITHUB_REPOSITORY" --workflow canary.yaml \
+            --status success --created "$since" --json databaseId --jq 'length')"
+          echo "recent-successes=$recent since=$since"
+          if [ "$recent" -gt 0 ]; then
+            echo 'skip=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'skip=false' >> "$GITHUB_OUTPUT"
+          fi
+
   canary:
+    needs: fallback-gate
+    if: needs.fallback-gate.outputs.skip != 'true'
     # rm-188 (cycle 13, 2026-09-25): pinned ubuntu-24.04 — ubuntu-26.04 images are
     # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
     # at the rm-139 Node-26 window (2026-10-28).
