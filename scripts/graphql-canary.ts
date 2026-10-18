@@ -41,6 +41,7 @@ async function runTemplate(token: string, entry: {readonly name: string; readonl
   try {
     const res = await fetch('https://api.github.com/graphql', {
       method: 'POST',
+      signal: AbortSignal.timeout(20_000), // 2026-10-18 (rm-1520): 20s transport bound
       headers: {
         authorization: `Bearer ${token}`,
         accept: 'application/vnd.github+json',
