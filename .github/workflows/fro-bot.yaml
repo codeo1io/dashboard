@@ -258,7 +258,17 @@ env:
 jobs:
   fro-bot:
     name: Fro Bot
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 # 2026-09-20: pinned runner (rm-188) to decouple from default-fleet churn.
+    # 2026-09-20 (rm-603): bound agent runs (360m default is excessive). Lost in the 2026.10.43
+    # adoption merge (c51597ad) along with the secret-presence gate below; re-restored 2026-10-18 (rm-1518/1520).
+    timeout-minutes: 20
+    env:
+      # 2026-09-20 (rm-1450): job-level secret-presence gate, re-restored 2026-10-18 (rm-1518). The secrets
+      # context is not available in a job-level if (actionlint rejects the whole workflow file), so the gate is
+      # expressed as job env + per-step if, mirroring release.yaml's HAS_RELEASE_APP contract. The 2026.10.43
+      # adoption merge reverted this wholesale: secrets.FRO_BOT_PAT is empty at the fork default, so schedule
+      # and dispatch runs fail at the PAT-consuming steps instead of skipping green.
+      HAS_FRO_BOT_PAT: ${{ secrets.FRO_BOT_PAT != '' }}
     if: >-
       (
         github.event.pull_request == null ||
@@ -288,8 +298,15 @@ jobs:
         )
       )
     steps:
+      - name: Skip warning (no FRO_BOT_PAT)
+        if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && env.HAS_FRO_BOT_PAT == 'false'
+        run: echo "::warning::FRO_BOT_PAT is not configured — scheduled/dispatched fro-bot run skipped by the secret-presence gate (rm-1450, re-restored rm-1518 after the 2026.10.43 adoption revert)."
+
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        # 2026-09-20 (rm-1450): schedule/dispatch-path guard — when the secret is absent these
+        # triggers skip green instead of failing at PAT-consuming steps.
+        if: (github.event_name != 'schedule' && github.event_name != 'workflow_dispatch') || env.HAS_FRO_BOT_PAT == 'true'
+        uses: actions/checkout@3d3c42e5fd0b1b161c4e20ea4c16c8725711bfdf # v7.0.1
         with:
           fetch-depth: 0
           # Review-path triggers withhold credentials from the agent; don't leave one in the workspace.
@@ -306,10 +323,12 @@ jobs:
           token: ${{ secrets.FRO_BOT_PAT }}
 
       - name: 📦 Setup
+        if: (github.event_name != 'schedule' && github.event_name != 'workflow_dispatch') || env.HAS_FRO_BOT_PAT == 'true' # rm-1450/rm-1518 secret-presence gate
         uses: ./.github/actions/setup
 
       - name: Run Fro Bot
         id: fro-bot-agent
+        if: (github.event_name != 'schedule' && github.event_name != 'workflow_dispatch') || env.HAS_FRO_BOT_PAT == 'true' # rm-1450/rm-1518 secret-presence gate
         uses: fro-bot/agent@7d273ac643c8f9c0dc8615222677693dc337adef # v0.122.3
         env:
           OPENCODE_PROMPT_ARTIFACT: 'true'
