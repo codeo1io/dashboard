@@ -24,6 +24,15 @@
 //   candidates because their third component (15) is a valid integer. Nested
 //   four-part tags (e.g. 2026.06.15.1) are ignored because their third
 //   component after stripping the month prefix contains a dot.
+//
+// Scheme record (rm-1483, 2026-10-17): the third component is the release
+// ORDINAL within the month, 0–999 — one scheme, shared with the staleness
+// parser (scripts/release-channel-staleness.ts, CALVER_TAG accepts 1–3
+// digits). The ordinal is bounded at 999 by a LOUD rejection here: a month
+// that reaches 999 releases is exhausted for this scheme, and minting
+// 1000+ would silently fall out of the parser's domain (a four-digit
+// ordinal is rejected there BY DESIGN) — an invisible tag is strictly worse
+// than a red mint, so this script exits nonzero instead.
 
 import {spawnSync} from 'node:child_process'
 import process from 'node:process'
@@ -95,6 +104,18 @@ for (const tag of tags) {
 // ---------------------------------------------------------------------------
 
 const nextPatch = maxPatch < 0 ? 0 : maxPatch + 1
+
+// rm-1483: the ordinal bound is part of the scheme — reject loudly instead
+// of minting a tag the staleness parser would silently ignore.
+const MAX_ORDINAL = 999
+if (nextPatch > MAX_ORDINAL) {
+  process.stderr.write(
+    `ERROR: month ${month} is exhausted — next ordinal ${nextPatch} exceeds the scheme bound 999 (rm-1483); release-channel-staleness would not see a wider ordinal tag. Record a scheme decision (e.g. year rollover) instead of minting.
+`,
+  )
+  process.exit(1)
+}
+
 const tag = `${month}.${nextPatch}`
 
 // ---------------------------------------------------------------------------

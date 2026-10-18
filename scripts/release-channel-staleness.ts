@@ -38,6 +38,17 @@
  * Tags must be fetched first (`git fetch --tags origin`, or a full checkout
  * with fetch-depth: 0) — the script reads LOCAL refs only, so it performs no
  * authenticated network access of its own.
+ *
+ * Calver scheme record (rm-1483, 2026-10-17): the third component is the
+ * release ORDINAL within the month, not a calendar day — the mint
+ * (scripts/compute-release-tag.ts) numbers releases 0,1,2,… onward, so the
+ * historical day-shaped subset (≤31, the `D` in the old `YYYY.MM.D` reading)
+ * is just the early ladder; upstream's ladder passed 31 releases in a month
+ * as early as 2026.08. The parser accepts ordinals 0–999 (three digits max):
+ * 999 is the mint's loud-rejection bound, so the historical out-of-range
+ * test shape `2026.08.32` now PARSES (ordinal 32). Four-digit ordinals are
+ * rejected — the mint cannot emit them (it exits nonzero at 999), so any
+ * such tag would have to be hand-made and SHOULD be invisible here.
  */
 import {spawnSync} from 'node:child_process'
 import {appendFileSync, readFileSync} from 'node:fs'
@@ -47,8 +58,12 @@ import {pathToFileURL} from 'node:url'
 
 export const DEFAULT_THRESHOLD_DAYS = 45
 
-/** Calver tags as this repo's release channel mints them: YYYY.MM.D (day NOT zero-padded). */
-const CALVER_TAG = /^(\d{4})\.(\d{1,2})\.(\d{1,2})$/
+/**
+ * Calver tag shape as this repo's release channel mints it: YYYY.MM.ORDINAL
+ * with ordinal 0–999, NOT zero-padded (see the scheme record in the header,
+ * rm-1483).
+ */
+const CALVER_TAG = /^(\d{4})\.(\d{1,2})\.(\d{1,3})$/
 
 export interface CalverTagInfo {
   name: string
@@ -73,21 +88,24 @@ export interface StalenessResult {
   decision: DormancyDecision | null
 }
 
-/** Parses a calver tag name; day/month compare NUMERICALLY (2026.08.9 > 2026.08.10 lexically-reversed trap). */
-export function parseCalverTag(name: string): {year: number; month: number; day: number} | null {
+/** Parses a calver tag name; ordinal/month compare NUMERICALLY (2026.08.9 > 2026.08.10 lexically-reversed trap). */
+export function parseCalverTag(name: string): {year: number; month: number; ordinal: number} | null {
   const match = CALVER_TAG.exec(name)
   if (match === null) return null
   const year = Number(match[1])
   const month = Number(match[2])
-  const day = Number(match[3])
-  if (month < 1 || month > 12 || day < 1 || day > 31) return null
-  return {year, month, day}
+  const ordinal = Number(match[3])
+  if (month < 1 || month > 12) return null
+  // Ordinal 0–999: 0 is a fresh-month first release, 999 is the mint's
+  // loud-rejection bound (see the header scheme record, rm-1483).
+  if (ordinal > 999) return null
+  return {year, month, ordinal}
 }
 
 /** Newest calver tag by numeric calver comparison (ignores non-calver tags entirely). */
 export function selectNewestCalverTag(tags: readonly CalverTagInfo[]): CalverTagInfo | null {
   let newest: CalverTagInfo | null = null
-  let newestKey: {year: number; month: number; day: number} | null = null
+  let newestKey: {year: number; month: number; ordinal: number} | null = null
   for (const tag of tags) {
     const key = parseCalverTag(tag.name)
     if (key === null) continue
@@ -95,7 +113,7 @@ export function selectNewestCalverTag(tags: readonly CalverTagInfo[]): CalverTag
       newestKey === null ||
       key.year > newestKey.year ||
       (key.year === newestKey.year && key.month > newestKey.month) ||
-      (key.year === newestKey.year && key.month === newestKey.month && key.day > newestKey.day)
+      (key.year === newestKey.year && key.month === newestKey.month && key.ordinal > newestKey.ordinal)
     ) {
       newest = tag
       newestKey = key
