@@ -9,6 +9,7 @@
  * route handler, not here.
  */
 import {Buffer} from 'node:buffer'
+import {GITHUB_API_VERSION} from '../github/api-version.ts'
 
 const GITHUB_OAUTH_ERROR_CODES = new Set([
   'access_denied',
@@ -127,7 +128,7 @@ export async function fetchGitHubUserLogin(accessToken: string): Promise<string>
       headers: {
         Authorization: `Bearer ${accessToken}`,
         Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
+        'X-GitHub-Api-Version': GITHUB_API_VERSION,
       },
       redirect: 'error',
       signal: AbortSignal.timeout(GITHUB_FETCH_TIMEOUT_MS),

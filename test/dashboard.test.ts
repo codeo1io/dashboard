@@ -258,6 +258,8 @@ describe('/api/monitoring — BFF aggregation endpoint', () => {
         overall: 'minor',
         overallDescription: 'Investigating Actions run creation delays',
         actions: 'major_outage',
+        // rm-1467: the maintenance rider on the annotation ([] = none).
+        maintenances: [],
         fetchedAt: 1_700_000_123_456,
       } as const
       const app = await buildTestApp(makeSnapshot({platformStatus}))

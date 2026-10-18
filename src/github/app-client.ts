@@ -17,8 +17,8 @@ import {Octokit} from '@octokit/core'
 import {graphql} from '@octokit/graphql'
 import {retry} from '@octokit/plugin-retry'
 import {throttling} from '@octokit/plugin-throttling'
-
 import {logger, sanitizeErrorMessage} from '../logger.ts'
+import {pinGitHubApiVersion} from './api-version.ts'
 
 // ---------------------------------------------------------------------------
 // Throttled + retrying Octokit class
@@ -131,32 +131,39 @@ export function createDashboardAppClient(options: AppClientOptions): DashboardAp
   const {appId, privateKey, requestTimeoutMs, baseUrl} = options
   const timeoutMs = requestTimeoutMs ?? GITHUB_REQUEST_TIMEOUT_MS
 
-  const octokit = new ThrottledOctokit({
-    authStrategy: createAppAuth,
-    auth: {appId, privateKey},
-    ...(baseUrl === undefined ? {} : {baseUrl}),
-    // rm-156: ENFORCED at the transport layer (createBoundedFetch) — this
-    // runtime ignores the `timeout` option on hung upstreams. The key stays
-    // (same deadline where honored; rm-197 transport-contract gate pins it).
-    request: {timeout: timeoutMs, fetch: createBoundedFetch(timeoutMs)},
-    // rm-156: a timed-out request must fail fast, not be retried. The retry
-    // plugin cannot distinguish a timeout abort (surfaced as status 500 by
-    // @octokit/request) from a retryable 5xx, and retrying multiplies the
-    // stall the bound exists to cap. Rate-limit handling stays (throttling
-    // plugin); transient upstream failures re-heal on the next aggregator
-    // refresh cycle.
-    retry: {enabled: false},
-    throttle: {
-      onRateLimit: (retryAfter: number, opts: Record<string, unknown>, _octokit: unknown, retryCount: number) => {
-        logger.warning('GitHub rate limit hit', {retryAfter, url: opts.url, retryCount})
-        return retryCount < 2
+  // rm-855: pin X-GitHub-Api-Version on every REST egress path of this client
+  // (single source: ./api-version.ts — @octokit/core 7 reads no `defaultHeaders`
+  // constructor option, so the pin is written into the endpoint defaults at
+  // construction; covers request calls, the hook pipeline, and auth-app token
+  // mints alike).
+  const octokit = pinGitHubApiVersion(
+    new ThrottledOctokit({
+      authStrategy: createAppAuth,
+      auth: {appId, privateKey},
+      ...(baseUrl === undefined ? {} : {baseUrl}),
+      // rm-156: ENFORCED at the transport layer (createBoundedFetch) — this
+      // runtime ignores the `timeout` option on hung upstreams. The key stays
+      // (same deadline where honored; rm-197 transport-contract gate pins it).
+      request: {timeout: timeoutMs, fetch: createBoundedFetch(timeoutMs)},
+      // rm-156: a timed-out request must fail fast, not be retried. The retry
+      // plugin cannot distinguish a timeout abort (surfaced as status 500 by
+      // @octokit/request) from a retryable 5xx, and retrying multiplies the
+      // stall the bound exists to cap. Rate-limit handling stays (throttling
+      // plugin); transient upstream failures re-heal on the next aggregator
+      // refresh cycle.
+      retry: {enabled: false},
+      throttle: {
+        onRateLimit: (retryAfter: number, opts: Record<string, unknown>, _octokit: unknown, retryCount: number) => {
+          logger.warning('GitHub rate limit hit', {retryAfter, url: opts.url, retryCount})
+          return retryCount < 2
+        },
+        onSecondaryRateLimit: (retryAfter: number, opts: Record<string, unknown>, _octokit: unknown) => {
+          logger.warning('GitHub secondary rate limit hit', {retryAfter, url: opts.url})
+          return false
+        },
       },
-      onSecondaryRateLimit: (retryAfter: number, opts: Record<string, unknown>, _octokit: unknown) => {
-        logger.warning('GitHub secondary rate limit hit', {retryAfter, url: opts.url})
-        return false
-      },
-    },
-  })
+    }),
+  )
 
   async function mintInstallationToken(
     installationId: number,
@@ -217,6 +224,8 @@ export function createInstallationGraphqlQueryFn(
     const token = await getToken(installationId)
     const gql = graphql.defaults({
       headers: {authorization: `token ${token}`},
+      // rm-855: GraphQL is DOCUMENTED VERSIONLESS — X-GitHub-Api-Version
+      // applies to REST only and must not be sent on GraphQL requests.
       // rm-156: fetch-layer enforcement (load-bearing); rm-197: the `timeout`
       // key rides along for the transport-contract gate + paths that honor it.
       request: {timeout: timeoutMs, fetch: createBoundedFetch(timeoutMs)},

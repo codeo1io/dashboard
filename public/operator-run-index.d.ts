@@ -116,3 +116,20 @@ export declare function initOperatorRunIndex(opts?: {
    */
   onAuthRequired?: () => void
 }): Promise<void>
+
+/**
+ * Format an ISO timestamp as a coarse relative time string. Returns 'just now',
+ * 'N minute(s) ago', 'N hour(s) ago', or 'N day(s) ago'; '' for empty or
+ * unparseable input. Accepts an optional now-in-ms override for deterministic
+ * rendering (tests, snapshots).
+ */
+export declare function formatRelativeTime(isoString: string, nowMs?: number): string
+
+/**
+ * Mark a launch-created run card as expanded before the first fetch adopts it,
+ * so a same-tab operator launch stays expanded across the index-to-runtime
+ * card transition. Idempotent and non-toggling (only ever expands); safe-DOM
+ * only — toggles `hidden` and `dataset.expanded`, never innerHTML. No-op when
+ * `document` is unavailable.
+ */
+export declare function markCardExpandedForLaunch(runId: string): void
