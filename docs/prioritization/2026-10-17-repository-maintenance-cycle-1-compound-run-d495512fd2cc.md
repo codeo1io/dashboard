@@ -46,7 +46,8 @@ is main-derivable via git apply --3way (re-simulated clean at full_tests).
 - U4 (rm-1495 host half): ~/.local/bin/node repointed to nvm v24.21.0;
   docs/solutions/workflow-issues/host-node-default-below-engines-floor-2026-10-17.md.
 - Ledger collateral: ROADMAP.md 255 defs/0 dup/max rm-1498 + riders + selection
-  comment. Custody: 6 M + 1 ??, zero package.json/pnpm-lock churn.
+  comment. Custody: 6 M + 2 ?? (this record included), zero
+  package.json/pnpm-lock churn.
 
 ## Durable lessons and prevention rules
 
@@ -110,10 +111,34 @@ result for values.
 
 ## Next-cycle context (candidates and hazards, ordered)
 
-1. Fold-collision watch: PR #790 (Dockerfile + dependabot.yml — owns
-   rm-1496/rm-1497 re-derivation), PR #798 (push/darkness lane — owns
-   upstream #631 wire-or-fold), PR #787 (main.yaml health-probe), run
-   7708ee2a (dependency minors VERIFIED in its tree), run 8ebc9eed (visual).
+1. Fold-collision watch (per-PR surfaces re-verified live 2026-10-18 at
+   origin/main 389d60e, all four PRs OPEN and CONFLICTING — corrects the
+   prioritize/stewardship attributions, which named wrong files): PR #787
+   (run 40bcd47a) shares fro-bot.yaml + AGENTS.md + ROADMAP.md — its
+   fro-bot.yaml pin hunk writes the SAME 7d273ac6 # v0.122.3 line this batch
+   converges on (no-op vs main; it also moves the cron to 02:37 and pads the
+   HAS_FRO_BOT_PAT guards), and its AGENTS.md hunk rewrites the :94
+   workflow-state paragraph (the rm-1410 lane stewardship kept out-of-bounds
+   — boundary right, attribution wrong: no main.yaml anywhere in the PR; its
+   web legs are new ErrorBoundary/entry files that exist at no ref yet). PR
+   #790 (run 3d6aa134) currently carries visual.yaml upload-artifact pin
+   bumps, Dockerfile, AGENTS.md, ROADMAP.md, scripts/roadmap-census.ts and
+   test/roadmap-integrity-guard.test.ts — NO dependabot.yml (stale
+   attribution; rm-1497's surface sits in no open PR); its AGENTS.md hunk
+   rewrites the :101-107 clonedeps mirror block version-agnostically — a
+   divergent fix of the same staleness our U1 resolved by hardcoding
+   v0.122.3. PR #860 (run 528f458d, omitted from the old watch) rewrites
+   that SAME block (VERSION-TRUTH paragraph + .slim/clonedeps.json manifest
+   procedure) and shares ROADMAP.md — the mirror line is a THREE-WAY
+   contested block (ours / #790 / #860): first-landed-wins, and if either
+   sibling lands first the reconcile should adopt their
+   version-agnostic/manifest-truth shape and keep this batch's
+   re-provision facts (canonical clone at v0.122.3), not re-hardcode. PR
+   #798 (run 1108172d) is the operator run-card output-truth lane (public
+   operator-launch/run artifacts + web/src/operator surfaces; shares only
+   ROADMAP.md) — the old 'push/darkness, upstream #631' attribution matches
+   no live PR. Sibling worktree lanes re-checked present: run 7708ee2a
+   (dependency minors, owns the pnpm-lock lane), run 8ebc9eed (visual).
 2. Next-cycle LEAD candidates: rm-1494 web/src ESLint coverage (census the
    violation count first); rm-116 branch-protection fill (live-API, zero
    file footprint, Actions recovered); dependency minors re-derived post-7708ee2a.
