@@ -61,6 +61,12 @@ export declare const QUESTION_INVALID_REASONS: readonly [
 export declare const QUESTION_CLAIM_RECHECK_DELAYS_MS: readonly number[]
 /** Bound, in milliseconds, on each fetch of the question client (list, CSRF and decision POST). */
 export declare const QUESTION_FETCH_TIMEOUT_MS: number
+/**
+ * Bound, in milliseconds, on each approval-client fetch — CSRF fetch, decision
+ * POST, list (rm-594 fork hardening). rm-1468: exported from the JS since the
+ * hardening landed but never declared here (drift guard closes the class).
+ */
+export declare const APPROVAL_FETCH_TIMEOUT_MS: number
 
 /** Operator-safe failure-reason code. */
 export type FailureKind =

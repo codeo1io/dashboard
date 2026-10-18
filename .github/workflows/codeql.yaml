@@ -3,6 +3,10 @@ name: CodeQL
 
 on:
   pull_request:
+    # conductor/ci-base-** bases carry the engine's ephemeral validation PRs —
+    # without them conductor candidates lose all pre-merge CodeQL (branch
+    # protection is a shell, rm-116). Restored by independent_review fix
+    # 2026-10-18 after the wholesale upstream alignment dropped it.
     branches: [main, 'conductor/ci-base-**']
     types: [opened, synchronize, reopened, ready_for_review]
   push:
@@ -19,12 +23,14 @@ jobs:
     name: Analyze
     # rm-188 (cycle 13, 2026-09-25): pinned ubuntu-24.04 — ubuntu-26.04 images are
     # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
-    # at the rm-139 Node-26 window (2026-10-28).
+    # at the rm-139 Node-26 window (2026-10-28). (Restored by independent_review
+    # fix 2026-10-18 after the wholesale upstream alignment dropped it.)
     runs-on: ubuntu-24.04
     # rm-603 (2026-10-04): bounded so a wedged analysis can never hold a runner
     # indefinitely. Sized from the last 30 successful runs (gh api): typical
     # 69-142s, worst observed 565s (9.4m) — 20 gives ~2.1x headroom over the
     # worst and matches main.yaml's CodeQL-era 20-minute job ceiling.
+    # (Restored by independent_review fix 2026-10-18.)
     timeout-minutes: 20
     permissions:
       contents: read
@@ -36,11 +42,14 @@ jobs:
       # passes on hosted runners where the wrapper resolves on its own; here
       # autobuild never sets the override, so point it at the repo-installed
       # typescript (pinned toolchain, installed by the Setup step below).
+      # (Restored by independent_review fix 2026-10-18; kept across the
+      # codeql-action 6f2ac81 digest move — the env is a stable CodeQL
+      # convention, not action-version-specific.)
       SEMMLE_TYPESCRIPT_HOME: ${{ github.workspace }}/node_modules/typescript
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
 
@@ -48,15 +57,15 @@ jobs:
       # (this repo has no `main` entrypoint), and checkout's git-clean wipes
       # node_modules — install deps before codeql-init so autobuild finds the
       # toolchain. Also feeds SEMMLE_TYPESCRIPT_HOME (job env above) with the
-      # pinned typescript.
+      # pinned typescript. (Restored by independent_review fix 2026-10-18.)
       - name: 📦 Setup
         uses: ./.github/actions/setup
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
         with:
           languages: javascript-typescript
           build-mode: none
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
+        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4

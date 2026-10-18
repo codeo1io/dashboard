@@ -7,9 +7,20 @@ name: Release channel staleness check
 # so `HAS_RELEASE_APP` is false and release.yaml skips create-tag /
 # promote-calver / create-GitHub-Release on every push; the live path is
 # promote-latest only. Nothing alerts on that silence. This weekly check
-# compares the newest calver tag on THIS repo's public refs against a stated
-# 45-day threshold and goes RED while the channel is stale and no dormancy
-# decision is recorded.
+# goes RED while the channel is dead/stale and no dormancy decision is
+# recorded.
+#
+# SIGNAL (repaired by rm-1465, 2026-10-16): the PRIMARY, verdict-driving
+# signal is the GitHub Releases lane itself, probed with one
+# `gh api repos/:repo/releases/latest` call — a 404 is channel ABSENCE
+# (stale by design; the releases list is empty while HAS_RELEASE_APP is
+# false), a present release ages against the 45-day threshold. The calver
+# TAG stream is demoted to a labeled SECONDARY, non-verdict datum: the
+# namespace is foreign-polluted (origin max 2026.10.25 is foreign-born and
+# absent from fork HEAD history; local refs additionally carry upstream-born
+# 2026.10.32+), and the PATCH component is an unbounded max(N)+1 counter
+# (compute-release-tag.ts), not a day — the original parser rejected every
+# tag with patch >31 as "day out of range", silently discarding 11 live tags.
 #
 # Red-while-undecided is BY DESIGN: the decision owner is rm-714 (branch-b
 # dormancy decision — either record the channel retired-with-owner in
@@ -17,11 +28,9 @@ name: Release channel staleness check
 # provisioning the release App / secrets). The step summary names rm-714 so
 # the red is actionable, not mysterious.
 #
-# Reads only public refs (tags). No new secrets: the default GITHUB_TOKEN
-# (contents: read) via actions/checkout is the only credential involved —
-# fetch-depth: 0 brings the tags with the checkout's own credentials, so the
-# script reads LOCAL refs only and performs no authenticated network access.
-# issues: write is NOT granted — this workflow opens no issues (the red run
+# No new secrets: the default GITHUB_TOKEN (contents: read) is exported to
+# the step as GH_TOKEN for the one releases probe; fetch-depth: 0 brings the
+# tags with the checkout's own credentials. issues: write is NOT granted — this workflow opens no issues (the red run
 # itself is the signal, matching the upstream-drift.yaml alert-only posture).
 
 on:
@@ -58,7 +67,10 @@ jobs:
 
       - name: 🔍 Evaluate release channel staleness (rm-740)
         # Exit 0 = healthy or recorded-retired; 1 = stale (red BY DESIGN while
-        # the dormancy decision is undecided); 2 = extraction error (never a
-        # pass). The runner injects GITHUB_STEP_SUMMARY automatically — the
-        # script appends the rm-740/rm-714 summary there.
+        # the dormancy decision is undecided — including releases-lane
+        # ABSENCE); 2 = extraction error (never a pass). The runner injects
+        # GITHUB_STEP_SUMMARY automatically — the script appends the
+        # rm-740/rm-1465 summary there.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: node scripts/release-channel-staleness.ts
