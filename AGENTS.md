@@ -91,10 +91,13 @@ view of Fro Bot's cross-repo footprint.
   workflow now sets `branch-pr` for those triggers; verify delivery by confirming a
   fro-bot-authored PR exists, not by reading run status. See
   `docs/solutions/workflow-issues/workflow-output-mode-auto-discarded-agent-fixes-2026-08-31.md`.
-- The `Fro Bot` workflow on this fork is `disabled_manually` (verified 2026-09-19):
-  codeo1io/dashboard has no `FRO_BOT_PAT` secret, so the daily cron would fail on
-  every run. Re-enabling it without provisioning that secret resurrects the failing
-  cron — check `gh workflow list` state and secret presence before flipping it back on.
+- The `Fro Bot` workflow's live state is variable — re-probe before relying on
+  it (2026-10-17: `active`; earlier probes saw `disabled_manually`). The fork
+  has no `FRO_BOT_PAT` secret as of that probe, so the daily cron (`0 0 * * *`)
+  fails on every fire while active-without-secret. Always check `gh workflow
+  list` state and `gh secret list` presence before assuming either direction —
+  and provision the secret before re-enabling (or while active) to avoid a
+  failing cron.
 
 ## Cloned Dependency Source
 
@@ -102,9 +105,12 @@ Read-only dependency source repositories are available under
 `.slim/clonedeps/repos/` for inspection. Do not edit these clones.
 
 - `.slim/clonedeps/repos/fro-bot__agent/` — `fro-bot/agent` at the CI-pinned
-  tag `v0.122.1` (pin source: `.github/workflows/fro-bot.yaml`; mirror
-  re-provisioned 2026-10-15 — provision with `git clone --depth 1 --branch
-  <pin>` if absent); the gateway's operator OAuth return path contract, GitHub
+  tag `v0.122.2` (pin source: `.github/workflows/fro-bot.yaml`, digest-pinned
+  `06469674…`); the manifest `.slim/clonedeps.json` has lagged the pin before
+  (it recorded `v0.78.0` while the pin was v0.122.x) — when inspection must
+  match the pin, re-provision with `git clone --depth 1 --branch <pin>` and
+  verify with `git describe --tags` rather than trusting the manifest tag;
+  the gateway's operator OAuth return path contract, GitHub
   App client, secret readers, Hono build/serve split, and runtime
   logger/Result primitives that this app mirrors.
 
