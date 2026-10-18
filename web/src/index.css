@@ -183,6 +183,17 @@
   display: contents;
 }
 
+.run-card .run-prompt {
+  /* rm-1522: browser-memory prompt echo — full-width row under the header,
+     same font tokens as the updated-at line; textContent-only, capped upstream. */
+  grid-column: 1 / -1;
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: var(--text-caption);
+  color: var(--color-text-subtle);
+  overflow-wrap: anywhere;
+}
+
 .run-reason {
   grid-column: 2;
   grid-row: 2;

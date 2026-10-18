@@ -18,7 +18,12 @@
  * - All 400s collapse to one generic failure; 404 → one uniform unavailable state.
  * - No cause inference from body or timing.
  * - credentials:'include', redirect:'error' on all fetch calls.
- * - The prompt is user-typed and goes only in the POST body — never in logs or DOM.
+ * - The prompt is user-typed and goes only in the POST body — never in logs,
+ *   telemetry, or persisted state. Its single sanctioned DOM surface is the
+ *   optimistic run card built in the operator's own browser memory
+ *   (p[data-role="run-prompt"] in the launched branch): that echo is
+ *   textContent-only, capped like other free-form strings, and disappears on
+ *   reload because fetched run data never carries the prompt.
  * - runId appears only in the data-run-id attribute and the stream URL.
  */
 
@@ -31,6 +36,31 @@ import {formatRelativeTime, LAUNCH_TIME_SOURCE} from './operator-time.js'
 // so a static import here would create a second, uncoordinated module instance with
 // its own singleton state rather than sharing the runtime seam's instance.
 const LAUNCH_RUN_INDEX_CAP = 100
+
+// rm-1522: display cap for the browser-memory prompt echo on the optimistic card.
+// Mirrors MAX_CHECKOUT_STRING_CHARS / sanitizeCheckoutText in operator-stream.js
+// (not imported: this module and operator-stream.js are loaded as separate
+// dynamic-import instances — see the note above), including both halves of that
+// contract: control/bidi characters are stripped before display, the trailing
+// ellipsis counts toward the cap, and a cut never leaves half a surrogate pair.
+const MAX_PROMPT_ECHO_CHARS = 256
+
+// C0 controls and DEL, C1 controls, and every Unicode bidi control — same set as
+// CHECKOUT_STRIPPED_CHARS in operator-stream.js, mirrored for the same reason:
+// none of these belong in rendered operator-authored text.
+// eslint-disable-next-line no-control-regex
+const PROMPT_ECHO_STRIPPED_CHARS = /[\u0000-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g
+
+/** Redaction/capping parity for the prompt echo: strip, then cap with a safe cut. */
+function sanitizePromptEcho(value) {
+  const stripped = value.replaceAll(PROMPT_ECHO_STRIPPED_CHARS, '')
+  if (stripped.length <= MAX_PROMPT_ECHO_CHARS) return stripped
+  let head = stripped.slice(0, MAX_PROMPT_ECHO_CHARS - 1)
+  // Never leave half a surrogate pair at the cut.
+  const last = head.charCodeAt(head.length - 1)
+  if (last >= 0xD800 && last <= 0xDBFF) head = head.slice(0, -1)
+  return `${head}…`
+}
 
 // ---------------------------------------------------------------------------
 // Pure: repo item validation
@@ -690,6 +720,15 @@ export async function initOperatorLaunch(opts) {
           timeEl.setAttribute('datetime', launchedAt)
           timeEl.textContent = formatRelativeTime(launchedAt)
           card.append(timeEl)
+
+          // The prompt echo is browser memory only: built from the in-memory submit
+          // text, never from fetched run data, so it disappears on reload or adopt.
+          // textContent only (never innerHTML), capped like other free-form strings.
+          const promptEl = document.createElement('p')
+          promptEl.className = 'run-prompt'
+          promptEl.dataset.role = 'run-prompt'
+          promptEl.textContent = sanitizePromptEcho(prompt)
+          card.append(promptEl)
 
           // Hidden per-card substructure for the stream renderer.
 
