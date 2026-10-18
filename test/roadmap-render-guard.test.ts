@@ -219,4 +219,67 @@ describe('ROADMAP.md render-guard census (rm-1454)', () => {
       'solution doc.',
     )
   })
+
+  // rm-864 census-equality leg: the live def census must EQUAL a named constant
+  // bumped in the same commit. The rm-877 floors in test/roadmap-integrity-
+  // guard.test.ts intentionally coexist — floors catch catastrophic collapse,
+  // this catches ANY drift (the silent five-def-drop class of 2026-10-15).
+  it('def census equals the named expected constant', async () => {
+    const {census} = await import('../scripts/roadmap-census.ts')
+    const {EXPECTED_ROADMAP_DEF_CENSUS} = await import('../scripts/roadmap-census-expected.ts')
+    const live = census()
+
+    if (live.defs !== EXPECTED_ROADMAP_DEF_CENSUS) {
+      expect.fail(
+        `ROADMAP def census DRIFTED: live=${live.defs} expected=${EXPECTED_ROADMAP_DEF_CENSUS} ` +
+        '(rm-864 census-equality). Resolution rule: set scripts/roadmap-census-expected.ts ' +
+        'EXPECTED_ROADMAP_DEF_CENSUS to the live number above and land the constant in the ' +
+        'SAME COMMIT as the ROADMAP edit that changed the census. The rm-877 floors stay ' +
+        'untouched — they are the collapse backstop, not the drift guard.',
+      )
+    }
+  })
+
+  // rm-864 stringified-object prose leg: the second 2026-10-15 fifty-error
+  // emission class — bare (un-backticked) JSON-ish object/array tokens riding
+  // narrative lines. Backticked code spans, def-id lines, whole-line HTML
+  // comments and headings stay exempt (the post-repair shape is backticks).
+  const stringifiedProseTrip = (line: string): boolean => {
+    if (line.startsWith('- id: `rm-')) return false
+    if (line.startsWith('<!--')) return false
+    if (line.startsWith('#')) return false
+    const withoutCodeSpans = line.replaceAll(/`[^`]*`/g, '')
+    return /\{\s*"/.test(withoutCodeSpans) || /\[\s*"/.test(withoutCodeSpans)
+  }
+
+  it('trips on bare stringified-object prose and stays green on the live ledger', () => {
+    const damagePath = resolve(repoRoot, 'test', 'fixtures', 'roadmap-render-guard-damage-synthetic.md')
+    const damage = readFileSync(damagePath, 'utf8').split('\n')
+    const damageTrips = damage
+      .map((line, i) => (stringifiedProseTrip(line) ? `fixture:${i + 1} ${line.slice(0, 80)}` : ''))
+      .filter(Boolean)
+
+    expect(
+      damageTrips,
+      'the damage fixture must trip the leg — a detector that cannot see its own ' +
+      'replica of the 2026-10-15 emission is a broken detector (rm-864)',
+    ).toHaveLength(3)
+
+    const liveTrips = roadmapLines()
+      .map((line, i) => (stringifiedProseTrip(line) ? `ROADMAP.md:${i + 1} ${line.slice(0, 80)}` : ''))
+      .filter(Boolean)
+
+    expect(
+      liveTrips,
+      'bare stringified-object prose in live narrative lines (rm-864): wrap the ' +
+      'token in a backtick code span, exactly like the post-repair shape — ' +
+      `trips: ${liveTrips.join(' | ')}`,
+    ).toEqual([])
+
+    // Exemption load-bearing proof: strip the code spans from a live clean line
+    // and the detector must fire — otherwise the pass above is vacuous.
+    const control = '- acceptance: clean control with `{"_dev": [ "modes", "all" ]}` wrapped'
+    expect(stringifiedProseTrip(control)).toBe(false)
+    expect(stringifiedProseTrip(control.replaceAll('`', ''))).toBe(true)
+  })
 })
