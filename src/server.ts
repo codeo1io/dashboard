@@ -62,6 +62,7 @@ import {isOk} from './result.ts'
 import {buildApiRouter} from './routes/api.ts'
 import {buildAuthRouter} from './routes/auth.ts'
 import {buildListenerRouter} from './routes/listener.ts'
+import {createIngestReplayGuard} from './listener/ingest-auth.ts'
 import {readOptionalMultilineSecret, readOptionalSecret} from './secrets.ts'
 import {loadCookieKey, SessionManager} from './session.ts'
 import {installShutdownHandlers} from './shutdown.ts'
@@ -1225,6 +1226,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       buildListenerRouter({
         store: opts.listenerStore,
         ingestKey: opts.listenerIngestKey ?? null,
+        // rm-2008: one seen-delivery cache per server instance — byte-identical
+        // verified redeliveries inside the HMAC window reject 401 before the
+        // store; bounded, in-memory, restart-clears.
+        ingestReplayGuard: createIngestReplayGuard(),
         // Ack CSRF is active whenever an operator session is in scope. Derive
         // from the RESOLVED operatorLogin (opts with env fallback — see the
         // resolution above), never raw opts: createDashboardServer and

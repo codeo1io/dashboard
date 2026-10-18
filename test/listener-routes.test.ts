@@ -6,6 +6,7 @@ import {Buffer} from 'node:buffer'
 import {createHmac} from 'node:crypto'
 import process from 'node:process'
 import {beforeEach, describe, expect, it} from 'vitest'
+import {createIngestReplayGuard} from '../src/listener/ingest-auth.ts'
 import {createListenerStore} from '../src/listener/store.ts'
 import {deriveAckCsrfToken} from '../src/routes/listener.ts'
 import {buildDashboardApp} from '../src/server.ts'
@@ -409,7 +410,12 @@ describe('operator listener channel routes', () => {
     // Standalone router (no server.ts wiring) — proves the fail-closed default:
     // CSRF is structural, not an optional feature of the mount site.
     const {buildListenerRouter} = await import('../src/routes/listener.ts')
-    const router = buildListenerRouter({store, ingestKey: null, ackCsrf: null})
+    const router = buildListenerRouter({
+      store,
+      ingestKey: null,
+      ackCsrf: null,
+      ingestReplayGuard: createIngestReplayGuard(),
+    })
 
     const ackRes = await router.request('/ack-all', {method: 'POST'})
     expect(ackRes.status).toBe(403)
@@ -437,5 +443,89 @@ describe('operator listener channel routes', () => {
       headers: {cookie: sessionCookieHeader()},
     })
     expect(res.status).toBe(404)
+  })
+
+  // -------------------------------------------------------------------------
+  // rm-2008: bounded seen-delivery cache — byte-identical redeliveries of a
+  // VERIFIED delivery inside the window reject 401 before the store; a fresh
+  // delivery GUID (or, without one, a fresh signature timestamp) admits.
+  // -------------------------------------------------------------------------
+
+  it('rm-2008: byte-identical redelivery with the same x-github-delivery GUID → second POST 401, store keeps one message', async () => {
+    const app = await buildTestApp({listenerStore: store, listenerIngestKey: INGEST_KEY})
+    const fixedTs = 1_800_000_000
+    const headers = {
+      ...ingestHeaders(VALID_BODY, INGEST_KEY, fixedTs),
+      'x-github-delivery': '9f8e7d6c-1234-4321-abcd-000000000001',
+    }
+
+    const first = await app.request('/api/listener/ingest', {
+      method: 'POST',
+      headers,
+      body: VALID_BODY,
+    })
+    expect(first.status).toBe(202)
+
+    const replay = await app.request('/api/listener/ingest', {
+      method: 'POST',
+      headers,
+      body: VALID_BODY,
+    })
+    expect(replay.status).toBe(401)
+    const json = (await replay.json()) as {error: string}
+    expect(json.error).toBe('unauthorized')
+
+    const getRes = await app.request('/api/listener/messages', {
+      headers: {cookie: sessionCookieHeader()},
+    })
+    const getJson = (await getRes.json()) as {messages: {id: string}[]}
+    expect(getJson.messages).toHaveLength(1)
+  })
+
+  it('rm-2008: same body with a FRESH delivery GUID → 202 (distinct delivery), then replays 401', async () => {
+    const app = await buildTestApp({listenerStore: store, listenerIngestKey: INGEST_KEY})
+    const fixedTs = 1_800_000_100
+
+    const post = (guid: string) =>
+      app.request('/api/listener/ingest', {
+        method: 'POST',
+        headers: {
+          ...ingestHeaders(VALID_BODY, INGEST_KEY, fixedTs),
+          'x-github-delivery': guid,
+        },
+        body: VALID_BODY,
+      })
+
+    expect((await post('11111111-2222-3333-4444-555555555555')).status).toBe(202)
+    expect((await post('66666666-7777-8888-9999-aaaaaaaaaaaa')).status).toBe(202)
+    expect((await post('66666666-7777-8888-9999-aaaaaaaaaaaa')).status).toBe(401)
+  })
+
+  it('rm-2008: no delivery GUID — byte-identical replay (same timestamp bucket) 401; a re-signed fresh timestamp 202', async () => {
+    const app = await buildTestApp({listenerStore: store, listenerIngestKey: INGEST_KEY})
+    const tsA = 1_800_000_200
+    const tsB = tsA + 1
+
+    const first = await app.request('/api/listener/ingest', {
+      method: 'POST',
+      headers: ingestHeaders(VALID_BODY, INGEST_KEY, tsA),
+      body: VALID_BODY,
+    })
+    expect(first.status).toBe(202)
+
+    const replay = await app.request('/api/listener/ingest', {
+      method: 'POST',
+      headers: ingestHeaders(VALID_BODY, INGEST_KEY, tsA),
+      body: VALID_BODY,
+    })
+    expect(replay.status).toBe(401)
+
+    // Fresh signing (new timestamp bucket) is a new delivery by definition.
+    const reSigned = await app.request('/api/listener/ingest', {
+      method: 'POST',
+      headers: ingestHeaders(VALID_BODY, INGEST_KEY, tsB),
+      body: VALID_BODY,
+    })
+    expect(reSigned.status).toBe(202)
   })
 })
