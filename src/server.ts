@@ -1342,8 +1342,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   if (operatorUiEnabled) {
     // Serves public/ at /static/* — flag-gated alongside the operator UI flag.
     // /static/ is in isPublicPath so unauthenticated browsers can load assets.
-    // Note: operator-stream.js and operator-launch.js are already mounted above;
-    // this catch-all additionally serves operator.css and any other static assets.
+    // Note: operator-stream.js, operator-launch.js, operator-run-index.js and
+    // operator-time.js are already mounted above; this catch-all additionally
+    // serves operator.css and any other static assets. publicStatic.revalidate
+    // (mounted before it, flag-independent) adds the cache validators.
     app.use('/static/*', publicStatic.serve)
   }
 

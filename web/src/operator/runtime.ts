@@ -94,11 +94,14 @@ export function discoverCardStreamTargets(runId: string): {
  * Run-list summary status → hyphenated class token: a mirror of RUN_STATUS_CLASS_TOKENS in
  * public/operator-run-index.js, which the run index writes onto each card's run-status element.
  * The seven summary statuses are exactly the run index parser's VALID_RUN_SUMMARY_STATUSES; the
- * stream-only blocked status is not a summary.
+ * stream-only blocked status is not a summary (the waiting pair joined the summary allowlist
+ * with operator contract 1.11.0 — upstream PR #619; rm-884's re-derivation concurs).
  *
  * Mirrored, not imported: this file only takes types from public/ — the run index is loaded at
  * runtime from /static (see _runIndexSpecifier) and must not be bundled a second time into the
- * client. runtime.test.ts pins the two maps together (parity), so they cannot drift silently.
+ * client. web/src/operator/runtime.test.ts pins the two maps together (parity), and
+ * test/operator-contract-allowlist-guard.test.ts pins the run index against the vendored
+ * contract's RUN_SUMMARY_STATUSES — the declarations cannot drift silently.
  */
 export const STATUS_CLASS_TOKENS = {
   queued: 'status-queued',
