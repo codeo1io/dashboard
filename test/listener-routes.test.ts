@@ -89,6 +89,41 @@ describe('operator listener channel routes', () => {
     expect(getJson.unreadCount).toBe(1)
   })
 
+  it('rm-1982: redelivered identical webhook (no producer dedupeKey) → one row, same id, original received_at', async () => {
+    const app = await buildTestApp({listenerStore: store, listenerIngestKey: INGEST_KEY})
+
+    // VALID_BODY carries no dedupeKey — the contract now derives a
+    // deterministic fallback key, so the second delivery must land on the
+    // same row instead of inserting a duplicate.
+    const headers = ingestHeaders(VALID_BODY)
+    const first = await app.request('/api/listener/ingest', {
+      method: 'POST',
+      headers,
+      body: VALID_BODY,
+    })
+    expect(first.status).toBe(202)
+    const firstJson = (await first.json()) as {id: string; receivedAt: string}
+
+    const second = await app.request('/api/listener/ingest', {
+      method: 'POST',
+      headers,
+      body: VALID_BODY,
+    })
+    expect(second.status).toBe(202)
+    const secondJson = (await second.json()) as {id: string; receivedAt: string}
+
+    expect(secondJson.id).toBe(firstJson.id)
+    expect(secondJson.receivedAt).toBe(firstJson.receivedAt) // rm-1982: no refresh
+
+    const getRes = await app.request('/api/listener/messages', {
+      headers: {cookie: sessionCookieHeader()},
+    })
+    const getJson = (await getRes.json()) as {messages: {id: string}[]; unreadCount: number}
+    expect(getJson.messages).toHaveLength(1)
+    expect(getJson.messages[0]?.id).toBe(firstJson.id)
+    expect(getJson.unreadCount).toBe(1)
+  })
+
   it('POST /ingest with bad signature → 401', async () => {
     const app = await buildTestApp({listenerStore: store, listenerIngestKey: INGEST_KEY})
     const res = await app.request('/api/listener/ingest', {

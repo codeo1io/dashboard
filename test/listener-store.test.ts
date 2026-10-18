@@ -49,6 +49,10 @@ describe('listener store', () => {
     )
 
     expect(second.id).toBe(first.id)
+    // rm-1982: the replay must NOT advance received_at — a redelivery is not
+    // a new arrival; it cannot queue-jump the operator feed or reset the
+    // 30-day retention clock.
+    expect(second.receivedAt).toBe(first.receivedAt)
 
     const {messages} = store.list({})
     expect(messages).toHaveLength(1)
@@ -66,11 +70,29 @@ describe('listener store', () => {
     const second = store.insert(makeMessage({dedupeKey: 'replay-unread', title: 'Second'}))
 
     expect(second.id).toBe(first.id)
+    // rm-1982: unread replays keep the original arrival time too.
+    expect(second.receivedAt).toBe(first.receivedAt)
     const {messages, unreadCount} = store.list({})
     expect(messages).toHaveLength(1)
     expect(messages[0]?.title).toBe('Second')
     expect(messages[0]?.read).toBe(false)
     expect(unreadCount).toBe(1)
+  })
+
+  it('rm-1982: replay across a wall-clock gap keeps the original received_at (no age reset)', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-01T00:00:00Z'))
+    const first = store.insert(makeMessage({dedupeKey: 'replay-age-gap', title: 'First'}))
+
+    vi.setSystemTime(new Date('2026-10-05T00:00:00Z'))
+    const second = store.insert(makeMessage({dedupeKey: 'replay-age-gap', title: 'Second'}))
+    const {messages} = store.list({})
+    vi.useRealTimers()
+
+    expect(second.id).toBe(first.id)
+    expect(second.receivedAt).toBe(first.receivedAt) // 2026-10-01, NOT 2026-10-05
+    expect(messages[0]?.receivedAt).toBe(first.receivedAt)
+    expect(messages[0]?.title).toBe('Second') // content still refreshes (rm-169)
   })
 
   it('different dedupeKey or source creates a separate row', () => {

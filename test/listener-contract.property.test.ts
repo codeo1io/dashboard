@@ -92,7 +92,13 @@ describe('listener ingest contract properties (rm-144)', () => {
           if (!want || !got) throw new Error(`link ${i} missing`)
           expect(got).toEqual({label: want.label.trim(), url: want.url})
         }
-        expect(msg.dedupeKey).toBe(input.dedupeKey ?? null)
+        if (input.dedupeKey === undefined) {
+          // rm-1982: absent producer key → deterministic sha256 fallback (64
+          // hex chars, under the 128 cap) so redelivery always dedupes.
+          expect(msg.dedupeKey).toMatch(/^[0-9a-f]{64}$/)
+        } else {
+          expect(msg.dedupeKey).toBe(input.dedupeKey)
+        }
         expect(msg.createdAt).toBe(input.createdAt)
         // Closed shape: exactly the 8 declared fields.
         expect(Object.keys(msg).sort()).toEqual([
@@ -105,6 +111,42 @@ describe('listener ingest contract properties (rm-144)', () => {
           'source',
           'title',
         ])
+      }),
+      {numRuns: 200},
+    )
+  })
+
+  it('rm-1982: absent dedupeKey → deterministic derived key; supplied key wins', () => {
+    fc.assert(
+      fc.property(validBodyArb, input => {
+        const {createdAt} = input
+        const absent = {...input, dedupeKey: undefined}
+        const first = parseIngestBody(absent)
+        expect(first.success).toBe(true)
+        if (!first.success) return
+        expect(first.data.dedupeKey).toMatch(/^[0-9a-f]{64}$/)
+
+        // Same content → same key (redelivery dedupes).
+        const second = parseIngestBody({...absent})
+        expect(second.success).toBe(true)
+        if (!second.success) return
+        expect(second.data.dedupeKey).toBe(first.data.dedupeKey)
+
+        // Different content (createdAt shifted 1ms) → different key.
+        const shifted = {
+          ...absent,
+          createdAt: new Date(new Date(createdAt).getTime() + 1).toISOString(),
+        }
+        const third = parseIngestBody(shifted)
+        expect(third.success).toBe(true)
+        if (!third.success) return
+        expect(third.data.dedupeKey).not.toBe(first.data.dedupeKey)
+
+        // Supplied key is echoed verbatim — never derived over.
+        const supplied = parseIngestBody({...input, dedupeKey: 'producer-key'})
+        expect(supplied.success).toBe(true)
+        if (!supplied.success) return
+        expect(supplied.data.dedupeKey).toBe('producer-key')
       }),
       {numRuns: 200},
     )
