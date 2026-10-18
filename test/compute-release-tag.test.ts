@@ -14,6 +14,8 @@
  * - Edge case: other-month tags are ignored
  * - Error/hygiene: non-numeric/nested suffixes ignored
  * - Error/hygiene: output must match ^[0-9]+\.[0-9]+\.[0-9]+$
+ * - Scheme bound (rm-1483): ordinal 999 is the loud-rejection edge
+ * - Scheme parity (rm-1483): mint output parses in the staleness checker
  */
 
 import {execFileSync, spawnSync} from 'node:child_process'
@@ -29,6 +31,7 @@ import {afterEach, beforeEach, describe, expect, it} from 'vitest'
 // ---------------------------------------------------------------------------
 
 const SCRIPT = resolve(import.meta.dirname, '../scripts/compute-release-tag.ts')
+const repoRoot = resolve(import.meta.dirname, '..')
 
 /**
  * Create a minimal isolated git repository in a temp directory.
@@ -312,6 +315,74 @@ describe('compute-release-tag — git spawn failure (git not on PATH)', () => {
     )
     expect(exitCode).not.toBe(0)
     expect(stderr).toContain('ERROR: failed to run git tag')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Scheme bound + cross-property parity (rm-1483, 2026-10-17)
+// ---------------------------------------------------------------------------
+
+describe('compute-release-tag — ordinal scheme bound (rm-1483)', () => {
+  it('mints the ordinal past 31 normally — the domain matches the widened staleness parser', () => {
+    // The mint never had a day bound; this pins the HARMONIZED domain: a
+    // ladder that passes 31 in a month (upstream 2026.08 did) must keep
+    // minting ordinals the staleness check can see.
+    addTag(tmpDir, '2026.08.31')
+    const {stdout, exitCode} = runScript(tmpDir, '2026.08')
+    expect(exitCode).toBe(0)
+    expect(stdout).toBe('2026.08.32')
+  })
+
+  it('rejects LOUDLY at the scheme bound: 2026.08.999 → nonzero, no tag printed', () => {
+    // Widening the parser to 3 digits without a mint bound would mint
+    // 2026.08.1000 — invisible to the staleness check BY DESIGN. The bound
+    // rejects loudly instead: a month at 999 releases is exhausted for this
+    // scheme and needs a recorded scheme decision, not a silent mint.
+    addTag(tmpDir, '2026.08.999')
+    const {stdout, stderr, exitCode} = runScript(tmpDir, '2026.08')
+    expect(exitCode).not.toBe(0)
+    expect(stdout).toBe('')
+    expect(stderr).toContain('exceeds the scheme bound 999')
+  })
+})
+
+describe('compute-release-tag ↔ release-channel-staleness scheme parity (rm-1483)', () => {
+  it('the actual repo answer for 2026.10 parses in the staleness checker', async () => {
+    // Cross-property: run the mint's git scan against THIS repo's real
+    // 2026.10 ladder, take the answer it would mint, and require the
+    // widened staleness parser to accept it — the exact seam where the
+    // historical day≤31 parser would have gone blind (e.g. at 2026.11.0,
+    // a fresh month's first release, which the old parser ALSO rejected).
+    const {parseCalverTag} = await import('../scripts/release-channel-staleness.ts')
+    const result = spawnSync('node', [SCRIPT], {
+      cwd: repoRoot,
+      env: {...process.env, CALVER_MONTH: '2026.10'},
+      encoding: 'utf8',
+      timeout: 30_000,
+    })
+    if (result.status === null) {
+      throw new Error('compute-release-tag spawn produced no exit status (infrastructure)')
+    }
+    expect(result.status).toBe(0)
+    const minted = result.stdout.trim()
+    expect(parseCalverTag(minted), `the mint output ${minted} must be visible to the staleness parser`).not.toBeNull()
+    // The fresh-month first release is the shape the OLD parser rejected —
+    // pin it: ordinal 0 parses now.
+    expect(parseCalverTag('2026.11.0')).not.toBeNull()
+    // The exact-ladder pin runs only where the checkout actually carries
+    // the ladder: an ephemeral validation/CI checkout fetches refs, not
+    // tags, and there the mint's honest answer for a tagless 2026.10 is
+    // 2026.10.0 — still parser-visible, pinned above. Where the ladder IS
+    // present (any full clone), the repo's real max is 2026.10.25 and the
+    // next mint is 2026.10.26; a foreign same-month tag (shared-store
+    // pollution) moves the answer and trips this pin.
+    const ladder = spawnSync('git', ['-C', repoRoot, 'tag', '-l', '2026.10.*'], {
+      encoding: 'utf8',
+      timeout: 10_000,
+    })
+    if ((ladder.stdout ?? '').split('\n').some(line => line.trim() !== '')) {
+      expect(minted).toBe('2026.10.26')
+    }
   })
 })
 

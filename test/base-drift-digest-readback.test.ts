@@ -43,6 +43,47 @@ function readWorkflowFiles(): {name: string; text: string}[] {
     .map(name => ({name, text: stripCommentLines(readFileSync(join(workflowsDir, name), 'utf8'))}))
 }
 
+/**
+ * rm-1478 (run 475b46bc, 2026-10-17): the pullability leg + live-tag derivation.
+ *
+ * Drift (pin vs live tag) reads green the moment pin and tag agree — it never
+ * asks whether the pinned DIGEST itself still resolves, which is exactly how
+ * sha256:173f1258 (deleted from Docker Hub) broke release builds while the
+ * weekly check looked structurally fine. These statics pin the wiring that
+ * keeps that class covered: base-drift.yaml must RUN the pullability script,
+ * and the drift job must derive its live tag from the Dockerfile's ARG
+ * (the hardcoded `node:24-slim` compared a different tag's digest against the
+ * trixie pins — permanent false drift).
+ */
+describe('base-drift pullability + live-tag derivation — workflow statics (rm-1478)', () => {
+  const file = readWorkflowFiles().find(f => f.name === 'base-drift.yaml')
+
+  it('base-drift.yaml runs the pullability script as a job step', () => {
+    expect(file, '.github/workflows/base-drift.yaml must exist').toBeDefined()
+    const text = file?.text ?? ''
+    expect(
+      text.includes('base-pin-pullability'),
+      'base-drift.yaml must invoke scripts/base-pin-pullability.ts — the digest-pullability class has no other weekly coverage',
+    ).toBe(true)
+    expect(
+      text.includes('pullability:'),
+      'base-drift.yaml must carry a dedicated pullability job',
+    ).toBe(true)
+  })
+
+  it('the drift job derives the live tag from the Dockerfile ARG, not a hardcoded tag', () => {
+    const text = file?.text ?? ''
+    expect(
+      text.includes(String.raw`sed -n 's/^ARG NODE_IMAGE=\([^@]*\)@sha256:.*/\1/p' Dockerfile`),
+      'the drift job must derive the live tag from the Dockerfile ARG NODE_IMAGE (rm-1478)',
+    ).toBe(true)
+    expect(
+      text,
+      'no hardcoded official-image live tag may reappear in the drift comparison — the pinned image is the source of truth',
+    ).not.toContain('inspect node:24-slim')
+  })
+})
+
 describe('base-drift digest readback — workflow statics (rm-166)', () => {
   it('no workflow pipes `docker manifest inspect` into a ^Digest: awk parse', () => {
     // `docker manifest inspect` emits raw manifest JSON — there is no

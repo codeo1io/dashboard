@@ -33,17 +33,27 @@ const tags = (entries: [name: string, dateUnix: number][]): CalverTagInfo[] =>
 
 describe('rm-740: calver tag parsing and newest selection', () => {
   it('parses this repo calver shapes and rejects non-calver tags', () => {
-    expect(parseCalverTag('2026.08.9')).toEqual({year: 2026, month: 8, day: 9})
-    expect(parseCalverTag('2026.10.28')).toEqual({year: 2026, month: 10, day: 28})
+    expect(parseCalverTag('2026.08.9')).toEqual({year: 2026, month: 8, ordinal: 9})
+    expect(parseCalverTag('2026.10.28')).toEqual({year: 2026, month: 10, ordinal: 28})
     expect(parseCalverTag('v1.2.3')).toBeNull()
     expect(parseCalverTag('2026.13.1')).toBeNull() // month out of range
-    expect(parseCalverTag('2026.08.32')).toBeNull() // day out of range
+    // rm-1483: the third component is the release ORDINAL (0–999), not a
+    // calendar day — this test was reshaped on 2026-10-17, not deleted:
+    // 2026.08.32 (upstream's ladder passed 31 releases in 2026.08) and
+    // 2026.11.0 (a fresh month's first release) now PARSE; the rejection
+    // bound moved to the scheme edge — four-digit ordinals cannot be minted
+    // (compute-release-tag exits nonzero at 999), so a wider tag is
+    // hand-made and invisible here by design.
+    expect(parseCalverTag('2026.08.32')).toEqual({year: 2026, month: 8, ordinal: 32})
+    expect(parseCalverTag('2026.11.0')).toEqual({year: 2026, month: 11, ordinal: 0})
+    expect(parseCalverTag('2026.08.999')).toEqual({year: 2026, month: 8, ordinal: 999})
+    expect(parseCalverTag('2026.08.1000')).toBeNull() // ordinal past the scheme bound
     expect(parseCalverTag('2026.8')).toBeNull() // not the three-part shape
   })
 
   it('selects the newest tag NUMERICALLY — 2026.08.10 beats 2026.08.9 despite lexical order', () => {
     // Refname STRING sort puts '2026.08.9' after '2026.08.10' ('9' > '1') — a
-    // lexical sort would wrongly crown 2026.08.9. Numeric day compare crowns
+    // lexical sort would wrongly crown 2026.08.9. Numeric ordinal compare crowns
     // 2026.08.10 (August 10 is newer than August 9).
     const set = tags([
       ['2026.08.10', 1],
@@ -53,7 +63,7 @@ describe('rm-740: calver tag parsing and newest selection', () => {
     expect(selectNewestCalverTag(set)?.name).toBe('2026.08.10')
   })
 
-  it('multi-digit days across the series still select numerically (the CI-observed shape)', () => {
+  it('multi-digit ordinals across the series still select numerically (the CI-observed shape)', () => {
     // Observed live on this host: tags 2026.10.0 .. 2026.10.14 — a string
     // sort crowns '2026.10.9'; numeric crowns '2026.10.14'.
     const set = tags([
@@ -63,6 +73,19 @@ describe('rm-740: calver tag parsing and newest selection', () => {
       ['2026.10.14', 4],
     ])
     expect(selectNewestCalverTag(set)?.name).toBe('2026.10.14')
+  })
+
+  it('ordinals past 31 select numerically — the widened scheme domain (rm-1483)', () => {
+    // Upstream's 2026.08 ladder reached 32+ releases in a month; under the
+    // retired day≤31 parser this newest tag was INVISIBLE to the channel
+    // (null → skipped), so a stale month could read healthy. The widened
+    // parser must crown it.
+    const set = tags([
+      ['2026.08.9', 1],
+      ['2026.08.31', 2],
+      ['2026.08.32', 3],
+    ])
+    expect(selectNewestCalverTag(set)?.name).toBe('2026.08.32')
   })
 
   it('rolls month/year boundaries correctly', () => {
