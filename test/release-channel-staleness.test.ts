@@ -33,24 +33,43 @@ const tags = (entries: [name: string, dateUnix: number][]): CalverTagInfo[] =>
 
 describe('rm-740: calver tag parsing and newest selection', () => {
   it('parses this repo calver shapes and rejects non-calver tags', () => {
-    expect(parseCalverTag('2026.08.9')).toEqual({year: 2026, month: 8, day: 9})
-    expect(parseCalverTag('2026.10.28')).toEqual({year: 2026, month: 10, day: 28})
+    expect(parseCalverTag('2026.08.9')).toEqual({year: 2026, month: 8, patch: 9})
+    expect(parseCalverTag('2026.10.28')).toEqual({year: 2026, month: 10, patch: 28})
     expect(parseCalverTag('v1.2.3')).toBeNull()
     expect(parseCalverTag('2026.13.1')).toBeNull() // month out of range
-    expect(parseCalverTag('2026.08.32')).toBeNull() // day out of range
+    // rm-740 amendment (2026-10-18): the third component is the minter's
+    // per-month PATCH counter (scripts/compute-release-tag.ts), not a day —
+    // patch-shaped tags above .31 MUST parse, and the regex accepts up to
+    // three digits. The day-out-of-range rejection below .31-era tags
+    // mis-parsed the channel's own output (2026.10.47 observed live).
+    expect(parseCalverTag('2026.08.32')).toEqual({year: 2026, month: 8, patch: 32})
+    expect(parseCalverTag('2026.10.47')).toEqual({year: 2026, month: 10, patch: 47})
+    expect(parseCalverTag('2026.08.0')).toBeNull() // patch must be positive — 0 is noise
     expect(parseCalverTag('2026.8')).toBeNull() // not the three-part shape
   })
 
   it('selects the newest tag NUMERICALLY — 2026.08.10 beats 2026.08.9 despite lexical order', () => {
     // Refname STRING sort puts '2026.08.9' after '2026.08.10' ('9' > '1') — a
-    // lexical sort would wrongly crown 2026.08.9. Numeric day compare crowns
-    // 2026.08.10 (August 10 is newer than August 9).
+    // lexical sort would wrongly crown 2026.08.9. Numeric patch compare crowns
+    // 2026.08.10 (patch 10 is newer than patch 9).
     const set = tags([
       ['2026.08.10', 1],
       ['2026.08.9', 2],
       ['2026.07.31', 3],
     ])
     expect(selectNewestCalverTag(set)?.name).toBe('2026.08.10')
+  })
+
+  it('newest selection sees patch-shaped tags above .31 (rm-740 amendment regression)', () => {
+    // Live-observed 2026-10-18: the checker reported newest 2026.10.31 while
+    // the tree held 2026.10.47 — the old day ≤ 31 cap made every tag above
+    // .31 invisible to newest-selection, arming a silent dormancy blindness.
+    const set = tags([
+      ['2026.10.31', 1],
+      ['2026.10.47', 2],
+      ['2026.10.5', 3],
+    ])
+    expect(selectNewestCalverTag(set)?.name).toBe('2026.10.47')
   })
 
   it('multi-digit days across the series still select numerically (the CI-observed shape)', () => {

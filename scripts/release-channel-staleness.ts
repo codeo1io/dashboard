@@ -47,8 +47,8 @@ import {pathToFileURL} from 'node:url'
 
 export const DEFAULT_THRESHOLD_DAYS = 45
 
-/** Calver tags as this repo's release channel mints them: YYYY.MM.D (day NOT zero-padded). */
-const CALVER_TAG = /^(\d{4})\.(\d{1,2})\.(\d{1,2})$/
+/** Calver tags as this repo's release channel mints them: YYYY.MM.PATCH (per-month release counter, NOT zero-padded, NOT a day — legacy day-shaped tags are the ≤ 31 subset). */
+const CALVER_TAG = /^(\d{4})\.(\d{1,2})\.(\d{1,3})$/
 
 export interface CalverTagInfo {
   name: string
@@ -73,21 +73,24 @@ export interface StalenessResult {
   decision: DormancyDecision | null
 }
 
-/** Parses a calver tag name; day/month compare NUMERICALLY (2026.08.9 > 2026.08.10 lexically-reversed trap). */
-export function parseCalverTag(name: string): {year: number; month: number; day: number} | null {
+/** Parses a calver tag name; month/patch compare NUMERICALLY (2026.08.9 > 2026.08.10 lexically-reversed trap). */
+export function parseCalverTag(name: string): {year: number; month: number; patch: number} | null {
   const match = CALVER_TAG.exec(name)
   if (match === null) return null
   const year = Number(match[1])
   const month = Number(match[2])
-  const day = Number(match[3])
-  if (month < 1 || month > 12 || day < 1 || day > 31) return null
-  return {year, month, day}
+  const patch = Number(match[3])
+  // month range stays strict (leniency would mint channel tags from noise);
+  // PATCH only needs to be positive — the old day ≤ 31 cap made newest-selection
+  // blind to every patch-shaped tag above .31 (rm-740 amendment, 2026-10-18)
+  if (month < 1 || month > 12 || patch < 1) return null
+  return {year, month, patch}
 }
 
 /** Newest calver tag by numeric calver comparison (ignores non-calver tags entirely). */
 export function selectNewestCalverTag(tags: readonly CalverTagInfo[]): CalverTagInfo | null {
   let newest: CalverTagInfo | null = null
-  let newestKey: {year: number; month: number; day: number} | null = null
+  let newestKey: {year: number; month: number; patch: number} | null = null
   for (const tag of tags) {
     const key = parseCalverTag(tag.name)
     if (key === null) continue
@@ -95,7 +98,7 @@ export function selectNewestCalverTag(tags: readonly CalverTagInfo[]): CalverTag
       newestKey === null ||
       key.year > newestKey.year ||
       (key.year === newestKey.year && key.month > newestKey.month) ||
-      (key.year === newestKey.year && key.month === newestKey.month && key.day > newestKey.day)
+      (key.year === newestKey.year && key.month === newestKey.month && key.patch > newestKey.patch)
     ) {
       newest = tag
       newestKey = key
