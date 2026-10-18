@@ -78,4 +78,14 @@ USER node
 
 EXPOSE 3000
 
+# rm-228: container-native liveness. node:24-slim ships no curl or wget, so the
+# probe is node itself fetching the public /api/healthz route (src/server.ts;
+# public by design, no auth). DASHBOARD_PORT is the server's documented bind
+# override (README env table; src/server.ts reads env.DASHBOARD_PORT), PORT a
+# conventional fallback, 3000 the server default matching EXPOSE above; the
+# 4.5s in-process watchdog sits just under HEALTHCHECK --timeout=5s so a
+# hung fetch exits 1 before the runtime kill.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD ["node", "-e", "const t=setTimeout(()=>process.exit(1),4500);fetch(process.env.HEALTHCHECK_URL??('http://127.0.0.1:'+(process.env.DASHBOARD_PORT??process.env.PORT??3000)+'/api/healthz')).then(r=>{clearTimeout(t);process.exit(r.ok?0:1)}).catch(()=>{clearTimeout(t);process.exit(1)})"]
+
 CMD ["node", "src/server.ts"]

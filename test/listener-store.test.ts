@@ -128,6 +128,40 @@ describe('listener store', () => {
     expect(messages.length).toBeLessThanOrEqual(200)
   })
 
+  it('rm-227: duplicate ingest is idempotent — no throw, one row, ack state preserved', () => {
+    // The old check-then-insert pair was TOCTOU-unsound: under concurrent
+    // duplicate ingest (or a second process sharing the DB file) both
+    // SELECTs could miss, both INSERT, and the loser would 500 on the
+    // partial UNIQUE index. insert() is now a single INSERT…ON CONFLICT
+    // upsert, so a replay can never surface a constraint violation to the
+    // webhook caller.
+    const first = store.insert(makeMessage({dedupeKey: 'race-key', title: 'Original'}))
+    store.ack(first.id)
+
+    const replay = store.insert(
+      makeMessage({dedupeKey: 'race-key', title: 'Replayed', body: 'redelivered body'}),
+    )
+
+    expect(replay.id).toBe(first.id)
+    const {messages, unreadCount} = store.list({})
+    expect(messages).toHaveLength(1)
+    expect(messages[0]?.title).toBe('Replayed')
+    expect(messages[0]?.read).toBe(true)
+    expect(unreadCount).toBe(0)
+  })
+
+  it('rm-227: NULL dedupe_key rows never conflict — every ingest persists', () => {
+    // The partial index only covers WHERE dedupe_key IS NOT NULL, so the
+    // ON CONFLICT clause must not swallow NULL-key inserts: two identical
+    // NULL-key payloads are two distinct messages.
+    const a = store.insert(makeMessage({dedupeKey: null, title: 'fire one'}))
+    const b = store.insert(makeMessage({dedupeKey: null, title: 'fire two'}))
+
+    expect(a.id).not.toBe(b.id)
+    const {messages} = store.list({})
+    expect(messages).toHaveLength(2)
+  })
+
   it('close does not throw', () => {
     expect(() => store.close()).not.toThrow()
   })
