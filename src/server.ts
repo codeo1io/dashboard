@@ -63,6 +63,7 @@ import {buildApiRouter} from './routes/api.ts'
 import {buildAuthRouter} from './routes/auth.ts'
 import {buildListenerRouter} from './routes/listener.ts'
 import {readOptionalMultilineSecret, readOptionalSecret} from './secrets.ts'
+import {readServedPushHandlerPresence} from './served-push-capability.ts'
 import {loadCookieKey, SessionManager} from './session.ts'
 import {installShutdownHandlers} from './shutdown.ts'
 import {createPublicStatic} from './static-files.ts'
@@ -512,6 +513,19 @@ export interface DashboardAppConfig {
    */
   pushNotificationsEnabled?: boolean | undefined
   /**
+   * Whether the SERVED web/dist/sw.js registers a push event handler.
+   * If undefined, derived ONCE at startup from `<webDistRoot>/sw.js`
+   * (see src/served-push-capability.ts). The push-enabled meta is injected
+   * only when pushNotificationsEnabled AND this are both true — fail-closed
+   * by artifact truth so the consent surface can never mount against a
+   * service worker that cannot deliver push (the marker is quote-agnostic:
+   * the Vite PWA build emits the registration with backticks; the handlers'
+   * presence is guarded by web/src/sw.test.ts, which the 2026.10.43 upstream
+   * adoption made true on this estate).
+   * Explicit injection exists for tests; production always derives.
+   */
+  servedPushHandlerPresent?: boolean | undefined
+  /**
    * Injectable OperatorClient for the gateway auth branch.
    * If undefined, a real client is built per-request from the server-side fetch adapter.
    * Never constructed when gatewayOperatorSessionEnabled is false.
@@ -771,6 +785,28 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
 
   // Resolve SPA static asset root — defaults to ./web/dist; override via DASHBOARD_WEB_DIST or opts.
   const webDistRoot = opts?.webDistRoot ?? process.env.DASHBOARD_WEB_DIST?.trim() ?? './web/dist'
+
+  // Deploy-guard (rm-249 rider, run 61448784a089): the push consent surface
+  // must be unreachable unless the SERVED sw.js can actually deliver push.
+  // The env flag alone is not sufficient — against a served worker with no
+  // push handler, an enabled flag manufactures a doomed consent card
+  // ('sw-not-ready' on every opt-in). Fail closed on artifact truth: a
+  // push-capable SW rebuilds sw.js with the handler marker and the gate
+  // opens automatically (it did, at the 2026.10.43 upstream adoption —
+  // the built sw.js now carries the push handlers, so on this estate the
+  // gate is open and the flag is the deciding input).
+  const servedPushHandlerPresent =
+    opts?.servedPushHandlerPresent === undefined
+      ? readServedPushHandlerPresence(webDistRoot)
+      : opts.servedPushHandlerPresent
+  const pushMetaInjectionEnabled = pushNotificationsEnabled && servedPushHandlerPresent
+  if (pushNotificationsEnabled && !servedPushHandlerPresent) {
+    logger.warning(
+      'DASHBOARD_OPERATOR_PUSH_ENABLED ignored: the served sw.js registers no push event ' +
+      'handler — this deployment cannot deliver push. The push-enabled meta is NOT injected; ' +
+      'the consent surface stays hidden (fail-closed until a push-capable service worker ships).',
+    )
+  }
 
   // Guard: dist-fixture must never be served in production. Fail loudly at construction.
   // dist-fixture contains fixture-mode JS that bypasses real auth flows.
@@ -1243,9 +1279,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   }
 
   // Serve the React SPA at /. index.html requires a session; shell assets are public.
-  // When pushNotificationsEnabled, inject a <meta name="push-enabled" content="true">
+  // When the push consent surface is enabled (env flag AND a push-capable served sw.js —
+  // see the deploy-guard above), inject a <meta name="push-enabled" content="true">
   // tag so the SPA can render the push consent surface without a separate flag fetch.
-  if (pushNotificationsEnabled) {
+  if (pushMetaInjectionEnabled) {
     // Serve the SPA shell inline (not via serveStatic) so the injected body's
     // length is computed correctly. Post-processing a streamed serveStatic
     // response leaves a stale Content-Length that truncates the injected HTML

@@ -20,6 +20,7 @@ import {DISMISS_KEY as INSTALL_DISMISS_KEY, InstallPrompt} from '../pwa/InstallP
 import {ReloadPrompt} from '../pwa/ReloadPrompt.tsx'
 import {purgeOperatorCache} from '../pwa/logout-purge.ts'
 import {DISMISS_SETTINGS_KEY as NOTIFICATIONS_DISMISS_KEY, Notifications} from '../views/Notifications.tsx'
+import {useServedPushCapability} from '../push/served-sw-capability.ts'
 
 /**
  * Best-effort push teardown on logout. Runs local `unsubscribe()` + Gateway
@@ -158,6 +159,7 @@ export function AppShell({
   // machine at not-requested. Per-surface so restoring the notifications card
   // never discards a captured (not-dismissed) beforeinstallprompt event.
   const [notificationsRestoreNonce, setNotificationsRestoreNonce] = useState(0)
+  const servedPushCapable = useServedPushCapability()
   const [installRestoreNonce, setInstallRestoreNonce] = useState(0)
   const logoutInFlight = useRef(false)
   // Release version shown in the footer, baked at build time (release.yaml's
@@ -544,12 +546,14 @@ export function AppShell({
         }}
         className="sm:px-6 md:px-8 lg:px-10"
       >
-        <Notifications
-          key={`notifications-restore-${notificationsRestoreNonce}`}
-          pushEndpointBase={pushEndpointBase}
-          pushConfigReady={pushConfigReady}
-          pushFixtureSessionId={pushFixtureSessionId}
-        />
+        {servedPushCapable ? (
+          <Notifications
+            key={`notifications-restore-${notificationsRestoreNonce}`}
+            pushEndpointBase={pushEndpointBase}
+            pushConfigReady={pushConfigReady}
+            pushFixtureSessionId={pushFixtureSessionId}
+          />
+        ) : null}
         {children}
       </main>
 
