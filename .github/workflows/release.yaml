@@ -19,6 +19,11 @@ on:
       - .github/workflows/release.yaml
       - scripts/should-release.ts
       - scripts/compute-release-tag.ts
+      # rm-602 (conflict fa1b4af9): COPY'd into the builder stage and chained
+      # into build:web — changes the shipped sidecar bytes with no src/web
+      # diff. Paired in scripts/release-paths.ts (rm-154/rm-248 bidirectional
+      # sync).
+      - scripts/gzip-static-sidecars.ts
   workflow_dispatch:
 
 concurrency:

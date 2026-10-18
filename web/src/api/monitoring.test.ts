@@ -132,5 +132,100 @@ describe('monitoring API', () => {
       const res = await fetchMonitoring()
       expect(res).toEqual({ ok: false, reason: 'contract-drift' })
     })
+
+    it('rm-1516/rm-1517: parses present security + lifecycle status fields', async () => {
+      const mockData = {
+        repos: [{
+          full_name: 'fro-bot/agent',
+          discovery_channel: 'installation',
+          status: {
+            rollupState: 'red',
+            failingChecks: 1,
+            failingCheckDetails: [],
+            openPrCount: 0,
+            openIssueCount: 0,
+            openAlertCount: 2,
+            openCodeScanningCount: 3,
+            pushedAt: '2026-10-17T00:00:00.000Z',
+            isArchived: false,
+            stale: false,
+          },
+        }],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: 1742000000000,
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+      const res = await fetchMonitoring()
+      expect(res.ok).toBe(true)
+      if (res.ok) {
+        const status = res.data.repos[0]?.status
+        expect(status?.openAlertCount).toBe(2)
+        expect(status?.openCodeScanningCount).toBe(3)
+        expect(status?.pushedAt).toBe('2026-10-17T00:00:00.000Z')
+        expect(status?.isArchived).toBe(false)
+      }
+    })
+
+    it('rm-1516/rm-1517: absent status fields degrade to null (older server), not contract-drift', async () => {
+      const mockData = {
+        repos: [{
+          full_name: 'fro-bot/agent',
+          discovery_channel: 'installation',
+          status: {
+            rollupState: 'green',
+            failingChecks: 0,
+            failingCheckDetails: [],
+            openPrCount: 0,
+            openIssueCount: 0,
+            openAlertCount: null,
+            stale: false,
+          },
+        }],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+      const res = await fetchMonitoring()
+      expect(res.ok).toBe(true)
+      if (res.ok) {
+        const status = res.data.repos[0]?.status
+        expect(status?.openCodeScanningCount).toBeNull()
+        expect(status?.pushedAt).toBeNull()
+        expect(status?.isArchived).toBeNull()
+      }
+    })
+
+    it('rm-1516: a malformed security field fails closed as contract-drift (never a wrong value)', async () => {
+      const mockData = {
+        repos: [{
+          full_name: 'fro-bot/agent',
+          discovery_channel: 'installation',
+          status: {
+            rollupState: 'green',
+            failingChecks: 0,
+            failingCheckDetails: [],
+            openPrCount: 0,
+            openIssueCount: 0,
+            openAlertCount: null,
+            openCodeScanningCount: 'many',
+            stale: false,
+          },
+        }],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+      const res = await fetchMonitoring()
+      expect(res).toEqual({ ok: false, reason: 'contract-drift' })
+    })
   })
 })

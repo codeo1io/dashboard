@@ -46,6 +46,10 @@ function needsAttention(status: RepoCiStatus): boolean {
     status.rollupState === 'red' ||
     status.failingChecks > 0 ||
     (status.openAlertCount !== null && status.openAlertCount > 0) ||
+    // rm-1516: code-scanning alerts join the same attention class as
+    // Dependabot alerts (this oracle caught the salvage's implementation-
+    // only extension as a red property — exactly its job).
+    (status.openCodeScanningCount !== null && status.openCodeScanningCount > 0) ||
     status.openPrCount > 0
   )
 }
@@ -69,7 +73,12 @@ const statusArb = (fetchedAt: number): fc.Arbitrary<RepoCiStatus> =>
     openIssueCount: fc.nat({max: 500}),
     openAlertCount: fc.option(fc.nat({max: 30}), {nil: null}),
     openCodeScanningCount: fc.option(fc.nat({max: 30}), {nil: null}),
-    pushedAt: fc.option(fc.date().map((d) => d.toISOString()), {nil: null}),
+    // ISO-safe only: fast-check v4's fc.date injects new Date(NaN) (~0.1%
+    // of samples) even inside a [min,max] window — noInvalidDate suppresses
+    // that, and the window itself keeps values inside Date#toISOString's
+    // [1, 9999] year domain (.toISOString() throws RangeError outside it;
+    // caught live by this suite, not by check-types).
+    pushedAt: fc.option(fc.date({min: new Date('2000-01-01T00:00:00.000Z'), max: new Date('2200-01-01T00:00:00.000Z'), noInvalidDate: true}).map(d => d.toISOString()), {nil: null}),
     isArchived: fc.option(fc.boolean(), {nil: null}),
     stale: fc.boolean(),
     fetchedAt: fc.constant(fetchedAt),
