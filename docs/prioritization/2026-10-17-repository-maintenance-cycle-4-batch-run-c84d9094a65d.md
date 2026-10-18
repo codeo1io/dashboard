@@ -86,3 +86,86 @@ the same landing) per the standard pipeline.
 - test/roadmap-render-guard.test.ts 4/4 green; pnpm lint rc=0 (sequential, never parallel).
 - Selection delta mirrored to spool: prioritize-c84d9094a65d-0463abe2.patch — the full ROADMAP.md delta vs pristine edf948de (roadmap-phase extension + the 4 selection riders), i.e. exactly what implement/fold applies to a clean main; the selection component is the final 4 rider lines.
 - Worktree state: ` M ROADMAP.md` + this new untracked doc; no other tracked file touched.
+
+## Implement outcome (2026-10-18, attempt 425318eeedfb467d91256ff47d135f0d)
+
+**Salvage adoption, verified — nothing redone.** The conductor preserved the reaped implement
+attempt's tree as salvage commit `46bc60bc` (11 paths, content-preservation only, no validation
+claim). This attempt audited every hunk against the four acceptance cards and validated the whole
+batch first-hand:
+
+- **Gates (node v24.21.0; `pnpm install --frozen-lockfile` 7.2s from the shared store):**
+  `pnpm check-types` rc=0; `pnpm lint` rc=0; focused impacted battery `vitest run` over the 9
+  touched-seam suites (operator-stream-core, operator-sse-reader, listener-store-degradation,
+  listener-store, listener-contract.property, operator-fixture-harness, roadmap-render-guard,
+  roadmap-length-guard, sse-parser.property) = **1307/1307 green**.
+- **Red-first, re-proven this attempt (each reverted to its edf948de shape, expected red, restored):**
+  rm-1457 units-blind `.length` cap → flood test fails `'closed' ≠ 'failed'`;
+  rm-1458 pre-fix reader → 3 cancel tests red (clean-completion control + 7-byte-offset exactness
+  test stay green both ways, as designed); rm-1459 pre-fix store → 3 drift tests red (no-log
+  control green). Post-restore porcelain clean (byte-exact `git checkout --`).
+- **rm-1458 exactness audit:** the incremental `bufferBytes` is decremented at every record split
+  (`bufferBytes -= encoder.encode(\`${record}\\n\\n\`).length`, src/gateway/operator-sse-reader.ts:623)
+  so long multi-frame streams cannot false-trip the cap; the held-CR ±1 and code-point additivity
+  argument was re-derived and is behaviorally pinned by the 7-byte-offset chunk-split reassembly
+  test. `releaseBody` fires on all four non-completion exits; EOF exits release nothing.
+- **rm-1460 round-trip, re-verified programmatically:** both rewrapped comments (43af4cf graft,
+  extension #44) are whitespace-collapsed EQUAL to their edf948de single-line blobs; pre-change
+  `awk length>4000` = exactly :1507 (4463) + :1553 (4453); post-change = 0 lines. Render-tail
+  marker remains the last non-empty line; census 260 defs / 0 dups.
+- **Deferred by design (recorded, not blocking):** the client twin's cap check re-encodes the whole
+  buffer per chunk — bounded by the 1 MB frame cap, exact, and rm-253's fold inherits the helper at
+  the same seam if it ever wants the incremental treatment. The `validation:v1` executable-surface
+  digest is work-order-declared and consumed by the later full_tests gate against the batch-applied
+  tree; no in-repo digest file exists to update.
+
+## Compound outcome (cycle:4, pre-review)
+
+**Validation records consumed (this section documents; it does not re-run):** targeted_tests
+09b95c46-a61125ab — impacted-seam derivation covered all 3 changed testable surfaces across 12
+suites, 1531/1531 green at tree 46bc60bc, digest re-derived live = dispatch digest (66ab04bb,
+match True). full_tests 09b95c46 — 3 executions of `github_ci_validate.py --repo .` (854477cb):
+run1/run2 rc=1 on a FOREIGN path-parity red (adjudicated: validator grafts main's
+`.github/workflows` onto the worktree tree; main's 9f67ea88 workflow path met this base's
+pre-9f67ea88 corpus), run3 rc=0 `ok:true` — ephemeral PR #939, commit 11e496b2, 7/7 buckets
+SUCCESS + Fro Bot SKIPPED (fork PAT gate). Emission-time digest declared FRESH (23d78d07) because
+the cure changed 2 executable surfaces, both content-identical to origin/main (fold-neutral).
+
+**Ledger compounding:** rm-1457..rm-1460 statuses advanced implemented → validated with the two
+validation records cited inline; rm-253 gained a compound rider (fold arm now cites live seams:
+sseBufferByteLength at public/operator-stream.js:4645, releaseBody at
+src/gateway/operator-sse-reader.ts:547). Prevention rule written to
+`docs/solutions/workflow-issues/ephemeral-ci-validator-grafts-main-workflows-old-base-path-parity-red-2026-10-18.md`.
+
+**Next-cycle pointers (concrete, ranked):** (1) rm-253 wire-or-fold — helper + release discipline
+now exist; collision check vs the 08a0abac rm-842 thread before dispatch. (2) rm-1449 majors gate
+2026-10-21 — the research rider's census is current as of 2026-10-17; re-probe vitest 5 / TS 7 /
+vite-plugin-pwa 2 / jsdom 30 that morning. (3) rm-139 Node-26 triad go/no-go 2026-10-28. (4) The
+implement-phase vitest flake (render-guard eslint leg cold 30s timeout vs 120s spawn allowance,
+test/roadmap-render-guard.test.ts:182-188) — re-run-once policy sufficed twice; widen only on a
+third occurrence.
+
+## Compound outcome (cycle:4, pre-review — run c84d9094a65d424fba812b8b286ed080 compound 0aa8d989)
+
+Validation record consumed (no tests re-run in compound, per phase budget):
+- targeted (attempt a61125ab, tree 46bc60bc): 12 suites / 1531 tests, all passed; digest
+  re-derived live = dispatch digest 66ab04bb (match True).
+- full (attempt 09b95c46): github_ci_validate rc=0 ok:true — ephemeral PR #939, commit
+  11e496b2037855150b8cc967808a55312636c537; 7/7 buckets SUCCESS (Dependency Review, Lint,
+  Design Check, Check Types, TEST, Check Workflows, Test Scripts Load) + Fro Bot SKIPPED (fork
+  PAT gate; ok:true). Two prior runs failed on a FOREIGN red adjudicated and cured — see
+  docs/solutions/workflow-issues/ephemeral-ci-validator-grafts-main-workflows-old-base-path-parity-red-2026-10-18.md.
+- Emission-time digest after the full_tests cure: validation:v1:23d78d07… (two aligned surfaces,
+  both content-identical to origin/main 5ab50da0 → fold/rebase-neutral).
+
+Ledger state after compounding: rm-1457..rm-1460 def lines now read "validated 2026-10-18
+(implement 866552f6, salvage 46bc60bc; validated by targeted 1531/1531 + full ok:true PR #939);
+pending review + landing". The rm-253 wire-or-fold decision gained a rider citing the now-live
+fold-arm seams (sseBufferByteLength, releaseBody) and the acceptance-template tests.
+
+Next-cycle pointers (assessment carries review/shipping outcomes forward):
+- rm-253 wire-or-fold: fold arm now cites live seams + property-test template; still owe the
+  08a0abac rm-842 fleet-collision check before dispatch.
+- rm-1449 dependency-majors gate re-evaluation lands 2026-10-21 (rider census refreshed by
+  research f65cef59: no new majors beyond vite-plugin-pwa 2.0.0 / jsdom 30.1.3).
+- rm-139 Node-26 triad go/no-go at the 2026-10-28 promotion gate (v26.12.0 lts:false today).
