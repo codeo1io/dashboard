@@ -13,7 +13,12 @@
  *    an extraction error, not a silent green;
  * 4. no calver tags at all = extraction error (fail loud on empty evidence,
  *    never a healthy verdict — rm-166 lesson);
- * 5. the step summary names rm-740 and, on stale, the decision owner rm-714.
+ * 5. the step summary names rm-740 and, on stale, the decision owner rm-714;
+ * 6. rm-1932: the third calver component is a per-month RELEASE COUNTER
+ *    (counter-form >31 valid — the census shapes .32/.43/.57), and the
+ *    verdict set is SCOPED to fork-reachable tags: foreign upstream tags are
+ *    excluded from the verdict and counted in the summary (a foreign tag
+ *    crown is exactly the false-healthy this fix kills).
  */
 import {describe, expect, it} from 'vitest'
 import {
@@ -21,6 +26,8 @@ import {
   evaluateReleaseChannelStaleness,
   parseCalverTag,
   parseDormancyDecision,
+  scopeCalverTagsToForkReachable,
+  scopeToChannel,
   selectNewestCalverTag,
   type CalverTagInfo,
 } from '../scripts/release-channel-staleness.ts'
@@ -33,12 +40,33 @@ const tags = (entries: [name: string, dateUnix: number][]): CalverTagInfo[] =>
 
 describe('rm-740: calver tag parsing and newest selection', () => {
   it('parses this repo calver shapes and rejects non-calver tags', () => {
-    expect(parseCalverTag('2026.08.9')).toEqual({year: 2026, month: 8, day: 9})
-    expect(parseCalverTag('2026.10.28')).toEqual({year: 2026, month: 10, day: 28})
+    expect(parseCalverTag('2026.08.9')).toEqual({year: 2026, month: 8, counter: 9})
+    expect(parseCalverTag('2026.10.28')).toEqual({year: 2026, month: 10, counter: 28})
     expect(parseCalverTag('v1.2.3')).toBeNull()
     expect(parseCalverTag('2026.13.1')).toBeNull() // month out of range
-    expect(parseCalverTag('2026.08.32')).toBeNull() // day out of range
     expect(parseCalverTag('2026.8')).toBeNull() // not the three-part shape
+  })
+
+  it('rm-1932: the third component is a per-month RELEASE COUNTER, not a day — counter-form >31 is valid', () => {
+    // Live census 2026-10-17: this repo's tag namespace carries
+    // 2026.06.31-.57, 2026.07.32-.43, 2026.08.32-.36, 2026.10.32-.43 — the
+    // pre-rm-1932 `day > 31` rejection silently dropped every one of them,
+    // mis-naming the channel newest (the gate reported 2026.10.31 while
+    // 2026.10.43 existed). Day-shaped 1-31 is the legacy subset and stays
+    // valid; counters of any width are accepted.
+    expect(parseCalverTag('2026.08.32')).toEqual({year: 2026, month: 8, counter: 32})
+    expect(parseCalverTag('2026.10.43')).toEqual({year: 2026, month: 10, counter: 43})
+    expect(parseCalverTag('2026.06.57')).toEqual({year: 2026, month: 6, counter: 57})
+    expect(parseCalverTag('2026.07.0')).toBeNull() // zero counter rejected (rm-1932)
+    expect(parseCalverTag('2026.06.15.1')).toBeNull() // 4-part sub-tag stays ignored
+  })
+
+  it('counter-form tags outrank same-month day-form tags NUMERICALLY (2026.10.43 beats 2026.10.31)', () => {
+    const set = tags([
+      ['2026.10.31', 1],
+      ['2026.10.43', 2],
+    ])
+    expect(selectNewestCalverTag(set)?.name).toBe('2026.10.43')
   })
 
   it('selects the newest tag NUMERICALLY — 2026.08.10 beats 2026.08.9 despite lexical order', () => {
@@ -81,6 +109,79 @@ describe('rm-740: calver tag parsing and newest selection', () => {
       ['2026.08.9', 1],
     ])
     expect(selectNewestCalverTag(set)?.name).toBe('2026.08.9')
+  })
+})
+
+describe('rm-1932: verdict scoping — foreign upstream tags never feed the verdict', () => {
+  it('partitions the gathered set into fork-reachable and foreign, counting the exclusion', () => {
+    const gathered = tags([
+      ['2026.10.23', 1], // fork-reachable (upstream tag on a commit main contains)
+      ['2026.10.40', 2], // foreign — cut on upstream commits main does NOT contain
+      ['2026.10.43', 3], // foreign
+      ['2026.08.15', 4], // fork-reachable
+    ])
+    const {scoped, foreignExcludedCount} = scopeCalverTagsToForkReachable(
+      gathered,
+      new Set(['2026.10.23', '2026.08.15']),
+    )
+    expect(scoped.map(t => t.name)).toEqual(['2026.10.23', '2026.08.15'])
+    expect(foreignExcludedCount).toBe(2)
+  })
+
+  it('a foreign newest tag never crowns the channel — the scoped newest decides', () => {
+    // The exact false-healthy rm-1932 kills: unscoped, 2026.10.43 (foreign,
+    // 1 day old) would crown and report healthy while the fork-reachable
+    // newest is months old.
+    const {scoped, foreignExcludedCount} = scopeCalverTagsToForkReachable(
+      tags([
+        ['2026.10.43', Math.floor((NOW - 1 * DAY_MS) / 1000)],
+        ['2026.08.15', Math.floor((NOW - 54 * DAY_MS) / 1000)],
+      ]),
+      new Set(['2026.08.15']),
+    )
+    const result = evaluateReleaseChannelStaleness({
+      nowMs: NOW,
+      tags: scoped,
+      thresholdDays: 45,
+      decision: null,
+      foreignExcludedCount,
+    })
+    expect(result.status).toBe('stale')
+    expect(result.newestTag).toBe('2026.08.15')
+    expect(result.foreignExcludedCount).toBe(1)
+  })
+
+  it('a scope set that drops EVERY calver tag is an extraction error, not an empty healthy', () => {
+    const {scoped, foreignExcludedCount} = scopeCalverTagsToForkReachable(
+      tags([['2026.10.43', Math.floor((NOW - 1 * DAY_MS) / 1000)]]),
+      new Set(),
+    )
+    expect(() =>
+      evaluateReleaseChannelStaleness({
+        nowMs: NOW,
+        tags: scoped,
+        thresholdDays: 45,
+        decision: null,
+        foreignExcludedCount,
+      }),
+    ).toThrow(/no fork-reachable calver tags/)
+  })
+
+  it('the summary names the verdict scope: fork-reachable count and foreign exclusion count', () => {
+    const lines = buildSummaryLines({
+      status: 'healthy',
+      newestTag: '2026.10.23',
+      newestTagDateUnix: Math.floor((NOW - 13 * DAY_MS) / 1000),
+      ageDays: 13,
+      thresholdDays: 45,
+      decision: null,
+      scopedTagCount: 141,
+      foreignExcludedCount: 20,
+      upstreamExcludedCount: 26,
+    })
+    const text = lines.join('\n')
+    expect(text).toContain('141 fork-channel')
+    expect(text).toContain('20 foreign upstream tag(s) excluded')
   })
 })
 
@@ -192,7 +293,7 @@ describe('rm-740: empty evidence is an extraction error, never healthy', () => {
   it('no calver tags at all throws (tags-not-fetched / never-tagged channel)', () => {
     expect(() =>
       evaluateReleaseChannelStaleness({nowMs: NOW, tags: [], thresholdDays: 45, decision: null}),
-    ).toThrow(/no calver tags/)
+    ).toThrow(/no fork-reachable calver tags/)
     // Non-calver tags present but no calver ones — same class.
     expect(() =>
       evaluateReleaseChannelStaleness({
@@ -201,7 +302,7 @@ describe('rm-740: empty evidence is an extraction error, never healthy', () => {
         thresholdDays: 45,
         decision: null,
       }),
-    ).toThrow(/no calver tags/)
+    ).toThrow(/no fork-reachable calver tags/)
   })
 })
 
@@ -214,6 +315,9 @@ describe('rm-740: step summary rendering', () => {
       ageDays: 13,
       thresholdDays: 45,
       decision: null,
+      scopedTagCount: 2,
+      foreignExcludedCount: 0,
+      upstreamExcludedCount: 0,
     })
     const text = lines.join('\n')
     expect(text).toContain('rm-740')
@@ -230,6 +334,9 @@ describe('rm-740: step summary rendering', () => {
       ageDays: 60,
       thresholdDays: 45,
       decision: null,
+      scopedTagCount: 1,
+      foreignExcludedCount: 0,
+      upstreamExcludedCount: 0,
     })
     const text = lines.join('\n')
     expect(text).toContain('rm-714')
@@ -245,9 +352,73 @@ describe('rm-740: step summary rendering', () => {
       ageDays: 60,
       thresholdDays: 45,
       decision: {retired: true, ownerDefId: 'rm-714', recordedAt: '2026-10-01'},
+      scopedTagCount: 1,
+      foreignExcludedCount: 0,
+      upstreamExcludedCount: 0,
     })
     const text = lines.join('\n')
     expect(text).toContain('retired-with-owner')
     expect(text).toContain('rm-714')
+  })
+})
+
+describe('rm-1932 tier 2: absorbed-upstream-lineage exclusion (scopeToChannel)', () => {
+  it('excludes tags reachable from BOTH base and upstream (absorbed upstream releases)', () => {
+    const all = tags([
+      ['2026.10.43', 100], // foreign (not reachable from base)
+      ['2026.10.23', 90], // absorbed upstream release: reachable from base AND upstream
+      ['2026.08.15', 80], // fork channel tag: reachable from base only
+    ])
+    const baseNames = new Set(['2026.10.23', '2026.08.15'])
+    const upstreamNames = new Set(['2026.10.23'])
+
+    const {scoped, foreignExcludedCount, upstreamExcludedCount} = scopeToChannel(all, baseNames, upstreamNames)
+
+    expect(scoped.map(t => t.name)).toEqual(['2026.08.15'])
+    expect(foreignExcludedCount).toBe(1)
+    expect(upstreamExcludedCount).toBe(1)
+  })
+
+  it('null upstreamNames = tier-1-only scoping (no upstream concept configured)', () => {
+    const all = tags([
+      ['2026.10.23', 90],
+      ['2026.08.15', 80],
+    ])
+    const baseNames = new Set(['2026.10.23', '2026.08.15'])
+
+    const {scoped, upstreamExcludedCount} = scopeToChannel(all, baseNames, null)
+
+    expect(scoped.map(t => t.name)).toEqual(['2026.10.23', '2026.08.15'])
+    expect(upstreamExcludedCount).toBe(0)
+  })
+
+  it('empty channel after tier-2 exclusion still reaches evaluate, which throws the no-tags red (never a healthy)', () => {
+    // The empirically-observed live shape (2026-10-17): every reachable calver
+    // tag in this repo is absorbed upstream lineage — the honest verdict is
+    // the never-minted red, NOT a healthy borrowed from upstream's cadence.
+    const all = tags([['2026.10.23', 90]])
+    const baseNames = new Set(['2026.10.23'])
+    const upstreamNames = new Set(['2026.10.23'])
+
+    const {scoped} = scopeToChannel(all, baseNames, upstreamNames)
+    expect(scoped).toHaveLength(0)
+    expect(() => evaluateReleaseChannelStaleness({nowMs: NOW, tags: scoped, thresholdDays: 45, decision: null})).toThrow(
+      /no fork-reachable calver tags/,
+    )
+  })
+
+  it('summary names both exclusion counts (scope transparency)', () => {
+    const result = evaluateReleaseChannelStaleness({
+      nowMs: NOW,
+      tags: tags([['2026.08.15', Math.floor((NOW - 10 * DAY_MS) / 1000)]]),
+      thresholdDays: 45,
+      decision: null,
+      foreignExcludedCount: 20,
+      upstreamExcludedCount: 9,
+    })
+    const lines = buildSummaryLines(result)
+    const scopeLine = lines.find(l => l.includes('Verdict scope'))
+    expect(scopeLine).toContain('20 foreign upstream tag(s) excluded')
+    expect(scopeLine).toContain('9 absorbed-upstream-lineage tag(s) excluded')
   })
 })

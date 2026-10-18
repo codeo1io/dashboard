@@ -7,15 +7,22 @@ name: Release channel staleness check
 # so `HAS_RELEASE_APP` is false and release.yaml skips create-tag /
 # promote-calver / create-GitHub-Release on every push; the live path is
 # promote-latest only. Nothing alerts on that silence. This weekly check
-# compares the newest calver tag on THIS repo's public refs against a stated
-# 45-day threshold and goes RED while the channel is stale and no dormancy
-# decision is recorded.
+# compares the newest FORK-REACHABLE calver tag (rm-1932: scoped via
+# `git tag --merged origin/main` — foreign upstream tags fetched into this
+# repo's tag namespace never feed the verdict; the summary names the
+# exclusion count) against a stated 45-day threshold and goes RED when the
+# channel is stale and not recorded-retired.
 #
-# Red-while-undecided is BY DESIGN: the decision owner is rm-714 (branch-b
-# dormancy decision — either record the channel retired-with-owner in
-# docs/runbooks/release-channel-decision.json, or fix the channel by
-# provisioning the release App / secrets). The step summary names rm-714 so
-# the red is actionable, not mysterious.
+# The fog rm-714 dormancy decision is now RECORDED (2026-10-17, run
+# b1949a6acc52 cycle-1 batch doc + docs/runbooks/release-channel-decision.json):
+# retired:false — channel-of-record = the ABSORBED upstream release stream.
+# This fork mints no releases of its own (release App secrets absent), so
+# the newest calver tag REACHABLE from origin/main (the newest upstream
+# release this fork has fully absorbed) IS the channel's newest output, and
+# a red here is a REAL signal — the absorb stream itself has stalled past
+# the threshold. It clears by absorbing a newer release (or by flipping the
+# decision record to retired-with-owner in the file above), never by
+# ignoring it; the step summary names rm-714 so the red is actionable.
 #
 # Reads only public refs (tags). No new secrets: the default GITHUB_TOKEN
 # (contents: read) via actions/checkout is the only credential involved —
@@ -52,13 +59,19 @@ jobs:
           persist-credentials: false
 
       - name: 🟢 Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
 
       - name: 🔍 Evaluate release channel staleness (rm-740)
-        # Exit 0 = healthy or recorded-retired; 1 = stale (red BY DESIGN while
-        # the dormancy decision is undecided); 2 = extraction error (never a
-        # pass). The runner injects GITHUB_STEP_SUMMARY automatically — the
-        # script appends the rm-740/rm-714 summary there.
-        run: node scripts/release-channel-staleness.ts
+        # Exit 0 = healthy or recorded-retired; 1 = stale (a REAL red since
+        # the rm-714 branch-b decision was recorded 2026-10-17 — the absorb
+        # stream stalled; retired:false does not suppress it); 2 = extraction
+        # error (never a pass). Tier-1 scoping only: absorbed upstream
+        # releases ARE the channel of record (rm-1932 header + decision
+        # record); the branch-a fork-authored capability stays unwired. The
+        # runner injects GITHUB_STEP_SUMMARY automatically — the script
+        # appends the rm-740/rm-714 summary there.
+        run: >-
+          node scripts/release-channel-staleness.ts
+          --base-ref origin/main

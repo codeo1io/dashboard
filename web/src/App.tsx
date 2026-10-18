@@ -5,6 +5,7 @@ import {Operator} from './views/Operator.tsx'
 import {ListenerChannel} from './views/Listener.tsx'
 import {Monitoring} from './views/Monitoring.tsx'
 import {fetchListenerMessages} from './api/listener.ts'
+import {fetchMonitoring} from './api/monitoring.ts'
 import {useBoundedPoll} from './hooks/useBoundedPoll.ts'
 import type {OperatorState} from './operator/state.ts'
 import {requestRunJump} from './operator/runtime.ts'
@@ -71,6 +72,32 @@ export default function App() {
   const [badgeStale, setBadgeStale] = useState(false)
   /** rm-158: consecutive poll failures (reset on success). */
   const consecutiveFailuresRef = useRef(0)
+  /**
+   * rm-1932: the deployment's release-channel version, fetched ONCE at boot
+   * from /api/monitoring (same DTO the monitoring view polls). Decoration
+   * only — every failure mode (unauthenticated, network, contract drift,
+   * older deploy without the field) resolves to null and the footer simply
+   * hides its version element; the version never becomes an error surface.
+   */
+  const [releaseVersion, setReleaseVersion] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    fetchMonitoring()
+      .then(result => {
+        if (cancelled) return
+        if (result.ok && result.data.releaseVersion !== null) {
+          setReleaseVersion(result.data.releaseVersion)
+        }
+      })
+      .catch(() => {
+        // Version is decoration — a failed lookup leaves the footer without
+        // a version element, which is the designed fallback shape.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     if (!import.meta.env.DEV) return
@@ -185,6 +212,7 @@ export default function App() {
       listenerUnreadError={unreadPollError}
       listenerUnreadStaleSince={badgeStale ? lastGoodAt : null}
       listenerUnreadAuthExpired={authExpired}
+      releaseVersion={releaseVersion}
     >
       <div style={{ display: currentView === 'operator' ? 'block' : 'none' }}>
         <Operator

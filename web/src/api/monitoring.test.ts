@@ -32,7 +32,60 @@ describe('monitoring API', () => {
         expect(res.data.driftCount).toBe(0)
         // rm-1447: the annotation is optional on the wire — absence parses to null.
         expect(res.data.platformStatus).toBeNull()
+        // rm-1932: releaseVersion likewise optional — absent parses to null.
+        expect(res.data.releaseVersion).toBeNull()
       }
+    })
+
+    it('rm-1932: parses a present releaseVersion string', async () => {
+      const mockData = {
+        repos: [],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: 1742000000000,
+        releaseVersion: '2026.10.23',
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+      const res = await fetchMonitoring()
+      expect(res.ok).toBe(true)
+      if (res.ok) {
+        expect(res.data.releaseVersion).toBe('2026.10.23')
+      }
+    })
+
+    it('rm-1932: explicit null releaseVersion parses to null (fail-open absence, older deploy)', async () => {
+      const mockData = {
+        repos: [],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+        releaseVersion: null,
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+      const res = await fetchMonitoring()
+      expect(res.ok).toBe(true)
+      if (res.ok) {
+        expect(res.data.releaseVersion).toBeNull()
+      }
+    })
+
+    it('rm-1932: non-string releaseVersion fails closed as contract-drift', async () => {
+      const mockData = {
+        repos: [],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+        releaseVersion: 42,
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+      const res = await fetchMonitoring()
+      expect(res).toEqual({ ok: false, reason: 'contract-drift' })
     })
 
     it('rm-1447: parses a present platform-status annotation', async () => {

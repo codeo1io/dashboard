@@ -65,6 +65,7 @@ function runScript(
   calverMonth?: string,
   extraEnv?: Record<string, string | undefined>,
   nodeBin?: string,
+  args?: readonly string[],
 ): {stdout: string; stderr: string; exitCode: number} {
   // Build env: start from parent, strip CALVER_MONTH, then apply overrides.
   const {CALVER_MONTH, ...parentEnv} = process.env
@@ -78,7 +79,7 @@ function runScript(
   // the spawn cause instead of fabricating an exit code.
   let lastFailure = 'unknown spawn failure'
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const result = spawnSync(nodeBin ?? 'node', [SCRIPT], {
+    const result = spawnSync(nodeBin ?? 'node', [SCRIPT, ...(args ?? [])], {
       cwd: dir,
       env: {
         ...parentEnv,
@@ -333,5 +334,85 @@ describe('compute-release-tag — output format', () => {
     const {stderr, exitCode} = runScript(tmpDir, 'not-a-month')
     expect(exitCode).not.toBe(0)
     expect(stderr).toContain('invalid month')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-1932: --current mode — the footer's release-channel version seam
+// (release.yaml invokes this; the selection is imported from
+// release-channel-staleness.ts — one selection, two consumers).
+// ---------------------------------------------------------------------------
+
+describe('compute-release-tag --current (rm-1932 footer seam)', () => {
+  it('emits the newest calver tag reachable from HEAD (default base ref)', () => {
+    addTag(tmpDir, '2026.9.7')
+    addTag(tmpDir, '2026.10.3')
+    addTag(tmpDir, '2026.10.43')
+    const {stdout, exitCode} = runScript(tmpDir, undefined, undefined, undefined, ['--current'])
+    expect(exitCode).toBe(0)
+    expect(stdout).toBe('2026.10.43')
+  })
+
+  it('foreign (unreachable-from-HEAD) tags never crown the channel', () => {
+    addTag(tmpDir, '2026.10.7')
+    // Commit B + a newer tag on it, then rewind the branch: 2026.11.5 still
+    // exists as a ref but its commit is no longer an ancestor of HEAD.
+    writeFileSync(join(tmpDir, 'b.txt'), 'b\n')
+    execFileSync('git', ['add', 'b.txt'], {cwd: tmpDir})
+    execFileSync('git', ['commit', '-m', 'b'], {cwd: tmpDir})
+    addTag(tmpDir, '2026.11.5')
+    execFileSync('git', ['reset', '--hard', 'HEAD~1'], {cwd: tmpDir})
+
+    const {stdout, exitCode} = runScript(tmpDir, undefined, undefined, undefined, ['--current'])
+    expect(exitCode).toBe(0)
+    expect(stdout).toBe('2026.10.7')
+  })
+
+  it('never crowns a zero-counter start tag — 2026.10.0 is not the channel newest', () => {
+    addTag(tmpDir, '2026.9.7')
+    addTag(tmpDir, '2026.10.0')
+    const {stdout, exitCode} = runScript(tmpDir, undefined, undefined, undefined, ['--current'])
+    expect(exitCode).toBe(0)
+    expect(stdout).toBe('2026.9.7')
+  })
+
+  it('exits 1 with the skip NOTE when no reachable calver tag exists (never prints garbage)', () => {
+    // Fresh repo, zero tags — the caller skips version injection and the
+    // footer hides its version element (the designed fallback shape).
+    const {stdout, stderr, exitCode} = runScript(tmpDir, undefined, undefined, undefined, ['--current'])
+    expect(exitCode).toBe(1)
+    expect(stdout).toBe('')
+    expect(stderr).toContain('skipping version injection')
+  })
+
+  it('exits 1 when --base-ref is unresolvable (fail closed, never an unscoped verdict)', () => {
+    const {stdout, stderr, exitCode} = runScript(
+      tmpDir,
+      undefined,
+      undefined,
+      undefined,
+      ['--current', '--base-ref', 'refs/heads/no-such-ref'],
+    )
+    expect(exitCode).toBe(1)
+    expect(stdout).toBe('')
+    expect(stderr).toContain('cannot resolve a scoping ref')
+  })
+
+  it('--upstream-ref (tier 2) excludes absorbed-upstream tags — the branch-a capability is wired at the CLI', () => {
+    // Commit A carries the only tag; branch 'up' also contains A, so under
+    // --upstream-ref the tag counts as absorbed-upstream output and the
+    // scope empties into the skip NOTE (never an unscoped healthy).
+    addTag(tmpDir, '2026.10.7')
+    execFileSync('git', ['branch', 'up'], {cwd: tmpDir})
+    const {stdout, stderr, exitCode} = runScript(
+      tmpDir,
+      undefined,
+      undefined,
+      undefined,
+      ['--current', '--upstream-ref', 'up'],
+    )
+    expect(exitCode).toBe(1)
+    expect(stdout).toBe('')
+    expect(stderr).toContain('absorbed-upstream tag(s) excluded')
   })
 })

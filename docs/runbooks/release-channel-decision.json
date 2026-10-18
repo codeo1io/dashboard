@@ -1,0 +1,6 @@
+{
+  "retired": false,
+  "ownerDefId": "rm-714",
+  "recordedAt": "2026-10-17",
+  "note": "rm-714 branch-b decision (run b1949a6acc52, repository-maintenance cycle 1): channel-of-record = the ABSORBED upstream release stream. This fork mints no releases of its own (release App secrets absent, so release.yaml never creates a tag); the newest calver tag REACHABLE from origin/main is the channel's newest output, and upstream tags never absorbed (e.g. 2026.10.44+) stay foreign to the verdict. retired:false is an explicit live-channel statement: a staleness red is a real absorb-stall signal and is NOT suppressed. Flip to retired-with-owner only if the absorb stream itself is being abandoned; a fork-minted tag reachable from origin/main would revive the fork-authored channel (see the tier-2 capability in scripts/release-channel-staleness.ts)."
+}

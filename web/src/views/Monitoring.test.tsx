@@ -40,6 +40,7 @@ function makeData(overrides: Partial<MonitoringData> = {}): MonitoringData {
     enumerationIncomplete: null,
     refreshedAt: 1742000000000,
     platformStatus: null,
+    releaseVersion: null,
     ...overrides
   }
 }

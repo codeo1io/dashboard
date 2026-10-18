@@ -57,6 +57,13 @@ export interface MonitoringData {
   readonly refreshedAt: number | null
   /** rm-1447: null when the server could not fetch the feed (fail-open both directions). */
   readonly platformStatus: PlatformStatusSummary | null
+  /**
+   * rm-1932 (footer seam): the deployment's release-channel version, from
+   * the same scoped newest-calver selection the staleness gate measures.
+   * Optional on the wire — absent/null (older deploy, dev server, or no
+   * reachable calver tag) renders NO version element, never a placeholder.
+   */
+  readonly releaseVersion: string | null
 }
 
 export type FetchMonitoringResult =
@@ -196,6 +203,15 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
       if (parsed === null) return {ok: false, reason: 'contract-drift'}
       platformStatus = parsed
     }
+    // rm-1932: releaseVersion is OPTIONAL on the wire (older deploys omit
+    // it) — absent/undefined/null all parse to null; present-but-non-string
+    // is contract drift. The server clamps to a calver-shaped string | null
+    // before emitting, so no vocabulary check here (rm-1447 clamp logic).
+    let releaseVersion: string | null = null
+    if (data.releaseVersion !== null && data.releaseVersion !== undefined) {
+      if (typeof data.releaseVersion !== 'string') return {ok: false, reason: 'contract-drift'}
+      releaseVersion = data.releaseVersion
+    }
 
     const repos: MonitoringRepo[] = []
     for (const item of data.repos) {
@@ -213,6 +229,7 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
         enumerationIncomplete: data.enumerationIncomplete,
         refreshedAt: data.refreshedAt,
         platformStatus,
+        releaseVersion,
       },
     }
   } catch (err) {

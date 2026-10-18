@@ -41,6 +41,23 @@ describe('App', () => {
       ok: true,
       data: {messages: [], unreadCount: 0, prunedCount: 0, droppedCount: 0},
     })
+    // rm-1932: App boot-fetches the release-channel version once from
+    // /api/monitoring. Default to the older-deploy shape (no version) so the
+    // other tests never race an unmocked fetch; the rm-1932 footer test in
+    // the first describe overrides it.
+    const monitoringApi = await import('./api/monitoring.ts')
+    vi.spyOn(monitoringApi, 'fetchMonitoring').mockResolvedValue({
+      ok: true,
+      data: {
+        repos: [],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+        platformStatus: null,
+        releaseVersion: null,
+      },
+    })
   })
 
   afterEach(() => {
@@ -61,6 +78,30 @@ describe('App', () => {
     render(<App />)
     expect(screen.getByTestId('app-shell')).toBeInTheDocument()
     expect(screen.getByTestId('app-nav')).toBeInTheDocument()
+  })
+
+  it('rm-1932: boot-fetches the release-channel version and renders it in the footer', async () => {
+    const monitoringApi = await import('./api/monitoring.ts')
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValue({
+      ok: true,
+      data: {
+        repos: [],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+        platformStatus: null,
+        releaseVersion: '2026.10.43',
+      },
+    })
+
+    render(<App />)
+
+    // The version starts hidden (boot state null) and appears once the
+    // boot fetch resolves — same conditional-render contract as AppShell.
+    const version = await screen.findByTestId('app-release-version')
+    expect(version).toHaveTextContent('release 2026.10.43')
+    expect(screen.getByTestId('app-footer')).toContainElement(version)
   })
 
   it('renders Operator view inside AppShell', () => {
@@ -251,6 +292,20 @@ describe('App — runtime state wiring', () => {
     vi.spyOn(listenerApi, 'fetchListenerMessages').mockResolvedValue({
       ok: true,
       data: {messages: [], unreadCount: 0, prunedCount: 0, droppedCount: 0},
+    })
+    // rm-1932: same default as the outer describe — no unmocked boot fetch.
+    const monitoringApi = await import('./api/monitoring.ts')
+    vi.spyOn(monitoringApi, 'fetchMonitoring').mockResolvedValue({
+      ok: true,
+      data: {
+        repos: [],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+        platformStatus: null,
+        releaseVersion: null,
+      },
     })
   })
 

@@ -168,6 +168,36 @@ jobs:
       - name: 🔧 Set up Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
+      # rm-1932: deployment release-channel version — newest calver tag
+      # REACHABLE from this checkout (foreign upstream tags that live in this
+      # repo's tag namespace are excluded by the shared scoped selection in
+      # scripts/release-channel-staleness.ts; one selection, two consumers).
+      # Tier-1 scoping per the recorded fog rm-714 branch-b decision
+      # (2026-10-17): channel-of-record = the ABSORBED upstream release
+      # stream — the fork mints no releases of its own, so the newest
+      # reachable absorbed release IS the version the footer should show.
+      # Deliberately the newest EXISTING reachable tag, not this run's future
+      # tag: it always names a real ancestor release of the exact commit being
+      # built, while predicting the not-yet-minted tag would race with
+      # concurrent runs and could render a tag that never exists (upstream
+      # #641's Vite-env shape has exactly that failure fork-side — the link
+      # targets a release object that is never created). The footer
+      # therefore lags at most one release. No reachable tag (channel
+      # bootstrapping, or a candidate branch whose history predates the
+      # absorbed-release adoption on main) → empty → the build-arg is
+      # omitted downstream and the footer hides its version element.
+      - name: 🏷️ Compute current release-channel tag (rm-1932)
+        id: current_tag
+        run: |
+          set -euo pipefail
+          tag=''
+          if tag="$(node scripts/compute-release-tag.ts --current --base-ref HEAD)"; then
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          else
+            echo 'no reachable calver tag — building without version injection' >&2
+            echo 'tag=' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: 🏗️ Build and push candidate image
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -187,6 +217,10 @@ jobs:
           # stage list (check the Dockerfile header comment).
           platforms: linux/amd64,linux/arm64
           tags: ghcr.io/${{ github.repository }}:ci-${{ github.run_id }}-${{ github.run_attempt }}
+          # rm-1932: deployment version injection (empty string when the
+          # channel has no reachable tag yet — the DTO then emits null).
+          build-args: |
+            RELEASE_CHANNEL_TAG=${{ steps.current_tag.outputs.tag }}
           # rm-105: registry-side supply-chain attestations. Provenance v1 ships
           # by default at mode=min; mode=max adds full materials/builder data and
           # sbom adds the SPDX attestation the image was missing (verified absent

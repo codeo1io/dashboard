@@ -74,6 +74,16 @@ COPY --from=builder /app/web/dist/ ./web/dist/
 # and pnpm build:web run with full dev-dep access.
 ENV NODE_ENV=production
 
+# rm-1932: deployment release-channel version, injected at image build time
+# via --build-arg (release.yaml computes it with
+# `scripts/compute-release-tag.ts --current` — the same scoped newest-calver
+# selection the release-channel-staleness gate uses; one selection, two
+# consumers, never a second parser). Optional: dev/local builds omit it,
+# /api/monitoring then serves releaseVersion: null and the SPA footer hides
+# its version element — a placeholder must never render.
+ARG RELEASE_CHANNEL_TAG=""
+ENV RELEASE_CHANNEL_TAG=${RELEASE_CHANNEL_TAG}
+
 # Remove package-manager binaries, shims, and caches inherited from the Node base
 # image before handing the filesystem to the unprivileged runtime user.
 # rm-558: the only target-platform RUN in the file (see the header comment).
