@@ -94,10 +94,13 @@ async function authedGet(app: Awaited<ReturnType<typeof buildTestApp>>, path: st
 // ---------------------------------------------------------------------------
 // PWA SW asset serving — /registerSW.js
 // ---------------------------------------------------------------------------
-// NOTE: vite-plugin-pwa only emits registerSW.js when using auto-register mode.
-// Since the app uses useRegisterSW() in a component (ReloadPrompt), the
-// registration code is bundled into the main JS chunk and registerSW.js is NOT
-// emitted. The route remains in isPublicPath for forward-compatibility.
+// NOTE (rm-274 truing): registerSW.js IS emitted. With no virtual-module
+// import in the client (auto-update needs no useRegisterSW wiring),
+// vite-plugin-pwa's default injectRegister 'auto' emits the loader asset and
+// injects the script tag into index.html — the old 'NOT emitted because
+// ReloadPrompt uses useRegisterSW' note described a wiring that never existed.
+// The production-artifact describe below asserts both facts against the real
+// build output.
 
 // ---------------------------------------------------------------------------
 // PWA manifest serving — /manifest.webmanifest
@@ -1103,6 +1106,16 @@ describe('production build artifacts — no fixture strings in web/dist JS', () 
     const fs = await import('node:fs/promises')
     const src = await fs.readFile('web/dist/index.html', 'utf8')
     expect(src).not.toContain('/__fixture')
+  })
+
+  it('emits registerSW.js and index.html injects the loader (rm-274)', async () => {
+    // Auto-update registration is real: the loader asset exists in the build
+    // and the built page pulls it in. The retired 'registerSW.js is NOT
+    // emitted' claim was fiction.
+    const fs = await import('node:fs')
+    expect(fs.existsSync('web/dist/registerSW.js'), 'web/dist/registerSW.js should be emitted').toBe(true)
+    const html = fs.readFileSync('web/dist/index.html', 'utf8')
+    expect(html).toMatch(/registerSW\.js/)
   })
 
   it('web/dist JS bundle does not contain /__fixture route string', async () => {

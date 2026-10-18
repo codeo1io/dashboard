@@ -117,15 +117,6 @@ describe('App', () => {
     })
   })
 
-  // ── Regression: SW prompts remain reachable ────────────────────────────────
-
-  it('ReloadPrompt is mounted (SW update affordance survives shell swap)', () => {
-    render(<App />)
-    // ReloadPrompt renders null when needRefresh is false (the default in tests),
-    // but it must be mounted so the SW registration hook runs.
-    // We verify AppShell is present (which always mounts ReloadPrompt).
-    expect(screen.getByTestId('app-shell')).toBeInTheDocument()
-  })
   // rm-155/rm-158: unread-poll hygiene — surface failures once, keep polling,
   // badge follows the count, and hidden tabs pause the poll.
   describe('unread poll hygiene (rm-155/rm-158)', () => {
