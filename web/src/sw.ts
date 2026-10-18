@@ -19,8 +19,9 @@
  *
  * OPERATOR DATA POLICY: operator session, run, stream, approval, launch, and
  * run-index responses are network-only/no-store. Only the static shell and
- * hashed assets are precached. Runtime caches are purged on logout, auth change,
- * and app-version change via the PURGE_RUNTIME message handler.
+ * hashed assets are precached — no runtime caches exist (rm-274 truthing). On
+ * logout/auth change the page posts PURGE_RUNTIME; the handler's only owned
+ * sweep is the legacy monitoring-v1 orphan from pre-migration clients.
  *
  * INSTALLED-CLIENT MIGRATION: old installed clients running the previous SW may
  * briefly serve the old monitoring shell for /operator until they open the app,
@@ -43,7 +44,6 @@
 import {cleanupOutdatedCaches, createHandlerBoundToURL, precacheAndRoute} from 'workbox-precaching'
 import {NavigationRoute, registerRoute} from 'workbox-routing'
 import {NetworkOnly} from 'workbox-strategies'
-import {OPERATOR_RUNTIME_CACHE} from './pwa/cache-names.ts'
 // The only non-Workbox imports in this file: pure modules for the
 // payload→safe-notification mapping and the notification-click resolver. Any
 // future non-Workbox import here should be a conscious decision (the
@@ -102,10 +102,13 @@ registerRoute(
   }),
 )
 
-// Logout purge handler — page posts {type:'PURGE_RUNTIME'} on logout, auth
-// change, or app-version change. Only runtime caches are deleted — NOT the
-// precache (app shell must survive logout for instant next-user load).
-//
+// Logout purge handler — page posts {type:'PURGE_RUNTIME'} on logout or auth
+// change. Nothing writes runtime caches at head (rm-274 truthing: the old
+// OPERATOR_RUNTIME_CACHE sweep had no writer and no forward-wiring owner —
+// rm-249's push-only SW direction was superseded by the push handlers landing
+// in this main SW), so the handler's sole owned sweep is the legacy cache.
+// The precache is NOT deleted — the app shell must survive logout for instant
+// next-user load.
 // Legacy purge: monitoring-v1 is the orphaned cache from the pre-migration SW.
 // Clients that installed the old SW may still have it on disk; delete it here
 // so stale monitoring data does not linger after migration.
@@ -128,11 +131,7 @@ addEventListener('message', (event: Event) => {
     e.waitUntil(self.skipWaiting())
   }
   if (messageType === 'PURGE_RUNTIME') {
-    e.waitUntil(
-      Promise.all([caches.delete(OPERATOR_RUNTIME_CACHE), caches.delete(LEGACY_MONITORING_CACHE)]).then(
-        () => undefined,
-      ),
-    )
+    e.waitUntil(caches.delete(LEGACY_MONITORING_CACHE).then(() => undefined))
   }
   // Dev-only synthetic push: the notifications consent surface posts
   // {type:'MOCK_SYNTHETIC_PUSH', payload} to the SW for visual verification
