@@ -1,15 +1,23 @@
 /**
  * Clicking inside an approval prompt must never toggle the run card it lives in.
  *
- * Bug: the prompt's Once/Always/Confirm/Cancel/Reject click handlers did not stop propagation, so the
- * click bubbled to the card's expand/collapse listener. The card collapsed, the runtime closed the
- * stream, and "Confirm always" was rendered into a card that had just collapsed. The decision never
- * took effect from the operator's point of view.
+ * Port of upstream fro-bot/dashboard #636 (commit 5581a49) — landed decision
+ * record rm-875 (this suite was authored as run 492efad5 cycle:1's rm-873 mint,
+ * retired under first-landed-wins; main's 2026.10.43 adoption carried the fix).
+ * Upstream's own bug report: the prompt's Once/Always/Confirm/Cancel/Reject click handlers did not
+ * stop propagation, so the click bubbled to the card's expand/collapse listener. The
+ * card collapsed, the runtime closed the stream, and "Confirm always" was rendered
+ * into a card that had just collapsed. The decision never took effect from the
+ * operator's point of view. The same containment hole existed here: the fork keeps
+ * the prompt and the Cancel control inside the same expandable run card (the only
+ * place this stream module renders them), and only the run-index question region had
+ * the containment listener.
  *
  * These tests run the real stack end to end in jsdom: the real default runtime loader
- * (createOperatorRuntime), the real run index (which builds the card and binds its toggle), the real
- * stream module (which renders the prompt) and the real browser approval client. Only `fetch` is a
- * stub. The static module specifiers the loader imports at runtime are pointed at the real files.
+ * (createOperatorRuntime), the real run index (which builds the card and binds its
+ * toggle), the real stream module (which renders the prompt) and the real browser
+ * approval client. Only `fetch` is a stub. The static module specifiers the loader
+ * imports at runtime are pointed at the real files.
  */
 
 import {afterEach, describe, expect, it, vi} from 'vitest'

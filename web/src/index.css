@@ -144,6 +144,8 @@
 }
 
 .run-card {
+  /* Keep a programmatic scrollIntoView from pinning a card under the sticky page
+     header: reveal it with breathing room below the header instead. */
   scroll-margin-top: calc(var(--space-12) + var(--space-4));
   display: grid;
   grid-template-columns: auto 1fr auto;
