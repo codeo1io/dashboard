@@ -16,7 +16,7 @@ by design, with the reason).
 | Check | Score | Disposition | Owner |
 | --- | --- | --- | --- |
 | Branch-Protection | -1 | tracked | `rm-116` (required checks on main, sequenced before `rm-146` auto-merge) |
-| CI-Tests | -1 | tracked | `rm-116` — 2026-10-18 reason string is "no pull request found"; the conductor landing flow's merges surface no PR check runs for the heuristic, and required checks on main is the lane that makes CI evidence visible (it read "2 out of 5 merged PRs checked" at 2026-10-09 — ROADMAP rm-143 rider) |
+| CI-Tests | -1 | tracked | `rm-878` (required-checks-on-main lane; re-mint of the orphaned `rm-116` numeral, ROADMAP.md:417-419 — review-F6) — 2026-10-18 reason string is "no pull request found"; the conductor landing flow's merges surface no PR check runs for the heuristic, and required checks on main is the lane that makes CI evidence visible (it read "2 out of 5 merged PRs checked" at 2026-10-09 — ROADMAP rm-143 rider) |
 | Code-Review | 0 | declined | single-operator autonomous loop — see below |
 | CII-Best-Practices | 0 | declined | badge-program overhead disproportionate for internal tooling |
 | License | 0 | tracked | `rm-147`, blocked-external — upstream is also unlicensed |
@@ -53,7 +53,7 @@ by design, with the reason).
 
 ## Tracked items
 
-- **Branch-Protection** (`rm-116`): live probe 2026-10-18 — the protection
+- **Branch-Protection** (`rm-878`, re-mint of the orphaned `rm-116` numeral): live probe 2026-10-18 — the protection
   object exists but is an empty shell (`required_status_checks.checks` empty,
   `enforce_admins` false), which the roadmap records as the root cause of
   three red landings. Scorecard's own -1 here is partly a measurement
