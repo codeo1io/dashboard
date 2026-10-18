@@ -333,3 +333,54 @@ describe('canonical format enforcement (rm-206)', () => {
     })
   })
 })
+
+// ---------------------------------------------------------------------------
+// rm-2063 — per-signing session ids (jti) inside the signed payload
+// ---------------------------------------------------------------------------
+
+describe('rm-2063 session ids (jti)', () => {
+  it('signs every cookie with a unique 32-hex session id', () => {
+    const sm = new SessionManager(VALID_KEY)
+    const ids = new Set<string>()
+    for (let i = 0; i < 32; i += 1) {
+      const cookie = sm.sign('alice')
+      const payloadB64 = cookie.split('.')[0] ?? expect.fail('cookie payload segment missing')
+      const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString()) as {jti: string}
+      expect(payload.jti).toMatch(/^[0-9a-f]{32}$/)
+      ids.add(payload.jti)
+    }
+    expect(ids.size).toBe(32)
+  })
+
+  it('returns the session id from verify alongside the login', () => {
+    const sm = new SessionManager(VALID_KEY)
+    const cookie = sm.sign('alice')
+    const session = sm.verify(cookie)
+    expect(session).not.toBeNull()
+    expect(session?.login).toBe('alice')
+    expect(session?.jti).toMatch(/^[0-9a-f]{32}$/)
+  })
+
+  it('rejects a cookie whose session id was tampered with (signature covers jti)', () => {
+    const sm = new SessionManager(VALID_KEY)
+    const cookie = sm.sign('alice')
+    const segments = cookie.split('.')
+    const payloadB64 = segments[0] ?? expect.fail('cookie payload segment missing')
+    const sig = segments[1] ?? expect.fail('cookie signature segment missing')
+    const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString()) as {jti: string}
+    const forgedJti = payload.jti === 'a'.repeat(32) ? 'b'.repeat(32) : 'a'.repeat(32)
+    const forgedPayloadB64 = Buffer.from(JSON.stringify({...payload, jti: forgedJti})).toString('base64url')
+    expect(sm.verify(`${forgedPayloadB64}.${sig}`)).toBeNull()
+  })
+
+  it('rejects a properly-signed legacy cookie with no session id (one-time re-login at deploy)', () => {
+    const sm = new SessionManager(VALID_KEY)
+    // Crafted exactly like a pre-rm-2063 cookie: {login, exp} payload, correct
+    // key, correct HMAC — only the missing jti distinguishes it.
+    const legacyPayload = Buffer.from(
+      JSON.stringify({login: 'alice', exp: Math.floor(Date.now() / 1000) + 60}),
+    ).toString('base64url')
+    const sig = createHmac('sha256', VALID_KEY).update(legacyPayload).digest('base64url')
+    expect(sm.verify(`${legacyPayload}.${sig}`)).toBeNull()
+  })
+})

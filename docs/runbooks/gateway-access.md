@@ -217,3 +217,5 @@ identified the outage recorded in
 `docs/solutions/security-issues/gateway-operator-oauth-rate-limit-shared-key-behind-caddy-2026-09-21.md`.
 
 Delete the capture when done; it is sensitive.
+
+See also: [session-kill-switch.md](session-kill-switch.md) for revoking the dashboard's own operator cookie sessions (non-gateway mode).
