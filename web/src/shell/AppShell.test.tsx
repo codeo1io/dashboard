@@ -3,6 +3,15 @@ import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {getLogoutAbortSignal} from '../push/logout-abort.ts'
 import * as logoutPurgeModule from '../pwa/logout-purge.ts'
 import {AppShell} from './AppShell.tsx'
+import {useServedPushCapability} from '../push/served-sw-capability.ts'
+
+// rm-249 deploy-guard (run 61448784a089): the push consent card is gated on
+// the served-sw capability probe at mount time. Default the hook to capable
+// so the pre-existing card tests keep exercising the Notifications state
+// machine; the gate itself has dedicated cases in the describe at the bottom.
+vi.mock('../push/served-sw-capability.ts', () => ({
+  useServedPushCapability: vi.fn(() => true),
+}))
 
 // jsdom throws "Not implemented: navigation to another Document" on real
 // `window.location.href =` assignment and never reflects the new value.
@@ -601,6 +610,54 @@ describe('AppShell', () => {
       fireEvent.click(screen.getByTestId('logout-button'))
 
       expect(signalBefore.aborted).toBe(true)
+    })
+  })
+
+  describe('rm-249 deploy-guard: push consent card gated on served-sw capability', () => {
+    const hookMock = vi.mocked(useServedPushCapability)
+
+    afterEach(() => {
+      hookMock.mockReset()
+      hookMock.mockReturnValue(true)
+      document
+        .querySelectorAll('meta[name="push-enabled"]')
+        .forEach(meta => meta.remove())
+    })
+
+    it('hides the card entirely when the served sw.js has no push handler, even with the push-enabled meta and no dismissal', () => {
+      hookMock.mockReturnValue(false)
+      const meta = document.createElement('meta')
+      meta.setAttribute('name', 'push-enabled')
+      meta.setAttribute('content', 'true')
+      document.head.appendChild(meta)
+
+      render(<AppShell>content</AppShell>)
+
+      // The mount gate is upstream of the Notifications state machine: the
+      // dead-channel consent surface never renders, so no opt-in can reach
+      // the terminal 'sw-not-ready' state.
+      expect(screen.queryByTestId('notifications-settings')).toBeNull()
+    })
+
+    it('shows the card when the served sw.js carries a push handler (flag+capability both true)', () => {
+      hookMock.mockReturnValue(true)
+      const meta = document.createElement('meta')
+      meta.setAttribute('name', 'push-enabled')
+      meta.setAttribute('content', 'true')
+      document.head.appendChild(meta)
+
+      render(<AppShell>content</AppShell>)
+
+      expect(screen.getByTestId('notifications-settings')).toBeInTheDocument()
+    })
+
+    it('keeps footer affordances (Privacy, restore) independent of the capability gate', () => {
+      hookMock.mockReturnValue(false)
+
+      render(<AppShell>content</AppShell>)
+
+      expect(screen.getByRole('link', {name: 'Privacy'})).toHaveAttribute('href', '/privacy')
+      expect(screen.getByRole('button', {name: 'Restore notifications'})).toBeInTheDocument()
     })
   })
 })

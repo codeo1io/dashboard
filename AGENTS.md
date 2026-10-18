@@ -120,6 +120,12 @@ Read-only dependency source repositories are available under
   post-merge emptiness check stands, because a candidate lineage's landing
   commit can still carry already-tracked breadcrumbs. Root mechanism + cure:
   `docs/solutions/workflow-issues/validation-clone-exclude-pathspec-drops-staged-breadcrumb-deletion-2026-09-24.md`.
+- Landing merges can also silently drop lane files that existed at the lane tip —
+  `test/lane-integrity-guard.test.ts` (rm-1020) diffs tracked file sets across
+  each recent merge and its parents/merge-base and fails on any lane file
+  absent from the merge result (intentional main-side deletions between branch
+  and landing are excluded by rule — see the test header for the 91774d8
+  limitation note). Keep it green at every gate.
 - Branch protection on `main` is a shell today: the protection object exists
   but carries no required checks and does not enforce for admins (re-probed
   2026-09-25; rm-116 tracks filling it with the Main job conclusions + CodeQL,
