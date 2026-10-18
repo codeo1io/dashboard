@@ -9,7 +9,7 @@ import {describe, expect, it} from 'vitest'
 // cycle-7 review found 3 stale sites because the sweep was scoped to
 // `.github/ AGENTS.md`, and the original wiki-writer residue hid in the
 // extension-less Dockerfile (see
-// docs/solutions/consistency-greps-avoid-pathspec-miss-2026-09-20.md).
+// docs/solutions/best-practices/binding-doc-consistency-greps-avoid-pathspec-miss-2026-09-20.md).
 // This guard walks EVERY file from the repo root with NO extension filter
 // and NO path filter, then fails on any mention that is not (a) inside a
 // declared exclusion or (b) an exact era-qualified allowlisted line.
