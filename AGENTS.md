@@ -71,7 +71,7 @@ view of Fro Bot's cross-repo footprint.
 - `.agents/skills/` is the canonical home for cross-harness agent skills (read by
   both OpenCode and GitHub Copilot). Install shared skills there, not per-harness:
   e.g. `npx impeccable skills install --providers=agents --scope=project`. The CI
-  Design Check pins `impeccable@3.2.1` in `.github/workflows/main.yaml` — an older
+  Design Check pins `impeccable@3.6.1` in `.github/workflows/main.yaml` — an older
   major ignores `.impeccable/config.json` `ignoreValues` and fails the gate on
   intentional brand tokens; bump the pin in both places together.
 - Live/browser verification needs the dev server backgrounded and run without
@@ -102,7 +102,7 @@ Read-only dependency source repositories are available under
 `.slim/clonedeps/repos/` for inspection. Do not edit these clones.
 
 - `.slim/clonedeps/repos/fro-bot__agent/` — `fro-bot/agent` at the CI-pinned
-  tag `v0.122.1` (pin source: `.github/workflows/fro-bot.yaml`; mirror
+  tag `v0.123.0` (pin source: `.github/workflows/fro-bot.yaml`; mirror
   re-provisioned 2026-10-15 — provision with `git clone --depth 1 --branch
   <pin>` if absent); the gateway's operator OAuth return path contract, GitHub
   App client, secret readers, Hono build/serve split, and runtime
