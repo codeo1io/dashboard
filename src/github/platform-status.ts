@@ -53,6 +53,7 @@ export interface PlatformStatusOptions {
   readonly baseUrl?: string
   readonly timeoutMs?: number
   readonly now?: () => number
+  readonly etagMemo?: PlatformStatusEtagMemo
 }
 
 /** Default public Statuspage v2 base (no trailing slash). */
@@ -64,6 +65,26 @@ export const PLATFORM_STATUS_BASE_URL = 'https://www.githubstatus.com/api/v2'
  * below the aggregator's per-call deadline (15s) and the cycle interval.
  */
 export const PLATFORM_STATUS_TIMEOUT_MS = 3_000
+
+/**
+ * rm-1447 follow-up (2026-10-17): each snapshot cycle used to issue two
+ * unconditional third-party GETs to www.githubstatus.com (~2,880/day at the
+ * default 60s refresh). The feeds serve ETags, so reads now revalidate with
+ * If-None-Match and reuse the stored body per endpoint on 304 — still
+ * read-only outbound GETs. The memo is injectable so tests stay network-free;
+ * the module-level default carries state across the aggregator's cycles.
+ */
+export interface PlatformStatusEtagMemoEntry {
+  etag?: string
+  body?: unknown
+}
+
+export interface PlatformStatusEtagMemo {
+  status?: PlatformStatusEtagMemoEntry
+  components?: PlatformStatusEtagMemoEntry
+}
+
+const defaultEtagMemo: PlatformStatusEtagMemo = {}
 
 /** Bound on third-party display text carried into the DTO (chars). */
 export const PLATFORM_STATUS_DESCRIPTION_MAX_CHARS = 200
@@ -93,10 +114,51 @@ function parseComponentStatus(raw: unknown): PlatformComponentStatus | null {
 const ACTIONS_COMPONENT_NAME = 'Actions'
 
 /** GET one endpoint and parse JSON; rejects on any transport/shape problem. */
-async function fetchJson(fetchFn: typeof fetch, url: string, signal: AbortSignal): Promise<unknown> {
-  const res = await fetchFn(url, {signal, headers: {accept: 'application/json'}})
+interface ConditionalFetchOutcome {
+  notModified: boolean
+  body?: unknown
+  etag?: string
+}
+
+async function fetchJson(
+  fetchFn: typeof fetch,
+  url: string,
+  signal: AbortSignal,
+  etag?: string,
+): Promise<ConditionalFetchOutcome> {
+  const headers: Record<string, string> = {accept: 'application/json'}
+  if (etag !== undefined) {
+    headers['if-none-match'] = etag
+  }
+  const res = await fetchFn(url, {signal, headers})
+  if (res.status === 304) return {notModified: true}
   if (!res.ok) throw new Error(`status ${res.status}`)
-  return res.json()
+  return {notModified: false, body: await res.json(), etag: res.headers.get('etag') ?? undefined}
+}
+
+// rm-1447 follow-up: fold If-None-Match revalidation into the outcome
+// mapping — a 304 reuses the stored body for that endpoint; a 304 with no
+// stored body (memo cleared mid-flight) degrades to a failed read so the
+// fail-open/fail-closed paths below stay intact. Fresh bodies are memoized
+// only alongside an etag.
+function resolveMemoizedBody(
+  memo: PlatformStatusEtagMemo,
+  slot: 'status' | 'components',
+  read: ConditionalFetchOutcome | null,
+): unknown {
+  if (read === null) {
+    return null
+  }
+  const entry = (memo[slot] ??= {})
+  if (read.notModified) {
+    return entry.body ?? null
+  }
+  const body = read.body ?? null
+  if (read.etag !== undefined && body !== null && typeof body === 'object') {
+    entry.etag = read.etag
+    entry.body = body
+  }
+  return body
 }
 
 /**
@@ -123,14 +185,15 @@ export async function fetchPlatformStatus(opts: PlatformStatusOptions = {}): Pro
     ])
 
   try {
+    const memo = opts.etagMemo ?? defaultEtagMemo
     const [statusOutcome, componentsOutcome] = await Promise.allSettled([
-      timeoutRace(fetchJson(fetchFn, `${baseUrl}/status.json`, signal)),
-      timeoutRace(fetchJson(fetchFn, `${baseUrl}/components.json`, signal)),
+      timeoutRace(fetchJson(fetchFn, `${baseUrl}/status.json`, signal, memo.status?.etag)),
+      timeoutRace(fetchJson(fetchFn, `${baseUrl}/components.json`, signal, memo.components?.etag)),
     ])
 
     const statusBody =
-      statusOutcome.status === 'fulfilled' && typeof statusOutcome.value === 'object' && statusOutcome.value !== null
-        ? (statusOutcome.value as {status?: unknown})
+      statusOutcome.status === 'fulfilled'
+        ? (resolveMemoizedBody(memo, 'status', statusOutcome.value) as {status?: unknown} | null)
         : null
     const rawStatus = statusBody?.status
     const statusFields =
@@ -138,15 +201,18 @@ export async function fetchPlatformStatus(opts: PlatformStatusOptions = {}): Pro
     const overall = parseIndicator(statusFields?.indicator)
     const rawDescription = statusFields?.description
     const overallDescription =
-      typeof rawDescription === 'string' ? rawDescription.slice(0, PLATFORM_STATUS_DESCRIPTION_MAX_CHARS) : ''
+      typeof rawDescription === 'string'
+        ? truncateCodePoints(rawDescription, PLATFORM_STATUS_DESCRIPTION_MAX_CHARS)
+        : ''
 
     let actions: PlatformComponentStatus | null = null
+    const componentsBody =
+      componentsOutcome.status === 'fulfilled'
+        ? resolveMemoizedBody(memo, 'components', componentsOutcome.value)
+        : null
     const componentsRaw =
-      componentsOutcome.status === 'fulfilled' &&
-      typeof componentsOutcome.value === 'object' &&
-      componentsOutcome.value !== null &&
-      Array.isArray((componentsOutcome.value as {components?: unknown}).components)
-        ? (componentsOutcome.value as {components: unknown[]}).components
+      componentsBody !== null && Array.isArray((componentsBody as {components?: unknown}).components)
+        ? (componentsBody as {components: unknown[]}).components
         : null
     if (componentsRaw !== null) {
       for (const component of componentsRaw) {
@@ -175,4 +241,24 @@ export async function fetchPlatformStatus(opts: PlatformStatusOptions = {}): Pro
     })
     return null
   }
+}
+
+// rm-1491: truncate on Unicode code points, never mid-surrogate-pair — a raw
+// String#slice can split an astral character at the cut and ship a lone
+// surrogate into the /api/monitoring DTO (renders as U+FFFD in the client).
+// BMP-only and shorter text is identical to slice().
+function truncateCodePoints(text: string, maxCodePoints: number): string {
+  if (text.length <= maxCodePoints) {
+    return text
+  }
+  let truncated = ''
+  let count = 0
+  for (const char of text) {
+    if (count >= maxCodePoints) {
+      break
+    }
+    truncated += char
+    count += 1
+  }
+  return truncated
 }
