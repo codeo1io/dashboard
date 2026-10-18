@@ -120,15 +120,26 @@ Read-only dependency source repositories are available under
   post-merge emptiness check stands, because a candidate lineage's landing
   commit can still carry already-tracked breadcrumbs. Root mechanism + cure:
   `docs/solutions/workflow-issues/validation-clone-exclude-pathspec-drops-staged-breadcrumb-deletion-2026-09-24.md`.
-- Branch protection on `main` is a shell today: the protection object exists
-  but carries no required checks and does not enforce for admins (re-probed
-  2026-09-25; rm-116 tracks filling it with the Main job conclusions + CodeQL,
-  strict, admin-enforced). Nothing structurally blocks red-check merges until
-  rm-116 lands — verify the live object before relying on any protection
-  claim. Once checks are in force, if a hotfix must land while a required
-  check cannot run, the override path is: temporarily
-  `enforce_admins.enabled=false` via `gh api -X PUT
-  /repos/codeo1io/dashboard/branches/main/protection` with the full protection
-  body preserved, land, then re-enable enforcement in the same session — never
-  delete the protection object (recreating it drops the check list; a
-  body-less recreate produces exactly the current all-empty shell state).
+- Branch protection on `main` is FILLED (final form applied
+  2026-10-19T09:41:12Z, rm-878): 7 required check contexts — exactly the
+  checks that run on EVERY pull_request to `main`: the six unconditional
+  main.yaml jobs (Check Types, Lint, Test, Design Check, Test Scripts Load,
+  Check Workflows) plus `Analyze` (CodeQL; codeql.yaml triggers on
+  pull_request + push) — with `strict` (branch up to date before merge) and
+  `enforce_admins` both on. Deliberately NOT required: `visual`
+  (pull_request paths-filtered, self-described "Intentionally NOT a required
+  check"), `Release` and `Release guard` (release.yaml is push-only),
+  `Scorecard analysis` (push + schedule only), and `Dispatch infra deploy`
+  (skip-filtered) — requiring a context that never executes on pull_request
+  would leave every PR permanently blocked on pending checks. An earlier
+  10-context fill (2026-10-19T01:06Z, including visual/Release
+  guard/Scorecard analysis) did not persist and carried exactly that defect;
+  the 7-context set is the durable shape (live re-probed 2026-10-19T16:32Z). Red-check direct pushes to `main` are now
+  structurally blocked — still verify the live object before relying on any
+  protection claim. If a hotfix must land while a required check cannot run,
+  the override path is: temporarily `enforce_admins.enabled=false` via
+  `gh api -X PUT /repos/codeo1io/dashboard/branches/main/protection` with the
+  full protection body preserved (contexts list included), land, then
+  re-enable enforcement in the same session — never delete the protection
+  object (recreating it drops the check list; a body-less recreate produces
+  the old all-empty shell state).
