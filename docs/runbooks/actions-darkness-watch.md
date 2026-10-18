@@ -69,3 +69,38 @@ out-of-band signal: repository tests cannot run while Actions is dark.
   schedule-only lanes (audit, base-drift, canary, fro-bot, upstream-drift)
   dark with no runs in the window. The outage state this runbook was written
   under.
+
+## Monitor-fleet heartbeat (dead-man alert over the listener ingest channel)
+
+`scripts/monitor-fleet-heartbeat.ts` judges each weekly monitor workflow
+(audit 03:37, base-drift 04:13, upstream-drift 05:17, canary 05:23,
+cve-tripwire 06:53, release-channel 07:23 — all Monday UTC) against its
+scheduled windows. A monitor missing two consecutive windows is a **dead
+man** and the script posts a signed `monitor-heartbeat` critical event
+through the dashboard's listener ingest channel (`POST /api/listener/ingest`),
+which surfaces as an operator notification alongside gateway events.
+
+Conductor-side by design: the maintenance harness invokes the script, which
+*observes* Actions runs via the GitHub API — it never depends on GitHub
+Actions creating runs, so the scheduled-run outage this fleet is currently in
+cannot blind it.
+
+Invocation:
+
+```sh
+MONITOR_HEARTBEAT_TOKEN=$GITHUB_TOKEN \
+MONITOR_HEARTBEAT_NOW=2026-10-18T12:00:00Z \   # optional time seam
+LISTENER_INGEST_URL=https://dashboard.example \ # dead-man alert target
+LISTENER_INGEST_KEY=$DASHBOARD_LISTENER_INGEST_KEY \
+node --experimental-strip-types scripts/monitor-fleet-heartbeat.ts --json
+```
+
+Exit codes: `0` no dead man · `1` unknown (token missing, API/parse failure,
+alert delivery failure) · `3` at least one monitor missed two consecutive
+windows (alert delivered if URL+key were set). Without URL/key a dead verdict
+still exits 3 and reports the un-delivered alert on stderr.
+
+Boundary with the run-creation watch above: the watch asks "did run creation
+stop repo-wide?" (48h any-event budget); the heartbeat asks "did each weekly
+monitor miss its scheduled window?" — the live 2026-10 darkness has both
+answers red, and the two scripts stay separate deliberately.
