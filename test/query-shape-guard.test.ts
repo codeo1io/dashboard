@@ -76,7 +76,12 @@ describe('GraphQL query-shape guard (rm-177)', () => {
     const a = fields(REPO_STATUS_QUERY)
     const b = fields(REPO_STATUS_QUERY_NO_ALERTS)
     const symmetricDiff = [...a].filter(f => !b.has(f)).concat([...b].filter(f => !a.has(f)))
-    expect(symmetricDiff).toEqual(['vulnerabilityAlerts'])
+    // rm-1516: the sanctioned exception is BOTH security fields — the
+    // no-permission fallback drops vulnerabilityAlerts AND codeScanningAlerts
+    // together (same security_events permission class; see
+    // REPO_STATUS_QUERY_NO_ALERTS's doc comment). Any OTHER field appearing in
+    // exactly one template is still the alertCount-null-gap bug this catches.
+    expect(symmetricDiff).toEqual(['vulnerabilityAlerts', 'codeScanningAlerts'])
   })
 
   it('rm-225: the registry contains every exported template constant (completeness)', () => {

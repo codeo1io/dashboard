@@ -48,7 +48,11 @@ export const REPO_STATUS_QUERY = `
       issues(states: OPEN) {
         totalCount
       }
-      # rm-1517: repo lifecycle context (metadata:read — granted on every installation)
+      # rm-1517: repo lifecycle context (metadata:read — granted on every
+      # installation). Refresh-set decision (named, not silent): archived
+      # repos are STILL REFRESHED but render badged — not skipped from the
+      # refresh set. Skipping would save per-cycle query budget but hide the
+      # truth the badge preserves.
       pushedAt
       isArchived
       vulnerabilityAlerts(states: OPEN) {

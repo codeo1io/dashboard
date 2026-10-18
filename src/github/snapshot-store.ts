@@ -94,6 +94,21 @@ function isValidSnapshotShape(value: unknown): value is AggregatorSnapshot {
     ) {
       return false
     }
+    // rm-1516/rm-1517 status fields: checked only when PRESENT, so a cache
+    // persisted before the fields existed still validates (an absent field
+    // degrades to null at the client parse), while a malformed present value
+    // fails open to an empty boot. Shape checks grow WITH fields — they must
+    // never reject pre-field caches.
+    const statusFields = row.status as Record<string, unknown>
+    if (statusFields.openCodeScanningCount !== null && statusFields.openCodeScanningCount !== undefined && typeof statusFields.openCodeScanningCount !== 'number') {
+      return false
+    }
+    if (statusFields.pushedAt !== null && statusFields.pushedAt !== undefined && typeof statusFields.pushedAt !== 'string') {
+      return false
+    }
+    if (statusFields.isArchived !== null && statusFields.isArchived !== undefined && typeof statusFields.isArchived !== 'boolean') {
+      return false
+    }
   }
   return true
 }

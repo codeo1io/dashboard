@@ -1146,6 +1146,9 @@ export function createAggregator(
       openPrCount: 0,
       openIssueCount: 0,
       openAlertCount: null,
+      openCodeScanningCount: null,
+      pushedAt: null,
+      isArchived: null,
       stale: true,
       // Review fix note: this stamp is the "never fetched, best effort"
       // placeholder for repos we have no prior data for. When the warm-empty

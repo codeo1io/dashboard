@@ -248,6 +248,35 @@ describe('/api/monitoring — BFF aggregation endpoint', () => {
       ])
     })
 
+    it('rm-1516/rm-1517: security + lifecycle fields survive the DTO projection', async () => {
+      const repo = makeRepo({
+        full_name: 'fro-bot/agent',
+        status: {
+          rollupState: 'red',
+          failingChecks: 1,
+          failingCheckDetails: [],
+          openPrCount: 0,
+          openIssueCount: 0,
+          openAlertCount: 2,
+          openCodeScanningCount: 3,
+          pushedAt: '2026-10-17T00:00:00.000Z',
+          isArchived: true,
+          stale: false,
+          fetchedAt: 1_700_000_000_000,
+        },
+      })
+      const app = await buildTestApp(makeSnapshot({repos: [repo]}))
+      const res = await authedGet(app, '/api/monitoring')
+
+      expect(res.status).toBe(200)
+      const body = await res.json() as AggregatorSnapshot
+      const status = body.repos[0]?.status
+      expect(status?.openAlertCount).toBe(2)
+      expect(status?.openCodeScanningCount).toBe(3)
+      expect(status?.pushedAt).toBe('2026-10-17T00:00:00.000Z')
+      expect(status?.isArchived).toBe(true)
+    })
+
     it('returns empty snapshot when no repos', async () => {
       const snapshot = makeSnapshot()
       const app = await buildTestApp(snapshot)
