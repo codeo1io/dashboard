@@ -3026,3 +3026,100 @@ describe('operator SSE reader: zero-frame streams fail closed (rm-851)', () => {
     expect(calls.at(-1)).toBe('close')
   })
 })
+
+/**
+ * rm-261 (run a31293fd): stream release on fail-closed exits. The read loop's
+ * fail-closed returns (drift, overflow, read error) and the HTTP-status exits
+ * used to abandon the response body without cancelling it — every abandoned
+ * stream held its connection open until GC. These tests observe the release
+ * through the underlying source's cancel callback (cancel propagates through
+ * the response-body wrapper), mirroring the client-side fetch/abort-spy shape.
+ */
+function makeCountedStreamResponse(status: number, chunks: string[], keepOpen = false): {
+  response: Response
+  cancelCount: () => number
+} {
+  const encoder = new TextEncoder()
+  let cancels = 0
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(encoder.encode(chunk))
+      }
+      if (!keepOpen) controller.close()
+    },
+    cancel() {
+      cancels++
+    },
+  })
+  return {
+    response: new Response(body, {status, headers: {'content-type': 'text/event-stream'}}),
+    cancelCount: () => cancels,
+  }
+}
+
+async function openWith(response: Response): Promise<{events: string[]; errors: string[]; closed: boolean}> {
+  const reader = createOperatorSseReader({fetchImpl: async () => response})
+  const events: string[] = []
+  const errors: string[] = []
+  let closed = false
+  await reader.open('/operator/runs/run-001/stream', {
+    onEvent: frame => events.push(frame.type),
+    onError: err => errors.push(err.message),
+    onClose: () => {
+      closed = true
+    },
+  })
+  return {events, errors, closed}
+}
+
+describe('createOperatorSseReader — connection release (rm-261)', () => {
+  it('releases the stream when contract drift aborts the read loop mid-stream', async () => {
+    const driftedReady = `event: ready\ndata: {"contractVersion":"${DRIFTED_VERSION}"}\n\n`
+    const {response, cancelCount} = makeCountedStreamResponse(200, [driftedReady], true)
+    const result = await openWith(response)
+    expect(result.errors[0]).toContain('contract-drift')
+    expect(result.closed).toBe(true)
+    expect(cancelCount()).toBe(1)
+  })
+
+  it('releases the stream when the hard buffer cap aborts the read loop', async () => {
+    const noBoundary = 'x'.repeat(MAX_SSE_BUFFER_BYTES + 16)
+    const {response, cancelCount} = makeCountedStreamResponse(200, [noBoundary], true)
+    const result = await openWith(response)
+    expect(result.errors[0]).toContain('buffer overflow')
+    expect(cancelCount()).toBe(1)
+  })
+
+  it('releases an unread body on the unexpected-status exit', async () => {
+    const {response, cancelCount} = makeCountedStreamResponse(500, ['unread body bytes'], true)
+    const result = await openWith(response)
+    expect(result.errors[0]).toContain('unexpected stream status')
+    expect(result.closed).toBe(true)
+    expect(cancelCount()).toBe(1)
+  })
+
+  it('repeated fail-closed attempts do not accumulate live connections', async () => {
+    // Mirror of the client-side live-connection bound: N sequential opens that
+    // each die on drift must leave N cancelled streams, not N parked ones.
+    const driftedReady = `event: ready\ndata: {"contractVersion":"${DRIFTED_VERSION}"}\n\n`
+    const counts: number[] = []
+    for (let i = 0; i < 3; i += 1) {
+      const {response, cancelCount} = makeCountedStreamResponse(200, [driftedReady], true)
+      await openWith(response)
+      counts.push(cancelCount())
+    }
+    expect(counts).toEqual([1, 1, 1])
+  })
+
+  it('a clean exhausted stream is not re-cancelled (release is a no-op after done)', async () => {
+    const ready = `event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\n`
+    const {response, cancelCount} = makeCountedStreamResponse(200, [ready])
+    const result = await openWith(response)
+    expect(result.errors).toEqual([])
+    expect(result.events).toEqual(['ready'])
+    // The source closed itself at EOF; a cancel on the exhausted reader is a
+    // spec no-op, so the underlying cancel callback must NOT fire.
+    expect(cancelCount()).toBe(0)
+  })
+})

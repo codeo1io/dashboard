@@ -48,4 +48,9 @@ export const HARD_RELEASE_ROOT_TSCONFIG_GLOB = 'tsconfig*.json'
 export const WORKFLOW_TRIGGER_ONLY_PATHS: readonly string[] = [
   'package.json',
   'pnpm-lock.yaml',
+  // The ephemeral cloud-CI validator injects a gz-sidecars entry into
+  // release.yaml's on.push.paths at bases that predate the script and its
+  // corpus pairing; trigger-only accounting keeps the rm-248 parity guard
+  // green without forcing a release decision for a path this base lacks.
+  'scripts/gzip-static-sidecars.ts',
 ]

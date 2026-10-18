@@ -671,12 +671,29 @@ function extractFailingCheckDetails(target: GraphqlCommitTarget | null | undefin
         workflowTitle,
         runAttempt,
         checkName: run.name ?? '(unnamed check)',
-        detailsUrl: run.detailsUrl ?? '',
+        detailsUrl: httpsDetailsUrl(run.detailsUrl),
       })
       if (details.length >= FAILING_CHECK_DETAILS_CAP) return details
     }
   }
   return details
+}
+
+/**
+ * rm-709: a check-run details_url is an operator-clickable link surfaced in
+ * the web client, so it is only propagated when it is an absolute https URL.
+ * Anything else — javascript:, data:, http:, a relative path, empty — becomes
+ * '' ("no link"), the same shape the client already treats as link-absent.
+ * The web client enforces the twin gate and drops the whole feed on a
+ * non-https non-empty value, so both ends fail closed on the same rule.
+ */
+function httpsDetailsUrl(detailsUrl: string | null | undefined): string {
+  if (typeof detailsUrl !== 'string' || detailsUrl === '') return ''
+  try {
+    return new URL(detailsUrl).protocol === 'https:' ? detailsUrl : ''
+  } catch {
+    return ''
+  }
 }
 
 /**

@@ -10,6 +10,13 @@
 // the repository's pushed_at is newer than that workflow's last run (i.e. a run
 // was owed by a push/schedule trigger and never created).
 //
+// rm-1956: last-run truth is per-workflow. Every candidate workflow's OWN
+// /actions/workflows/{id}/runs?per_page=1 endpoint is probed, so "never ran"
+// is only ever reported when that workflow-scoped probe observed zero runs —
+// a workflow merely absent from a sampled window has an unknown last run and
+// is never flagged (the repo-wide single-page census used before could not
+// distinguish the two and auto-darkened busy repositories' quiet workflows).
+//
 // Boundary (recorded with rm-289): the in-repo red-watch owns workflow-file
 // drift; this script owns the out-of-band run-creation signal. It intentionally
 // performs no repository writes and needs no CI lane — it is the probe you run
@@ -115,6 +122,11 @@ export function classifyWorkflows(files: Record<string, string>): TriggerIndex {
 export function computeDarkness(input: {
   workflows: WorkflowSummary[]
   runs: RunSummary[]
+  /**
+   * rm-1956: workflow ids whose OWN workflow-scoped runs probe observed zero
+   * runs — the only ground on which "never ran" may be claimed.
+   */
+  neverRan: number[]
   triggers: TriggerIndex
   pushedAt: string
   now: string
@@ -135,8 +147,13 @@ export function computeDarkness(input: {
       if (createdMs > latestMs) latestMs = createdMs
     }
     if (latestMs === Number.NEGATIVE_INFINITY) {
-      // Never ran: dark as soon as anything was ever pushed.
-      if (pushedMs > 0) {
+      // rm-1956: "never ran" is only claimable when the workflow-scoped
+      // probe observed zero runs (neverRan). A candidate absent from the run
+      // observations WITHOUT that verification has an UNKNOWN last run —
+      // absence from a sample is not evidence, so it is skipped, never
+      // reported as dark.
+      // Verified never ran: dark as soon as anything was ever pushed.
+      if (input.neverRan.includes(workflow.id) && pushedMs > 0) {
         darkWorkflows.push({
           name: workflow.name,
           path: workflow.path,
@@ -209,23 +226,45 @@ async function main(): Promise<number> {
   const token = process.env.ACTIONS_DARKNESS_TOKEN ?? process.env.GITHUB_TOKEN
   try {
     const triggers = readLocalTriggers()
-    const [apiWorkflows, apiRuns, repoInfo] = await Promise.all([
+    const [apiWorkflows, repoInfo] = await Promise.all([
       fetchJson<ApiWorkflows>(
         `https://api.github.com/repos/${repo}/actions/workflows?per_page=100`,
         token,
       ),
-      fetchJson<ApiRuns>(
-        `https://api.github.com/repos/${repo}/actions/runs?per_page=100`,
-        token,
-      ),
       fetchJson<{pushed_at: string}>(`https://api.github.com/repos/${repo}`, token),
     ])
+    const summaries = apiWorkflows.workflows.map(w => ({id: w.id, path: w.path, name: w.name}))
+    // rm-1956: per-workflow last-run truth. Each candidate's OWN runs
+    // endpoint is probed at per_page=1 — that is the workflow's true latest
+    // run and cannot be crowded out of a sampled window by busier siblings
+    // the way the repo-wide single-page census could. A probe that errors
+    // rejects this Promise.all and the verdict becomes UNKNOWN (exit 1),
+    // never a claim of "never ran".
+    const probes = await Promise.all(
+      summaries
+        .filter(w => (triggers[w.path] ?? []).some(t => PUSH_SCHEDULE_TRIGGERS.has(t)))
+        .map(async w => {
+          const data = await fetchJson<ApiRuns>(
+            `https://api.github.com/repos/${repo}/actions/workflows/${w.id}/runs?per_page=1`,
+            token,
+          )
+          return {workflowId: w.id, runs: data.workflow_runs}
+        }),
+    )
+    const runs: RunSummary[] = []
+    const neverRan: number[] = []
+    for (const probe of probes) {
+      const latest = probe.runs[0]
+      if (latest === undefined) {
+        neverRan.push(probe.workflowId)
+      } else {
+        runs.push({workflowId: probe.workflowId, createdAt: latest.created_at})
+      }
+    }
     const verdict = computeDarkness({
-      workflows: apiWorkflows.workflows.map(w => ({id: w.id, path: w.path, name: w.name})),
-      runs: apiRuns.workflow_runs.map(r => ({
-        workflowId: r.workflow_id,
-        createdAt: r.created_at,
-      })),
+      workflows: summaries,
+      runs,
+      neverRan,
       triggers,
       pushedAt: repoInfo.pushed_at,
       now,

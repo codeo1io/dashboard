@@ -47,10 +47,6 @@ interface MonitoringDto {
   /** Count of installations that failed during the enumeration feeding this snapshot; null = unknown. */
   readonly enumerationIncomplete: number | null
   readonly refreshedAt: number | null
-  /** Wall-clock duration (ms) of the last completed refresh attempt (rm-156 watchdog signal) */
-  readonly refreshDurationMs: number | null
-  /** True when the last refresh attempt exceeded the watchdog ceiling (rm-156 watchdog signal) */
-  readonly refreshDegraded: boolean
   /**
    * rm-1447: platform-availability annotation (githubstatus feed) — overall
    * indicator, Actions component status, fetchedAt. null when no fetch has
@@ -77,14 +73,16 @@ function toMonitoringRepoDto(repo: DashboardRepo): MonitoringRepoDto {
 }
 
 function toMonitoringDto(snapshot: AggregatorSnapshot): MonitoringDto {
+  // rm-156 TRIM (run a31293fd): refreshDurationMs/refreshDegraded were the
+  // only DTO fields with ZERO web consumers (the client never modeled them;
+  // grep-verified). The raw signals stay on /api/status via the shared
+  // AggregatorSnapshot — this endpoint stays the minimized operator view.
   return {
     repos: snapshot.repos.map(toMonitoringRepoDto),
     staleBanner: snapshot.staleBanner,
     driftCount: snapshot.driftCount,
     enumerationIncomplete: snapshot.enumerationIncomplete,
     refreshedAt: snapshot.refreshedAt,
-    refreshDurationMs: snapshot.refreshDurationMs,
-    refreshDegraded: snapshot.refreshDegraded,
     platformStatus: snapshot.platformStatus ?? null,
   }
 }

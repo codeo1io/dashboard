@@ -226,6 +226,50 @@ describe('aggregator — happy path: CI state mapping', () => {
     ])
   })
 
+  it('rm-709: only absolute-https details URLs survive extraction — javascript:/data:/http:/relative degrade to empty', async () => {
+    const repo = makeRepo({node_id: 'NODE_B3', owner: 'org', name: 'repo-b3'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_B3', owner: 'org', name: 'repo-b3'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue(makeGraphqlResponse({
+        rollupState: 'FAILURE',
+        failingChecks: 5,
+        checkSuites: [{
+          workflowRun: {displayTitle: 'CI · main', runAttempt: 1},
+          checkRuns: {
+            totalCount: 5,
+            nodes: [
+              {name: 'safe', detailsUrl: 'https://github.com/org/repo-b3/actions/runs/1'},
+              {name: 'js-url', detailsUrl: 'javascript:alert(document.domain)'},
+              {name: 'data-url', detailsUrl: 'data:text/html;base64,PHNjcmlwdD4='},
+              {name: 'plain-http', detailsUrl: 'http://github.com/org/repo-b3/actions/runs/2'},
+              {name: 'relative', detailsUrl: '/org/repo-b3/actions/runs/3'},
+            ],
+          },
+        }],
+      })),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const status = agg.getSnapshot().repos[0]?.status
+
+    expect(status?.failingCheckDetails).toEqual([
+      {
+        workflowTitle: 'CI · main',
+        runAttempt: 1,
+        checkName: 'safe',
+        detailsUrl: 'https://github.com/org/repo-b3/actions/runs/1',
+      },
+      {workflowTitle: 'CI · main', runAttempt: 1, checkName: 'js-url', detailsUrl: ''},
+      {workflowTitle: 'CI · main', runAttempt: 1, checkName: 'data-url', detailsUrl: ''},
+      {workflowTitle: 'CI · main', runAttempt: 1, checkName: 'plain-http', detailsUrl: ''},
+      {workflowTitle: 'CI · main', runAttempt: 1, checkName: 'relative', detailsUrl: ''},
+    ])
+  })
+
   it('maps PENDING rollup to pending', async () => {
     const repo = makeRepo({node_id: 'NODE_C', owner: 'org', name: 'repo-c'})
     const deps = makeDeps({
