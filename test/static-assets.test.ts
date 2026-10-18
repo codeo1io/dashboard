@@ -5,7 +5,9 @@
  * - CSP header present on responses with script-src 'self' and no 'unsafe-inline'
  * - GET /static/operator.css → 200 with CSS body + correct content-type, no auth required
  * - When operatorUiEnabled=false: /static/operator.css is not served
- * - PWA SW assets: /sw.js + /registerSW.js served with correct MIME + no-cache, public pre-auth
+ * - PWA SW assets: /sw.js served with correct MIME + no-cache, public pre-auth;
+ *   /registerSW.js stays a public inert-compat route (404 — not emitted under
+ *   the rm-1985 posture, registration is bundled via virtual:pwa-register/react)
  * - PWA manifest: /manifest.webmanifest served as application/manifest+json, public pre-auth
  * - CSP on /sw.js: no page CSP applied (workers don't inherit page CSP)
  */
@@ -1763,10 +1765,14 @@ describe('rm-690 — Cache-Control policy for static surfaces', () => {
     expect(res.headers.get('cache-control')).toBe('no-cache, no-store, must-revalidate')
   })
 
-  it('GET /registerSW.js keeps its no-cache,no-store policy (pinned pre-rm-690 behavior)', async () => {
+  it('GET /registerSW.js 404s under the rm-1985 posture (vite-plugin-pwa 2.0.0 emits no registerSW.js)', async () => {
+    // c51597a's 1.3.0-era build auto-injected <script src="/registerSW.js"> that
+    // self-registered the SW. Under the restored posture (rm-1985,
+    // test/sw-posture-guard.test.ts) registration flows through workbox-window
+    // bundled via virtual:pwa-register/react, so the file is no longer emitted.
+    // The server route stays as compat for stale cached HTML; pin the truth.
     const app = await buildTestApp(false)
     const res = await app.request('/registerSW.js')
-    expect(res.status).toBe(200)
-    expect(res.headers.get('cache-control')).toBe('no-cache, no-store, must-revalidate')
+    expect(res.status).toBe(404)
   })
 })

@@ -10,7 +10,7 @@
  * The root `pretest` script runs `pnpm build:web` automatically.
  */
 
-import {readFileSync} from 'node:fs'
+import {existsSync, readFileSync} from 'node:fs'
 import {resolve} from 'node:path'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 
@@ -191,9 +191,18 @@ describe('sw.js build output', () => {
     expect(content).not.toMatch(/"url":".*manifest\.webmanifest"/)
   })
 
-  it('registerSW.js is NOT in the precache list', () => {
-    const content = readSW()
-    expect(content).not.toMatch(/"url":"registerSW\.js"/)
+  it('registerSW.js is NOT emitted — registration flows through the bundled virtual module (rm-1985)', () => {
+    // Restored posture (2026-10-18, rm-1985): ReloadPrompt imports
+    // virtual:pwa-register/react, so vite-plugin-pwa resolves injectRegister to
+    // null — no registerSW.js is emitted and no <script src="/registerSW.js">
+    // is auto-injected into index.html (the 1.3.0-era stub build did both).
+    // The server route stays as inert compat for stale cached HTML and 404s —
+    // pinned in test/static-assets.test.ts.
+    expect(existsSync(resolve(__dirname, '../dist/registerSW.js'))).toBe(false)
+    expect(readFileSync(resolve(__dirname, '../dist/index.html'), 'utf-8')).not.toContain('registerSW')
+    // Defense in depth: even if a future plugin version re-emits the helper,
+    // it must never enter the precache list.
+    expect(readSW()).not.toMatch(/"url":"registerSW\.js"/)
   })
 
   // Asserts the shell's hashed JS and CSS are precached. Deliberately not
@@ -310,7 +319,8 @@ describe('sw.js build output', () => {
 
 // vite-plugin-pwa's useRegisterSW → updateServiceWorker(true) → workbox-window
 // messageSkipWaiting() posts exactly {type: 'SKIP_WAITING'} to the waiting worker
-// (workbox-window 7.4.1 SKIP_WAITING_MESSAGE; vite-plugin-pwa 1.3.0 client/build/react.js).
+// (workbox-window 7.4.1 SKIP_WAITING_MESSAGE; vite-plugin-pwa 2.0.0 client/build/react.js).
+// (Pin updated with the rm-1985 bump 1.3.0 → 2.0.0; the message flow is unchanged.)
 // The page's `controlling` listener then reloads. With injectManifest, the custom
 // worker must call skipWaiting() itself, or Refresh is a no-op and the old
 // worker keeps serving the old precached shell indefinitely.
