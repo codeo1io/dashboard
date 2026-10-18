@@ -323,3 +323,68 @@ describe('createFileSnapshotStore — size gate fires before the read (rm-759)',
     }
   })
 })
+
+describe('createFileSnapshotStore — rm-1516/rm-1517 shape growth', () => {
+  const dirs: string[] = []
+
+  function makeStore(): {store: SnapshotStore; file: string} {
+    const dir = mkdtempSync(join(tmpdir(), 'snapshot-store-rm1516-'))
+    dirs.push(dir)
+    const file = join(dir, 'snapshot.json')
+    return {store: createFileSnapshotStore(file) as SnapshotStore, file}
+  }
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, {recursive: true, force: true})
+  })
+
+  it('a PRE-FIELD cache (status lacking the new fields) still loads — shape checks grow with fields', () => {
+    const {store, file} = makeStore()
+    const row = makeRepoRow()
+    // Simulate a cache persisted before rm-1516/rm-1517: the three fields
+    // are simply absent from the status object.
+    const legacyStatus = row.status as unknown as Record<string, unknown>
+    delete legacyStatus.openCodeScanningCount
+    delete legacyStatus.pushedAt
+    delete legacyStatus.isArchived
+    writeFileSync(file, JSON.stringify({...makeSnapshot(), repos: [row]}), 'utf8')
+
+    const loaded = store.load()
+    expect(loaded).not.toBeNull()
+    expect(loaded?.repos).toHaveLength(1)
+  })
+
+  it('the new fields round-trip persist → load untouched', () => {
+    const {store} = makeStore()
+    const row = makeRepoRow()
+    const snapshot: AggregatorSnapshot = {
+      ...makeSnapshot(),
+      repos: [{
+        ...row,
+        status: {
+          ...row.status,
+          openCodeScanningCount: 7,
+          pushedAt: '2026-10-17T00:00:00.000Z',
+          isArchived: true,
+        },
+      }],
+    }
+    store.persist(snapshot)
+
+    const loaded = store.load()
+    expect(loaded?.repos[0]?.status.openCodeScanningCount).toBe(7)
+    expect(loaded?.repos[0]?.status.pushedAt).toBe('2026-10-17T00:00:00.000Z')
+    expect(loaded?.repos[0]?.status.isArchived).toBe(true)
+  })
+
+  it('a MALFORMED present value fails shape validation → fail-open empty boot', () => {
+    const {store, file} = makeStore()
+    const raw = JSON.parse(JSON.stringify(makeSnapshot())) as {repos: {status: Record<string, unknown>}[]}
+    const status = raw.repos[0]?.status
+    if (status === undefined) throw new Error('fixture row missing')
+    status.openCodeScanningCount = 'many'
+    writeFileSync(file, JSON.stringify(raw), 'utf8')
+
+    expect(store.load()).toBeNull()
+  })
+})

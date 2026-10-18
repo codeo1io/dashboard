@@ -359,3 +359,61 @@ describe('Monitoring (rm-192 red-repo drill-down)', () => {
     })
   })
 })
+
+describe('Monitoring — rm-1516/rm-1517 security + lifecycle rendering', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValue({
+      ok: true,
+      data: makeData()
+    })
+  })
+
+  afterEach(() => {
+    vi.runOnlyPendingTimers()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  async function renderBoard(data: MonitoringData) {
+    vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({ok: true, data})
+    render(<Monitoring />)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10)
+    })
+  }
+
+  it('renders dependabot and code-scanning counts beside failing checks (rm-1516 render cure)', async () => {
+    await renderBoard(makeData({repos: [makeRepo({status: {openAlertCount: 2, openCodeScanningCount: 3}})]}))
+
+    expect(screen.getByText('2 dependabot alerts')).toBeInTheDocument()
+    expect(screen.getByText('3 code-scanning alerts')).toBeInTheDocument()
+    expect(screen.getByLabelText('Dependabot alerts: 2')).toBeInTheDocument()
+    expect(screen.getByLabelText('Code-scanning alerts: 3')).toBeInTheDocument()
+    // The failing-checks chip stays beside them — the cure renders BOTH counts
+    expect(screen.getByText('1 failing check')).toBeInTheDocument()
+    expect(screen.getByTestId('monitoring-security-count')).toHaveTextContent('1 with open security alert')
+  })
+
+  it('hides zero/null security chips and the footer count when clean', async () => {
+    await renderBoard(makeData({repos: [makeRepo({status: {openAlertCount: 0, openCodeScanningCount: 0}})]}))
+
+    expect(screen.queryByText(/dependabot/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/code-scanning/)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('monitoring-security-count')).not.toBeInTheDocument()
+  })
+
+  it('renders the archived badge, footer archived count, and last-push line (rm-1517)', async () => {
+    await renderBoard(makeData({repos: [makeRepo({status: {isArchived: true, pushedAt: '2026-10-01T12:00:00.000Z'}})]}))
+
+    expect(screen.getByText('archived')).toBeInTheDocument()
+    expect(screen.getByTestId('monitoring-archived-count')).toHaveTextContent('1 archived')
+    expect(screen.getByText(/Last push/)).toBeInTheDocument()
+  })
+
+  it('skips the last-push line on an unparseable pushedAt (graceful, never a wrong date)', async () => {
+    await renderBoard(makeData({repos: [makeRepo({status: {pushedAt: 'not-a-date'}})]}))
+
+    expect(screen.queryByText(/Last push/)).not.toBeInTheDocument()
+  })
+})

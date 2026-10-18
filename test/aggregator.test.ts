@@ -87,6 +87,9 @@ function makeGraphqlResponse(overrides: {
   openPrCount?: number
   openIssueCount?: number
   openAlertCount?: number | null
+  openCodeScanningCount?: number | null
+  pushedAt?: string | null
+  isArchived?: boolean | null
   repository?: null
 } = {}) {
   const failingChecks = overrides.failingChecks ?? 0
@@ -108,6 +111,11 @@ function makeGraphqlResponse(overrides: {
       vulnerabilityAlerts: overrides.openAlertCount !== null && overrides.openAlertCount !== undefined
         ? {totalCount: overrides.openAlertCount}
         : null,
+      codeScanningAlerts: overrides.openCodeScanningCount !== null && overrides.openCodeScanningCount !== undefined
+        ? {totalCount: overrides.openCodeScanningCount}
+        : null,
+      pushedAt: overrides.pushedAt ?? null,
+      isArchived: overrides.isArchived ?? null,
     },
   }
 }
@@ -289,9 +297,10 @@ describe('aggregator — happy path: CI state mapping', () => {
         openPrCount: 3,
         openIssueCount: 7,
         openAlertCount: 2,
-        openCodeScanningCount: null,
-        pushedAt: null,
-        isArchived: null,
+        // rm-1516/rm-1517: the same response carries security + lifecycle
+        openCodeScanningCount: 5,
+        pushedAt: '2026-10-17T01:02:03.000Z',
+        isArchived: false,
       })),
     })
 
@@ -302,6 +311,42 @@ describe('aggregator — happy path: CI state mapping', () => {
     expect(snap.repos[0]?.status.openPrCount).toBe(3)
     expect(snap.repos[0]?.status.openIssueCount).toBe(7)
     expect(snap.repos[0]?.status.openAlertCount).toBe(2)
+    expect(snap.repos[0]?.status.openCodeScanningCount).toBe(5)
+    expect(snap.repos[0]?.status.pushedAt).toBe('2026-10-17T01:02:03.000Z')
+    expect(snap.repos[0]?.status.isArchived).toBe(false)
+  })
+
+  it('rm-1516/rm-1517: absent security/lifecycle response fields parse to null (no-alerts variant shape)', async () => {
+    const repo = makeRepo({node_id: 'NODE_F2', owner: 'org', name: 'repo-f2'})
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_F2', owner: 'org', name: 'repo-f2'})],
+      }))),
+      graphqlQueryForInstallation: vi.fn().mockResolvedValue({
+        repository: {
+          defaultBranchRef: {
+            target: {
+              statusCheckRollup: {state: 'SUCCESS'},
+              checkSuites: {nodes: []},
+            },
+          },
+          pullRequests: {totalCount: 0},
+          issues: {totalCount: 0},
+          // Neither security field nor lifecycle fields on the wire
+        },
+      }),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const status = agg.getSnapshot().repos[0]?.status
+
+    expect(status?.openAlertCount).toBeNull()
+    expect(status?.openCodeScanningCount).toBeNull()
+    expect(status?.pushedAt).toBeNull()
+    expect(status?.isArchived).toBeNull()
+    expect(status?.stale).toBe(false)
   })
 })
 
@@ -490,6 +535,36 @@ describe('aggregator — happy path: attention-first sorting', () => {
 
     expect(snap.repos[0]?.node_id).toBe('NODE_ALERTS')
     expect(snap.repos[1]?.node_id).toBe('NODE_H2')
+  })
+
+  it('rm-1516: repos with open code-scanning alerts sort before healthy repos', async () => {
+    const repoHealthy = makeRepo({node_id: 'NODE_H3', owner: 'org', name: 'healthy3'})
+    const repoCodeScanning = makeRepo({node_id: 'NODE_CODESCANNING', owner: 'org', name: 'codescanning'})
+
+    const graphqlQueryForInstallation: GraphqlQueryForInstallationFn = vi.fn().mockImplementation(async (_installId, _query, vars) => {
+      if ((vars as {name: string}).name === 'codescanning') {
+        return makeGraphqlResponse({rollupState: 'SUCCESS', openCodeScanningCount: 4})
+      }
+      return makeGraphqlResponse({rollupState: 'SUCCESS', openCodeScanningCount: 0})
+    })
+
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repoHealthy, repoCodeScanning])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [
+          makePublicRepo({node_id: 'NODE_H3', owner: 'org', name: 'healthy3'}),
+          makePublicRepo({node_id: 'NODE_CODESCANNING', owner: 'org', name: 'codescanning'}),
+        ],
+      }))),
+      graphqlQueryForInstallation,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    expect(snap.repos[0]?.node_id).toBe('NODE_CODESCANNING')
+    expect(snap.repos[1]?.node_id).toBe('NODE_H3')
   })
 
   it('repos with open PRs sort before repos with no PRs', async () => {
@@ -2086,6 +2161,60 @@ describe('P1 regression — vulnerabilityAlerts graceful: permission error → o
     expect(repoStatus?.openPrCount).toBe(3)
     expect(repoStatus?.openIssueCount).toBe(4)
     // Retry happened: the no-alerts variant succeeded on the second call
+    expect(callCount).toBe(2)
+  })
+
+  it('rm-1516: a code-scanning denial message takes the same graceful path — BOTH security fields null, lifecycle kept, not stale', async () => {
+    // codeScanningAlerts rides the same security_events permission class as
+    // vulnerabilityAlerts, so its denial must take the SAME graceful retry:
+    // the no-alerts variant drops BOTH security fields but keeps rm-1517
+    // lifecycle context (metadata:read is granted on every installation).
+    const repo = makeRepo({node_id: 'NODE_CODESCANNING_PERM', owner: 'org', name: 'codescanning-perm', installation_id: 1})
+
+    let callCount = 0
+    const graphqlQueryForInstallation: GraphqlQueryForInstallationFn = vi.fn().mockImplementation(
+      async (_installId: number, _query: string, _vars: Record<string, unknown>) => {
+        callCount++
+        if (callCount === 1) {
+          throw new Error("Field 'codeScanningAlerts' doesn't exist or is not accessible (resource not accessible by integration)")
+        }
+        return {
+          repository: {
+            defaultBranchRef: {
+              target: {
+                statusCheckRollup: {state: 'SUCCESS'},
+                checkSuites: {nodes: []},
+              },
+            },
+            pullRequests: {totalCount: 0},
+            issues: {totalCount: 1},
+            // No security fields — the no-alerts variant selects neither
+            pushedAt: '2026-10-17T00:00:00.000Z',
+            isArchived: true,
+          },
+        }
+      },
+    )
+
+    const deps = makeDeps({
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([repo])),
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        publicRepos: [makePublicRepo({node_id: 'NODE_CODESCANNING_PERM', owner: 'org', name: 'codescanning-perm'})],
+      }))),
+      graphqlQueryForInstallation,
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const repoStatus = agg.getSnapshot().repos[0]?.status
+
+    expect(repoStatus?.openAlertCount).toBeNull()
+    expect(repoStatus?.openCodeScanningCount).toBeNull()
+    expect(repoStatus?.pushedAt).toBe('2026-10-17T00:00:00.000Z')
+    expect(repoStatus?.isArchived).toBe(true)
+    expect(repoStatus?.stale).toBe(false)
+    expect(repoStatus?.rollupState).toBe('green')
+    expect(repoStatus?.openIssueCount).toBe(1)
     expect(callCount).toBe(2)
   })
 })
