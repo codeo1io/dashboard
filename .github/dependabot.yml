@@ -31,6 +31,10 @@
 #   weekly audit signal in .github/workflows/audit.yaml (rm-278) is the
 #   transitive watch).
 # - Weekly cadence, low open-PR cap, to keep the runner queue shallow.
+# - 2026-10-18 (rm-102 unstall rider, run 1209380057914cc3bd6682366af2dd0a
+#   cycle:2): comment-only touch — the config's landing commit on main is
+#   itself the server-side re-evaluation trigger for the update jobs;
+#   intentionally no semantic change, keep this note when editing nearby.
 version: 2
 updates:
   - package-ecosystem: github-actions
