@@ -9,6 +9,7 @@
  * derived HMAC-style from the cookie key — mirroring the logout CSRF pattern
  * in routes/auth.ts).
  */
+import type {IngestReplayGuard} from '../listener/ingest-auth.ts'
 import type {ListenerStore} from '../listener/store.ts'
 
 import {Buffer} from 'node:buffer'
@@ -96,6 +97,15 @@ export interface ListenerRouterDeps {
    * it whenever an operator session is in scope (auth active).
    */
   readonly ackCsrf: AckCsrfConfig | null
+  /**
+   * rm-2008: bounded seen-delivery cache — a byte-identical redelivery of a
+   * signature-VERIFIED delivery inside the HMAC window rejects 401 before
+   * the store. Required (structural, like `store`/`ingestKey`): construct
+   * with `createIngestReplayGuard()` at the mount site so each server
+   * instance owns its cache — restart or re-mount clears it, nothing
+   * persists.
+   */
+  readonly ingestReplayGuard: IngestReplayGuard
 }
 
 export function buildListenerRouter(deps: ListenerRouterDeps): Hono {
@@ -111,14 +121,31 @@ export function buildListenerRouter(deps: ListenerRouterDeps): Hono {
       return c.json({error: 'payload too large'}, 413)
     }
 
+    const nowSeconds = Math.floor(Date.now() / 1000)
+    const timestampHeader = c.req.header('x-listener-timestamp') ?? null
     const authResult = verifyIngestSignature({
       key: deps.ingestKey,
       rawBody,
-      timestampHeader: c.req.header('x-listener-timestamp') ?? null,
+      timestampHeader,
       signatureHeader: c.req.header('x-listener-signature') ?? null,
-      nowSeconds: Math.floor(Date.now() / 1000),
+      nowSeconds,
     })
     if (!authResult.success) {
+      return c.json({error: 'unauthorized'}, 401)
+    }
+
+    // rm-2008: replay check strictly AFTER signature verification — only an
+    // authenticated delivery may mark a key seen, so a caller without the key
+    // can never poison the cache into denying a genuine delivery.
+    if (
+      deps.ingestReplayGuard.isReplay({
+        deliveryGuid: c.req.header('x-github-delivery') ?? null,
+        timestampHeader,
+        rawBody,
+        key: deps.ingestKey,
+        nowSeconds,
+      })
+    ) {
       return c.json({error: 'unauthorized'}, 401)
     }
 
