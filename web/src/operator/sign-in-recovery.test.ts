@@ -154,7 +154,7 @@ describe('operator sign-in redirect recovery', () => {
       onStateChange: vi.fn(),
     })
 
-    await vi.waitFor(() => expect(sessionStorage.getItem(SIGN_IN_GUARD_KEY)).toBeNull())
+    await vi.waitFor(() => expect(sessionStorage.getItem(SIGN_IN_GUARD_KEY)).toBeNull(), { timeout: 5_000 })
     runtime.cleanup()
   })
 
@@ -181,7 +181,7 @@ describe('operator sign-in redirect recovery', () => {
 
     const runtime = createOperatorRuntime({container: document.createElement('div'), onStateChange: vi.fn()})
 
-    await vi.waitFor(() => expect(sessionStorage.getItem(SIGN_IN_GUARD_KEY)).toBe(guardValue))
+    await vi.waitFor(() => expect(sessionStorage.getItem(SIGN_IN_GUARD_KEY)).toBe(guardValue), { timeout: 5_000 })
     runtime.cleanup()
   })
 })

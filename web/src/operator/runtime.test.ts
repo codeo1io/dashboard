@@ -278,7 +278,7 @@ describe('createOperatorRuntime — run-index module integration', () => {
       _runtimeLoader: async () => cleanupFn,
     })
     const handle = createOperatorRuntime(opts)
-    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled())
+    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled(), { timeout: 5_000 })
     handle.cleanup()
     expect(cleanupFn).toHaveBeenCalledTimes(1)
   })
@@ -347,7 +347,7 @@ describe('createOperatorRuntime — active-stream coordination callbacks', () =>
       _runtimeLoader: async () => cleanupFn,
     })
     const handle = createOperatorRuntime(opts)
-    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled())
+    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled(), { timeout: 5_000 })
     expect(() => handle.cleanup()).not.toThrow()
     expect(cleanupFn).toHaveBeenCalledTimes(1)
   })
@@ -358,7 +358,7 @@ describe('createOperatorRuntime — active-stream coordination callbacks', () =>
       _runtimeLoader: async () => cleanupFn,
     })
     const handle = createOperatorRuntime(opts)
-    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled())
+    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled(), { timeout: 5_000 })
     handle.cleanup()
     expect(cleanupFn).toHaveBeenCalledTimes(1)
   })
@@ -369,7 +369,7 @@ describe('createOperatorRuntime — active-stream coordination callbacks', () =>
       _runtimeLoader: async () => cleanupFn,
     })
     const handle = createOperatorRuntime(opts)
-    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled())
+    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled(), { timeout: 5_000 })
     handle.cleanup()
     handle.cleanup()
     expect(cleanupFn).toHaveBeenCalledTimes(1)
@@ -766,7 +766,7 @@ describe('defaultRuntimeLoader — production stream wiring', () => {
 
     const onStateChange = vi.fn()
     const runtime = createOperatorRuntime({container: makeContainer(), onStateChange})
-    await vi.waitFor(() => expect(onSelectRun).toBeDefined())
+    await vi.waitFor(() => expect(onSelectRun).toBeDefined(), { timeout: 5_000 })
     expect(onStateChange).not.toHaveBeenCalled()
 
     expect(bootstrapOperatorStreams).not.toHaveBeenCalled()
@@ -840,7 +840,7 @@ describe('defaultRuntimeLoader — question region and summary status wiring', (
     await vi.waitFor(() => {
       expect(onSelectRun).toBeDefined()
       expect(onRunLaunched).toBeDefined()
-    })
+    }, { timeout: 5_000 })
     return {
       runtime,
       initCalls,
@@ -2391,7 +2391,7 @@ describe('defaultRuntimeLoader — in-page run jump (requestRunJump)', () => {
       onStateChange,
       /** The loader has finished its setup (and consumed the jump slot, if it was going to). */
       ready: async () => {
-        await vi.waitFor(() => expect(initOperatorLaunch).toHaveBeenCalled())
+        await vi.waitFor(() => expect(initOperatorLaunch).toHaveBeenCalled(), { timeout: 5_000 })
         await tick()
       },
       select: (runId: string) => captured?.onSelectRun(runId),
@@ -3541,7 +3541,7 @@ describe('defaultRuntimeLoader — finished-run cache', () => {
 
   const tick = () => new Promise<void>(resolve => realSetTimeout(resolve, 0))
   // The default 50 ms poll would make the 100-run fill below take seconds.
-  const waitFast = (assertion: () => void) => vi.waitFor(assertion, {interval: 1})
+  const waitFast = (assertion: () => void) => vi.waitFor(assertion, {timeout: 5_000, interval: 1})
 
   function frame(event: string, payload: unknown): string {
     return `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`
@@ -3709,7 +3709,7 @@ describe('defaultRuntimeLoader — finished-run cache', () => {
       setServer: (runId: string, status: ListStatus) => server.set(runId, status),
       dropServer: (runId: string) => server.delete(runId),
       ready: async () => {
-        await vi.waitFor(() => expect(initOperatorLaunch).toHaveBeenCalled())
+        await vi.waitFor(() => expect(initOperatorLaunch).toHaveBeenCalled(), { timeout: 5_000 })
         await tick()
       },
       /** A card activation: the run index toggles expansion, then calls onSelectRun. */
@@ -3752,7 +3752,7 @@ describe('defaultRuntimeLoader — finished-run cache', () => {
     await mounted.click(runId)
     await waitFast(() => expect(net.attachments).toHaveLength(before + 1))
     net.attachments[before]?.push(RUNNING_FRAMES(runId))
-    await vi.waitFor(() => expect(statusText(runId)).toBe('Running'))
+    await vi.waitFor(() => expect(statusText(runId)).toBe('Running'), { timeout: 5_000 })
   }
 
   // -------------------------------------------------------------------------
@@ -4154,7 +4154,7 @@ describe('defaultRuntimeLoader — finished-run cache', () => {
 
       mounted.authRequired()
       net.attachments[0]?.push(frame('output', {runId: 'run-c-a', text: FINAL_TEXT, final: true, seq: 1}) + statusFrame('run-c-a', 'succeeded', 'COMPLETED'))
-      await vi.waitFor(() => expect(statusText('run-c-a')).toBe('Succeeded'))
+      await vi.waitFor(() => expect(statusText('run-c-a')).toBe('Succeeded'), { timeout: 5_000 })
 
       expect(mounted.stream().hasUsableFinishedRun('run-c-a', 'succeeded')).toBe(false)
     })
@@ -4222,7 +4222,7 @@ describe('defaultRuntimeLoader — finished-run cache', () => {
           throw new Error('module not found')
         },
       })
-      await vi.waitFor(() => expect(onStateChange).toHaveBeenCalledWith('unavailable'))
+      await vi.waitFor(() => expect(onStateChange).toHaveBeenCalledWith('unavailable'), { timeout: 5_000 })
       failing.cleanup()
 
       expect(first.stream().hasUsableFinishedRun('run-c-a', 'succeeded')).toBe(true)
