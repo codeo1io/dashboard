@@ -1271,17 +1271,28 @@ describe('security — operator-stream.js contract pin and checkout-field bounda
 })
 
 // ---------------------------------------------------------------------------
-// HTML-sink ban — one scan over every module that builds output DOM
+// HTML-sink ban (rm-1502) — one scan over every shipped client module
 //
 // Write and call forms only, after comments are stripped, so prose that names a
-// sink cannot trip it and a sink cannot hide behind a bracket or quote.
+// sink cannot trip it and a sink cannot hide behind a bracket or quote. The
+// scan covers every shipped client surface: the public/ browser-direct
+// runtimes AND all of web/src (test files and test-setup exempt — jsdom
+// fixtures legitimately build DOM from strings). Upstream PR #646 ("render run
+// output as Markdown", absorbed here via the 2026.10.48 adoption) is the live
+// hazard this family is shaped against; the token-walking renderer at
+// web/src/operator/markdown-output.ts is the one exempt href surface because
+// it applies its own URL allow-list before any attribute write.
 // ---------------------------------------------------------------------------
 
-const HTML_SINK_PATTERN = /(?:innerHTML|outerHTML|insertAdjacentHTML|setHTMLUnsafe|createContextualFragment|parseFromString|srcdoc|document\.write)['"\]\s]*(?:\+?=|\()/
-const HREF_SINK_PATTERN = /setAttribute\(\s*['"]href|\.href\s*=(?!=)/
+const HTML_SINK_PATTERN = /(?:innerHTML|outerHTML|insertAdjacentHTML|setHTMLUnsafe|createContextualFragment|parseFromString|srcdoc|document\.write(?:ln)?)['"\]\s]*(?:\+?=|\()/
+// href writes are allowed only site-relative: the AUTH_LOGIN_PATH same-origin
+// constant (AppShell's login redirect) or a literal (template) starting '/' or
+// '#'. Any absolute or computed href is the #646-class XSS adjacency.
+const HREF_SINK_PATTERN = /setAttribute\(\s*['"]href|\.href\s*=(?!=)(?!\s*(?:AUTH_LOGIN_PATH|['"`][/#]))/
 const MARKDOWN_RENDERER_PATH = 'web/src/operator/markdown-output.ts'
-const SINK_SCAN_DIRS = ['public', 'web/src/operator'] as const
+const SINK_SCAN_ROOTS = ['public', 'web/src'] as const
 const SINK_SCAN_EXTENSIONS = /\.(?:js|mjs|ts|tsx)$/
+const SINK_SCAN_EXCLUDED = new Set(['web/src/test-setup.ts'])
 
 // A `//` comment starts at the beginning of a line or after whitespace, so `//` inside a string or a
 // URL (`'a//'`, `'https://x'`) is code and cannot hide a sink after it.
@@ -1296,15 +1307,18 @@ function isSinkScanned(file: string): boolean {
 async function listSinkScanFiles(): Promise<string[]> {
   const fs = await import('node:fs/promises')
   const files: string[] = []
-  for (const dir of SINK_SCAN_DIRS) {
+  const walk = async (dir: string): Promise<void> => {
     for (const entry of await fs.readdir(dir, {withFileTypes: true})) {
-      if (entry.isFile() && isSinkScanned(entry.name)) files.push(`${dir}/${entry.name}`)
+      const path = `${dir}/${entry.name}`
+      if (entry.isDirectory()) await walk(path)
+      else if (entry.isFile() && isSinkScanned(entry.name) && !SINK_SCAN_EXCLUDED.has(path)) files.push(path)
     }
   }
+  for (const root of SINK_SCAN_ROOTS) await walk(root)
   return files.toSorted()
 }
 
-describe('security — HTML and href sinks across operator output modules', () => {
+describe('security — HTML and href sinks across shipped client modules (rm-1502)', () => {
   it.each([
     ["el['innerHTML'] = x"],
     ['el.innerHTML = x'],
@@ -1317,6 +1331,7 @@ describe('security — HTML and href sinks across operator output modules', () =
     ['new DOMParser().parseFromString(x, "text/html")'],
     ['frame.srcdoc = x'],
     ['document.write(x)'],
+    ['document.writeln("<b>" + x)'],
     ['el["innerHTML"] += x'],
     ["x = 'a//'; el.innerHTML = y"],
     ["x = 'https://x'; el.innerHTML = y"],
@@ -1342,6 +1357,9 @@ describe('security — HTML and href sinks across operator output modules', () =
     ['const note = el.textContent'],
     ['if (a.href === b.href) return'],
     ['el.setAttribute("data-run-id", id)'],
+    ['window.location.href = AUTH_LOGIN_PATH'],
+    ["a.href = '/runs'"],
+    ["a.href = '#top'"],
   ])('neither pattern matches %s once comments are stripped', fixture => {
     const code = stripComments(fixture)
     expect(code).not.toMatch(HTML_SINK_PATTERN)
@@ -1364,13 +1382,20 @@ describe('security — HTML and href sinks across operator output modules', () =
     expect(isSinkScanned('markdown-output.ts')).toBe(true)
   })
 
-  it('the scan covers the renderer module and the shipped browser modules', async () => {
+  it('the scan covers the renderer module, the shipped browser modules, and the whole web/src tree', async () => {
     const files = await listSinkScanFiles()
     expect(files).toContain(MARKDOWN_RENDERER_PATH)
     for (const file of ['public/operator-stream.js', 'public/operator-launch.js', 'public/operator-run-index.js', 'public/operator-time.js']) {
       expect(files).toContain(file)
     }
+    // rm-1502 scope: every shipped web/src module is scanned, not just the
+    // operator output surfaces — the ban holds across the whole client tree.
+    for (const file of ['web/src/shell/AppShell.tsx', 'web/src/push/notification-click.ts', 'web/src/sw.ts']) {
+      expect(files).toContain(file)
+    }
+    expect(files).not.toContain('web/src/test-setup.ts')
     expect(files.filter(file => file.includes('.test.'))).toEqual([])
+    expect(files.length).toBeGreaterThan(40)
   })
 
   it('no scanned module writes an HTML sink', async () => {
