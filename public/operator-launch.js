@@ -15,10 +15,12 @@
  *   runId (except in the data-run-id attribute), or repo names.
  * - Render only safe fields; no data-* / error-copy / analytics that echoes
  *   prompt/csrf/idempotency/runId in logs.
- * - All 400s collapse to one generic failure; 404 → one uniform unavailable state.
+ * - A 400 is one generic failure, except the two prompt rejections, which map to fixed copy;
+ *   404 → one uniform unavailable state. A response body is never rendered.
  * - No cause inference from body or timing.
  * - credentials:'include', redirect:'error' on all fetch calls.
- * - The prompt is user-typed and goes only in the POST body — never in logs or DOM.
+ * - The prompt is user-typed. It goes in the POST body and, as plain text only (`textContent`), into the
+ *   launched card's prompt slots — never in logs, attributes or markup.
  * - runId appears only in the data-run-id attribute and the stream URL.
  */
 
@@ -31,6 +33,42 @@ import {formatRelativeTime, LAUNCH_TIME_SOURCE} from './operator-time.js'
 // so a static import here would create a second, uncoordinated module instance with
 // its own singleton state rather than sharing the runtime seam's instance.
 const LAUNCH_RUN_INDEX_CAP = 100
+
+// Mirrors OPERATOR_LAUNCH_PROMPT_MAX_LENGTH in src/gateway/operator-contract/launch-prompt.ts, for the
+// same reason as the cap above: browser code cannot import server modules. Counted in UTF-16 units
+// (`.length`) over the untrimmed prompt, which is what the gateway counts. Exported so a node-side test
+// holds it equal to the server constant.
+export const LAUNCH_PROMPT_MAX_LENGTH = 8000
+// The `reason` of the gateway's 400 for a prompt over the limit.
+const PROMPT_TOO_LONG_REASON = 'prompt-too-long'
+// The `error` of the gateway's 400 for a whitespace-only prompt.
+const PROMPT_REQUIRED_ERROR = 'prompt is required'
+
+const PROMPT_TOO_LONG_COPY = 'Prompt is too long. Keep it to 8,000 characters or fewer; emoji can count as more than one.'
+const PROMPT_REQUIRED_COPY = 'Please enter a prompt before launching.'
+
+/**
+ * The launch outcome for a 400 that names a prompt rejection, or undefined for any other error.
+ *
+ * @param {{kind: string, status?: number, reason?: string, code?: string}} error - A launchRun error.
+ * @returns {{kind: 'prompt-too-long'} | {kind: 'prompt-required'} | undefined} The fixed-copy outcome.
+ */
+function promptRejectionOutcome(error) {
+  if (error.kind !== 'http' || error.status !== 400) return undefined
+  if (error.reason === PROMPT_TOO_LONG_REASON) return {kind: 'prompt-too-long'}
+  if (error.code === PROMPT_REQUIRED_ERROR) return {kind: 'prompt-required'}
+  return undefined
+}
+
+/**
+ * True when the untrimmed prompt is over the gateway's length limit.
+ *
+ * @param {string} prompt - The prompt exactly as typed.
+ * @returns {boolean} Whether the prompt is too long to send.
+ */
+export function isPromptTooLong(prompt) {
+  return prompt.length > LAUNCH_PROMPT_MAX_LENGTH
+}
 
 // ---------------------------------------------------------------------------
 // Pure: repo item validation
@@ -94,6 +132,8 @@ export function mintIdempotencyKey() {
  *      - 400 (post-selection) → refreshCsrf ONCE + retry ONCE reusing the SAME key
  *        - retry 202 → {kind:'launched', runId}
  *        - retry 400 → {kind:'failure'} (no third attempt)
+ *      - 400 naming a prompt rejection (reason 'prompt-too-long' → {kind:'prompt-too-long'};
+ *        error 'prompt is required' → {kind:'prompt-required'}) → no CSRF refresh and no retry
  *      - 404 → {kind:'not-found'} (uniform, no cause)
  *      - 429 → {kind:'rate-limited'}
  *      - any other error → {kind:'failure'}
@@ -135,7 +175,11 @@ export async function submitLaunch(client, params, idempotencyKey) {
     return {kind: 'rate-limited'}
   }
 
-  // 400 → refresh CSRF once and retry ONCE reusing the SAME idempotency key
+  // 400 naming a prompt rejection → fixed copy; a fresh CSRF token cannot change the answer.
+  const promptRejection = promptRejectionOutcome(error)
+  if (promptRejection !== undefined) return promptRejection
+
+  // Any other 400 → refresh CSRF once and retry ONCE reusing the SAME idempotency key
   if (error.kind === 'http' && error.status === 400) {
     const retrycsrfResult = await client.refreshCsrf()
     if (!retrycsrfResult.success) {
@@ -154,8 +198,9 @@ export async function submitLaunch(client, params, idempotencyKey) {
       return {kind: 'launched', runId: retryResult.data.runId}
     }
 
-    // Second failure (any status) → generic failure, no further retry
-    return {kind: 'failure'}
+    // A prompt rejection on the retry maps to the same fixed copy; any other second failure is the
+    // generic failure, with no further retry.
+    return promptRejectionOutcome(retryResult.error) ?? {kind: 'failure'}
   }
 
   // Any other error (network, protocol, non-400/404/429 http) → failure
@@ -315,12 +360,37 @@ export function buildLaunchClient(opts) {
           }
           return {success: true, data: {runId: data.runId}}
         }
+        if (res.status === 400) {
+          return {success: false, error: await readRejection(res)}
+        }
         return {success: false, error: {kind: 'http', status: res.status}}
       } catch {
         return {success: false, error: {kind: 'network', message: 'network error'}}
       }
     },
   }
+}
+
+/**
+ * Read a 400 launch response into an http error. The body is parsed inside a try/catch and only two
+ * string fields are lifted from it, for submitLaunch to compare against fixed values. A missing,
+ * non-JSON or differently shaped body yields a bare 400. The body is never rendered.
+ *
+ * @param {Response} res - The 400 response.
+ * @returns {Promise<{kind: 'http', status: 400, reason?: string, code?: string}>} The http error.
+ */
+async function readRejection(res) {
+  const error = {kind: 'http', status: 400}
+  try {
+    const body = await res.json()
+    if (body !== null && typeof body === 'object' && !Array.isArray(body)) {
+      if (typeof body.reason === 'string') error.reason = body.reason
+      if (typeof body.error === 'string') error.code = body.error
+    }
+  } catch {
+    // No usable body: a bare 400.
+  }
+  return error
 }
 
 // ---------------------------------------------------------------------------
@@ -552,6 +622,41 @@ export async function initOperatorLaunch(opts) {
     _launchListenerController = listenerController
     _launchListenerGeneration = myGeneration
 
+    const promptEl = launchForm.querySelector('textarea[name="prompt"]')
+    const promptStatusEl = launchForm.querySelector('#launch-prompt-status')
+    const submitBtn = launchForm.querySelector('[type="submit"]')
+
+    // The one reader of the prompt: the untrimmed textarea value. It is what is counted, sent and
+    // seeded; emptiness is the only check that trims.
+    const readPrompt = () => {
+      if (promptEl !== null) return promptEl.value
+      return (new FormData(launchForm).get('prompt') ?? '').toString()
+    }
+
+    // True while this mount's submit is in flight (a lock from a torn-down mount does not count).
+    const isInFlight = () => _launching && _launchingGeneration === myGeneration
+
+    // The announced state: the status node is filled only when the prompt crosses the limit, in
+    // either direction, so typing further over the limit does not announce again.
+    let announcedTooLong = false
+
+    // The one place the Launch button's disabled state is computed.
+    const syncPromptState = () => {
+      const tooLong = isPromptTooLong(readPrompt())
+      if (submitBtn !== null) submitBtn.disabled = isInFlight() || tooLong
+      if (tooLong === announcedTooLong) return tooLong
+      announcedTooLong = tooLong
+      if (promptEl !== null) {
+        if (tooLong) promptEl.setAttribute('aria-invalid', 'true')
+        else promptEl.removeAttribute('aria-invalid')
+      }
+      if (promptStatusEl !== null) promptStatusEl.textContent = tooLong ? PROMPT_TOO_LONG_COPY : ''
+      return tooLong
+    }
+
+    launchForm.addEventListener('input', syncPromptState, {signal: listenerController.signal})
+    syncPromptState()
+
     launchForm.addEventListener('submit', async event => {
       event.preventDefault()
 
@@ -560,16 +665,21 @@ export async function initOperatorLaunch(opts) {
       // longer current (its mount was torn down mid-submit, e.g. by resetLaunchState)
       // is stale and must not block a fresh mount's submits.
       if (_launching && _launchingGeneration === myGeneration) return
+
+      // Pre-fetch validation: over the limit. requestSubmit() bypasses a disabled button,
+      // so the handler checks the length itself and sends nothing.
+      const prompt = readPrompt()
+      if (syncPromptState()) return
+
       _launching = true
       _launchingGeneration = myGeneration
 
       // Pre-fetch validation: empty prompt
       const formData = new FormData(launchForm)
-      const prompt = (formData.get('prompt') ?? '').toString().trim()
-      if (prompt === '') {
+      if (prompt.trim() === '') {
         _launching = false
         if (launchError !== null) {
-          launchError.textContent = 'Please enter a prompt before launching.'
+          launchError.textContent = PROMPT_REQUIRED_COPY
           launchError.hidden = false
         }
         return
@@ -601,9 +711,8 @@ export async function initOperatorLaunch(opts) {
         launchError.hidden = true
       }
 
-      // Disable submit during in-flight request
-      const submitBtn = launchForm.querySelector('[type="submit"]')
-      if (submitBtn !== null) submitBtn.disabled = true
+      // Disable submit during the in-flight request
+      syncPromptState()
 
       // Mint a fresh idempotency key for this submission
       const idempotencyKey = mintIdempotencyKey()
@@ -624,11 +733,12 @@ export async function initOperatorLaunch(opts) {
         // if this generation still owns the lock. If a stale generation somehow
         // reached this finally (it shouldn't, since isInitStale-guarded code paths
         // return earlier), it must not clear a newer generation's active lock.
-        if (submitBtn !== null) submitBtn.disabled = false
         if (_launchingGeneration === myGeneration) {
           _launching = false
           _launchingGeneration = null
         }
+        // The prompt may have grown past the limit while in flight, so the button is recomputed, not enabled.
+        syncPromptState()
       }
 
       if (outcome.kind === 'launched') {
@@ -690,6 +800,21 @@ export async function initOperatorLaunch(opts) {
           timeEl.setAttribute('datetime', launchedAt)
           timeEl.textContent = formatRelativeTime(launchedAt)
           card.append(timeEl)
+
+          // Launch prompt slots — same slot as a fetched card: right after the header row, ahead of every
+          // hidden region. Seeded with the exact text that was sent, as plain text. The run index owns
+          // the slots from adoption on and renders the body as Markdown when the card expands.
+          const promptPreviewEl = document.createElement('div')
+          promptPreviewEl.className = 'run-prompt-preview'
+          promptPreviewEl.dataset.role = 'run-prompt-preview'
+          promptPreviewEl.textContent = prompt
+          card.append(promptPreviewEl)
+
+          const promptBodyEl = document.createElement('div')
+          promptBodyEl.className = 'run-prompt'
+          promptBodyEl.dataset.role = 'run-prompt'
+          promptBodyEl.textContent = prompt
+          card.append(promptBodyEl)
 
           // Hidden per-card substructure for the stream renderer.
 
@@ -791,12 +916,23 @@ export async function initOperatorLaunch(opts) {
 
         // Reset the form
         launchForm.reset()
+        syncPromptState()
 
         // Dispatch success event to the form so React components/drawers can react (e.g. close drawer and focus card)
         launchForm.dispatchEvent(new CustomEvent('launch-success', {
           bubbles: true,
           detail: {runId},
         }))
+      } else if (outcome.kind === 'prompt-too-long') {
+        if (launchError !== null) {
+          launchError.textContent = PROMPT_TOO_LONG_COPY
+          launchError.hidden = false
+        }
+      } else if (outcome.kind === 'prompt-required') {
+        if (launchError !== null) {
+          launchError.textContent = PROMPT_REQUIRED_COPY
+          launchError.hidden = false
+        }
       } else if (outcome.kind === 'not-found') {
         if (launchError !== null) {
           launchError.textContent = 'The selected repository is not available for launch.'

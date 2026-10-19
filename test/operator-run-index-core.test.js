@@ -5,9 +5,12 @@
 
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 
-import {buildRunSafeView, FETCH_TIMEOUT_MS, fetchRunIndex, formatRelativeTime, initOperatorRunIndex, markCardExpandedForLaunch, markRunStreamAttached, parseRunSummaryItem, parseRunSummaryList, refreshOperatorRunIndex, resetRunIndexState, RUN_INDEX_CAP, FAILURE_REASON_LABELS as RUN_INDEX_FAILURE_REASON_LABELS, RUN_STATUS_CLASS_TOKENS, VALID_RUN_SUMMARY_STATUSES} from '../public/operator-run-index.js'
-import {FAILURE_REASON_LABELS as STREAM_FAILURE_REASON_LABELS} from '../public/operator-stream.js'
+import {LAUNCH_PROMPT_MAX_LENGTH as LAUNCH_FORM_PROMPT_MAX_LENGTH} from '../public/operator-launch.js'
+import {buildRunSafeView, FETCH_TIMEOUT_MS, fetchRunIndex, formatRelativeTime, initOperatorRunIndex, markCardExpandedForLaunch, markRunStreamAttached, parseRunSummaryItem, parseRunSummaryList, refreshOperatorRunIndex, resetRunIndexState, RUN_INDEX_CAP, FAILURE_REASON_LABELS as RUN_INDEX_FAILURE_REASON_LABELS, LAUNCH_PROMPT_MAX_LENGTH as RUN_INDEX_LAUNCH_PROMPT_MAX_LENGTH, PROVIDER_FAILURE_REASON_LABELS as RUN_INDEX_PROVIDER_FAILURE_REASON_LABELS, RUN_STATUS_CLASS_TOKENS, VALID_RUN_SUMMARY_STATUSES} from '../public/operator-run-index.js'
+import {nextStreamState, PINNED_CONTRACT_VERSION, FAILURE_REASON_LABELS as STREAM_FAILURE_REASON_LABELS, PROVIDER_FAILURE_REASON_LABELS as STREAM_PROVIDER_FAILURE_REASON_LABELS} from '../public/operator-stream.js'
 import {formatRelativeTime as sharedFormatRelativeTime} from '../public/operator-time.js'
+import {OPERATOR_LAUNCH_PROMPT_MAX_LENGTH} from '../src/gateway/operator-contract/launch-prompt.ts'
+import {OPERATOR_PROVIDER_FAILURE_REASONS} from '../src/gateway/operator-contract/provider-failure-reason.ts'
 import {isOperatorFailureKind, OPERATOR_FAILURE_KINDS} from '../src/gateway/operator-contract/run-status.ts'
 import {parseRunSummary as parseServerRunSummary} from '../src/gateway/operator-contract/run-summary.ts'
 
@@ -353,6 +356,124 @@ describe('parseRunSummaryItem — failureKind', () => {
 
   it('missing failureKind does not throw', () => {
     expect(() => parseRunSummaryItem(makeValidSummary())).not.toThrow()
+  })
+})
+
+describe('parseRunSummaryItem — prompt and providerFailureReason', () => {
+  const SESSION_ERROR_FAILED = {status: 'failed', failureKind: 'session-error'}
+  // 7,998 ASCII units plus one surrogate pair is exactly 8,000 UTF-16 units.
+  const PROMPT_AT_LIMIT = `${'a'.repeat(7998)}\u{1F600}`
+
+  it('keeps a multi-line Markdown prompt byte for byte', () => {
+    const prompt = '# Title\r\n\r\n- one\n- two\n\n```js\nconst x = 1\n```\n  trailing  \n<b>html</b> [link](https://example.com)\n'
+    const result = parseRunSummaryItem(makeValidSummary({prompt}))
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.prompt).toBe(prompt)
+  })
+
+  it('keeps a prompt of exactly 8000 units including a surrogate pair', () => {
+    expect(PROMPT_AT_LIMIT.length).toBe(8000)
+    const result = parseRunSummaryItem(makeValidSummary({prompt: PROMPT_AT_LIMIT}))
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.prompt).toBe(PROMPT_AT_LIMIT)
+  })
+
+  it('omits a prompt of 8001 units and keeps the run', () => {
+    const result = parseRunSummaryItem(makeValidSummary({prompt: `${PROMPT_AT_LIMIT}x`}))
+    expect(result.success).toBe(true)
+    if (result.success) expect(Object.hasOwn(result.data, 'prompt')).toBe(false)
+  })
+
+  it.each([
+    ['empty', ''],
+    ['whitespace-only', ' \t\r\n  '],
+    ['a number', 42],
+    ['null', null],
+    ['an object', {text: 'hi'}],
+    ['an array', ['hi']],
+    ['a boolean', true],
+  ])('omits a prompt that is %s and keeps the run', (_label, prompt) => {
+    const result = parseRunSummaryItem(makeValidSummary({prompt}))
+    expect(result.success).toBe(true)
+    if (result.success) expect(Object.hasOwn(result.data, 'prompt')).toBe(false)
+  })
+
+  it('omits prompt when the summary has none', () => {
+    const result = parseRunSummaryItem(makeValidSummary())
+    expect(result.success).toBe(true)
+    if (result.success) expect(Object.hasOwn(result.data, 'prompt')).toBe(false)
+  })
+
+  it.each(OPERATOR_PROVIDER_FAILURE_REASONS)(
+    'keeps providerFailureReason %s on a failed session-error run',
+    providerFailureReason => {
+      const result = parseRunSummaryItem(makeValidSummary({...SESSION_ERROR_FAILED, providerFailureReason}))
+      expect(result.success).toBe(true)
+      if (result.success) expect(result.data.providerFailureReason).toBe(providerFailureReason)
+    },
+  )
+
+  it.each([['an unknown string', 'some-future-reason'], ['a prototype name', 'constructor'], ['a number', 1], ['null', null]])(
+    'omits providerFailureReason that is %s and keeps the run',
+    (_label, providerFailureReason) => {
+      const result = parseRunSummaryItem(makeValidSummary({...SESSION_ERROR_FAILED, providerFailureReason}))
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(Object.hasOwn(result.data, 'providerFailureReason')).toBe(false)
+        expect(result.data.failureKind).toBe('session-error')
+      }
+    },
+  )
+
+  it('omits a known providerFailureReason on a non-session-error failureKind', () => {
+    const result = parseRunSummaryItem(
+      makeValidSummary({status: 'failed', failureKind: 'inactivity-timeout', providerFailureReason: 'model-not-available'}),
+    )
+    expect(result.success).toBe(true)
+    if (result.success) expect(Object.hasOwn(result.data, 'providerFailureReason')).toBe(false)
+  })
+
+  it('omits a known providerFailureReason when failureKind is absent or unrecognized', () => {
+    for (const failureKind of [undefined, 'some-future-kind']) {
+      const result = parseRunSummaryItem(
+        makeValidSummary({status: 'failed', failureKind, providerFailureReason: 'model-not-available'}),
+      )
+      expect(result.success).toBe(true)
+      if (result.success) expect(Object.hasOwn(result.data, 'providerFailureReason')).toBe(false)
+    }
+  })
+
+  it.each(['queued', 'running', 'waiting_for_approval', 'waiting_for_question', 'succeeded', 'cancelled'])(
+    'omits a known providerFailureReason on a %s run',
+    status => {
+      const result = parseRunSummaryItem(
+        makeValidSummary({status, failureKind: 'session-error', providerFailureReason: 'model-not-available'}),
+      )
+      expect(result.success).toBe(true)
+      if (result.success) expect(Object.hasOwn(result.data, 'providerFailureReason')).toBe(false)
+    },
+  )
+
+  it('keeps the same prompt and reason results as the server parser', () => {
+    const inputs = [
+      makeValidSummary({prompt: PROMPT_AT_LIMIT}),
+      makeValidSummary({prompt: `${PROMPT_AT_LIMIT}x`}),
+      makeValidSummary({prompt: '   '}),
+      makeValidSummary({prompt: 7}),
+      makeValidSummary({...SESSION_ERROR_FAILED, providerFailureReason: 'unclassified', prompt: '  keep me  '}),
+      makeValidSummary({...SESSION_ERROR_FAILED, providerFailureReason: 'nope'}),
+      makeValidSummary({status: 'failed', failureKind: 'unknown', providerFailureReason: 'unclassified'}),
+      makeValidSummary({status: 'running', failureKind: 'session-error', providerFailureReason: 'unclassified'}),
+    ]
+    for (const input of inputs) {
+      const browser = parseRunSummaryItem(input)
+      const server = parseServerRunSummary(input)
+      expect(browser.success).toBe(server.success)
+      if (browser.success && server.success) {
+        expect(browser.data.prompt).toBe(server.data.prompt)
+        expect(browser.data.providerFailureReason).toBe(server.data.providerFailureReason)
+      }
+    }
   })
 })
 
@@ -2811,6 +2932,205 @@ describe('failure reason label map parity (stream ↔ run-index)', () => {
   })
 })
 
+const PROVIDER_LABEL_COPY = [
+  ['provider-auth-unavailable', 'Model provider unavailable'],
+  ['model-not-available', 'Model not available'],
+  ['provider-rejected-request', 'Model provider rejected the request'],
+]
+
+describe('provider failure reason label map parity (stream ↔ run-index)', () => {
+  it('both modules map each known provider reason to the same dashboard copy', () => {
+    expect([...RUN_INDEX_PROVIDER_FAILURE_REASON_LABELS]).toEqual(PROVIDER_LABEL_COPY)
+    expect([...STREAM_PROVIDER_FAILURE_REASON_LABELS]).toEqual(PROVIDER_LABEL_COPY)
+  })
+
+  it('unclassified has no entry, so it keeps the session-error label', () => {
+    expect(RUN_INDEX_PROVIDER_FAILURE_REASON_LABELS.has('unclassified')).toBe(false)
+    expect(STREAM_PROVIDER_FAILURE_REASON_LABELS.has('unclassified')).toBe(false)
+  })
+
+  it('the provider copy is distinct from every failure-kind label', () => {
+    const kindLabels = new Set(Object.values(RUN_INDEX_FAILURE_REASON_LABELS))
+    for (const [, label] of PROVIDER_LABEL_COPY) expect(kindLabels.has(label)).toBe(false)
+  })
+})
+
+describe('browser launch prompt limit — parity with the vendored contract', () => {
+  it('the run index and the launch form use the contract limit', () => {
+    expect(RUN_INDEX_LAUNCH_PROMPT_MAX_LENGTH).toBe(OPERATOR_LAUNCH_PROMPT_MAX_LENGTH)
+    expect(LAUNCH_FORM_PROMPT_MAX_LENGTH).toBe(OPERATOR_LAUNCH_PROMPT_MAX_LENGTH)
+  })
+})
+
+describe('run-index provider reasons — parity with the vendored contract', () => {
+  it('every contract reason except unclassified has a run-index label', () => {
+    for (const reason of OPERATOR_PROVIDER_FAILURE_REASONS) {
+      expect(RUN_INDEX_PROVIDER_FAILURE_REASON_LABELS.has(reason)).toBe(reason !== 'unclassified')
+    }
+  })
+})
+
+describe('buildRunSafeView — provider failure label', () => {
+  const failedSessionError = extra => makeValidSummary({status: 'failed', failureKind: 'session-error', ...extra})
+
+  it.each(PROVIDER_LABEL_COPY)('a failed session-error run with %s shows %s', (providerFailureReason, label) => {
+    expect(buildRunSafeView(failedSessionError({providerFailureReason})).reasonLabel).toBe(label)
+  })
+
+  it.each([['unclassified', 'unclassified'], ['an unknown value', 'some-future-reason'], ['no reason', undefined]])(
+    'a failed session-error run with %s keeps the session-error label',
+    (_name, providerFailureReason) => {
+      expect(buildRunSafeView(failedSessionError({providerFailureReason})).reasonLabel).toBe('Session error')
+    },
+  )
+
+  it('a prototype member name is not a reason', () => {
+    expect(buildRunSafeView(failedSessionError({providerFailureReason: 'constructor'})).reasonLabel).toBe('Session error')
+  })
+
+  it('a reason on a non-session-error failure keeps that kind\'s label', () => {
+    const view = buildRunSafeView(
+      makeValidSummary({status: 'failed', failureKind: 'inactivity-timeout', providerFailureReason: 'model-not-available'}),
+    )
+    expect(view.reasonLabel).toBe('No recent activity')
+  })
+
+  it('a reason on a failed run with no failureKind shows no reason label', () => {
+    const view = buildRunSafeView(makeValidSummary({status: 'failed', providerFailureReason: 'model-not-available'}))
+    expect('reasonLabel' in view).toBe(false)
+  })
+
+  it.each(['queued', 'running', 'waiting_for_approval', 'waiting_for_question', 'succeeded', 'cancelled'])(
+    'a reason on a %s run shows no reason label',
+    status => {
+      const view = buildRunSafeView(
+        makeValidSummary({status, failureKind: 'session-error', providerFailureReason: 'model-not-available'}),
+      )
+      expect('reasonLabel' in view).toBe(false)
+    },
+  )
+
+  it('the safe view never carries the raw reason code', () => {
+    const view = buildRunSafeView(failedSessionError({providerFailureReason: 'model-not-available'}))
+    expect('providerFailureReason' in view).toBe(false)
+    expect(JSON.stringify(view)).not.toContain('model-not-available')
+  })
+})
+
+async function loadCard(summary) {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ok: true, status: 200, json: async () => ({runs: [summary]})}))
+  const cards = []
+  stubDOMWithSubstructureCards(cards)
+  await initOperatorRunIndex({endpointBase: '/operator'})
+  expect(cards).toHaveLength(1)
+  return cards[0]
+}
+
+describe('run-index provider failure label on the collapsed card', () => {
+  afterEach(() => {
+    resetRunIndexState()
+    vi.restoreAllMocks()
+  })
+
+  it.each(PROVIDER_LABEL_COPY)('shows the %s label as %s and no raw code anywhere on the card', async (providerFailureReason, label) => {
+    const card = await loadCard(
+      makeValidSummary({runId: 'run-provider-001', status: 'failed', failureKind: 'session-error', providerFailureReason}),
+    )
+    const reasonEl = card.querySelector('[data-role="run-reason"]')
+    expect(reasonEl?.textContent).toBe(label)
+    expect(reasonEl?.dataset.reasonState).toBe('present')
+    expect(card.attributes['aria-label']).toContain(label)
+    for (const el of [card, reasonEl, card.querySelector('[data-role="run-status"]')]) {
+      const surface = JSON.stringify([el.textContent, el.className, el.attributes, el.dataset])
+      expect(surface).not.toContain(providerFailureReason)
+    }
+  })
+
+  it('shows the session-error label for unclassified and for an unknown value', async () => {
+    for (const providerFailureReason of ['unclassified', 'some-future-reason']) {
+      const card = await loadCard(
+        makeValidSummary({runId: 'run-provider-002', status: 'failed', failureKind: 'session-error', providerFailureReason}),
+      )
+      expect(card.querySelector('[data-role="run-reason"]')?.textContent).toBe('Session error')
+      resetRunIndexState()
+    }
+  })
+
+  it('a reason on a non-session-error failure shows that kind\'s label', async () => {
+    const card = await loadCard(
+      makeValidSummary({runId: 'run-provider-003', status: 'failed', failureKind: 'stream-ended', providerFailureReason: 'model-not-available'}),
+    )
+    expect(card.querySelector('[data-role="run-reason"]')?.textContent).toBe('Stream ended early')
+  })
+
+  it('a reason on a running run shows no reason', async () => {
+    const card = await loadCard(
+      makeValidSummary({runId: 'run-provider-004', status: 'running', failureKind: 'session-error', providerFailureReason: 'model-not-available'}),
+    )
+    expect(card.querySelector('[data-role="run-reason"]')?.textContent).toBe('')
+  })
+})
+
+describe('prompt on the collapsed card (core)', () => {
+  afterEach(() => {
+    resetRunIndexState()
+    vi.restoreAllMocks()
+  })
+
+  const promptRoles = card => card._children.map(child => child.dataset.role)
+
+  it('buildRunSafeView carries the prompt exactly as received and omits it when absent', () => {
+    const prompt = '  # Heading\r\n\r\n- item  \n'
+    expect(buildRunSafeView(makeValidSummary({prompt})).prompt).toBe(prompt)
+    expect('prompt' in buildRunSafeView(makeValidSummary())).toBe(false)
+  })
+
+  it('a card with a prompt carries the preview and the body as plain text, right after the header row', async () => {
+    const prompt = '# Title\n\n<b>not html</b>'
+    const card = await loadCard(makeValidSummary({runId: 'run-core-prompt-001', updatedAt: '2026-06-26T13:00:00.000Z', prompt}))
+
+    const order = promptRoles(card)
+    expect(order.slice(0, 5)).toEqual(['run-status-group', 'run-repo', 'run-updated-at', 'run-prompt-preview', 'run-prompt'])
+    expect(order[5]).toBe('run-checkout-detail')
+    const preview = card.querySelector('[data-role="run-prompt-preview"]')
+    const body = card.querySelector('[data-role="run-prompt"]')
+    expect(preview.className).toBe('run-prompt-preview')
+    expect(body.className).toBe('run-prompt')
+    expect(preview.textContent).toBe(prompt)
+    expect(body.textContent).toBe(prompt)
+    expect(preview.hidden).toBe(false)
+    expect(body.hidden).toBe(false)
+  })
+
+  it('a card without a prompt carries both elements empty', async () => {
+    const card = await loadCard(makeValidSummary({runId: 'run-core-prompt-002'}))
+    expect(card.querySelector('[data-role="run-prompt-preview"]').textContent).toBe('')
+    expect(card.querySelector('[data-role="run-prompt"]').textContent).toBe('')
+  })
+
+  it('a prompt does not change the card label or add attributes for it', async () => {
+    const card = await loadCard(makeValidSummary({runId: 'run-core-prompt-003', prompt: 'private text'}))
+    expect(JSON.stringify([card.attributes, card.dataset, card.className])).not.toContain('private text')
+    expect(card.querySelector('[data-role="run-prompt"]').attributes).toEqual({})
+    expect(card.querySelector('[data-role="run-prompt-preview"]').attributes).toEqual({})
+  })
+})
+
+describe('summary-seeded label and stream label agree', () => {
+  const live = () => nextStreamState({connection: 'connecting', runs: {}, retryCount: 0, shouldReconnect: false}, {type: 'ready', data: {contractVersion: PINNED_CONTRACT_VERSION}})
+  const frame = extra => ({
+    type: 'status',
+    data: {runId: 'run-agree', entityRef: 'fro-bot/agent', surface: 'web', phase: 'FAILED', status: 'failed', startedAt: '2026-10-06T10:00:00Z', stale: false, ...extra},
+  })
+
+  it.each([...PROVIDER_LABEL_COPY.map(([reason]) => reason), 'unclassified', undefined])('reason %s resolves to the same label in both modules', providerFailureReason => {
+    const fields = {failureKind: 'session-error', ...(providerFailureReason === undefined ? {} : {providerFailureReason})}
+    const fromSummary = buildRunSafeView(makeValidSummary({status: 'failed', ...fields})).reasonLabel
+    const fromStream = nextStreamState(live(), frame(fields)).runs['run-agree'].reasonLabel
+    expect(fromStream).toBe(fromSummary)
+  })
+})
+
 describe('failure reason label copy (workspace and checkout kinds)', () => {
   it('workspace-unreachable, workspace-unavailable and checkout-substituted have three distinct labels, identical in both maps', () => {
     const kinds = ['workspace-unreachable', 'workspace-unavailable', 'checkout-substituted']
@@ -3839,7 +4159,7 @@ describe('checkout-detail region — adopted optimistic cards (ensureRunCardAnat
     await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
 
     const fetched = cards.find(card => card.dataset.runId === 'run-ck-parity-fetched')
-    const hiddenRoles = card => childRoles(card).filter(role => role !== undefined && !['run-status-group', 'run-repo', 'run-updated-at'].includes(role))
+    const hiddenRoles = card => childRoles(card).filter(role => role !== undefined && !['run-status-group', 'run-repo', 'run-updated-at', 'run-prompt-preview', 'run-prompt'].includes(role))
     expect(hiddenRoles(optimistic)).toEqual(hiddenRoles(fetched))
     expect(hiddenRoles(fetched)[0]).toBe(CHECKOUT_ROLE)
     expect(hiddenRoles(fetched)).toEqual(ORDERED_REGION_ROLES)
@@ -3982,7 +4302,7 @@ describe('question region — adopted optimistic cards (ensureRunCardAnatomy)', 
     await initOperatorRunIndex({endpointBase: '/operator', onSelectRun: vi.fn()})
 
     const fetched = cards.find(card => card.dataset.runId === 'run-q-parity-fetched')
-    const hiddenRoles = card => childRoles(card).filter(role => role !== undefined && !['run-status-group', 'run-repo', 'run-updated-at'].includes(role))
+    const hiddenRoles = card => childRoles(card).filter(role => role !== undefined && !['run-status-group', 'run-repo', 'run-updated-at', 'run-prompt-preview', 'run-prompt'].includes(role))
     expect(hiddenRoles(optimistic)).toEqual(hiddenRoles(fetched))
     expect(hiddenRoles(fetched)).toContain(QUESTIONS_ROLE)
     expect(hiddenRoles(fetched)).toEqual(ORDERED_REGION_ROLES)
