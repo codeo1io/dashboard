@@ -1216,3 +1216,36 @@ describe('rm-690 — Cache-Control policy for static surfaces', () => {
     expect(res.headers.get('cache-control')).toBe('no-cache, no-store, must-revalidate')
   })
 })
+
+describe('rm-760 — @hono/node-server 2.1.5 serveStatic serves GET and HEAD only', () => {
+  // v2.1.5 (2026-10-13) fixes serve-static to serve ONLY GET and HEAD: any
+  // other method falls through to app routing instead of returning the file
+  // body. On the fork's previous pin (2.1.3) a POST against a static path
+  // answered with the file's bytes. Pinned here so a future adapter bump
+  // cannot silently restore method-blind serving.
+
+  it('POST /static/operator.css does not return the stylesheet body (rm-760)', async () => {
+    const app = await buildTestApp(true)
+    const res = await app.request('/static/operator.css', {method: 'POST'})
+    expect(res.status).not.toBe(200)
+    expect(res.headers.get('content-type')).not.toContain('text/css')
+    expect(await res.text()).not.toContain('--')
+  })
+
+  it('DELETE /static/operator.css is not served either (rm-760)', async () => {
+    const app = await buildTestApp(true)
+    const res = await app.request('/static/operator.css', {method: 'DELETE'})
+    expect(res.status).not.toBe(200)
+    expect(res.headers.get('content-type')).not.toContain('text/css')
+  })
+
+  it('the method gate does not disturb GET or HEAD serving (rm-760)', async () => {
+    const app = await buildTestApp(true)
+    const get = await app.request('/static/operator.css')
+    expect(get.status).toBe(200)
+    expect(get.headers.get('content-type')).toContain('text/css')
+    const head = await app.request('/static/operator.css', {method: 'HEAD'})
+    expect(head.status).toBe(200)
+    expect(await head.text()).toBe('')
+  })
+})
