@@ -91,10 +91,15 @@ view of Fro Bot's cross-repo footprint.
   workflow now sets `branch-pr` for those triggers; verify delivery by confirming a
   fro-bot-authored PR exists, not by reading run status. See
   `docs/solutions/workflow-issues/workflow-output-mode-auto-discarded-agent-fixes-2026-08-31.md`.
-- The `Fro Bot` workflow on this fork is `disabled_manually` (verified 2026-09-19):
-  codeo1io/dashboard has no `FRO_BOT_PAT` secret, so the daily cron would fail on
-  every run. Re-enabling it without provisioning that secret resurrects the failing
-  cron — check `gh workflow list` state and secret presence before flipping it back on.
+- The `Fro Bot` workflow is `disabled_manually` again (decision re-verified
+  live 2026-10-19): it had been re-enabled without the prerequisite secret,
+  and the daily scheduled run then failed at the empty-token checkout on
+  2026-10-18 (run 39093521474) and 2026-10-19 (run 39195483154) before the
+  disable. Provision `FRO_BOT_PAT` (plus `OPENCODE_AUTH_JSON` /
+  `OPENCODE_CONFIG`) before re-enabling: `gh workflow enable 'Fro Bot' -R
+  codeo1io/dashboard` is the one-command reverse, and with the secret absent
+  the first scheduled run fails the same way — check `gh workflow list`
+  state and `gh secret list` presence before flipping it back on.
 
 ## Cloned Dependency Source
 
@@ -102,8 +107,8 @@ Read-only dependency source repositories are available under
 `.slim/clonedeps/repos/` for inspection. Do not edit these clones.
 
 - `.slim/clonedeps/repos/fro-bot__agent/` — `fro-bot/agent` at the CI-pinned
-  tag `v0.122.1` (pin source: `.github/workflows/fro-bot.yaml`; mirror
-  re-provisioned 2026-10-15 — provision with `git clone --depth 1 --branch
+  tag `v0.124.0` (pin source: `.github/workflows/fro-bot.yaml`; mirror
+  re-provisioned 2026-10-19 — provision with `git clone --depth 1 --branch
   <pin>` if absent); the gateway's operator OAuth return path contract, GitHub
   App client, secret readers, Hono build/serve split, and runtime
   logger/Result primitives that this app mirrors.
