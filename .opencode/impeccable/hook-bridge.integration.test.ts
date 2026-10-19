@@ -354,7 +354,15 @@ describe('createSpawnRunner', () => {
     const elapsedMs = Date.now() - start
 
     expect(result).toEqual({ kind: 'spawn-error' })
-    expect(elapsedMs).toBeGreaterThanOrEqual(200)
+    // The floor proves the runner waited out the full deadline window (giving
+    // the stalled check every ms it was owed) rather than resolving early.
+    // Date.now() truncates both ends of the measurement to whole ms while
+    // libuv rounds the deadline timer's wake into the same domain, so an
+    // on-deadline resolution can measure 1ms short (CI run 39290443167:
+    // elapsed 199 vs the 200ms deadline). The 5ms tolerance keeps the proof —
+    // 195ms is still unreachably far from the early-resolve bug class — per
+    // the rm-156 precedent at test/app-client-timeout.test.ts (- 25).
+    expect(elapsedMs).toBeGreaterThanOrEqual(200 - 5)
     expect(elapsedMs).toBeLessThan(200 + 1000)
     await new Promise((resolve) => setTimeout(resolve, 500))
     expect(existsSync(markerFile)).toBe(false)
