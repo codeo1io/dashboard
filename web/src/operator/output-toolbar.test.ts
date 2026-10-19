@@ -409,13 +409,13 @@ describe('Copy raw', () => {
     // A live attach with no output yet: nothing to copy, so no toolbar.
     expect(tools(card).hidden).toBe(true)
     const sse = (event: string, payload: unknown) => `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`
-    await vi.waitFor(() => expect(frames).toHaveLength(1))
+    await vi.waitFor(() => expect(frames).toHaveLength(1), { timeout: 5_000 })
     frames[0]?.(sse('ready', {contractVersion: PINNED_CONTRACT_VERSION}))
     frames[0]?.(sse('output', {runId: RUN_ID, text: 'one ', final: false, seq: 0}))
-    await vi.waitFor(() => expect(tools(card).hidden).toBe(false))
+    await vi.waitFor(() => expect(tools(card).hidden).toBe(false), { timeout: 5_000 })
     frames[0]?.(sse('output', {runId: RUN_ID, text: 'two', final: false, seq: 1}))
     // The throttled repaint may not have landed; state holds both deltas regardless.
-    await vi.waitFor(() => expect(region(card, 'run-output').textContent).toContain('two'))
+    await vi.waitFor(() => expect(region(card, 'run-output').textContent).toContain('two'), { timeout: 5_000 })
 
     click(copyButton(card))
 

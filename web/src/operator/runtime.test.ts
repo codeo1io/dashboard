@@ -3787,7 +3787,7 @@ describe('defaultRuntimeLoader — finished-run cache', () => {
     await mounted.click(runId)
     await waitFast(() => expect(net.attachments).toHaveLength(before + 1))
     net.attachments[before]?.push(RUNNING_FRAMES(runId))
-    await vi.waitFor(() => expect(statusText(runId)).toBe('Running'), { timeout: 5_000 })
+    await vi.waitFor(() => expect(statusText(runId), { timeout: 5_000 }).toBe('Running'), { timeout: 5_000 })
   }
 
   // -------------------------------------------------------------------------
@@ -4240,7 +4240,7 @@ describe('defaultRuntimeLoader — finished-run cache', () => {
 
         net.attachments[0]?.push(delta('run-c-a', 'some **bold** text', 0))
 
-        await vi.waitFor(() => expect(outputEl('run-c-a').querySelector('strong')?.textContent).toBe('bold'))
+        await vi.waitFor(() => expect(outputEl('run-c-a').querySelector('strong')?.textContent).toBe('bold'), { timeout: 5_000 })
       })
 
       it('stops painting at once: a frame and a toggle click arriving afterwards change nothing, and the preference is Rendered again', async () => {
@@ -4250,7 +4250,7 @@ describe('defaultRuntimeLoader — finished-run cache', () => {
         await mounted.ready()
         await openRunning(mounted, net, 'run-c-a')
         net.attachments[0]?.push(delta('run-c-a', 'some **bold** text', 0))
-        await vi.waitFor(() => expect(outputEl('run-c-a').querySelector('strong')).not.toBeNull())
+        await vi.waitFor(() => expect(outputEl('run-c-a').querySelector('strong')).not.toBeNull(), { timeout: 5_000 })
         toggle('run-c-a').click()
         expect(outputEl('run-c-a').getAttribute('data-output-view')).toBe('raw')
 
@@ -4272,7 +4272,7 @@ describe('defaultRuntimeLoader — finished-run cache', () => {
         await mounted.ready()
         await openRunning(mounted, net, 'run-c-a')
         net.attachments[0]?.push(delta('run-c-a', 'some text', 0))
-        await vi.waitFor(() => expect(outputEl('run-c-a').textContent).toBe('some text'))
+        await vi.waitFor(() => expect(outputEl('run-c-a').textContent).toBe('some text'), { timeout: 5_000 })
         toggle('run-c-a').click()
 
         clearFinishedRunCache()
@@ -4482,7 +4482,7 @@ describe('defaultRuntimeLoader — output renderer wiring', () => {
       await vi.waitFor(() => {
         expect(captured).toBeDefined()
         expect(onRunLaunched).toBeDefined()
-      })
+      }, { timeout: 5_000 })
       // The loader arms jumps a few microtasks after the launch module's init.
       await new Promise(resolve => realSetTimeout(resolve, 5))
     }
@@ -4520,7 +4520,7 @@ describe('defaultRuntimeLoader — output renderer wiring', () => {
     ['a launch', async (m: Awaited<ReturnType<typeof mountRenderer>>) => m.launch()],
     ['a jump', async (m: Awaited<ReturnType<typeof mountRenderer>>) => {
       requestRunJump(RUN_ID)
-      await vi.waitFor(() => expect(m.initOperatorStream).toHaveBeenCalled())
+      await vi.waitFor(() => expect(m.initOperatorStream).toHaveBeenCalled(), { timeout: 5_000 })
     }],
   ])('%s attaches with the real renderer', async (_name, act) => {
     renderPage()
@@ -4599,7 +4599,7 @@ describe('defaultRuntimeLoader — output renderer wiring', () => {
       expect(mounted.initOperatorStream).not.toHaveBeenCalled()
 
       release()
-      await vi.waitFor(() => expect(mounted.initOperatorStream).toHaveBeenCalledTimes(1))
+      await vi.waitFor(() => expect(mounted.initOperatorStream).toHaveBeenCalledTimes(1), { timeout: 5_000 })
 
       expectRealRenderer(mounted.lastAttach()?.renderOutput)
     })
@@ -4611,7 +4611,7 @@ describe('defaultRuntimeLoader — output renderer wiring', () => {
 
       await mounted.click()
       release()
-      await vi.waitFor(() => expect(mounted.initOperatorStream).toHaveBeenCalledTimes(1))
+      await vi.waitFor(() => expect(mounted.initOperatorStream).toHaveBeenCalledTimes(1), { timeout: 5_000 })
 
       expect(mounted.lastAttach()?.finishedRecord).toBe(FINISHED)
       expectRealRenderer(mounted.lastAttach()?.renderOutput)

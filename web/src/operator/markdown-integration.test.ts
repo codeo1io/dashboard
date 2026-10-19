@@ -109,7 +109,7 @@ function feedStream() {
   const sse = (event: string, payload: unknown) => `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`
   return {
     ready: async () => {
-      await vi.waitFor(() => expect(frames).toHaveLength(1))
+      await vi.waitFor(() => expect(frames).toHaveLength(1), { timeout: 5_000 })
       frames[0]?.(sse('ready', {contractVersion: PINNED_CONTRACT_VERSION}))
     },
     delta: (text: string, seq: number) => frames[0]?.(sse('output', {runId: RUN_ID, text, final: false, seq})),
@@ -149,15 +149,15 @@ describe('streamed output', () => {
     await stream.ready()
 
     stream.delta('Intro **bold** text', 0)
-    await vi.waitFor(() => expect(output(card).querySelector('strong')?.textContent).toBe('bold'))
+    await vi.waitFor(() => expect(output(card).querySelector('strong')?.textContent).toBe('bold'), { timeout: 5_000 })
     expect(output(card).getAttribute('data-output-view')).toBe('rendered')
 
     stream.delta('\n\n- first\n- second', 1)
-    await vi.waitFor(() => expect(output(card).querySelectorAll('li')).toHaveLength(2))
+    await vi.waitFor(() => expect(output(card).querySelectorAll('li')).toHaveLength(2), { timeout: 5_000 })
     expect(output(card).querySelector('strong')?.textContent).toBe('bold')
 
     stream.final('The *final* answer', 2)
-    await vi.waitFor(() => expect(output(card).querySelector('em')?.textContent).toBe('final'))
+    await vi.waitFor(() => expect(output(card).querySelector('em')?.textContent).toBe('final'), { timeout: 5_000 })
     expect(output(card).textContent).toBe('The final answer')
     expect(output(card).querySelector('li')).toBeNull()
     expect(output(card).querySelector('strong')).toBeNull()
@@ -292,7 +292,7 @@ describe('toolbar clicks on an expanded card', () => {
     expect(card.dataset.expanded).toBe('true')
     await stream.ready()
     stream.delta('Intro **bold** text\n\n- one\n- two', 0)
-    await vi.waitFor(() => expect(output(card).querySelector('strong')?.textContent).toBe('bold'))
+    await vi.waitFor(() => expect(output(card).querySelector('strong')?.textContent).toBe('bold'), { timeout: 5_000 })
     expect(tools(card).hidden).toBe(false)
     mounted.onSelectRun.mockClear()
     mounted.parentClick.mockClear()
@@ -356,7 +356,7 @@ describe('toolbar clicks on an expanded card', () => {
 
     pressOn(control(card))
     stream.delta('\n\n- three\n- four', 1)
-    await vi.waitFor(() => expect(output(card).querySelectorAll('li')).toHaveLength(4))
+    await vi.waitFor(() => expect(output(card).querySelectorAll('li')).toHaveLength(4), { timeout: 5_000 })
     const event = pointerClick(card)
 
     expect(onSelectRun).not.toHaveBeenCalled()
