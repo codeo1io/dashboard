@@ -20,6 +20,7 @@ import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {createAggregator} from '../src/github/aggregator.ts'
 import {FetchInstallationsError} from '../src/github/installations.ts'
 import {MetadataTransportError, MetadataUnavailableError} from '../src/github/metadata.ts'
+import {logger} from '../src/logger.ts'
 import {err, ok} from '../src/result.ts'
 
 // ---------------------------------------------------------------------------
@@ -2908,6 +2909,87 @@ describe('review fix P2-1 — last-good snapshot re-filtered against the fresh d
 
     // Warm-empty guard fires exactly once — the scrub itself persisted nothing
     expect(snapshotStore.persist).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-161 — cross-format scrub integrity for the last-good snapshot
+// The working-set channels are dual-key (node_id OR derived/explicit
+// databaseId); the last-good scrub was node_id-only, so a redacted entry
+// keyed one way could not scrub a snapshot row keyed the other way.
+// ---------------------------------------------------------------------------
+
+describe('rm-161 — last-good scrub applies the same dual-key denylist check as the live channels', () => {
+  // deriveDatabaseId('MDEwOlJlcG9zaXRvcnkxODY5MTU0') → 1869154 (same fixture
+  // shape as the cross-format working-set tests above).
+  const LEGACY_NODE_ID = 'MDEwOlJlcG9zaXRvcnkxODY5MTU0'
+  const SHARED_DATABASE_ID = 1869154
+
+  const makeCrossFormatBootSnapshot = (): AggregatorSnapshot => ({
+    ...makeBootSnapshot(),
+    repos: [
+      makeBootSnapshotRepo({node_id: 'NODE_BOOT', full_name: 'fro-bot/agent'}),
+      // Snapshot row recorded under the LEGACY base64 node_id. The fresh
+      // denylist below holds the SAME repo under a new-format R_ node_id with
+      // an explicit database_id — a node_id string match cannot see this row;
+      // only the secondary, format-independent databaseId guard can.
+      makeBootSnapshotRepo({node_id: LEGACY_NODE_ID, full_name: 'marcusrbrown/dotfiles'}),
+    ],
+  })
+
+  it('cross-format leak: denylist entry keyed R_ with explicit database_id, snapshot row keyed legacy → row is scrubbed via the derived databaseId', async () => {
+    const snapshotStore = {load: vi.fn(() => makeCrossFormatBootSnapshot()), persist: vi.fn()}
+    const deps = makeDeps({
+      snapshotStore,
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        redactedNodeIds: ['R_kgDONewFormat'], // different string — primary guard misses
+        redactedDatabaseIds: [SHARED_DATABASE_ID], // explicit database_id on the entry
+      }))),
+      // Empty channel → warm-empty guard serves last-good through the scrub.
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([])),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    // The legacy-keyed row must NOT be served: the scrub's secondary guard
+    // derives its databaseId from the legacy node_id and matches the denylist.
+    expect(snap.repos.map(r => r.full_name)).toEqual(['fro-bot/agent'])
+    expect(snap.staleBanner).toBe(true)
+    // The scrubbed snapshot is also what persists — the disk cache stops
+    // carrying the row.
+    const persisted = snapshotStore.persist.mock.calls.at(-1)?.[0] as AggregatorSnapshot
+    expect(persisted.repos.map(r => r.node_id)).toEqual(['NODE_BOOT'])
+  })
+
+  it('residual boundary: denylist entry R_ with NO database_id → legacy-keyed snapshot row survives and the partial-protection warning fires', async () => {
+    const snapshotStore = {load: vi.fn(() => makeCrossFormatBootSnapshot()), persist: vi.fn()}
+    const deps = makeDeps({
+      snapshotStore,
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        redactedNodeIds: ['R_kgDOFormatA'],
+        redactedDatabaseIds: [], // no usable key beyond the node_id string
+        redactedEntriesMissingDatabaseId: 1,
+      }))),
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([])),
+    })
+
+    const warnSpy = vi.spyOn(logger, 'warning')
+    try {
+      const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+      await agg.refresh()
+      const snap = agg.getSnapshot()
+
+      // Pins the documented residual (the scrub-side twin of the install-channel
+      // residual above): with no databaseId on the denylist entry, no guard can
+      // relate the legacy-keyed row to it — the warning is the contract, not a
+      // silent miss.
+      expect(snap.repos.map(r => r.full_name).sort()).toEqual(['fro-bot/agent', 'marcusrbrown/dotfiles'])
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Denylist cross-format protection is partial'))
+    } finally {
+      warnSpy.mockRestore()
+    }
   })
 })
 

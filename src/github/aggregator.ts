@@ -1023,12 +1023,20 @@ export function createAggregator(
    * fail-closed semantics — when metadata is UNavailable nothing changes
    * (we cannot know the current denylist without it).
    *
-   * Matches on node_id only (DashboardRepo rows carry no database_id); this
-   * is the primary denylist guard, same key buildWorkingSet applies.
+   * rm-161: applies the same dual key the working-set channels apply —
+   * primary node_id membership plus the secondary, format-independent
+   * databaseId guard. Snapshot rows (DashboardRepo) carry no database_id,
+   * so the secondary guard derives it from the row's node_id: a legacy
+   * base64 node_id decodes, a new-format R_ node_id is conservatively
+   * null and relies on the primary guard alone (that entry is what the
+   * partial-protection warning in refresh reports).
    */
   function scrubLastGoodAgainstDenylist(metadata: MetadataResult): void {
     if (lastGoodSnapshot === null || lastGoodSnapshot.repos.length === 0) return
-    const denylisted = lastGoodSnapshot.repos.filter(repo => metadata.redactedNodeIds.has(repo.node_id))
+    const denylisted = lastGoodSnapshot.repos.filter(
+      repo => metadata.redactedNodeIds.has(repo.node_id) ||
+        redactedDatabaseIdIn(metadata.redactedDatabaseIds, deriveDatabaseId(repo.node_id)),
+    )
     if (denylisted.length === 0) return
     const denylistedNodeIds = new Set(denylisted.map(repo => repo.node_id))
     setSnapshot({
@@ -1179,8 +1187,10 @@ export function createAggregator(
       logger.warning(
         `Denylist cross-format protection is partial: ${missingCount} redacted ` +
         `entr${missingCount === 1 ? 'y has' : 'ies have'}` +
-        ' no derived databaseId, so the secondary databaseId guard cannot catch an ' +
-        'installation-channel repo surfaced under a different node_id format. ' +
+        ' no derived databaseId, so the secondary databaseId guard cannot catch a ' +
+        'repo surfaced under a different node_id format — on the installation ' +
+        'channel or in the last-good snapshot scrub (rows carry no database_id; ' +
+        'only legacy node_ids are derivable). ' +
         'The primary node_id guard still applies for same-format matches.',
       )
     }
