@@ -107,12 +107,25 @@ view of Fro Bot's cross-repo footprint.
 Read-only dependency source repositories are available under
 `.slim/clonedeps/repos/` for inspection. Do not edit these clones.
 
-- `.slim/clonedeps/repos/fro-bot__agent/` — `fro-bot/agent` at the CI-pinned
-  tag `v0.122.1` (pin source: `.github/workflows/fro-bot.yaml`; mirror
-  re-provisioned 2026-10-15 — provision with `git clone --depth 1 --branch
-  <pin>` if absent); the gateway's operator OAuth return path contract, GitHub
-  App client, secret readers, Hono build/serve split, and runtime
-  logger/Result primitives that this app mirrors.
+- `.slim/clonedeps/repos/fro-bot__agent/` — `fro-bot/agent` for read-only
+  reference: the gateway's operator OAuth return path contract, GitHub App
+  client, secret readers, Hono build/serve split, and runtime logger/Result
+  primitives that this app mirrors. VERSION TRUTH (rm-2007, recorded 2026-10-16
+  by run 528f458d as rm-874; merged at the 2026-10-20 fold, case f896c277,
+  against the then-current pins): the manifest `.slim/clonedeps.json` still
+  pins `v0.78.0` — stale (upstream removed the clonedeps machinery in PR #493;
+  this fork restored the manifest as a fork-keep at fa1b333) — while the
+  clone on disk in the canonical checkout was last refreshed to `v0.122.1`
+  (2026-10-14) and the gateway line keeps moving (v0.122.3 on 2026-10-15;
+  the CI pin in `.github/workflows/fro-bot.yaml` is now v0.123.1). Treat the
+  clone's own `git describe --tags` as the source of truth for what you are
+  reading, not the manifest. Refresh (canonical checkout only — conductor
+  worktrees carry the manifest but never the clones; do not edit the clone):
+  `rm -rf .slim/clonedeps/repos/fro-bot__agent && git clone --depth 1 --branch <pin-from-fro-bot.yaml> https://github.com/fro-bot/agent.git .slim/clonedeps/repos/fro-bot__agent`
+  then update `ref`/`resolvedVersion` in `.slim/clonedeps.json` to match the
+  new tag (that manifest edit is a tracked change and lands like any other);
+  conductor worktrees provision a clone with `git clone --depth 1 --branch
+  <pin>` only when inspection is actually needed.
 
 ## Landing-pipeline traps
 

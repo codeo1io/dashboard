@@ -1,12 +1,16 @@
 # Actions Darkness Watch
 
-Out-of-band watchdog for GitHub Actions run-creation darkness (rm-1411, landed
-run a79dc20458f1, 2026-10-15). During the 2026-10-09 outage every workflow in
-this repository reported `active` through the API while run *creation* was dead
-repo-wide: the newest run of any workflow stayed at 2026-10-09T01:59:31Z for six
-plus days, a 14-file adopt merged to `main` with zero CI validation, and twelve
-open PRs showed no checks. Nothing that runs *inside* Actions can detect that
-state — this runbook covers the probe that runs outside it.
+Out-of-band watchdog for GitHub Actions run-creation darkness. Born as the
+rm-1411 lane (landed run a79dc20458f1, 2026-10-15 — the first variant: env-var
+REST probe); superseded at the 2026-10-20 integrate fold (conflict case
+f896c277, run 528f458d cycle:1, def rm-2006 — renumbered from that run's
+rm-873 mint) by the PR-#810-validated variant documented here. During the
+2026-10-09 outage every workflow in this repository reported `active` through
+the API while run *creation* was dead repo-wide: the newest run of any
+workflow stayed at 2026-10-09T01:59:31Z for six plus days, 57 commits merged
+to `main` with zero CI validation, and twelve open PRs showed no checks.
+Nothing that runs *inside* Actions can detect that state — this runbook
+covers the probe that runs outside it.
 
 ## Trigger
 
@@ -15,43 +19,68 @@ checks appearing, before trusting a merge, or on the operator cadence the
 estate tripwire already follows:
 
 ```bash
-node scripts/actions-darkness-watch.ts
+node scripts/actions-darkness-watch.ts [--repo owner/name] [--dry-run] [--json]
 ```
 
-Optional environment: `ACTIONS_DARKNESS_REPO` (default `codeo1io/dashboard`),
-`ACTIONS_DARKNESS_TOKEN` or `GITHUB_TOKEN` (avoids unauthenticated rate limits),
-`ACTIONS_DARKNESS_NOW` (ISO timestamp; test seam only).
+- `--repo owner/name` — target repository (default: `GH_REPO`, else
+  `GITHUB_REPOSITORY`, else `codeo1io/dashboard`).
+- `--dry-run` — no network at all: reproduces the embedded live snapshot of
+  the 2026-10-09 outage (captured read-only 2026-10-16; 11 workflows dark,
+  57 uncovered commits, six newest commits embedded).
+- `--json` — machine-readable verdict object on stdout instead of the
+  human report.
+
+Transport is the `gh` CLI (`gh api` GETs only, authenticated by `gh`'s own
+config). Read-only by construction: no mutation path exists in the script.
 
 ## Verdict semantics
 
-- **GREEN** (exit 0) — every push/schedule-triggered workflow has a run newer
-  than its staleness budget.
-- **DARK** (exit 3) — at least one push/schedule-triggered workflow has gone
-  more than 48 hours without any run while the repository's `pushed_at` is
-  newer than that workflow's last run: a run was owed and never created. The
-  output lists every dark workflow with its last-run timestamp and age.
-- **UNKNOWN** (exit 1) — the API reads failed; treat as no signal, not as
-  healthy. Re-run before concluding anything.
+A commit is **uncovered** when it is newer than the newest workflow-run
+creation timestamp across all workflows by more than the grace window
+(900 s — GitHub normally creates a run within seconds of a push; 15 minutes
+is a generous allowance). One or more uncovered commits on the default
+branch ⇒ **DARK**.
 
-The exit ladder (0/1/3 for OK/UNKNOWN/DRIFT-class) matches the external-estate
-tripwire so operator tooling can treat both probes uniformly.
+- **bright** (exit 0) — every fetched default-branch commit is covered by a
+  newer workflow-run creation.
+- **dark** (exit 1) — at least one uncovered commit. The report lists each
+  uncovered commit, the newest run-creation timestamp, per-workflow last-run
+  staleness, and the reasons. A dark verdict is the signal — this exit code
+  is designed to fail a CI step or a cron lane red.
+- **usage/transport error** (exit 2) — bad flags, `gh` unavailable, an API
+  read failed, or a payload was malformed. Treat as no signal, not as
+  healthy; re-run before concluding anything.
+
+Note the ladder differs from the external-estate tripwire's 0/1/3 convention:
+here 1 (not 3) is the dark verdict and 2 (not 1) is the unknown.
 
 ## Bounds
 
-- A run of **any** event kind counts as run-creation activity for its workflow:
-  darkness means no runs at all, not that one trigger misfired. A stale but
-  manually-dispatched run still proves run creation works.
-- Candidate set is fixed by the **local** `.github/workflows/*.yaml` trigger
-  blocks (parsed, not inferred from history) — a workflow with only
-  `workflow_dispatch` is never a candidate, and a dark workflow with no history
-  still is.
-- The probe reads the 100 most recent runs repo-wide, so a workflow whose
-  last run falls outside that window reports `never-ran` — still correctly
-  DARK (it is by construction more than two days stale), but the `last_run`
-  field understates. Consult the workflow's Actions page for the true date.
-- The probe reads public API data and writes nothing to any repository. It
-  cannot distinguish an outage from an org-wide run-creation pause; it reports
-  the repo-scoped fact and the escalation is human.
+- The candidate set is every workflow the repository reports (one
+  `per_page=100` page of the workflows list — a repo with more than 100
+  workflows would under-enumerate; this repo has 14). Each workflow's newest
+  run is fetched with `per_page=1`, so the newest-run timestamp is exact.
+- The commit window is the 30 newest default-branch commits; when ALL fetched
+  commits are uncovered the report says `window saturated` — the true outage
+  depth is at least that many commits, a floor not a ceiling.
+- A run of **any** event kind counts as run-creation activity: darkness means
+  commits land with no run created after them, not that one trigger misfired.
+  A stale but manually-dispatched run still proves run creation works.
+- The `gh` transport has no `spawnSync` timeout — a hung local `gh` hangs the
+  probe (in CI the job's `timeout-minutes` bounds it).
+- The probe reads API data and writes nothing to any repository. It cannot
+  distinguish an outage from an org-wide run-creation pause; it reports the
+  repo-scoped fact and the escalation is human.
+
+## Workflow lane
+
+`.github/workflows/actions-darkness-watch.yaml` is **dormant by design**:
+`workflow_dispatch` only, no push/schedule triggers. While Actions are dark it
+could never run anyway — it exists so an operator (or a future scheduled form
+of itself, once a Hermes-side root cause is found) can dispatch the probe on
+demand. It runs the probe with zero install (node builtins only) from a
+pristine checkout; a dark verdict fails the run red — that red run is the
+signal.
 
 ## Boundary with the in-repo red-watch
 
@@ -61,11 +90,15 @@ out-of-band signal: repository tests cannot run while Actions is dark.
 
 ## Recorded proof
 
-- Forced-DARK: `test/actions-darkness-watch.test.ts` pins the semantics
-  (stale-plus-owed, never-ran, threshold boundary, trigger filtering).
-- Live DARK, 2026-10-14T23:58Z: verdict `DARK`, exit 3, 10/10 candidates dark —
-  `Main`/`CodeQL`/`Release`/`Scorecard`/`visual` at 5.9 days stale with
-  `pushed_at` 2026-10-14T23:53:06Z newer than every last run; the five
-  schedule-only lanes (audit, base-drift, canary, fro-bot, upstream-drift)
-  dark with no runs in the window. The outage state this runbook was written
-  under.
+- `test/actions-darkness-watch.test.ts` — 9-test unit suite over
+  `computeDarknessVerdict` and the dry-run snapshot (uncovered-commit
+  detection, grace-window boundary, never-ran repos, window saturation,
+  snapshot-shape pins).
+- Full validation: ephemeral PR #810 commit 57b9ce7e (run 528f458d cycle:1
+  full_tests ab33ec6b) — all 11 executed checks SUCCESS, including visual.
+- Live bright probe 2026-10-17T01:53:41Z after Actions resumed
+  2026-10-16T17:12Z (the first dispatch / enable decision was recorded
+  UNBLOCKED the same day).
+- Live DARK, 2026-10-14 era (first variant, runbook's original evidence):
+  10/10 candidate workflows stale 5.9 days with `pushed_at` newer than every
+  last run — the outage state this runbook was written under.

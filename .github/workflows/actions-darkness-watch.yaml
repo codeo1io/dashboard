@@ -1,0 +1,51 @@
+---
+name: Actions darkness watch
+
+# rm-2006 (2026-10-16, run 528f458d; renumbered from rm-873 at the 2026-10-20 fold, case f896c277): dormant by design. Hosted Actions went
+# fully dark at 2026-10-09T01:59:31Z (every workflow's newest run; 57
+# commits landed on main through 3e3664c with zero run creation), and the
+# outage was invisible precisely because the gate workflows themselves were
+# part of it. This workflow carries no push/schedule triggers ON PURPOSE:
+# while Actions are dark it could never run anyway — it exists so an
+# operator (or a future scheduled form of itself, once the Hermes-side
+# root cause is found) can dispatch the probe on demand.
+#
+# The probe is read-only (gh api GETs only) and runs with zero install
+# (node builtins only — no pnpm), so it works from a pristine checkout.
+# Exit codes: 0 bright, 1 dark (a dark verdict FAILS this run — that red
+# run is the signal), 2 transport/usage error.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    shell: bash -Eeuo pipefail {0}
+
+jobs:
+  probe:
+    name: Probe run-creation darkness
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: ⤵ Checkout Branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - name: 🔍 Darkness probe
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: node scripts/actions-darkness-watch.ts

@@ -1,161 +1,162 @@
+/**
+ * rm-2006 unit tests — the actions-darkness verdict logic, exercised without
+ * any network. The probe's live half (gh api reads) is validated by the
+ * captured runs in the phase evidence; this suite pins the decision
+ * function: grace-window semantics, commit coverage, per-workflow
+ * staleness, window saturation, and the reproduction of the live
+ * 2026-10-09 outage from the embedded dry-run snapshot.
+ */
 import {describe, expect, it} from 'vitest'
 
 import {
-  classifyWorkflows,
-  computeDarkness,
-  DARKNESS_THRESHOLD_MS,
+  computeDarknessVerdict,
+  DRY_RUN_SNAPSHOT,
+  RUN_CREATION_GRACE_SECONDS,
+  type MainlineCommit,
+  type WorkflowRunSummary,
 } from '../scripts/actions-darkness-watch.ts'
 
-const NOW = '2026-10-15T12:00:00.000Z'
-const PUSHED_RECENT = '2026-10-14T21:00:00.000Z'
+const RUN_LAST = '2026-10-09T01:59:31Z'
+const COMMITS: readonly MainlineCommit[] = [
+  {sha: 'cccccc', committedAt: '2026-10-15T00:00:00Z', subject: 'third landing'},
+  {sha: 'bbbbbb', committedAt: '2026-10-14T00:00:00Z', subject: 'second landing'},
+  {sha: 'aaaaaa', committedAt: '2026-10-08T00:00:00Z', subject: 'covered by the last run'},
+]
 
-function daysAgo(days: number): string {
-  return new Date(Date.parse(NOW) - days * 24 * 60 * 60 * 1000).toISOString()
-}
-
-function verdictFor(options: {
-  workflows?: {id: number; path: string; name: string}[]
-  runs?: {workflowId: number; createdAt: string}[]
-  triggers?: Record<string, string[]>
-  pushedAt?: string
-  now?: string
-}) {
-  return computeDarkness({
-    workflows: options.workflows ?? [
-      {id: 1, path: '.github/workflows/main.yaml', name: 'Main'},
-      {id: 2, path: '.github/workflows/manual.yaml', name: 'Manual'},
-    ],
-    runs: options.runs ?? [{workflowId: 1, createdAt: daysAgo(0.1)}],
-    triggers: options.triggers ?? {
-      '.github/workflows/main.yaml': ['push'],
-      '.github/workflows/manual.yaml': ['workflow_dispatch'],
-    },
-    pushedAt: options.pushedAt ?? PUSHED_RECENT,
-    now: options.now ?? NOW,
-  })
-}
-
-describe('classifyWorkflows', () => {
-  it('normalizes the mapping form of on:', () => {
-    const index = classifyWorkflows({
-      'main.yaml': 'on:\n  push:\n    branches: [main]\n  schedule:\n    - cron: "0 6 * * *"\n',
+describe('computeDarknessVerdict (rm-2006)', () => {
+  it('reports dark with every post-run commit uncovered when commits land after the newest run', () => {
+    const verdict = computeDarknessVerdict({
+      now: '2026-10-16T12:00:00Z',
+      runs: [{workflow: 'Main', lastRunAt: RUN_LAST}],
+      commits: COMMITS,
     })
-    expect(index['main.yaml']).toEqual(['push', 'schedule'])
+    expect(verdict.verdict).toBe('dark')
+    expect(verdict.lastRunAt).toBe('2026-10-09T01:59:31.000Z') // normalized ISO form
+    expect(verdict.uncoveredCommits.map(commit => commit.sha)).toEqual(['cccccc', 'bbbbbb'])
+    expect(verdict.windowSaturated).toBe(false)
+    expect(verdict.darkSinceSeconds).toBe(Math.round((Date.parse('2026-10-16T12:00:00Z') - Date.parse(RUN_LAST)) / 1000))
   })
 
-  it('normalizes the array and bare-string forms of on:', () => {
-    const index = classifyWorkflows({
-      'array.yaml': 'on: [push, workflow_dispatch]\n',
-      'bare.yaml': 'on: push\n',
+  it('is bright when a run newer than every commit exists', () => {
+    const verdict = computeDarknessVerdict({
+      now: '2026-10-16T12:00:00Z',
+      runs: [{workflow: 'Main', lastRunAt: '2026-10-15T06:00:00Z'}],
+      commits: COMMITS,
     })
-    expect(index['array.yaml']).toEqual(['push', 'workflow_dispatch'])
-    expect(index['bare.yaml']).toEqual(['push'])
+    expect(verdict.verdict).toBe('bright')
+    expect(verdict.uncoveredCommits).toEqual([])
+    expect(verdict.reasons.join(' ')).toContain('every fetched commit predates')
   })
 
-  it('reads the legacy boolean on-key form (true:)', () => {
-    const index = classifyWorkflows({'legacy.yaml': 'true:\n  push:\njobs:\n  x:\n'})
-    expect(index['legacy.yaml']).toEqual(['push'])
-  })
-
-  it('skips unparseable and non-mapping documents', () => {
-    const index = classifyWorkflows({
-      'broken.yaml': 'on: [push\n',
-      'empty.yaml': '',
+  it('forgives a commit inside the run-creation grace window', () => {
+    // Commit 10 minutes after the newest run: a run for it may still be
+    // being created (default grace 900s) — not uncovered.
+    const graceCase = computeDarknessVerdict({
+      now: '2026-10-15T01:00:00Z',
+      runs: [{workflow: 'Main', lastRunAt: '2026-10-15T00:00:00Z'}],
+      commits: [{sha: 'ingrace', committedAt: '2026-10-15T00:10:00Z', subject: 'recent push'}],
     })
-    expect(index).toEqual({})
-  })
-})
+    expect(graceCase.verdict).toBe('bright')
 
-describe('computeDarkness', () => {
-  it('returns GREEN when every candidate ran after the last push', () => {
-    const result = verdictFor({})
-    expect(result.verdict).toBe('GREEN')
-    expect(result.candidates).toBe(1)
-    expect(result.darkWorkflows).toEqual([])
-  })
-
-  it('returns DARK when a candidate is days-stale and a run is owed', () => {
-    const result = verdictFor({
-      runs: [{workflowId: 1, createdAt: daysAgo(6)}],
-      pushedAt: daysAgo(1),
+    // Same clock, commit 20 minutes after the newest run: past grace, still
+    // no run — uncovered, dark.
+    const pastGrace = computeDarknessVerdict({
+      now: '2026-10-15T01:00:00Z',
+      runs: [{workflow: 'Main', lastRunAt: '2026-10-15T00:00:00Z'}],
+      commits: [{sha: 'pastgrace', committedAt: '2026-10-15T00:20:00Z', subject: 'stale push'}],
     })
-    expect(result.verdict).toBe('DARK')
-    expect(result.darkWorkflows).toHaveLength(1)
-    expect(result.darkWorkflows[0]?.name).toBe('Main')
-    expect(result.darkWorkflows[0]?.lastRun).toBe(daysAgo(6))
-    expect(result.darkWorkflows[0]?.ageDays).toBe(6)
+    expect(pastGrace.verdict).toBe('dark')
+    expect(pastGrace.graceSeconds).toBe(RUN_CREATION_GRACE_SECONDS)
   })
 
-  it('treats a candidate that never ran as dark once anything was pushed', () => {
-    const result = verdictFor({runs: []})
-    expect(result.verdict).toBe('DARK')
-    expect(result.darkWorkflows[0]?.lastRun).toBe('never')
-  })
-
-  it('does not flag staleness at exactly the threshold (strictly greater)', () => {
-    const exactlyAtThreshold = Date.parse(NOW) - DARKNESS_THRESHOLD_MS
-    const result = verdictFor({
-      runs: [{workflowId: 1, createdAt: new Date(exactlyAtThreshold).toISOString()}],
-      pushedAt: daysAgo(3),
+  it('honors a custom graceSeconds of zero (strict coverage)', () => {
+    const verdict = computeDarknessVerdict({
+      now: '2026-10-15T01:00:00Z',
+      runs: [{workflow: 'Main', lastRunAt: '2026-10-15T00:00:00Z'}],
+      commits: [{sha: 'oneSec', committedAt: '2026-10-15T00:00:01Z', subject: 'a second later'}],
+      graceSeconds: 0,
     })
-    expect(result.verdict).toBe('GREEN')
+    expect(verdict.verdict).toBe('dark')
+    expect(verdict.graceSeconds).toBe(0)
   })
 
-  it('returns GREEN when stale but nothing was pushed since the last run', () => {
-    const result = verdictFor({
-      runs: [{workflowId: 1, createdAt: daysAgo(6)}],
-      pushedAt: daysAgo(7),
+  it('treats never-ran workflows as null and darkens on any commit', () => {
+    const verdict = computeDarknessVerdict({
+      now: '2026-10-16T12:00:00Z',
+      runs: [{workflow: 'Main', lastRunAt: null}],
+      commits: [{sha: 'first', committedAt: '2026-10-10T00:00:00Z', subject: 'initial commit'}],
     })
-    expect(result.verdict).toBe('GREEN')
+    expect(verdict.verdict).toBe('dark')
+    expect(verdict.lastRunAt).toBeNull()
+    expect(verdict.darkSinceSeconds).toBeNull()
+    expect(verdict.reasons.join(' ')).toContain('has ever created a run')
   })
 
-  it('ignores workflows without push or schedule triggers', () => {
-    const result = verdictFor({
-      triggers: {
-        '.github/workflows/main.yaml': ['workflow_dispatch'],
-        '.github/workflows/manual.yaml': ['workflow_dispatch'],
-      },
-      runs: [],
+  it('is bright when nothing ever ran and no commits exist (vacuous, stated in reasons)', () => {
+    const verdict = computeDarknessVerdict({
+      now: '2026-10-16T12:00:00Z',
+      runs: [{workflow: 'Main', lastRunAt: null}],
+      commits: [],
     })
-    expect(result.verdict).toBe('GREEN')
-    expect(result.candidates).toBe(0)
+    expect(verdict.verdict).toBe('bright')
+    expect(verdict.reasons.join(' ')).toContain('vacuously bright')
   })
 
-  it('counts only the workflow-run timestamps of the matching workflow id', () => {
-    const result = verdictFor({
-      runs: [
-        {workflowId: 2, createdAt: daysAgo(0.1)},
-        {workflowId: 1, createdAt: daysAgo(6)},
-      ],
-      pushedAt: daysAgo(1),
+  it('uses the newest run across workflows for coverage and reports each workflow idle time', () => {
+    const runs: readonly WorkflowRunSummary[] = [
+      {workflow: 'Fro Bot', lastRunAt: '2026-09-18T03:11:51Z'},
+      {workflow: 'Main', lastRunAt: RUN_LAST},
+      {workflow: 'GraphQL canary', lastRunAt: '2026-10-05T12:21:01Z'},
+    ]
+    const verdict = computeDarknessVerdict({
+      now: '2026-10-16T12:00:00Z',
+      runs,
+      commits: COMMITS,
     })
-    expect(result.verdict).toBe('DARK')
-    expect(result.darkWorkflows).toHaveLength(1)
+    expect(verdict.lastRunAt).toBe('2026-10-09T01:59:31.000Z') // max across workflows, not the first entry
+    expect(verdict.uncoveredCommits.map(commit => commit.sha)).toEqual(['cccccc', 'bbbbbb'])
+    const byName = new Map(verdict.perWorkflow.map(entry => [entry.workflow, entry]))
+    expect(byName.get('Fro Bot')?.lastRunAt).toBe('2026-09-18T03:11:51Z')
+    expect(byName.get('GraphQL canary')?.idleSeconds).toBe(
+      Math.round((Date.parse('2026-10-16T12:00:00Z') - Date.parse('2026-10-05T12:21:01Z')) / 1000),
+    )
   })
 
-  it('reports every dark candidate, not just the first', () => {
-    const result = verdictFor({
-      workflows: [
-        {id: 1, path: '.github/workflows/main.yaml', name: 'Main'},
-        {id: 3, path: '.github/workflows/canary.yaml', name: 'Canary'},
-      ],
-      triggers: {
-        '.github/workflows/main.yaml': ['push'],
-        '.github/workflows/canary.yaml': ['schedule'],
-      },
-      runs: [{workflowId: 1, createdAt: daysAgo(6)}],
-      pushedAt: daysAgo(1),
+  it('flags window saturation when every fetched commit is uncovered (depth is a floor)', () => {
+    const saturated = Array.from({length: 30}, (_, index): MainlineCommit => ({
+      sha: `sha${index}`,
+      committedAt: `2026-10-1${Math.min(5, 0 + index)}T00:00:00Z`,
+      subject: `dark landing ${index}`,
+    }))
+    const verdict = computeDarknessVerdict({
+      now: '2026-10-16T12:00:00Z',
+      runs: [{workflow: 'Main', lastRunAt: RUN_LAST}],
+      commits: saturated,
     })
-    expect(result.verdict).toBe('DARK')
-    expect(result.darkWorkflows.map(w => w.name)).toEqual(['Main', 'Canary'])
+    expect(verdict.verdict).toBe('dark')
+    expect(verdict.windowSaturated).toBe(true)
+    expect(verdict.uncoveredCommits).toHaveLength(30)
+    expect(verdict.reasons.join(' ')).toContain('outage is at least 30 commits deep')
   })
 
-  it('treats schedule-only workflows as candidates', () => {
-    const result = verdictFor({
-      triggers: {'.github/workflows/main.yaml': ['schedule']},
-      runs: [],
+  it('reproduces the embedded 2026-10-09 outage snapshot as a dark verdict (dry-run parity)', () => {
+    const verdict = computeDarknessVerdict({
+      now: DRY_RUN_SNAPSHOT.now,
+      runs: DRY_RUN_SNAPSHOT.runs,
+      commits: DRY_RUN_SNAPSHOT.commits,
     })
-    expect(result.candidates).toBe(1)
-    expect(result.verdict).toBe('DARK')
+    expect(verdict.verdict).toBe('dark')
+    expect(verdict.lastRunAt).toBe('2026-10-09T01:59:31.000Z')
+    expect(verdict.uncoveredCommits.map(commit => commit.sha)).toEqual([
+      '3e3664c',
+      '5d5f9be',
+      'a385ca5',
+      '5530b5e',
+      'e895362',
+      '0003850',
+    ])
+    expect(verdict.windowSaturated).toBe(true)
+    expect(DRY_RUN_SNAPSHOT.runs).toHaveLength(11)
+    expect(DRY_RUN_SNAPSHOT.totalUncoveredDepth).toBeGreaterThan(DRY_RUN_SNAPSHOT.commits.length)
   })
 })
