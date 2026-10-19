@@ -1,4 +1,5 @@
 ---
+title: "Design Check on impeccable 4.6.0: v4 migration, role sizes, and the ephemeral-PR parity red (2026-10-18)"
 module: ci-design-check
 tags: [impeccable, design-check, v4-migration, flat-type-hierarchy]
 problem_type: toolchain-migration
