@@ -91,10 +91,13 @@ view of Fro Bot's cross-repo footprint.
   workflow now sets `branch-pr` for those triggers; verify delivery by confirming a
   fro-bot-authored PR exists, not by reading run status. See
   `docs/solutions/workflow-issues/workflow-output-mode-auto-discarded-agent-fixes-2026-08-31.md`.
-- The `Fro Bot` workflow on this fork is `disabled_manually` (verified 2026-09-19):
-  codeo1io/dashboard has no `FRO_BOT_PAT` secret, so the daily cron would fail on
-  every run. Re-enabling it without provisioning that secret resurrects the failing
-  cron — check `gh workflow list` state and secret presence before flipping it back on.
+- The `Fro Bot` workflow on this fork is `active` and schedule-inert by gate (verified
+  2026-10-19): codeo1io/dashboard still has no `FRO_BOT_PAT` secret, and fro-bot.yaml's
+  `HAS_FRO_BOT_PAT` gate + per-step schedule guards skip the daily cron with a visible warning
+  while the secret is absent — manual dispatch with the secret set still runs. The 2026.10.43
+  adoption merge had stripped that gate, and the cron then failed for real (run 39093521474,
+  2026-10-18T03:24Z) until it was restored. Check `gh workflow list` state and secret presence
+  before changing either side of that contract.
 
 ## Cloned Dependency Source
 
@@ -102,9 +105,10 @@ Read-only dependency source repositories are available under
 `.slim/clonedeps/repos/` for inspection. Do not edit these clones.
 
 - `.slim/clonedeps/repos/fro-bot__agent/` — `fro-bot/agent` at the CI-pinned
-  tag `v0.122.1` (pin source: `.github/workflows/fro-bot.yaml`; mirror
-  re-provisioned 2026-10-15 — provision with `git clone --depth 1 --branch
-  <pin>` if absent); the gateway's operator OAuth return path contract, GitHub
+  tag `v0.123.1` (pin source: `.github/workflows/fro-bot.yaml`; mirror
+  re-provisioned 2026-10-19 — provision with `git clone --depth 1 --branch
+  <pin>` if absent, or fetch + checkout the tag when the pin advances); the
+  gateway's operator OAuth return path contract, GitHub
   App client, secret readers, Hono build/serve split, and runtime
   logger/Result primitives that this app mirrors.
 
