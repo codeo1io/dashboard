@@ -1,0 +1,160 @@
+# Conductor residue hygiene (rm-2009).
+#
+# Weekly REPORT pass over conductor PR residue: derives run-state dispositions
+# from origin evidence (scripts/conductor-run-state-derive.ts — landing merges
+# + head-ancestry on origin/main) and feeds them to conductor-pr-janitor.ts in
+# classify/report mode. Scheduled runs are strictly read-only: the janitor is
+# invoked with NO --apply/--execute, so nothing can close, and its exit code
+# (0 clean; 2 refusal; non-zero only if the process itself fails, e.g. the gh
+# listing) never fails the job — the rc is captured and surfaced instead.
+#
+# Mutation is triple-gated and manual-only: the `apply` job runs only on an
+# explicit workflow_dispatch, only with the apply input set (execute adds the
+# second gate), and the janitor itself refuses any close without
+# --superseding-commit=<sha>. Zero auto-closing by construction.
+name: Conductor Hygiene
+on:
+  schedule:
+    # Mondays 04:47 UTC — after base-drift (04:13), before upstream-drift
+    # (05:17); minute 47 is otherwise unused on Mondays in this repo.
+    - cron: '47 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Print (not run) the close commands for close rows — manual only
+        type: boolean
+        required: false
+        default: false
+      execute:
+        description: 'Actually close residue PRs — requires apply + superseding-commit; manual only'
+        type: boolean
+        required: false
+        default: false
+      superseding-commit:
+        description: Commit sha named in every close summary (required when any row would close)
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: conductor-hygiene
+  cancel-in-progress: false
+
+jobs:
+  report:
+    name: Residue report (read-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: the derivation reads landing-merge subjects and
+          # runs merge-base --is-ancestor against origin/main.
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Derive run states from origin evidence
+        id: derive
+        env:
+          GH_TOKEN: '${{ github.token }}'
+        run: |
+          set -euo pipefail
+          node scripts/conductor-run-state-derive.ts --repo codeo1io/dashboard > derive-output.txt
+          # Strictly hex ids + literal '=landed' tokens — safe to word-split.
+          ARGS="$(sed -n 's/^run-state-args: //p' derive-output.txt)"
+          {
+            echo '## Conductor PR residue report (rm-2009)'
+            echo
+            echo 'Derived run states (origin evidence: landing merges + head ancestry):'
+            echo
+            echo '```'
+            cat derive-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "args=${ARGS}" >> "$GITHUB_OUTPUT"
+      - name: Janitor report pass (classify-only; exit code never fails the job)
+        env:
+          GH_TOKEN: '${{ github.token }}'
+        run: |
+          # The janitor exits 0 on a clean classify pass, 2 on a refusal, and
+          # non-zero only when the process itself fails (e.g. the gh listing
+          # throws). `bash -e` would abort the step before the rc is captured,
+          # so the call runs with -e suspended and the rc lands in the summary.
+          set +e
+          node scripts/conductor-pr-janitor.ts --repo codeo1io/dashboard \
+            ${{ steps.derive.outputs.args }} > janitor-output.txt 2>&1
+          RC=$?
+          set -e
+          {
+            echo
+            echo '### Janitor triage (exit rc='"$RC"')'
+            echo
+            echo '```'
+            cat janitor-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+  apply:
+    name: 'Manual close (dispatch + apply + execute gated)'
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.apply == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # Only this dispatch-only job holds the PR-write grant; the weekly
+      # report job stays read-only and unprivileged.
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Derive run states from origin evidence
+        id: derive
+        env:
+          GH_TOKEN: '${{ github.token }}'
+        run: |
+          set -euo pipefail
+          node scripts/conductor-run-state-derive.ts --repo codeo1io/dashboard > derive-output.txt
+          ARGS="$(sed -n 's/^run-state-args: //p' derive-output.txt)"
+          echo "args=${ARGS}" >> "$GITHUB_OUTPUT"
+      - name: Janitor apply/execute pass (operator-gated)
+        env:
+          GH_TOKEN: '${{ github.token }}'
+          INPUT_EXECUTE: '${{ inputs.execute }}'
+          SUPERSEDING_COMMIT: '${{ inputs.superseding-commit }}'
+        run: |
+          FLAGS='--apply'
+          if [ "$INPUT_EXECUTE" = 'true' ]; then
+            FLAGS="$FLAGS --execute"
+          fi
+          if [ -n "$SUPERSEDING_COMMIT" ]; then
+            FLAGS="$FLAGS --superseding-commit=$SUPERSEDING_COMMIT"
+          fi
+          # rc 2 (janitor refusal: e.g. close rows without a superseding
+          # commit) is the gate working — surface it, never hide it. Same
+          # -e suspension as the report job so the rc is always captured.
+          set +e
+          node scripts/conductor-pr-janitor.ts --repo codeo1io/dashboard \
+            ${{ steps.derive.outputs.args }} $FLAGS > janitor-output.txt 2>&1
+          RC=$?
+          set -e
+          {
+            echo '## Conductor Hygiene — manual apply pass (rm-2009)'
+            echo
+            echo '```'
+            cat janitor-output.txt
+            echo '```'
+            echo
+            echo 'janitor exit rc='"$RC"' (2 = the janitor refused — gate working)'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0

@@ -56,6 +56,7 @@ import {makeNotFoundError, readRepoMetadata} from './github/metadata.ts'
 import {fetchPlatformStatus} from './github/platform-status.ts'
 import {createFileSnapshotStore} from './github/snapshot-store.ts'
 import {readListenerDbPath, readListenerIngestKey} from './listener/config.ts'
+import {createIngestReplayGuard} from './listener/ingest-auth.ts'
 import {createListenerStore} from './listener/store.ts'
 import {logger, sanitizeErrorMessage} from './logger.ts'
 import {isOk} from './result.ts'
@@ -1225,6 +1226,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       buildListenerRouter({
         store: opts.listenerStore,
         ingestKey: opts.listenerIngestKey ?? null,
+        // rm-2008: one seen-delivery cache per server instance — byte-identical
+        // verified redeliveries inside the HMAC window reject 401 before the
+        // store; bounded, in-memory, restart-clears.
+        ingestReplayGuard: createIngestReplayGuard(),
         // Ack CSRF is active whenever an operator session is in scope. Derive
         // from the RESOLVED operatorLogin (opts with env fallback — see the
         // resolution above), never raw opts: createDashboardServer and
