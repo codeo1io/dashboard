@@ -372,4 +372,23 @@ describe('sw.ts message handler (behavioral)', () => {
     dispatchMessage(data)
     expect(skipWaiting).not.toHaveBeenCalled()
   })
+
+  it('does not ship the dev-only push mock receiver (rm-2003)', () => {
+    // web/src/sw.ts gates the MOCK_SYNTHETIC_PUSH receiver behind
+    // import.meta.env.DEV (same flag as the sender in Notifications.tsx);
+    // Vite statically replaces the flag in a production build, so the whole
+    // block — literal included — must be dead-branch-eliminated from the
+    // emitted sw.js. test/static-assets.test.ts sweeps the same literal
+    // class; this pin lives here next to the other build-output assertions.
+    expect(readSW()).not.toContain('MOCK_SYNTHETIC_PUSH')
+  })
+
+  it('still ships the real push wiring rm-249 tracks', () => {
+    // Positive counterweight to the absence pin above: a stubbed or broken
+    // SW build must not be able to pass that absence test vacuously. The
+    // deny-by-default router registers the genuine push surface at module
+    // scope, so the handler registrations stay present in production output.
+    expect(readSW()).toContain('notificationclick')
+    expect(readSW()).toContain('push')
+  })
 })

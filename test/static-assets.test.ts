@@ -921,6 +921,18 @@ describe('production build artifacts — no fixture strings in web/dist JS', () 
     }
   })
 
+  it('web/dist sw.js does not contain push fixture literals (rm-2003)', async () => {
+    // The mock receiver in web/src/sw.ts is import.meta.env.DEV-gated (same
+    // flag as the sender in Notifications.tsx), so a production build must
+    // dead-branch-eliminate it. The assets sweep above cannot see sw.js.
+    const fs = await import('node:fs/promises')
+    const src = await fs.readFile('web/dist/sw.js', 'utf8')
+    const forbidden = ['endpoint-fixture-', '/__fixture/operator/push', 'FIXTURE_VAPID_PUBLIC_KEY', 'MOCK_SYNTHETIC_PUSH']
+    for (const literal of forbidden) {
+      expect(src, `web/dist/sw.js must not contain ${literal}`).not.toContain(literal)
+    }
+  })
+
   it('web/dist/index.html does not contain push fixture literals', async () => {
     const fs = await import('node:fs/promises')
     const src = await fs.readFile('web/dist/index.html', 'utf8')
