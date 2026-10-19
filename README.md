@@ -70,6 +70,10 @@ Endpoint parity is guarded in both directions by `test/endpoint-parity-guard.tes
 every live route must appear here (or on an explicit allowlist inside that test), and every row
 here must name a route the server actually mounts.
 
+The operator launch surface behind the reverse proxy (repo picker, idempotency-key retry,
+optimistic pending cards, the `launch-success` event) has its own behavioral contract:
+`docs/contracts/operator-launch.md`.
+
 ## Configuration
 
 Access is single-operator: GitHub OAuth authenticates the request and an exact, case-sensitive
