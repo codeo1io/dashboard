@@ -8,6 +8,7 @@ import {DatabaseSync} from 'node:sqlite'
  * See docs/contracts/operator-listener-channel.md — retention policy (500 rows
  * / 30 days) and idempotency (dedupeKey upsert) are enforced here.
  */
+import {logger, sanitizeErrorMessage} from '../logger.ts'
 import {parseLinks, type IngestMessage, type ListenerLink, type ListenerMessage, type MessagesResponse} from './contract.ts'
 
 export interface ListenerStore {
@@ -63,9 +64,16 @@ function parseLinksCell(raw: string, id: string): readonly ListenerLink[] {
     if (!validated.success) throw new Error(validated.error.message)
     return validated.data
   } catch (error) {
-    console.warn(
+    // rm-187 / rm-229 rider discipline (2026-10-17): degrade warnings route
+    // through the structured logger, not a bare console call. The logger's
+    // emit() redacts CONTEXT fields only, so the message text is pre-sanitized
+    // here via sanitizeErrorMessage (house pattern, aggregator.ts:576) — a V8
+    // SyntaxError message can embed a raw snippet of the corrupt cell
+    // (2026-10-18 independent-review fix). Warning-level still lands on stderr
+    // via the console-backed sink, so log-channel assertions keep observing it.
+    logger.warning(
       `[listener-store] degraded links cell on message ${id}: ${
-        error instanceof Error ? error.message : String(error)
+        sanitizeErrorMessage(error instanceof Error ? error.message : String(error))
       } — serving empty links, other fields intact`,
     )
     return []
