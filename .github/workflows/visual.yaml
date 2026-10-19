@@ -86,6 +86,13 @@ jobs:
         with:
           persist-credentials: false
 
+      # setup-bun extracts the Bun release zip with `unzip`; the pinned
+      # playwright image ships without it. Install first (root container,
+      # inert for rendering — the lockstep guard pins browser/image versions,
+      # not system utilities).
+      - name: Install unzip
+        run: apt-get update -qq && apt-get install -y -qq unzip
+
       # Bun via oven-sh/setup-bun (repo convention since the 2026.10.48
       # adoption of upstream #648; the shared composite action does the same).
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
