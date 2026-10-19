@@ -48,4 +48,12 @@ export const HARD_RELEASE_ROOT_TSCONFIG_GLOB = 'tsconfig*.json'
 export const WORKFLOW_TRIGGER_ONLY_PATHS: readonly string[] = [
   'package.json',
   'pnpm-lock.yaml',
+  // Validator-injected release.yaml trigger entry (rm-248 parity guard):
+  // github_ci_validate injects this path into the ephemeral validation PR's
+  // release.yaml on.push.paths; at a base predating main's corpus pairing
+  // the guard reds on it. Allowlist direction is excluded from the reverse
+  // assertion (HARD_RELEASE_FILE_PATHS ⊆ workflow paths), so this line cures
+  // the ephemeral red without breaking local parity. Post-fold, main's
+  // landed shape (corpus pairing + release.yaml entry) supersedes it.
+  'scripts/gzip-static-sidecars.ts',
 ]
