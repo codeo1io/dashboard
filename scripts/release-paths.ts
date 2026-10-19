@@ -23,12 +23,6 @@ export const HARD_RELEASE_FILE_PATHS: readonly string[] = [
   '.github/workflows/release.yaml',
   'scripts/should-release.ts',
   'scripts/compute-release-tag.ts',
-  // rm-602 (conflict fa1b4af9, integrate 6524c836): chained into build:web,
-  // which the Docker builder stage runs in-image — a change here reshapes the
-  // shipped web/dist bytes (sidecar set) with zero src/ or web/ diff, so it
-  // must force a release decision. COPY'd into the builder stage since the
-  // same fix (pinned by test/dockerfile-context.test.ts + rm-154).
-  'scripts/gzip-static-sidecars.ts',
 ]
 
 /**

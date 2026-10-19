@@ -22,10 +22,15 @@
 //                       (warning-class: mirrors the test/clonedeps-lockstep
 //                       suite, rm-1510)
 //   actionlint          container-form actionlint IF a container runtime is
-//                       present (warn-skip otherwise — see the runbook recipe)
+//                       present AND the image is cached locally — no network
+//                       pulls by design (warn-skip otherwise; a run against a
+//                       cached image FAILs only on real findings)
 //
 // Usage:
-//   node scripts/preflight.ts [--skip=tsc,eslint,...] [--list]
+//   node scripts/preflight.ts [--skip=<check-id>,...] [--list]
+//   (check ids: `node scripts/preflight.ts --list`; they are the names in
+//   the Checks list above — e.g. typescript-server, eslint — NOT generic
+//   tool names)
 //
 // Exit code 0 = every check ok (warns allowed); 1 = at least one failure.
 // This script performs no repository writes and no network access.
@@ -204,6 +209,20 @@ const checks: Check[] = [
         return {
           status: 'warn',
           note: 'no container runtime — run actionlint container form before landing workflow edits',
+        }
+      }
+      // rm-1509 review-fix (2026-10-19): outage-proofing — this doctor never
+      // touches the network, so `image inspect` gates the run instead of a
+      // pull. Inspect doubles as the daemon probe (it fails when the daemon
+      // is down) and the cache probe (it fails when the image was never
+      // pulled); either way we WARN with remediation rather than fail on
+      // infrastructure. Only a run against a locally cached image can FAIL,
+      // and there a nonzero exit is actionlint findings, not an outage.
+      const inspect = cmd(runtime, ['image', 'inspect', 'rhysd/actionlint:latest'])
+      if (inspect.code !== 0) {
+        return {
+          status: 'warn',
+          note: `actionlint image not usable offline (${runtime} image inspect rc=${inspect.code}) — pull rhysd/actionlint:latest once while online; not attempting a network pull by design (rm-1509)`,
         }
       }
       const {code, out} = cmd(runtime, [

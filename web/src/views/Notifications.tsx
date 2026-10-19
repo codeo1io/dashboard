@@ -364,7 +364,13 @@ export function Notifications({
 
   // rm-1446: surface the gateway's session push-health field. Fail-open by
   // construction — every failure path resolves null and renders nothing.
+  // Review-fix (2026-10-19): fetch only when the card actually renders — the
+  // same condition as the early-return below — so a dismissed or
+  // push-disabled mount pays no /operator/session request. Re-runs when the
+  // footer re-entry clears the dismissal latch, so a re-shown card still
+  // hydrates its badge.
   useEffect(() => {
+    if (!metaEnabled || isCardDismissed) return
     const controller = new AbortController()
     void fetchSessionPushStatus({}, controller.signal).then(status => {
       setPushHealth(status)
@@ -372,7 +378,7 @@ export function Notifications({
     return () => {
       controller.abort()
     }
-  }, [])
+  }, [metaEnabled, isCardDismissed])
 
   if (!metaEnabled || isCardDismissed) {
     return null
