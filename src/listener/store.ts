@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto'
 import {mkdirSync} from 'node:fs'
 import {dirname} from 'node:path'
 import {DatabaseSync} from 'node:sqlite'
+import {logger, sanitizeErrorMessage} from '../logger.ts'
 /**
  * `node:sqlite`-backed persistence for the operator listener channel.
  *
@@ -63,10 +64,22 @@ function parseLinksCell(raw: string, id: string): readonly ListenerLink[] {
     if (!validated.success) throw new Error(validated.error.message)
     return validated.data
   } catch (error) {
-    console.warn(
-      `[listener-store] degraded links cell on message ${id}: ${
-        error instanceof Error ? error.message : String(error)
-      } — serving empty links, other fields intact`,
+    // rm-2009 (2026-10-19): route the degradation through the rm-229 logger
+    // chokepoint with sanitizeErrorMessage applied — this used to be a bare
+    // console.warn, the only console-dot call under src/listener/. The
+    // SyntaxError class (bare JSON.parse of the cell) is reduced to a FIXED
+    // content-free reason: V8 < 12 and other runtimes embed a raw snippet of
+    // the offending JSON in error.message, and sanitizeErrorMessage strips
+    // credential SHAPES, not arbitrary persisted content (Node 24's V8 is
+    // position-based, but the reduction is engine-independent defence). Every
+    // other message here — the ingest validator's, value-free by design — is
+    // sanitized, not discarded.
+    const reason =
+      error instanceof SyntaxError
+        ? 'links cell is not valid JSON'
+        : sanitizeErrorMessage(error instanceof Error ? error.message : String(error))
+    logger.warning(
+      `[listener-store] degraded links cell on message ${id}: ${reason} — serving empty links, other fields intact`,
     )
     return []
   }

@@ -8,9 +8,10 @@
  */
 import {Buffer} from 'node:buffer'
 import {randomUUID} from 'node:crypto'
-import {mkdtempSync, rmSync} from 'node:fs'
+import {mkdtempSync, readdirSync, readFileSync, rmSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
+import process from 'node:process'
 import {DatabaseSync} from 'node:sqlite'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {createListenerStore} from '../src/listener/store.ts'
@@ -230,5 +231,108 @@ describe('links cell wrong-shaped elements degrade to empty (rm-187 follow-up)',
     ])
     expect(warn).not.toHaveBeenCalled()
     warn.mockRestore()
+  })
+})
+
+describe('listener store rm-2009 (degradation log routes through the logger chokepoint, payload-free)', () => {
+  let dir: string
+  let dbPath: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'dashboard-rm2009-'))
+    dbPath = join(dir, `listener-${randomUUID()}.db`)
+  })
+
+  afterEach(() => {
+    rmSync(dir, {recursive: true, force: true})
+  })
+
+  function corruptLinksCell(id: string, linksValue: string): void {
+    const handle = new DatabaseSync(dbPath)
+    try {
+      handle.prepare('UPDATE messages SET links = ? WHERE id = ?').run(linksValue, id)
+    } finally {
+      handle.close()
+    }
+  }
+
+  function seedRow(title: string): string {
+    const store = createListenerStore(dbPath)
+    return store.insert({
+      source: 'infra',
+      kind: 'deploy-health',
+      severity: 'warning',
+      title,
+      body: 'b',
+      links: [],
+      dedupeKey: null,
+      createdAt: '2026-10-19T00:00:00Z',
+    }).id
+  }
+
+  it('the warning never carries a verbatim cell-payload substring and is logger-routed (SyntaxError class)', () => {
+    const marker = 'SECRET-marker-zq9w8e7d6c5r4t3'
+    const payload = `{"label":"${marker}","url":"https://evil.example/${marker}" nope}`
+    const id = seedRow('payload-bearing corrupt row')
+    corruptLinksCell(id, payload)
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = createListenerStore(dbPath)
+    const page = store.list({})
+
+    const degraded = page.messages.find(m => m.id === id)
+    if (degraded === undefined) throw new Error('expected degraded row')
+    expect(degraded.links).toEqual([])
+    expect(warn).toHaveBeenCalledTimes(1)
+    const line = String(warn.mock.calls[0]?.[0] ?? '')
+    // Logger chokepoint (rm-229), not a bare console call: the level prefix is
+    // what the redaction suites observe on the same stderr channel.
+    expect(line).toContain('[warning]')
+    expect(line).toContain('degraded links cell on message')
+    // The JSON.parse failure class is reduced to a fixed content-free reason…
+    expect(line).toContain('links cell is not valid JSON')
+    // …so no verbatim cell-payload substring can reach the sink, however the
+    // underlying engine words its SyntaxError (V8 < 12 embeds a raw snippet
+    // of the offending JSON in the message; Node 24's is position-based —
+    // the reduction is engine-independent defence either way).
+    expect(line).not.toContain(marker)
+    expect(line).not.toContain('evil.example')
+    warn.mockRestore()
+  })
+
+  it('non-SyntaxError degradations keep their value-free validator reason through the sanitizer', () => {
+    const id = seedRow('non-array row')
+    corruptLinksCell(id, 'null')
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = createListenerStore(dbPath)
+    const page = store.list({})
+
+    const degraded = page.messages.find(m => m.id === id)
+    if (degraded === undefined) throw new Error('expected degraded row')
+    expect(degraded.links).toEqual([])
+    expect(warn).toHaveBeenCalledTimes(1)
+    const line = String(warn.mock.calls[0]?.[0] ?? '')
+    expect(line).toContain('[warning]')
+    expect(line).toContain('not a JSON array')
+    warn.mockRestore()
+  })
+})
+
+describe('listener sources keep zero console-dot calls (rm-2009 statics)', () => {
+  it('no src/listener/*.ts file calls console.* outside full-line comments', () => {
+    const listenerDir = join(process.cwd(), 'src', 'listener')
+    const files = readdirSync(listenerDir).filter(f => f.endsWith('.ts'))
+    expect(files.length).toBeGreaterThan(0)
+    for (const name of files) {
+      const text = readFileSync(join(listenerDir, name), 'utf8')
+        .split('\n')
+        .filter(line => !line.trimStart().startsWith('//'))
+        .join('\n')
+      expect(
+        text,
+        `${name} must route logs through src/logger.ts (rm-2009), not console-dot`,
+      ).not.toContain('console.')
+    }
   })
 })
