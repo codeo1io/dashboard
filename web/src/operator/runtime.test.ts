@@ -43,6 +43,13 @@ import {
 // Captured before any test installs fake timers, for polling that must keep running on the real clock.
 const realSetTimeout = globalThis.setTimeout
 
+// vi.waitFor defaults to a 1000 ms timeout. Under full-suite parallel load (`pnpm test`,
+// 120 files) the loader-settle condition these waits poll for has blown that default
+// twice (2026-10-18/19 full-suite reds: different tests each run, same ready() root;
+// this file is 205/205 green in isolation). 15 s = 15x the default absorbs load
+// starvation while bounding the cost of a genuinely-failing wait.
+const WAIT_FOR_TIMEOUT_MS = 15_000
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -278,7 +285,7 @@ describe('createOperatorRuntime — run-index module integration', () => {
       _runtimeLoader: async () => cleanupFn,
     })
     const handle = createOperatorRuntime(opts)
-    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled())
+    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled(), {timeout: WAIT_FOR_TIMEOUT_MS})
     handle.cleanup()
     expect(cleanupFn).toHaveBeenCalledTimes(1)
   })
@@ -347,7 +354,7 @@ describe('createOperatorRuntime — active-stream coordination callbacks', () =>
       _runtimeLoader: async () => cleanupFn,
     })
     const handle = createOperatorRuntime(opts)
-    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled())
+    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled(), {timeout: WAIT_FOR_TIMEOUT_MS})
     expect(() => handle.cleanup()).not.toThrow()
     expect(cleanupFn).toHaveBeenCalledTimes(1)
   })
@@ -358,7 +365,7 @@ describe('createOperatorRuntime — active-stream coordination callbacks', () =>
       _runtimeLoader: async () => cleanupFn,
     })
     const handle = createOperatorRuntime(opts)
-    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled())
+    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled(), {timeout: WAIT_FOR_TIMEOUT_MS})
     handle.cleanup()
     expect(cleanupFn).toHaveBeenCalledTimes(1)
   })
@@ -369,7 +376,7 @@ describe('createOperatorRuntime — active-stream coordination callbacks', () =>
       _runtimeLoader: async () => cleanupFn,
     })
     const handle = createOperatorRuntime(opts)
-    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled())
+    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled(), {timeout: WAIT_FOR_TIMEOUT_MS})
     handle.cleanup()
     handle.cleanup()
     expect(cleanupFn).toHaveBeenCalledTimes(1)
@@ -766,7 +773,7 @@ describe('defaultRuntimeLoader — production stream wiring', () => {
 
     const onStateChange = vi.fn()
     const runtime = createOperatorRuntime({container: makeContainer(), onStateChange})
-    await vi.waitFor(() => expect(onSelectRun).toBeDefined())
+    await vi.waitFor(() => expect(onSelectRun).toBeDefined(), {timeout: WAIT_FOR_TIMEOUT_MS})
     expect(onStateChange).not.toHaveBeenCalled()
 
     expect(bootstrapOperatorStreams).not.toHaveBeenCalled()
@@ -840,7 +847,7 @@ describe('defaultRuntimeLoader — question region and summary status wiring', (
     await vi.waitFor(() => {
       expect(onSelectRun).toBeDefined()
       expect(onRunLaunched).toBeDefined()
-    })
+    }, {timeout: WAIT_FOR_TIMEOUT_MS})
     return {
       runtime,
       initCalls,
@@ -2391,7 +2398,7 @@ describe('defaultRuntimeLoader — in-page run jump (requestRunJump)', () => {
       onStateChange,
       /** The loader has finished its setup (and consumed the jump slot, if it was going to). */
       ready: async () => {
-        await vi.waitFor(() => expect(initOperatorLaunch).toHaveBeenCalled())
+        await vi.waitFor(() => expect(initOperatorLaunch).toHaveBeenCalled(), {timeout: WAIT_FOR_TIMEOUT_MS})
         await tick()
       },
       select: (runId: string) => captured?.onSelectRun(runId),
@@ -3541,7 +3548,7 @@ describe('defaultRuntimeLoader — finished-run cache', () => {
 
   const tick = () => new Promise<void>(resolve => realSetTimeout(resolve, 0))
   // The default 50 ms poll would make the 100-run fill below take seconds.
-  const waitFast = (assertion: () => void) => vi.waitFor(assertion, {interval: 1})
+  const waitFast = (assertion: () => void) => vi.waitFor(assertion, {interval: 1, timeout: WAIT_FOR_TIMEOUT_MS})
 
   function frame(event: string, payload: unknown): string {
     return `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`
@@ -3709,7 +3716,7 @@ describe('defaultRuntimeLoader — finished-run cache', () => {
       setServer: (runId: string, status: ListStatus) => server.set(runId, status),
       dropServer: (runId: string) => server.delete(runId),
       ready: async () => {
-        await vi.waitFor(() => expect(initOperatorLaunch).toHaveBeenCalled())
+        await vi.waitFor(() => expect(initOperatorLaunch).toHaveBeenCalled(), {timeout: WAIT_FOR_TIMEOUT_MS})
         await tick()
       },
       /** A card activation: the run index toggles expansion, then calls onSelectRun. */
@@ -3752,7 +3759,7 @@ describe('defaultRuntimeLoader — finished-run cache', () => {
     await mounted.click(runId)
     await waitFast(() => expect(net.attachments).toHaveLength(before + 1))
     net.attachments[before]?.push(RUNNING_FRAMES(runId))
-    await vi.waitFor(() => expect(statusText(runId)).toBe('Running'))
+    await vi.waitFor(() => expect(statusText(runId)).toBe('Running'), {timeout: WAIT_FOR_TIMEOUT_MS})
   }
 
   // -------------------------------------------------------------------------
@@ -4154,7 +4161,7 @@ describe('defaultRuntimeLoader — finished-run cache', () => {
 
       mounted.authRequired()
       net.attachments[0]?.push(frame('output', {runId: 'run-c-a', text: FINAL_TEXT, final: true, seq: 1}) + statusFrame('run-c-a', 'succeeded', 'COMPLETED'))
-      await vi.waitFor(() => expect(statusText('run-c-a')).toBe('Succeeded'))
+      await vi.waitFor(() => expect(statusText('run-c-a')).toBe('Succeeded'), {timeout: WAIT_FOR_TIMEOUT_MS})
 
       expect(mounted.stream().hasUsableFinishedRun('run-c-a', 'succeeded')).toBe(false)
     })
@@ -4222,7 +4229,7 @@ describe('defaultRuntimeLoader — finished-run cache', () => {
           throw new Error('module not found')
         },
       })
-      await vi.waitFor(() => expect(onStateChange).toHaveBeenCalledWith('unavailable'))
+      await vi.waitFor(() => expect(onStateChange).toHaveBeenCalledWith('unavailable'), {timeout: WAIT_FOR_TIMEOUT_MS})
       failing.cleanup()
 
       expect(first.stream().hasUsableFinishedRun('run-c-a', 'succeeded')).toBe(true)
