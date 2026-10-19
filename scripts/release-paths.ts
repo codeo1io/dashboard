@@ -48,4 +48,15 @@ export const HARD_RELEASE_ROOT_TSCONFIG_GLOB = 'tsconfig*.json'
 export const WORKFLOW_TRIGGER_ONLY_PATHS: readonly string[] = [
   'package.json',
   'pnpm-lock.yaml',
+  // Base-era bridge (added 2026-10-18, run 19c024286fc4 review_fix
+  // 279ad7a6, rider at rm-248; introducing-commit attribution trued
+  // 2026-10-19 at 00988404): main debde80 (2026-10-17, the integrate of
+  // run f2821fb57c34 — the rm-602 sidecar-build run itself) added this
+  // path to release.yaml on.push.paths and carries it in the HARD corpus
+  // there; this base predates the file itself, so it can only
+  // be trigger-only here — the hard-corpus leg stays green against this
+  // base's workflow (which does not list it) while the parity leg accounts
+  // main's entry in mixed validation trees. At integrate main's HARD
+  // corpus entry governs.
+  'scripts/gzip-static-sidecars.ts',
 ]
