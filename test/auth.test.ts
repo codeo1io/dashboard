@@ -274,6 +274,36 @@ describe('OAuth flow', () => {
       expect(location).toContain('github.com')
     })
 
+    it('requests ZERO OAuth scopes — zero-scope operator sign-in (rm-2029)', async () => {
+      // The access token is only ever spent on fetchUserLogin (public
+      // GET /user, no scope needed) + the exact allowlist check, so the
+      // authorize URL must request no scope at all — mirrors upstream
+      // fro-bot/agent v0.123.1 #1856. Pins BOTH the route's scopes argument
+      // and the produced URL (no `scope` param, not an empty one).
+      const captured: {scopes: string[]} = {scopes: ['sentinel']}
+      const app = await buildDashboardApp({
+        operatorLogin: 'octocat',
+        cookieKey: TEST_KEY,
+        oauthClient: {
+          createAuthorizationURL: (state: string, scopes: string[]) => {
+            captured.scopes = scopes
+            const url = new URL('https://github.com/login/oauth/authorize')
+            url.searchParams.set('state', state)
+            if (scopes.length > 0) url.searchParams.set('scope', scopes.join(' '))
+            return url
+          },
+          validateAuthorizationCode: async () => ({accessToken: () => 'fake-access-token'}),
+        },
+        fetchUserLogin: async () => 'octocat',
+      })
+
+      const res = await app.request('/auth/login')
+      expect([302, 303]).toContain(res.status)
+      expect(captured.scopes).toEqual([])
+      const location = new URL(res.headers.get('location') ?? '')
+      expect(location.searchParams.has('scope')).toBe(false)
+    })
+
     it('sets oauth_state cookie (HttpOnly)', async () => {
       const app = await buildTestApp({operatorLogin: 'octocat'})
       const res = await app.request('/auth/login')
@@ -757,14 +787,17 @@ describe('OAuth flow', () => {
 })
 
 describe('makeGitHubOAuthClient', () => {
-  it('createAuthorizationURL produces the GitHub authorization URL', () => {
+  it('createAuthorizationURL produces the GitHub authorization URL (non-empty scopes → joined scope param)', () => {
     const client = makeGitHubOAuthClient(
       'client-id',
       'client-secret',
       'https://dashboard.example.com/auth/callback',
     )
 
-    const url = client.createAuthorizationURL('state value', ['read:user', 'repo:status'], {
+    // rm-2029 companion pin: the NON-empty path (a hypothetical future scope
+    // request) still maps the list to a single space-joined scope param, in
+    // the same position. The empty path has its own test below.
+    const url = client.createAuthorizationURL('state value', ['read:org', 'repo:status'], {
       codeChallenge: 'challenge-value',
       codeChallengeMethod: 'S256',
     })
@@ -775,7 +808,35 @@ describe('makeGitHubOAuthClient', () => {
       client_id: 'client-id',
       redirect_uri: 'https://dashboard.example.com/auth/callback',
       state: 'state value',
-      scope: 'read:user repo:status',
+      scope: 'read:org repo:status',
+      response_type: 'code',
+      code_challenge: 'challenge-value',
+      code_challenge_method: 'S256',
+    })
+  })
+
+  it('createAuthorizationURL with an empty scope list omits the scope param entirely (rm-2029)', () => {
+    const client = makeGitHubOAuthClient(
+      'client-id',
+      'client-secret',
+      'https://dashboard.example.com/auth/callback',
+    )
+
+    const url = client.createAuthorizationURL('state value', [], {
+      codeChallenge: 'challenge-value',
+      codeChallengeMethod: 'S256',
+    })
+
+    // Zero-scope operator sign-in: no scopes requested → NO scope param at
+    // all. `scope=` (empty) is a different, undocumented request shape;
+    // GitHub falls back to the app's registered default scopes only on
+    // omission, and this app registers none.
+    expect(url.searchParams.has('scope')).toBe(false)
+    expect(url.search).not.toContain('scope')
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      client_id: 'client-id',
+      redirect_uri: 'https://dashboard.example.com/auth/callback',
+      state: 'state value',
       response_type: 'code',
       code_challenge: 'challenge-value',
       code_challenge_method: 'S256',
@@ -1007,7 +1068,9 @@ describe('makeGitHubOAuthClient', () => {
     const client = makeGitHubOAuthClient(clientId, clientSecret, 'https://dashboard.example.com/auth/callback')
     const originalFetch = globalThis.fetch
 
-    globalThis.fetch = async () => Response.json({scope: 'read:user'})
+    // rm-2029: realistic zero-scope token echo — no access_token present, so
+    // the exchange must still reject with TypeError.
+    globalThis.fetch = async () => Response.json({scope: ''})
 
     try {
       const result = client.validateAuthorizationCode(code)

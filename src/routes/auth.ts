@@ -128,7 +128,15 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
       path: '/auth',
     })
 
-    const authURL = oauthClient.createAuthorizationURL(state, ['read:user'], {
+    // rm-2029 zero-scope operator sign-in (2026-10-19; mirrors upstream
+    // fro-bot/agent v0.123.1 #1856): the access token is spent on exactly
+    // one call — fetchUserLogin, a public GET /user that needs no scope —
+    // followed by the exact allowlist check below. No scope was ever read,
+    // so none is requested; the minted token carries zero scopes (least
+    // privilege — drops private-profile-field access). Caveat: operators
+    // who signed in while a profile scope was requested keep that grant
+    // per-operator until the GitHub app authorization is revoked manually.
+    const authURL = oauthClient.createAuthorizationURL(state, [], {
       codeChallenge,
       codeChallengeMethod: 'S256',
     })

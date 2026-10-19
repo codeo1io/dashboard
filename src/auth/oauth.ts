@@ -70,11 +70,17 @@ export function makeGitHubOAuthClient(
       // leaves the server except via the HttpOnly /auth-scoped cookie. The param
       // is required at the type seam (review-fix 134c9ca9): no no-PKCE call site
       // can typecheck.
+      // rm-2029 zero-scope operator sign-in: an EMPTY scope list must omit
+      // the param entirely — `scope=` (empty) is a different, undocumented
+      // request shape, while omission is GitHub's documented no-explicit-
+      // scopes form (falls back to the app's registered defaults; this app
+      // registers none). Non-empty lists keep the identical param set and
+      // order (byte-identical URL).
       const params: Record<string, string> = {
         client_id: clientId,
         redirect_uri: redirectURI,
         state,
-        scope: scopes.join(' '),
+        ...(scopes.length > 0 ? {scope: scopes.join(' ')} : {}),
         response_type: 'code',
         code_challenge: pkce.codeChallenge,
         code_challenge_method: pkce.codeChallengeMethod,
