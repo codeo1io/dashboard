@@ -1426,3 +1426,68 @@ describe('operator-launch — security: no data-repo/data-status on the optimist
     expect(src).not.toMatch(/console\.(log|error|warn)\s*\(/)
   })
 })
+
+// ---------------------------------------------------------------------------
+// submitLaunch — timeout outcome mapping (rm-1983)
+// ---------------------------------------------------------------------------
+
+describe('submitLaunch — timeout outcome mapping (rm-1983)', () => {
+  type Err = {readonly kind: string; readonly status?: number; readonly message?: string}
+  type CsrfRow = {readonly ok: true; readonly csrfToken: string} | {readonly ok: false; readonly error: Err}
+  type LaunchRow = {readonly ok: true; readonly runId: string} | {readonly ok: false; readonly error: Err}
+
+  /** Client whose calls resolve with configurable error kinds (beyond http). */
+  function clientWith(csrfRows: readonly CsrfRow[], launchRows: readonly LaunchRow[]): LaunchClient {
+    let csrfIdx = 0
+    let launchIdx = 0
+    return {
+      async refreshCsrf() {
+        const r = csrfRows[csrfIdx] ?? {ok: false as const, error: {kind: 'network'} satisfies Err}
+        csrfIdx++
+        return r.ok
+          ? {success: true as const, data: {csrfToken: r.csrfToken}}
+          : {success: false as const, error: r.error}
+      },
+      async launchRun() {
+        const r = launchRows[launchIdx] ?? {ok: false as const, error: {kind: 'network'} satisfies Err}
+        launchIdx++
+        return r.ok
+          ? {success: true as const, data: {runId: r.runId}}
+          : {success: false as const, error: r.error}
+      },
+    }
+  }
+
+  const timedOut = (): Err => ({kind: 'timeout', message: 'network error'})
+
+  it('refreshCsrf timeout → {kind:"timeout"} (retry affordance, not generic failure)', async () => {
+    const client = clientWith([{ok: false, error: timedOut()}], [])
+    expect(await submitLaunch(client, {repo: 'fro-bot/agent', prompt: 'p'}, 'k-t-1')).toEqual({kind: 'timeout'})
+  })
+
+  it('launchRun timeout → {kind:"timeout"}', async () => {
+    const client = clientWith([{ok: true, csrfToken: 'tok'}], [{ok: false, error: timedOut()}])
+    expect(await submitLaunch(client, {repo: 'fro-bot/agent', prompt: 'p'}, 'k-t-2')).toEqual({kind: 'timeout'})
+  })
+
+  it('timeout inside the 400-retry CSRF refresh → {kind:"timeout"} (no second launch attempt)', async () => {
+    const client = clientWith(
+      [{ok: true, csrfToken: 'tok-1'}, {ok: false, error: timedOut()}],
+      [{ok: false, error: {kind: 'http', status: 400}}],
+    )
+    expect(await submitLaunch(client, {repo: 'fro-bot/agent', prompt: 'p'}, 'k-t-3')).toEqual({kind: 'timeout'})
+  })
+
+  it('retry launchRun timeout → {kind:"timeout"}', async () => {
+    const client = clientWith(
+      [{ok: true, csrfToken: 'tok-1'}, {ok: true, csrfToken: 'tok-2'}],
+      [{ok: false, error: {kind: 'http', status: 400}}, {ok: false, error: timedOut()}],
+    )
+    expect(await submitLaunch(client, {repo: 'fro-bot/agent', prompt: 'p'}, 'k-t-4')).toEqual({kind: 'timeout'})
+  })
+
+  it('non-timeout client errors still collapse to generic failure (mapping is narrow)', async () => {
+    const client = clientWith([{ok: false, error: {kind: 'network'}}], [])
+    expect(await submitLaunch(client, {repo: 'fro-bot/agent', prompt: 'p'}, 'k-t-5')).toEqual({kind: 'failure'})
+  })
+})

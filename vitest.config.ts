@@ -1,6 +1,25 @@
+import {fileURLToPath} from 'node:url'
 import {defineConfig} from 'vitest/config'
 
 export default defineConfig({
+  plugins: [{
+    // rm-1983: public/operator-launch.js's DOM shell dynamically imports the
+    // browser-absolute '/static/operator-stream.js?manual=1' (the real browser
+    // resolves it through the server's /static mount). The Vitest module runner
+    // externalizes absolute-path imports before resolve.alias is consulted, so
+    // resolveId is the interception point. Without it, jsdom-driven
+    // initOperatorLaunch tests cannot execute the real submit path — bounded-
+    // wait fetch + form recovery — and that surface stays pinned at the
+    // source-contract level only.
+    name: 'rm-1983-static-stream-alias',
+    enforce: 'pre',
+    resolveId(source) {
+      if (source === '/static/operator-stream.js?manual=1') {
+        return `${fileURLToPath(new URL('./public/operator-stream.js', import.meta.url))}?manual=1`
+      }
+      return null
+    },
+  }],
   test: {
     // Only run this app's tests. Exclude vendored dependency source under
     // .slim/clonedeps (those repos carry their own tests + workspace deps that

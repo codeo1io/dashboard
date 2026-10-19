@@ -130,7 +130,10 @@ jobs:
     # at the rm-139 Node-26 window (2026-10-28).
     timeout-minutes: 60
     permissions:
-      contents: read
+      # rm-1978: contents:write lets the publication steps below mint the CalVer
+      # tag + GitHub Release with the repository token when no release App is
+      # provisioned (the App token stays preferred whenever it exists).
+      contents: write
       packages: write
       security-events: write
     env:
@@ -405,11 +408,14 @@ jobs:
           version: v0.72.0
 
       # Mint the publication token only after all third-party actions have completed.
-      # Fork posture: this repository runs without APPLICATION_ID/APPLICATION_PRIVATE_KEY
-      # (no release App is installed), so the token mint is skipped and the App-gated
-      # publication steps below degrade to a warning — mirroring the dispatch job's
-      # unprovisioned-secret contract. The scanned image is still published to GHCR by
-      # the ci-<run> tag from the build step, and :latest promotion needs no App token.
+      # Fork posture (rm-1978): this repository runs without
+      # APPLICATION_ID/APPLICATION_PRIVATE_KEY (no release App is installed), so
+      # the App token mint skips. Publication no longer waits for it: every
+      # publication step below falls back to the repository GITHUB_TOKEN
+      # (contents:write above), mirroring upstream's gate-on-tag-not-App shape,
+      # so the CalVer tag and GitHub Release mint regardless of App provisioning.
+      # When the App IS provisioned its token is preferred (it takes precedence
+      # in the || fallbacks below).
       - name: 🤖 Get App token for publication
         id: app-token
         if: env.HAS_RELEASE_APP == 'true'
@@ -418,20 +424,19 @@ jobs:
           app-id: ${{ secrets.APPLICATION_ID }}
           private-key: ${{ secrets.APPLICATION_PRIVATE_KEY }}
 
-      - name: ⚠️ Publication credentials not provisioned
+      - name: ℹ️ Publication token source
         if: env.HAS_RELEASE_APP != 'true'
         run: >-
-          echo "::warning title=CalVer release skipped::APPLICATION_ID/APPLICATION_PRIVATE_KEY
-          are not configured in this repository — skipping release-tag creation and
-          CalVer/sha image promotion. The scanned image is published as
-          ghcr.io/${{ github.repository }}:ci-${{ github.run_id }}-${{ github.run_attempt }}
-          and :latest."
+          echo "::notice title=Publication token::APPLICATION_ID/APPLICATION_PRIVATE_KEY
+          are not configured in this repository — publication steps below run with the
+          repository GITHUB_TOKEN (contents:write) instead: CalVer tag, release-unique
+          image tags, and the GitHub Release all mint with that identity (rm-1978)."
 
       - name: 🏷️ Create release tag
         id: calver
-        if: ${{ steps.app-token.outcome == 'success' }}
+        if: ${{ steps.version.outputs.tag != '' }}
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           echo "Creating precomputed release tag $TAG"
@@ -444,7 +449,7 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: 📦 Promote release-unique image tags
-        if: ${{ steps.app-token.outcome == 'success' }}
+        if: ${{ steps.calver.outputs.tag != '' }}
         run: |
           CALVER="${{ steps.calver.outputs.tag }}"
           SRC="ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"
@@ -489,10 +494,15 @@ jobs:
           done
           echo "digest verification OK"
 
+      # rm-1978 (release-object leg, ported from upstream's promote shape): create
+      # the Release object beside the tag precompute above, edit its body with the
+      # image digest block, and delete it in lockstep with the tag on rollback.
+      # Token: the app token when provisioned, else the job GITHUB_TOKEN whose
+      # job-level permissions grant contents:write over both refs and releases.
       - name: 🚀 Create GitHub Release
-        if: ${{ steps.app-token.outcome == 'success' }}
+        if: ${{ steps.calver.outputs.tag != '' }}
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
         run: |
           CALVER="${{ steps.calver.outputs.tag }}"
           DIGEST="${{ steps.build.outputs.digest }}"
@@ -541,7 +551,7 @@ jobs:
       - name: 🧹 Cleanup on failure (delete Git ref + release)
         if: failure()
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ steps.calver.outputs.tag }}"
           if [ -z "$TAG" ]; then

@@ -21,10 +21,11 @@ export default defineConfig(
     },
   },
   {
-    // operator-runtime.test.ts lives in test/ but requires DOM types (jsdom environment).
-    // It is excluded from the root tsconfig (no DOM lib) and covered by web/tsconfig.json.
-    // Override the parser project for this file so ESLint resolves it correctly.
-    files: ['test/operator-runtime.test.ts'],
+    // operator-runtime.test.ts and operator-launch-timeout.test.ts live in test/ but require DOM types
+    // (jsdom environment). They are excluded from the root tsconfig (no DOM lib) and
+    // covered by web/tsconfig.json. Override the parser project for these files so
+    // ESLint resolves them correctly.
+    files: ['test/operator-runtime.test.ts', 'test/operator-launch-timeout.test.ts'],
     languageOptions: {
       parser: tseslint.parser,
       parserOptions: {

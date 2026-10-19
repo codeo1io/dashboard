@@ -963,3 +963,51 @@ describe('should-release — unreadable or invalid pkg files produce exit 2', ()
     expect(stderr).toMatch(/head-pkg/i)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Workflow-structure guard — the release OBJECT beside the tag (rm-1978)
+// ---------------------------------------------------------------------------
+// The fork's Release job long minted tags without Release objects, so the
+// footer's release-notes link 404'd on every shipped version. rm-1978 ports
+// upstream's create/edit/rollback-delete leg. This guard pins the STRUCTURE
+// (not a live run) so the leg cannot silently regress into tag-only again.
+
+describe('release.yaml structure — release object beside the tag (rm-1978)', () => {
+  const workflowPath = resolve(process.cwd(), '.github/workflows/release.yaml')
+  const raw = readFileSync(workflowPath, 'utf8')
+
+  type Step = {name?: string, run?: string, env?: Record<string, string>, if?: string}
+  const workflow = parse(raw) as {jobs?: {release?: {permissions?: Record<string, string>, steps?: Step[]}}}
+  const releaseJob = workflow.jobs?.release
+  const steps = releaseJob?.steps ?? []
+
+  it('the release job grants contents:write — the permission class that covers BOTH tag refs and release objects', () => {
+    expect(releaseJob?.permissions?.contents).toBe('write')
+  })
+
+  it('create-beside-tag: gh release create runs in the SAME job, AFTER the tag precompute step', () => {
+    const tagStepIdx = steps.findIndex(s => (s.name ?? '').includes('Create release tag'))
+    const createStepIdx = steps.findIndex(s => (s.run ?? '').includes('gh release create'))
+    expect(tagStepIdx, 'the "Creating precomputed release tag" step must exist').toBeGreaterThanOrEqual(0)
+    expect(createStepIdx, 'a gh release create step must exist beside it (rm-1978)').toBeGreaterThan(tagStepIdx)
+  })
+
+  it('the create/edit/delete steps can run on the job GITHUB_TOKEN, not only on a provisioned app token', () => {
+    const createStep = steps.find(s => (s.run ?? '').includes('gh release create'))
+    expect(createStep?.env?.GH_TOKEN).toContain('secrets.GITHUB_TOKEN')
+  })
+
+  it('rollback lockstep: the cleanup step deletes BOTH the tag ref and the release object', () => {
+    const cleanup = steps.find(s => (s.name ?? '').includes('Cleanup'))
+    expect(cleanup?.run).toContain('git/refs/tags')
+    expect(cleanup?.run).toContain('gh release delete')
+  })
+
+  it('a grep-countable rm-1978 structural marker sits directly above the create step', () => {
+    const lines = raw.split('\n')
+    const stepLine = lines.findIndex(l => l.includes('🚀 Create GitHub Release'))
+    expect(stepLine).toBeGreaterThan(0)
+    const window = lines.slice(Math.max(0, stepLine - 8), stepLine).join('\n')
+    expect(window).toMatch(/#\s*rm-1978/)
+  })
+})

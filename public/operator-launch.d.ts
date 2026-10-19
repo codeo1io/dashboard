@@ -13,6 +13,7 @@ export type LaunchOutcome =
   | {readonly kind: 'launched'; readonly runId: string}
   | {readonly kind: 'not-found'}
   | {readonly kind: 'rate-limited'}
+  | {readonly kind: 'timeout'}
   | {readonly kind: 'failure'}
 
 // ---------------------------------------------------------------------------
@@ -72,7 +73,7 @@ export declare function mintIdempotencyKey(): string
  *
  * Pure state machine: refreshCsrf → launchRun → on 400, refresh + retry once
  * reusing the SAME idempotency key. Maps 404→not-found, 429→rate-limited,
- * all other errors→failure.
+ * timeout (rm-1983 bounded fetch expiry)→timeout, all other errors→failure.
  */
 export declare function submitLaunch(
   client: LaunchClient,

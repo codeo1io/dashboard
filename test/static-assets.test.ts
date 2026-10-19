@@ -16,7 +16,7 @@ import type {GitHubOAuthClient} from '../src/auth/oauth.ts'
 import {Buffer} from 'node:buffer'
 import {existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync} from 'node:fs'
 import {tmpdir} from 'node:os'
-import {join, resolve} from 'node:path'
+import {join, relative, resolve} from 'node:path'
 import process from 'node:process'
 import {gunzipSync} from 'node:zlib'
 import {Hono} from 'hono'
@@ -1565,18 +1565,82 @@ describe('rm-690 — Cache-Control policy for static surfaces', () => {
 describe('static response compression — gzip sidecars (rm-602)', () => {
   const COMPRESSIBLE = ['.html', '.js', '.mjs', '.css', '.json', '.svg', '.webmanifest', '.txt', '.xml']
 
-  it('build:web emitted a .gz sidecar for every compressible file in web/dist', () => {
+  // rm-1980: scripts/gzip-static-sidecars.ts deliberately skips a sidecar that
+  // would not shrink (tiny files can outgrow their gzip framing — the identity
+  // fallback serves them fine) and records every compressible file with byte
+  // counts in web/dist/gzip-sidecar-manifest.json. The contract is reconciled
+  // here: a compressible file needs a .gz sibling UNLESS the manifest records
+  // it as a deliberate skip (sidecarBytes: null). A file with neither is a skip
+  // that was not deliberate — the only red this gate knows. This replaced the
+  // rm-602-era "every compressible file has a sidecar" demand, which made a
+  // green-intent build (legitimate size-skip) red on the Main gate.
+  const SIDECAR_MANIFEST = 'gzip-sidecar-manifest.json'
+
+  interface SidecarManifestEntry {
+    readonly file: string
+    readonly originalBytes: number
+    readonly sidecarBytes: number | null
+  }
+
+  function readSidecarManifest(): readonly SidecarManifestEntry[] {
+    const raw = JSON.parse(readFileSync(join('web/dist', SIDECAR_MANIFEST), 'utf8')) as {
+      files?: SidecarManifestEntry[]
+    }
+    expect(Array.isArray(raw.files), `${SIDECAR_MANIFEST} must carry a files array`).toBe(true)
+    return raw.files ?? []
+  }
+
+  it('every compressible file in web/dist has a sidecar or a deliberate manifest skip (rm-1980)', () => {
     expect(existsSync('web/dist')).toBe(true)
+    const entries = new Map(readSidecarManifest().map(entry => [entry.file, entry]))
     const roots = ['web/dist', 'web/dist/assets']
     let checked = 0
     for (const root of roots) {
       for (const name of readdirSync(root)) {
         if (!COMPRESSIBLE.some(ext => name.endsWith(ext))) continue
+        // The manifest itself is the skip record, not a served artifact — the
+        // generator never compresses or records it (see its MANIFEST_NAME guard).
+        if (name === SIDECAR_MANIFEST) continue
         checked++
-        expect(existsSync(join(root, `${name}.gz`))).toBe(true)
+        if (existsSync(join(root, `${name}.gz`))) continue
+        const rel = relative('web/dist', join(root, name))
+        const entry = entries.get(rel)
+        expect(
+          entry !== undefined && entry.sidecarBytes === null,
+          `${rel} has no .gz sidecar and no deliberate-skip entry in ${SIDECAR_MANIFEST} — emit the sidecar or record the skip (rm-1980)`,
+        ).toBe(true)
       }
     }
     expect(checked).toBeGreaterThan(5) // html + manifest + sw + bundle + css at minimum
+  })
+
+  it('the sidecar manifest is faithful and the census is pinned (rm-1980)', () => {
+    const entries = readSidecarManifest()
+    const withSidecar = entries.filter(entry => entry.sidecarBytes !== null)
+    for (const entry of withSidecar) {
+      const sidecar = join('web/dist', `${entry.file}.gz`)
+      expect(existsSync(sidecar), `${entry.file} is recorded with a sidecar but ${entry.file}.gz is missing`).toBe(true)
+      expect(statSync(sidecar).size).toBe(entry.sidecarBytes)
+    }
+    for (const entry of entries) {
+      if (entry.sidecarBytes !== null) continue
+      expect(
+        existsSync(join('web/dist', `${entry.file}.gz`)),
+        `${entry.file} is recorded skipped but a sidecar exists — the record is stale`,
+      ).toBe(false)
+      expect(entry.originalBytes).toBeGreaterThan(0)
+    }
+    // Pinned census baseline (rm-1980, build:web 2026-10-18): 9 sidecars,
+    // 1,027,021 → 590,471 bytes (−42.5%). A changed census means the client
+    // build's compressible artifact set changed — re-pin these numbers and
+    // update the rm-1980 rider in ROADMAP.md in the same change; never widen
+    // the contract to make a surprise red green.
+    expect(
+      withSidecar.length,
+      'sidecar census changed — re-pin this baseline and the rm-1980 ROADMAP rider in the same change',
+    ).toBe(9)
+    expect(withSidecar.reduce((sum, entry) => sum + entry.originalBytes, 0)).toBe(1_027_021)
+    expect(withSidecar.reduce((sum, entry) => sum + (entry.sidecarBytes ?? 0), 0)).toBe(590_471)
   })
 
   it('sidecars are valid gzip of the original bytes and shrink the hashed bundle', () => {

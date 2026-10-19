@@ -16,6 +16,8 @@
 import type {GitHubOAuthClient} from '../src/auth/oauth.ts'
 import type {LogContext} from '../src/logger.ts'
 import {Buffer} from 'node:buffer'
+import {readFileSync} from 'node:fs'
+import {resolve} from 'node:path'
 import {afterEach, beforeEach, describe, expect, it} from 'vitest'
 import {logger} from '../src/logger.ts'
 import {
@@ -211,5 +213,59 @@ describe('XFF-collapse detector, middleware wiring (rm-183)', () => {
     expect(collapseWarnings()).toHaveLength(0)
     // And unit-level state stayed untouched by the trusted requests.
     expect(xffCollapseTrackedKeys()).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// rm-1979 — runbook truth pin: prose cannot drift from the detector
+// ---------------------------------------------------------------------------
+// docs/runbooks/gateway-access.md once claimed "one client alone cannot fire
+// (or verify) the detector" — false in the default topology, where the
+// fingerprint reads the client-suppliable X-Forwarded-For header (the
+// middleware test above proves it fires from ONE client). The runbook now
+// carries the spoofing caveat plus the recorded hardening decision; this
+// guard pins BOTH sides of the claim so prose and code cannot drift apart.
+
+describe('rm-1979 — runbook XFF truth pin', () => {
+  const runbook = readFileSync(resolve(process.cwd(), 'docs/runbooks/gateway-access.md'), 'utf8')
+
+  it('behavioral side: ONE client sending two XFF values fires the warning (default topology)', async () => {
+    resetXffCollapseForTesting()
+    resetRateLimitForTesting()
+    const warningCalls: [string, LogContext | undefined][] = []
+    const realWarning = logger.warning
+    ;(logger as unknown as {warning: typeof logger.warning}).warning = (message, context) => {
+      warningCalls.push([message, context])
+    }
+    try {
+      const app = await buildTestApp()
+      const first = await app.request('/api/healthz', {headers: {'x-forwarded-for': CLIENT_1}})
+      expect(first.status).toBe(200)
+      const second = await app.request('/api/healthz', {headers: {'x-forwarded-for': CLIENT_2}})
+      expect(second.status).toBe(200) // one client, two spoofed header values
+
+      const collapses = warningCalls.filter(([message]) => message.includes('Rate limiter client collapse'))
+      expect(collapses).toHaveLength(1)
+    } finally {
+      ;(logger as unknown as {warning: typeof logger.warning}).warning = realWarning
+      resetXffCollapseForTesting()
+      resetRateLimitForTesting()
+    }
+  })
+
+  it('prose side: the spoofing caveat is present and the false single-source claim is gone', () => {
+    expect(runbook).toMatch(/Spoofing caveat \(rm-1979\)/)
+    expect(runbook).toMatch(/misconfiguration OR spoofing/)
+    expect(runbook).toMatch(/RATE_LIMIT_TRUSTED_PROXY=1/)
+    // The rm-183-era false claim, verbatim — its return is the drift this guard exists to catch.
+    expect(runbook, 'the runbook must not claim a lone client cannot fire the detector').not.toMatch(
+      /one client alone cannot fire/,
+    )
+    expect(runbook).not.toMatch(/a single source can never produce two distinct forwarded values/)
+  })
+
+  it('the hardening decision is recorded beside the caveat (accepted as bounded log noise)', () => {
+    expect(runbook).toMatch(/Hardening decision \(rm-1979\)/)
+    expect(runbook).toMatch(/bounded log noise/)
   })
 })

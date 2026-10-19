@@ -96,6 +96,8 @@ export function mintIdempotencyKey() {
  *        - retry 400 → {kind:'failure'} (no third attempt)
  *      - 404 → {kind:'not-found'} (uniform, no cause)
  *      - 429 → {kind:'rate-limited'}
+ *      - timeout (rm-1983: the client's bounded fetch expired) → {kind:'timeout'}
+ *        (the form surfaces a retry affordance and stays responsive)
  *      - any other error → {kind:'failure'}
  *
  * The idempotency key is passed in (not minted here) so the caller can reuse it
@@ -112,6 +114,11 @@ export async function submitLaunch(client, params, idempotencyKey) {
   // Step 1: Get initial CSRF token
   const csrfResult = await client.refreshCsrf()
   if (!csrfResult.success) {
+    // rm-1983: a bounded fetch that expired surfaces a distinct timeout outcome
+    // so the operator UI can offer its retry affordance instead of a generic failure.
+    if (csrfResult.error.kind === 'timeout') {
+      return {kind: 'timeout'}
+    }
     return {kind: 'failure'}
   }
   const csrfToken = csrfResult.data.csrfToken
@@ -124,6 +131,11 @@ export async function submitLaunch(client, params, idempotencyKey) {
   }
 
   const error = launchResult.error
+
+  // rm-1983: the launch fetch exceeded LAUNCH_RUN_TIMEOUT_MS → timeout (retry affordance)
+  if (error.kind === 'timeout') {
+    return {kind: 'timeout'}
+  }
 
   // 404 → uniform not-found (no cause, no retry)
   if (error.kind === 'http' && error.status === 404) {
@@ -139,6 +151,10 @@ export async function submitLaunch(client, params, idempotencyKey) {
   if (error.kind === 'http' && error.status === 400) {
     const retrycsrfResult = await client.refreshCsrf()
     if (!retrycsrfResult.success) {
+      // rm-1983: a retry-path timeout keeps the same distinct outcome.
+      if (retrycsrfResult.error.kind === 'timeout') {
+        return {kind: 'timeout'}
+      }
       return {kind: 'failure'}
     }
     const retryCsrfToken = retrycsrfResult.data.csrfToken
@@ -154,11 +170,15 @@ export async function submitLaunch(client, params, idempotencyKey) {
       return {kind: 'launched', runId: retryResult.data.runId}
     }
 
-    // Second failure (any status) → generic failure, no further retry
+    // Second failure — a timeout keeps its distinct outcome; everything else is
+    // generic failure. No further retry.
+    if (retryResult.error.kind === 'timeout') {
+      return {kind: 'timeout'}
+    }
     return {kind: 'failure'}
   }
 
-  // Any other error (network, protocol, non-400/404/429 http) → failure
+  // Any other error (network, protocol, non-400/404/429 http) → failure (timeout handled above)
   return {kind: 'failure'}
 }
 
@@ -233,12 +253,30 @@ export function buildLaunchClient(opts) {
   const getScenario = opts?.getScenario
   const fixtureSessionId = opts?.fixtureSessionId
 
-  const browserFetch = (input, init) =>
-    globalThis.fetch(input, {
+  // rm-1983: browser-direct calls are bounded so a stalled gateway socket
+  // rejects instead of pinning the UI. Metadata calls mirror the operator-stream
+  // 10s precedent (QUESTION/APPROVAL_FETCH_TIMEOUT_MS); the run launch does
+  // heavier gateway work and gets a longer bound. Tests shrink these by spying
+  // AbortSignal.timeout.
+  const METADATA_FETCH_TIMEOUT_MS = 10_000
+  const LAUNCH_RUN_TIMEOUT_MS = 60_000
+  const browserFetch = (input, init, timeoutMs = METADATA_FETCH_TIMEOUT_MS) => {
+    const timeoutSignal =
+      typeof AbortSignal !== 'undefined' &&
+      typeof AbortSignal.timeout === 'function'
+        ? AbortSignal.timeout(timeoutMs)
+        : undefined
+    const signal =
+      timeoutSignal !== undefined && init?.signal !== undefined
+        ? AbortSignal.any([init.signal, timeoutSignal])
+        : (timeoutSignal ?? init?.signal)
+    return globalThis.fetch(input, {
       ...init,
+      signal,
       credentials: 'include',
       redirect: 'error',
     })
+  }
 
   return {
     async refreshCsrf() {
@@ -252,8 +290,9 @@ export function buildLaunchClient(opts) {
           return {success: false, error: {kind: 'protocol', message: 'invalid csrf response'}}
         }
         return {success: true, data: {csrfToken: data.csrfToken}}
-      } catch {
-        return {success: false, error: {kind: 'network', message: 'network error'}}
+      } catch (err) {
+        const kind = err?.name === 'TimeoutError' || err?.name === 'AbortError' ? 'timeout' : 'network'
+        return {success: false, error: {kind, message: 'network error'}}
       }
     },
 
@@ -273,8 +312,9 @@ export function buildLaunchClient(opts) {
           }
         }
         return {success: true, data}
-      } catch {
-        return {success: false, error: {kind: 'network', message: 'network error'}}
+      } catch (err) {
+        const kind = err?.name === 'TimeoutError' || err?.name === 'AbortError' ? 'timeout' : 'network'
+        return {success: false, error: {kind, message: 'network error'}}
       }
     },
 
@@ -307,7 +347,7 @@ export function buildLaunchClient(opts) {
             'idempotency-key': req.idempotencyKey,
           },
           body: JSON.stringify(bodyObj),
-        })
+        }, LAUNCH_RUN_TIMEOUT_MS)
         if (res.status === 200 || res.status === 202) {
           const data = await res.json()
           if (typeof data.runId !== 'string' || data.runId === '') {
@@ -316,8 +356,9 @@ export function buildLaunchClient(opts) {
           return {success: true, data: {runId: data.runId}}
         }
         return {success: false, error: {kind: 'http', status: res.status}}
-      } catch {
-        return {success: false, error: {kind: 'network', message: 'network error'}}
+      } catch (err) {
+        const kind = err?.name === 'TimeoutError' || err?.name === 'AbortError' ? 'timeout' : 'network'
+        return {success: false, error: {kind, message: 'network error'}}
       }
     },
   }
@@ -502,6 +543,9 @@ export async function initOperatorLaunch(opts) {
         }
       } else if (error.kind === 'network') {
         failureCopy = 'Repository list unavailable \u2014 check your connection.'
+      } else if (error.kind === 'timeout') {
+        // rm-1983: the bounded fetch expired — coarse copy, no cause inference.
+        failureCopy = 'Repository list unavailable \u2014 the gateway did not respond.'
       } else {
         // protocol or unknown
         failureCopy = 'Repository list unavailable.'
@@ -804,6 +848,13 @@ export async function initOperatorLaunch(opts) {
       } else if (outcome.kind === 'rate-limited') {
         if (launchError !== null) {
           launchError.textContent = 'Too many launch requests. Please wait before trying again.'
+          launchError.hidden = false
+        }
+      } else if (outcome.kind === 'timeout') {
+        // rm-1983: the bounded launch fetch expired — coarse copy plus the
+        // re-enabled submit button is the retry affordance.
+        if (launchError !== null) {
+          launchError.textContent = 'Launch timed out. Please try again.'
           launchError.hidden = false
         }
       } else if (launchError !== null) {
