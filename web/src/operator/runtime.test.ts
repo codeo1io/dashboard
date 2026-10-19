@@ -3787,7 +3787,7 @@ describe('defaultRuntimeLoader — finished-run cache', () => {
     await mounted.click(runId)
     await waitFast(() => expect(net.attachments).toHaveLength(before + 1))
     net.attachments[before]?.push(RUNNING_FRAMES(runId))
-    await vi.waitFor(() => expect(statusText(runId), { timeout: 5_000 }).toBe('Running'), { timeout: 5_000 })
+    await vi.waitFor(() => expect(statusText(runId)).toBe('Running'), { timeout: 5_000 })
   }
 
   // -------------------------------------------------------------------------
