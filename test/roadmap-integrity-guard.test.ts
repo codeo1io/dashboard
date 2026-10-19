@@ -127,10 +127,10 @@ const TOLERATED_MISSING = new Map([
     'web/dist/index.html',
     'build artifact quoted as runtime evidence by the 2026-10-18 cycle:2 batch doc (registerSW.js auto-injection verified in the built bundle) — never tracked (gitignored); exists only transiently after pnpm build:web, so it is absent from a clean checkout by construction and its build-time presence is invisible to the honesty leg (tracked-ness is the staleness test)',
   ],
-  [
-    'web/src/operator/markdown-output.ts',
-    'upstream tree path quoted in the 2026-10-18 cycle:2 batch doc’s rm-1513 next-cycle lead (upstream a957b59b #646 markdown renderer) — the absorb is still a candidate def, not landed; prune this entry when rm-1513 lands the file',
-  ],
+  // 'web/src/operator/markdown-output.ts' tolerance RETIRED at the 2026.10.48
+  // adoption (b48ae13): the file landed tracked (upstream a957b59b #646
+  // markdown renderer), so it no longer belongs in the tolerated-missing map —
+  // the honesty leg would correctly flag it as a stale entry.
 ])
 
 function newestCohortDocs(): string[] {

@@ -3,7 +3,7 @@
 Read-only Fro Bot monitoring dashboard. Two parts in one repo: a Node 24
 native-TS Hono server (`src/`, strip-only, no backend build step) that serves the
 API + GitHub OAuth, and a Vite + React 19 + Tailwind v4 PWA client (`web/`, built
-via `pnpm build:web` → `web/dist`, served at `/`). Authenticated single-operator
+via `bun run build:web` → `web/dist`, served at `/`). Authenticated single-operator
 view of Fro Bot's cross-repo footprint.
 
 ## Critical security invariants
@@ -14,14 +14,16 @@ view of Fro Bot's cross-repo footprint.
    `security_events`/`vulnerability_alerts:read` optional + graceful). The Agent
    App's registered permissions are therefore irrelevant to effective access.
    Never add a write code path.
-   Upstream divergence disposition (verified 2026-09-29, run 262f170c research):
-   `fro-bot/dashboard` upstream has adopted an isolated repository-editing (wiki)
-   capability —
-   visible in its package description — while this fork keeps the read-only
-   invariant absolute (standing never-absorb item, upstream PR #498). Any
-   future absorb of upstream commits must exclude write-capability surfaces by
-   default; the ledger tracks the absorb window at rm-252 and the disposition at
-   rm-259.
+   Upstream divergence disposition (verified 2026-09-29, run 262f170c research;
+   re-verified at the 2026.10.48 adoption): `fro-bot/dashboard` upstream has
+   adopted an isolated repository-editing (wiki) capability — visible in its
+   package description and carried in `wiki-writer/` — while this fork keeps
+   the read-only invariant absolute (standing never-absorb item, upstream PR
+   #498). The upstream wiki-writer tree is EXCLUDED at every adoption (dropped
+   from the merge; tsconfig/vitest do not reference it; the Dockerfile copies
+   nothing from it). Any future absorb of upstream commits must exclude
+   write-capability surfaces by default; the ledger tracks the absorb window
+   at rm-252 and the disposition at rm-259.
 2. **Redaction preservation.** `src/github/metadata.ts` reads
    `metadata/repos.yaml` from the `codeo1io/.github` `data` branch and exports
    `redactedNodeIds` (node_ids of `[REDACTED]`/`private:true` entries). The
@@ -41,15 +43,16 @@ view of Fro Bot's cross-repo footprint.
   OVERWRITES `X-Forwarded-For` with the real client — keying then uses the first XFF
   hop (capped at 64 chars); behind an appending proxy, first-hop keying is
   client-spoofable.
-- pnpm. Server (`src/`, `test/`, `scripts/`) is Node 24 native TS (strip-only): no
+- Bun (`bun install`, `bun run <script>`). Server (`src/`, `test/`, `scripts/`) is Node 24 native TS (strip-only): no
   enums, namespaces, parameter properties, or TS import aliases (`erasableSyntaxOnly`
   lint enforces this). The client (`web/`) is a full-TS Vite + React 19 workspace with
   its own `web/tsconfig.json` — excluded from the strip-only lint.
 - `as unknown as X` for Octokit boundary casts; never `any`.
 - `Result<T,E>` error-return shape for the app client (extraction seam).
-- Gates: `pnpm check-types` (server + `web/` + `.opencode`), `pnpm lint`, `pnpm test` (rebuilds the
-  client via `pretest`, then runs Vitest). Build the client with `pnpm build:web` →
-  `web/dist`; `pnpm dev` serves that prebuilt bundle. Direct `vitest run`
+- Gates: `bun run check-types` (server + `web/` + `.opencode`), `bun run lint`, `bun run test` (rebuilds the
+  client via `pretest`, then runs Vitest). Always `bun run test`, never a bare `bun test`,
+  which starts Bun's own runner. Build the client with `bun run build:web` →
+  `web/dist`; `bun run dev` serves that prebuilt bundle. Direct `vitest run`
   invocations bypass `pretest` — suites that hit `/` will 404 on a stale or
   missing `web/dist`; build first (see
   `docs/solutions/workflow-issues/targeted-vitest-without-pretest-build-webdist-404s-2026-09-24.md`).
@@ -71,9 +74,9 @@ view of Fro Bot's cross-repo footprint.
 - `.agents/skills/` is the canonical home for cross-harness agent skills (read by
   both OpenCode and GitHub Copilot). Install shared skills there, not per-harness:
   e.g. `npx impeccable skills install --providers=agents --scope=project`. The CI
-  Design Check pins `impeccable@3.2.1` in `.github/workflows/main.yaml` — an older
-  major ignores `.impeccable/config.json` `ignoreValues` and fails the gate on
-  intentional brand tokens; bump the pin in both places together.
+  Design Check pins Impeccable in `.github/workflows/main.yaml`, and Renovate tracks
+  that pin. An older major ignores `.impeccable/config.json` `ignoreValues` and fails
+  the gate on intentional brand tokens.
 - Live/browser verification needs the dev server backgrounded and run without
   `--watch` (which masks crashes by parking). The recipe — and the orchestrator-owns-
   the-server pattern for subagent verification — is in
