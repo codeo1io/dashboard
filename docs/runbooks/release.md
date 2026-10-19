@@ -17,8 +17,38 @@ docker buildx imagetools inspect ghcr.io/codeo1io/dashboard:latest
 
 The top-level `Digest:` line is the index digest the workflow compares against
 `steps.build.outputs.digest`. `:latest` should match the most recent green
-release run's build step; per-run tags (`vYYYY.MM.DD-N`, `sha-<short>`) are
+release run's build step; per-run tags (CalVer + `sha-<short>`, below) are
 immutable snapshots.
+
+## Release tag shape (rm-2081, verified 2026-10-19)
+
+Release tags are CalVer `YYYY.MM.N` — year, month, month-serial patch, **no `v`
+prefix and no day component**. Worked example: the newest live tag is
+`2026.10.48`; the month-serial line runs `2026.07.0` … `2026.07.43`,
+`2026.08.0` … `2026.08.15`, `2026.10.22` … `2026.10.25`, `2026.10.48`.
+`scripts/compute-release-tag.ts` is the single source of truth:
+it scans git tags matching the current UTC month and mints `max(N)+1`; the
+workflow builds the image with that precomputed tag (`Compute release version`
+step) and later creates the git tag with the **same string** (`Create release
+tag` step) so the footer chip and the tag can never disagree. Only legacy
+June-2026 tags carry an older day-shaped third component (`2026.06.15` …
+`2026.06.30`, plus the nested `2026.06.15.1`/`.2` the script's transition-month
+note documents) — and no live tag anywhere carries a `v` prefix; the
+runbook's earlier `v`-prefixed day-serial description matches no tag in the
+live census.
+
+Per-run image tags on GHCR: the CalVer tag and `sha-<short>` (promoted from the
+build digest by the App-gated promote step), plus the candidate-build tag
+`ci-<run_id>-<attempt>`.
+
+Verified against live state 2026-10-19 (this section's edit date):
+`git ls-remote --tags origin` holds the full census above in exactly those
+shapes; the fork's GitHub releases list is empty
+(`gh api repos/codeo1io/dashboard/releases` → `[]`) because `Create GitHub
+Release` is App-gated (see Known-gated surfaces) — so published tag state lives
+in git tags and GHCR, not on the releases page. An operator verifying published
+state should therefore read the tag list and the registry, not expect release
+objects.
 
 ## Failure triage — observed classes
 
