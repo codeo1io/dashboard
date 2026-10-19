@@ -4,6 +4,9 @@ import {resolve} from 'node:path'
 import process from 'node:process'
 import {describe, expect, it} from 'vitest'
 
+import {EXPECTED_ROADMAP_DEF_CENSUS} from '../scripts/roadmap-census-expected.ts'
+import {census} from '../scripts/roadmap-census.ts'
+
 /**
  * rm-1454: render-guard census for the managed ROADMAP.md.
  *
@@ -24,6 +27,14 @@ import {describe, expect, it} from 'vitest'
  * is tracked as an out-of-repo cross-repo stewardship request — see
  * docs/solutions/workflow-issues/managed-render-lint-regression-2026-10-15.md
  * and rm-1454's implement rider.
+ *
+ * rm-864 (2026-10-19, run fcb763d993e9): two further legs live in this
+ * file — def-census exact equality against a named expected constant
+ * (scripts/roadmap-census-expected.ts; distinct from the rm-877 floor
+ * tripwires, which stay in test/roadmap-integrity-guard.test.ts) and the
+ * stringified-object prose trip (bare bracketed structured tokens in
+ * narrative prose — the renderer's second emission mechanism, after the
+ * trailing-whitespace/label-ref round rm-1454 caught).
  */
 const repoRoot = process.cwd()
 
@@ -67,6 +78,72 @@ function closedItemIds(lines: readonly string[]): Set<number> {
 }
 
 /**
+ * rm-864 prose-trip leg: catch structured values the managed render
+ * stringifies into narrative prose. Two observed shapes, both 2026-10-15,
+ * both parsed by the markdown processor as label references that failed
+ * `pnpm lint` on clean main: an entire script array stringified into a
+ * link label (rm-022, ROADMAP.md:19:32) and object-Object brackets in
+ * rm-802's acceptance (:878/:880). The durable cure is renderer-side
+ * (hermes-roadmap must never emit non-string values into prose fields —
+ * out-of-repo); this trip is the repo-side defense, and it fires on the
+ * EMISSION signature rather than on markdown reference resolution, so a
+ * stray bracket token that happens to satisfy the label linter still
+ * trips.
+ */
+const BRACKET_TOKEN = /\[([^[\]]*)\]/g
+
+function isStringifiedStructure(inner: string): boolean {
+  // `[object Object]` and cousins (`[object Array]`) — the default
+  // toString of a structured value. Lowercase prose such as `[object
+  // model]` does not match (a capital letter is required after the space).
+  if (/^object [A-Z][a-zA-Z]*$/.test(inner)) return true
+  // Stringified arrays of quoted items — `['a', 'b']`, `["x"]`, one or
+  // more items. Unquoted numeric brackets (`[1]` citation shape) stay
+  // exempt: every observed emission quoted its items.
+  return /^\s*['"][^'"]*['"]\s*(?:,\s*['"][^'"]*['"]\s*)*$/.test(inner)
+}
+
+/**
+ * Prose-only scan of the ledger. Exempt by design: HTML-comment graft
+ * blocks (frozen verbatim history — same exemption the dangling-refs
+ * census grants), fenced code blocks, inline code spans (backticks quote
+ * content deliberately), and backslash-escaped brackets (the documented
+ * cure for an emission, not the disease).
+ */
+function stringifiedObjectProseTrips(lines: readonly string[]): string[] {
+  const offenders: string[] = []
+  let inFence = false
+  let inComment = false
+  lines.forEach((raw, index) => {
+    let line = raw
+    if (inComment) {
+      if (line.includes('-->')) inComment = false
+      return
+    }
+    const commentStart = line.indexOf('<!--')
+    if (commentStart !== -1) {
+      // Scan only the prose preceding the comment opener; if the comment
+      // does not close on the same line, everything after it is frozen.
+      line = line.slice(0, commentStart)
+      if (!raw.slice(commentStart).includes('-->')) inComment = true
+    }
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      inFence = !inFence
+      return
+    }
+    if (inFence) return
+    const narrative = line
+      .replaceAll(/`[^`]*`/g, '') // inline code spans quote content deliberately
+      .replaceAll(/\\[[\]]/g, '  ') // escaped brackets are the cure, not the disease
+    for (const match of narrative.matchAll(BRACKET_TOKEN)) {
+      const inner = match[1] ?? ''
+      if (isStringifiedStructure(inner)) offenders.push(`ROADMAP.md:${index + 1} [${inner}]`)
+    }
+  })
+  return offenders
+}
+
+/**
  * House fog convention: a ref explicitly marked `fog rm-NNN` points at a
  * cross-lineage ledger item that this tree's history cannot see (other runs'
  * bands, dead patches, superseded lineages). Such refs are intentional and
@@ -78,6 +155,22 @@ const FOG_MARKED_RE = /fog[ (]*rm-\d+(?:\s*\/\s*rm-\d+)*/gi
 const RM_REF_RE = /rm-(\d+)/g
 
 describe('ROADMAP.md render-guard census (rm-1454)', () => {
+  it('no line exceeds the 4000-char ledger line ceiling (rm-1460)', () => {
+    const offenders = roadmapLines()
+      .map((text, index) => ({line: index + 1, length: text.length}))
+      .filter(entry => entry.length > 4000)
+      .map(entry => `ROADMAP.md:${entry.line} (${entry.length} chars)`)
+
+    expect(
+      offenders,
+      'Lines over the 4000-char ledger ceiling (rm-1460) — graft/cycle ' +
+      'comments and riders must wrap at sentence boundaries instead of ' +
+      'growing unbounded single lines: they break diff review, blame, and ' +
+      'every editorless consumer of the ledger. Wrap the content (never ' +
+      'rewrite it) and keep the wrap change in the same batch.',
+    ).toEqual([])
+  })
+
   it('no line carries trailing whitespace', () => {
     const offenders = roadmapLines()
       .map((text, index) => ({line: index + 1, text}))
@@ -97,9 +190,18 @@ describe('ROADMAP.md render-guard census (rm-1454)', () => {
     const lines = roadmapLines()
     const resolvable = new Set<number>([...defLineIds(lines), ...closedItemIds(lines)])
     const offenders: string[] = []
+    // rm-1460: long graft/cycle notes now wrap as multi-line <!-- --> comments
+    // (the 4000-char ceiling), so "line contains '<!'" no longer identifies
+    // comment content — track open-comment state across lines instead. A
+    // single-line <!-- x --> comment still matches the contains check and
+    // leaves the state untouched.
+    let inComment = false
     lines.forEach((text, index) => {
       if (text.startsWith('- id: `rm-')) return
-      if (text.includes('<!--')) return
+      const wasInComment = inComment
+      if (text.includes('<!--') && !text.includes('-->')) inComment = true
+      else if (inComment && text.includes('-->')) inComment = false
+      if (text.includes('<!--') || wasInComment) return
       const unmarked = text.replaceAll(FOG_MARKED_RE, '')
       for (const match of unmarked.matchAll(RM_REF_RE)) {
         if (!resolvable.has(Number(match[1]))) {
@@ -152,6 +254,69 @@ describe('ROADMAP.md render-guard census (rm-1454)', () => {
       'at 5d5f9be). Re-derive tracks from def content; the renderer-side fix is the ' +
       'durable cure (rm-1454 rider + managed-render-lint-regression solution doc).',
     ).toBeGreaterThanOrEqual(MIN_DISTINCT_TRACKS)
+  })
+
+  it('def census equals the named expected constant (rm-864)', () => {
+    const live = census()
+    expect(
+      live.defs,
+      `ROADMAP.md carries ${live.defs} def lines but scripts/roadmap-census-expected.ts pins ` +
+      `${EXPECTED_ROADMAP_DEF_CENSUS}. A managed render, integrate graft, or parallel-mint ` +
+      'landing changed the census — bump the constant in that same change, deliberately. ' +
+      'The one-line file is the coordination point: two sibling landings that both bump it ' +
+      'produce a merge conflict that must be reconciled by hand, never silently resolved. ' +
+      'Do not weaken this leg to a floor — the rm-877 integrity guard already owns floors; ' +
+      'this leg exists to make census drift loud. Re-derive the live count with ' +
+      '`node scripts/roadmap-census.ts`.',
+    ).toBe(EXPECTED_ROADMAP_DEF_CENSUS)
+  })
+
+  it('no stringified structured value lands in narrative prose (rm-864)', () => {
+    const offenders = stringifiedObjectProseTrips(roadmapLines())
+    expect(
+      offenders,
+      'Stringified structured tokens in ROADMAP.md narrative prose — the managed render ' +
+      'dropped a structured detail value into a prose field (observed 2026-10-15: a script ' +
+      'array stringified into a link label at ROADMAP.md:19:32 and object-Object brackets ' +
+      'at :878/:880; the markdown processor parses both as label references and `pnpm lint` ' +
+      'went RED on clean main). Escape the brackets, quote-wrap the token in backticks, or ' +
+      'reword to plain prose. The durable cure is renderer-side — hermes-roadmap must never ' +
+      'emit non-string values into prose fields; see rm-864 and the managed-render ' +
+      'lint-regression solution doc.',
+    ).toEqual([])
+  })
+
+  it('stringified-object detector fires on both observed emission shapes and spares legitimate prose', () => {
+    const emissions = stringifiedObjectProseTrips(
+      [
+        '- acceptance: the module list renders as [object Object] in narrative prose',
+        "- signals: a script array stringified into a label as ['impeccable@3.2.1', 'playwright@1.64.0'] here",
+        '- evidence: a single-item array ["only-child"] still trips',
+        '- cousin shape [object Array] trips too',
+      ].join('\n').split('\n'),
+    )
+    expect(emissions).toEqual([
+      'ROADMAP.md:1 [object Object]',
+      "ROADMAP.md:2 ['impeccable@3.2.1', 'playwright@1.64.0']",
+      'ROADMAP.md:3 ["only-child"]',
+      'ROADMAP.md:4 [object Array]',
+    ])
+
+    const legitimate = stringifiedObjectProseTrips(
+      [
+        'Prose with a backticked literal `[object Object]` stays quiet.',
+        String.raw`Escaped brackets \[object Object\] are the documented cure.`,
+        'A markdown link [label](https://example.invalid) is not an emission.',
+        'A reference-style link [text][ref] and a citation [1] stay quiet.',
+        'Lowercase prose such as an [object model] discussion does not match.',
+        "<!-- graft block: [object Object] and ['a', 'b'] frozen verbatim -->",
+        '```',
+        'fenced [object Object] block content',
+        '```',
+        "Post-fence prose ['a', 'b'] trips again — fence state is per-block.",
+      ].join('\n').split('\n'),
+    )
+    expect(legitimate).toEqual(["ROADMAP.md:10 ['a', 'b']"])
   })
 
   // The probe budget below must exceed spawnSync's own 120s timeout: the
