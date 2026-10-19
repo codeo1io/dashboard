@@ -48,6 +48,21 @@ const ThrottledOctokit = Octokit.plugin(throttling, retry)
 export const GITHUB_REQUEST_TIMEOUT_MS = 30_000
 
 /**
+ * rm-855: REST API version pinned on every GitHub egress path. GitHub's REST
+ * API is calendar-versioned; pinning the version at the client-construction
+ * seam keeps a future deprecation window from shifting response shapes under
+ * a long-lived deployment. @octokit/core 7.x DROPS constructor-level default
+ * headers (verified empirically: neither top-level `headers` nor
+ * `request.headers` reaches the wire), so the pin rides
+ * `octokit.request = octokit.request.defaults({headers})` — the only
+ * construction seam that lands on BOTH the REST path and auth-app token
+ * fetches. GraphQL is versionless (no calendar versioning — no header owed
+ * there) and the OAuth web-flow endpoints (github.com/login/oauth/*) are not
+ * REST API surface; oauth.ts's manual api.github.com fetch uses this constant.
+ */
+export const GITHUB_API_VERSION = '2022-11-28'
+
+/**
  * Build a fetch wrapper that bounds every call by wall-clock time (rm-156).
  *
  * The runtime's `@octokit/request` does not honor the `timeout` option for
@@ -158,6 +173,13 @@ export function createDashboardAppClient(options: AppClientOptions): DashboardAp
     },
   })
 
+  // rm-855: REST version pin (GITHUB_API_VERSION) — request.defaults is the
+  // only seam this octokit stack honors for default headers; it also covers
+  // the auth-app installation-token mint below, which rides octokit.request.
+  octokit.request = octokit.request.defaults({
+    headers: {'X-GitHub-Api-Version': GITHUB_API_VERSION},
+  })
+
   async function mintInstallationToken(
     installationId: number,
     permissions: Record<string, 'read'>,
@@ -215,6 +237,9 @@ export function createInstallationGraphqlQueryFn(
   const timeoutMs = options.timeoutMs ?? GITHUB_REQUEST_TIMEOUT_MS
   return async (installationId: number, query: string, variables: Record<string, unknown>): Promise<unknown> => {
     const token = await getToken(installationId)
+    // rm-855: GraphQL is versionless — GitHub's GraphQL endpoint carries no
+    // calendar-version header (that pin is REST-only, see
+    // GITHUB_API_VERSION above), so no X-GitHub-Api-Version is owed here.
     const gql = graphql.defaults({
       headers: {authorization: `token ${token}`},
       // rm-156: fetch-layer enforcement (load-bearing); rm-197: the `timeout`

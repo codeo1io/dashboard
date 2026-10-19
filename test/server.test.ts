@@ -42,6 +42,19 @@ describe('readServerBindConfig — server bind address (issue #13)', () => {
     }
   })
 
+  it('throws on padded/whitespace DASHBOARD_PORT spellings (rm-852: no silent trim)', () => {
+    // The pre-rm-852 trim let ' 3000 ' bind 3000 silently; the raw decimal
+    // grammar fails loud on every non decimal-digit spelling, whitespace
+    // included (whitespace-only is a misprovision, not an unset value).
+    for (const bad of [' 3000 ', '3000 ', ' 3000', '  ', '\t80']) {
+      expect(() => readServerBindConfig({DASHBOARD_PORT: bad}), JSON.stringify(bad)).toThrow(/DASHBOARD_PORT/)
+    }
+  })
+
+  it('accepts leading-zero decimal spellings — decimal digits are decimal digits (rm-852 spelling census)', () => {
+    expect(readServerBindConfig({DASHBOARD_PORT: '03000'})).toEqual({host: '0.0.0.0', port: 3000})
+  })
+
   it('throws on an out-of-range DASHBOARD_PORT', () => {
     expect(() => readServerBindConfig({DASHBOARD_PORT: '70000'})).toThrow(/DASHBOARD_PORT/)
     expect(() => readServerBindConfig({DASHBOARD_PORT: '0'})).toThrow(/DASHBOARD_PORT/)

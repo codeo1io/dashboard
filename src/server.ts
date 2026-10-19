@@ -49,6 +49,7 @@ import {
   createBoundedFetch,
   createDashboardAppClient,
   createInstallationGraphqlQueryFn,
+  GITHUB_API_VERSION,
   GITHUB_REQUEST_TIMEOUT_MS,
 } from './github/app-client.ts'
 import {buildInstallationsClient, enumerateRepos, mintReadOnlyToken} from './github/installations.ts'
@@ -1553,6 +1554,11 @@ export function buildSnapshotProvider(deps: SnapshotProviderDeps): {
         auth: token,
         request: {timeout: GITHUB_REQUEST_TIMEOUT_MS, fetch: createBoundedFetch(GITHUB_REQUEST_TIMEOUT_MS)},
       })
+      // rm-855: REST version pin — same request.defaults seam as app-client
+      // (constructor-level default headers are dropped by @octokit/core 7.x).
+      installOctokit.request = installOctokit.request.defaults({
+        headers: {'X-GitHub-Api-Version': GITHUB_API_VERSION},
+      })
       const response = await installOctokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
         owner: 'codeo1io',
         repo: '.github',
@@ -1649,12 +1655,16 @@ export function readServerBindConfig(env: NodeJS.ProcessEnv = process.env): Serv
   const rawHost = env.DASHBOARD_HOST?.trim()
   const host = rawHost !== undefined && rawHost !== '' ? rawHost : '0.0.0.0'
 
-  const rawPort = env.DASHBOARD_PORT?.trim()
+  const rawPort = env.DASHBOARD_PORT
   let port = 3000
   if (rawPort !== undefined && rawPort !== '') {
     // rm-180 port-path rider (2026-10-10): whole-string decimal grammar, the
     // house convention used by envIntOrDefault above — a bare Number() here
     // accepted '0x10'/'1e2' spellings as valid ports. Fail-loud stays.
+    // rm-852 (2026-10-19): the trim is GONE — padded spellings (' 3000 ') and
+    // whitespace-only values now fail loud instead of binding silently after
+    // a trim; '' still means unset (default port). The host above keeps its
+    // trim: a hostname is freeform, the port grammar is not.
     if (!/^\d+$/.test(rawPort)) {
       throw new Error(`DASHBOARD_PORT must be an integer in 1-65535, got: ${rawPort}`)
     }

@@ -10,6 +10,8 @@
  */
 import {Buffer} from 'node:buffer'
 
+import {GITHUB_API_VERSION} from '../github/app-client.ts'
+
 const GITHUB_OAUTH_ERROR_CODES = new Set([
   'access_denied',
   'bad_verification_code',
@@ -97,6 +99,10 @@ export function makeGitHubOAuthClient(
       }
       let res: Response
       try {
+        // rm-855: no X-GitHub-Api-Version here by design — the OAuth web-flow
+        // endpoints (github.com/login/oauth/*) are not calendar-versioned REST
+        // API surface; the pin applies to api.github.com calls only
+        // (fetchGitHubUserLogin below pins it via GITHUB_API_VERSION).
         res = await fetch('https://github.com/login/oauth/access_token', {
           method: 'POST',
           headers: {
@@ -159,7 +165,7 @@ export async function fetchGitHubUserLogin(accessToken: string): Promise<string>
       headers: {
         Authorization: `Bearer ${accessToken}`,
         Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
+        'X-GitHub-Api-Version': GITHUB_API_VERSION,
       },
       redirect: 'error',
       signal: AbortSignal.timeout(GITHUB_FETCH_TIMEOUT_MS),
