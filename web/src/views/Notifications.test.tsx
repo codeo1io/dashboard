@@ -478,6 +478,41 @@ describe('Notifications Component', () => {
     expect(screen.queryByTestId('notifications-settings')).toBeNull()
   })
 
+  it('pays no /operator/session request when the card is already dismissed (rm-1446 review-fix)', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      addMetaTag()
+      localStorage.setItem('fro-bot-notifications-dismissed', '1')
+      await act(async () => {
+        render(<Notifications />)
+      })
+      expect(screen.queryByTestId('notifications-settings')).toBeNull()
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+      removeMetaTag()
+      localStorage.removeItem('fro-bot-notifications-dismissed')
+    }
+  })
+
+  it('pays no /operator/session request when push is disabled via absent meta tag (rm-1446 review-fix)', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      removeMetaTag()
+      localStorage.removeItem('fro-bot-notifications-dismissed')
+      await act(async () => {
+        render(<Notifications />)
+      })
+      expect(screen.queryByTestId('notifications-settings')).toBeNull()
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+      localStorage.removeItem('fro-bot-notifications-dismissed')
+    }
+  })
+
   it('runs reconcile actions: register', async () => {
     addMetaTag()
     vi.mocked(runReconcileSweep).mockResolvedValue({
