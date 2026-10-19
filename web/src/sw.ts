@@ -139,7 +139,13 @@ addEventListener('message', (event: Event) => {
   // shape {title, body, data: {type, route, failureLabel?}} and is routed
   // through the same safe-copy mapping as a real push — never renders raw
   // payload text.
-  if (messageType === 'MOCK_SYNTHETIC_PUSH') {
+  //
+  // The receiver is gated by the SAME import.meta.env.DEV flag as the only
+  // sender (web/src/views/Notifications.tsx): Vite replaces the flag at build
+  // time, so production builds dead-branch-eliminate this block and the
+  // fixture literal never reaches web/dist/sw.js (pinned by
+  // test/static-assets.test.ts and web/src/sw.test.ts; rm-2003).
+  if (import.meta.env.DEV && messageType === 'MOCK_SYNTHETIC_PUSH') {
     const {title, body, data} = buildNotification((e.data as {payload?: unknown} | null)?.payload)
     e.waitUntil(registration.showNotification(title, {body, data}))
   }

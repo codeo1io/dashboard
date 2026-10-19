@@ -16,11 +16,14 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       // injectManifest ships our hand-written SW (web/src/sw.ts) — the
-      // deny-by-default precache router (rm-274 truthing: NavigationRoute
-      // denylist + /operator redirect, NetworkOnly for auth/operator/API
-      // routes, push handlers, legacy-cache sweep; it never unregisters
-      // itself). The emitted precache manifest is live — precacheAndRoute
-      // installs it, so the shell serves offline.
+      // deny-by-default precache router (rm-274 truthing): NavigationRoute
+      // denylist + /operator redirect, NetworkOnly for auth/operator-auth/API
+      // routes, push/notificationclick/pushsubscriptionchange handlers, and
+      // the legacy monitoring-v1 cache sweep; it never unregisters itself.
+      // The emitted precache manifest is live — precacheAndRoute installs
+      // it, so the shell serves offline. Only the dev-only synthetic push
+      // receiver is build-time DEV-gated (rm-2003); everything else here
+      // ships in production.
       strategies: 'injectManifest',
       srcDir: 'src',
       filename: 'sw.ts',
@@ -43,11 +46,12 @@ export default defineConfig({
 
         // Rewrite the precache manifest entry for index.html → '/' so the
         // generated workbox manifest stays consistent with the server's '/'
-        // route (GET /index.html has no route and 404s). The deployed SW
-        // precaches and serves the shell (web/src/sw.ts, rm-274 truthing), so
-        // this rewrite is load-bearing: it is what lets the '/' navigation be
-        // served from the precache (createHandlerBoundToURL('/')) instead of
-        // re-fetched.
+        // route (GET /index.html has no route and 404s). This transform is
+        // load-bearing: the deployed SW precaches and serves the shell
+        // (deny-by-default router in web/src/sw.ts, rm-274 truthing), so it
+        // is what lets the '/' navigation be served from the precache
+        // (createHandlerBoundToURL('/')) instead of re-fetched — a missing
+        // or malformed entry breaks offline shell delivery. Do not delete.
         manifestTransforms: [
           (entries) => {
             const manifest = entries.map((entry) =>

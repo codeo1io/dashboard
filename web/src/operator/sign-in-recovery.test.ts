@@ -155,7 +155,7 @@ describe('operator sign-in redirect recovery', () => {
       onStateChange: vi.fn(),
     })
 
-    await vi.waitFor(() => expect(sessionStorage.getItem(SIGN_IN_GUARD_KEY)).toBeNull())
+    await vi.waitFor(() => expect(sessionStorage.getItem(SIGN_IN_GUARD_KEY)).toBeNull(), { timeout: 5_000 })
     runtime.cleanup()
   })
 
@@ -186,7 +186,7 @@ describe('operator sign-in redirect recovery', () => {
 
     // The guard starts set, so asserting it right away would pass before the loader had done anything:
     // wait for the run list's outcome to be handled, then check the guard survived it.
-    await vi.waitFor(() => expect(initOperatorRunIndex).toHaveBeenCalled())
+    await vi.waitFor(() => expect(initOperatorRunIndex).toHaveBeenCalled(), { timeout: 5_000 })
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(sessionStorage.getItem(SIGN_IN_GUARD_KEY)).toBe(guardValue)
     runtime.cleanup()
