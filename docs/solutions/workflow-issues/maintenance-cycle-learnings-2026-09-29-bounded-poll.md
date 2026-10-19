@@ -1,4 +1,5 @@
 ---
+title: Maintenance-cycle learnings — bounded-poll batch (2026-09-29, run 262f170c0a1e)
 module: dashboard
 tags: ['maintenance-cycle', 'vitest', 'roadmap-ledger', 'lint-cache', 'guard-tests']
 problem_type: workflow-issue

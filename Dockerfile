@@ -141,10 +141,18 @@ EXPOSE 3000
 # refresh cycle of noise tolerance, so a single slow cycle cannot flap the
 # container. node:24-slim ships no curl/wget, so the probe is a node fetch
 # one-liner using the runtime the CMD already uses (adding curl to the image
-# would grow the Trivy surface for no other need). The URL hard-codes the
-# DASHBOARD_PORT default (3000): a deployment overriding DASHBOARD_PORT must
-# override this HEALTHCHECK to match (documented in docs/runbooks/release.md).
+# would grow the Trivy surface for no other need).
+# rm-233 fold (2026-10-19, integrate of run c8b5d2ec cycle-1 batch B2, conflict
+# case 5e1dbf59): the URL is now env-aware instead of hard-coding 3000 —
+# DASHBOARD_PORT is the server's documented bind override (README env table;
+# src/server.ts reads env.DASHBOARD_PORT), PORT a conventional fallback, 3000
+# the server default matching EXPOSE above, and HEALTHCHECK_URL replaces the
+# whole URL for exotic probe targets. The 4.5s in-process watchdog sits just
+# under HEALTHCHECK --timeout=5s so a hung fetch exits 1 before the runtime
+# kill; a deployment overriding DASHBOARD_PORT therefore needs no HEALTHCHECK
+# override (the docs/runbooks/release.md coupling note is retired by this
+# fold — the probe follows the bind port now).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD ["node", "-e", "fetch('http://127.0.0.1:3000/api/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+  CMD ["node", "-e", "const t=setTimeout(()=>process.exit(1),4500);fetch(process.env.HEALTHCHECK_URL??('http://127.0.0.1:'+(process.env.DASHBOARD_PORT??process.env.PORT??3000)+'/api/healthz')).then(r=>{clearTimeout(t);process.exit(r.ok?0:1)}).catch(()=>{clearTimeout(t);process.exit(1)})"]
 
 CMD ["node", "src/server.ts"]
