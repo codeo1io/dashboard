@@ -43,8 +43,8 @@ concurrency:
 env:
   PR_REVIEW_PROMPT: |
     You are a skeptical reviewer for fro-bot/dashboard — a TypeScript Hono
-    read-only monitoring dashboard — never a write code path
-    (Node 24 native TS, pnpm, no build step).
+    read-only-by-default monitoring dashboard with one isolated wiki-write capability
+    (Node 24 native TS, Bun, no build step).
     Focus on correctness, security, and breaking changes. Prefer false positives
     over false negatives for security issues.
 
@@ -101,8 +101,8 @@ env:
 
   SCHEDULE_PROMPT: |
     Run the daily Fro Bot pass for fro-bot/dashboard — a TypeScript Hono
-    read-only monitoring dashboard — never a write code path
-    (Node 24 native TS, pnpm, no build step).
+    read-only-by-default monitoring dashboard with one isolated wiki-write capability
+    (Node 24 native TS, Bun, no build step).
     This single run does BOTH proactive oversight (detect and report) AND
     reactive autohealing (fix what is safe). Prioritize minimal, reversible
     changes. Read the canonical context first: README.md,
@@ -125,19 +125,15 @@ env:
     detail for an LLM agent to act on later (see AGENT NOTES).
 
     DEPENDENCY OWNERSHIP
-    Dependabot owns routine dependency and version bumps on this fork (weekly
-    grouped PRs per .github/dependabot.yml; first window opened 2026-09-19).
-    Renovate does not run here — its workflow was retired during CI migration
-    and its config deleted 2026-09-22. Change dependency
-    versions only to remediate a confirmed critical/high security advisory or
-    to repair an existing security-update PR. Never open a non-security
-    version-bump PR and never batch unrelated dependency changes into a
-    security fix.
+    Renovate owns routine dependency and version bumps. Change dependency
+    versions only to remediate a confirmed critical/high security advisory or to
+    repair an existing security-update PR. Never open a non-security version-bump
+    PR and never batch unrelated dependency changes into a security fix.
 
     TRUSTED AUTHORS
     Only repair a PR branch authored by the repository owner/a collaborator with
-    write access, or an approved automation bot (dependabot[bot], fro-bot). If
-    author trust cannot be established, skip the PR and log it under
+    write access, or an approved automation bot (renovate[bot], dependabot[bot],
+    fro-bot). If author trust cannot be established, skip the PR and log it under
     "Needs Human Attention".
 
     CATEGORIES (work in order)
@@ -166,10 +162,10 @@ env:
 
     3. CODE QUALITY
        Run the repository's own validation gates in order:
-         pnpm bootstrap
-         pnpm check-types
-         pnpm lint
-         pnpm test
+         bun run bootstrap
+         bun run check-types
+         bun run lint
+         bun run test
        Also run the Node strip-only load check over src/**/*.ts (excluding
        *.test.ts) — Node 24's strip-only TypeScript execution does not transform
        TS-specific constructs (enum, namespace, parameter properties, import
@@ -262,32 +258,7 @@ env:
 jobs:
   fro-bot:
     name: Fro Bot
-    # rm-188 (cycle 13, 2026-09-25): pinned ubuntu-24.04 — ubuntu-26.04 images are
-    # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
-    # at the rm-139 Node-26 window (2026-10-28).
-    runs-on: ubuntu-24.04
-    # rm-603 (2026-10-04): bounded so a wedged agent run can never hold a runner
-    # indefinitely. The cap was sized while this workflow was disabled_manually
-    # (no FRO_BOT_PAT), so its own history could not size it: last pre-disable
-    # runs (2026-09-16..18) died in <=35s at input validation. Sized by
-    # role-analog instead — this is
-    # an agent-driven job like main.yaml's Conductor jobs (self-kill at 20;
-    # only the lint-validation job gets 35 for its poll window) — 20 minutes.
-    timeout-minutes: 20
-    # 2026-09-19: this repo has no FRO_BOT_PAT secret configured, so the job's
-    # token input is empty and every scheduled run fails at input validation
-    # ("Input required and not supplied: token"). Skip scheduled runs until the
-    # secret exists (manual dispatch with the secret set still runs).
-    # 2026-10-15 state truth-up: the workflow itself is active again (gh api
-    # workflow state, re-verified 2026-10-15) — it is schedule-inert, not
-    # disabled, while FRO_BOT_PAT is absent: the gate below skips the
-    # scheduled job and manual dispatch still runs.
-    # 2026-09-20: the secret-presence gate moved out of this job-level if (neither
-    # the secrets nor env context is available there — actionlint rejects the
-    # whole workflow file) to job-level env + per-step if, mirroring release.yaml's
-    # HAS_RELEASE_APP contract.
-    env:
-      HAS_FRO_BOT_PAT: ${{ secrets.FRO_BOT_PAT != '' }}
+    runs-on: ubuntu-latest
     if: >-
       (
         github.event.pull_request == null ||
@@ -317,16 +288,8 @@ jobs:
         )
       )
     steps:
-      - name: ⚠️ Fro Bot skipped (FRO_BOT_PAT not configured)
-        if: github.event_name == 'schedule' && env.HAS_FRO_BOT_PAT != 'true'
-        run: >-
-          echo "::warning title=Fro Bot skipped::FRO_BOT_PAT is not configured in
-          this repository — skipping the scheduled run. Provision the secret (and
-          re-enable this workflow) to restore the daily cron."
-
       - name: Checkout repository
-        if: github.event_name != 'schedule' || env.HAS_FRO_BOT_PAT == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
           # Review-path triggers withhold credentials from the agent; don't leave one in the workspace.
@@ -343,13 +306,11 @@ jobs:
           token: ${{ secrets.FRO_BOT_PAT }}
 
       - name: 📦 Setup
-        if: github.event_name != 'schedule' || env.HAS_FRO_BOT_PAT == 'true'
         uses: ./.github/actions/setup
 
       - name: Run Fro Bot
-        if: github.event_name != 'schedule' || env.HAS_FRO_BOT_PAT == 'true'
         id: fro-bot-agent
-        uses: fro-bot/agent@06469674e6671f36c7f22b87f136d34d6d69f060 # v0.122.2
+        uses: fro-bot/agent@e59939d5df645ce0d7640f0c015f7f1e54b72dea # v0.123.1
         env:
           OPENCODE_PROMPT_ARTIFACT: 'true'
           TASK_PROMPT: >-
