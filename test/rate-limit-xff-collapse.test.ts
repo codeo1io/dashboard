@@ -18,6 +18,7 @@ import type {LogContext} from '../src/logger.ts'
 import {Buffer} from 'node:buffer'
 import {readFileSync} from 'node:fs'
 import {resolve} from 'node:path'
+import process from 'node:process'
 import {afterEach, beforeEach, describe, expect, it} from 'vitest'
 import {logger} from '../src/logger.ts'
 import {

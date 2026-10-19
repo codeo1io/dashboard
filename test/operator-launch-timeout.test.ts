@@ -27,7 +27,7 @@ function installHungFetch(resolveImmediately?: (input: unknown) => Response | un
   urls: string[]
 } {
   const urls: string[] = []
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     urls.push(String(input))
     const immediate = resolveImmediately?.(input)
     if (immediate !== undefined) return Promise.resolve(immediate)
@@ -53,7 +53,10 @@ function installControllableTimeout(): {controllers: AbortController[]; firePend
     controllers.push(controller)
     return controller.signal
   })
-  return {controllers, firePending: () => { for (const c of controllers) c.abort() }}
+  const firePending = () => {
+    for (const controller of controllers) controller.abort()
+  }
+  return {controllers, firePending}
 }
 
 const LAUNCH_TIMEOUT_COPY = 'Launch timed out. Please try again.'
@@ -137,7 +140,7 @@ describe('operator-launch form recovery within the bound (rm-1983)', () => {
   })
 
   it('hung launchRun (csrf instant) → same bounded recovery', async () => {
-    installHungFetch((input) => String(input).endsWith('/session/csrf')
+    installHungFetch(input => String(input).endsWith('/session/csrf')
       ? new Response(JSON.stringify({csrfToken: 'tok-hung'}), {status: 200, headers: {'content-type': 'application/json'}})
       : undefined)
     const {controllers, firePending} = installControllableTimeout()

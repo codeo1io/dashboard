@@ -53,7 +53,7 @@ const GZIP_LEVEL = 9
 /** Manifest lives at the dist root so the gate can verify skip intent (rm-1980). */
 const MANIFEST_NAME = 'gzip-sidecar-manifest.json'
 
-type SidecarEntry = {
+interface SidecarEntry {
   file: string
   originalBytes: number
   sidecarBytes: number | null

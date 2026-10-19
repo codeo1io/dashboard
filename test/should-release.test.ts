@@ -976,8 +976,8 @@ describe('release.yaml structure — release object beside the tag (rm-1978)', (
   const workflowPath = resolve(process.cwd(), '.github/workflows/release.yaml')
   const raw = readFileSync(workflowPath, 'utf8')
 
-  type Step = {name?: string, run?: string, env?: Record<string, string>, if?: string}
-  const workflow = parse(raw) as {jobs?: {release?: {permissions?: Record<string, string>, steps?: Step[]}}}
+  interface Step {name?: string; run?: string; env?: Record<string, string>; if?: string}
+  const workflow = parse(raw) as {jobs?: {release?: {permissions?: Record<string, string>; steps?: Step[]}}}
   const releaseJob = workflow.jobs?.release
   const steps = releaseJob?.steps ?? []
 
@@ -998,7 +998,9 @@ describe('release.yaml structure — release object beside the tag (rm-1978)', (
   })
 
   it('rollback lockstep: the cleanup step deletes BOTH the tag ref and the release object', () => {
-    const cleanup = steps.find(s => (s.name ?? '').includes('Cleanup'))
+    // 'Cleanup on failure' — NOT the earlier 'Cleanup smoke containers' step,
+    // which is the first name-only 'Cleanup' match in this job.
+    const cleanup = steps.find(s => (s.name ?? '').includes('Cleanup on failure'))
     expect(cleanup?.run).toContain('git/refs/tags')
     expect(cleanup?.run).toContain('gh release delete')
   })

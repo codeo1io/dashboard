@@ -290,8 +290,8 @@ export function buildLaunchClient(opts) {
           return {success: false, error: {kind: 'protocol', message: 'invalid csrf response'}}
         }
         return {success: true, data: {csrfToken: data.csrfToken}}
-      } catch (err) {
-        const kind = err?.name === 'TimeoutError' || err?.name === 'AbortError' ? 'timeout' : 'network'
+      } catch (error) {
+        const kind = error?.name === 'TimeoutError' || error?.name === 'AbortError' ? 'timeout' : 'network'
         return {success: false, error: {kind, message: 'network error'}}
       }
     },
@@ -312,8 +312,8 @@ export function buildLaunchClient(opts) {
           }
         }
         return {success: true, data}
-      } catch (err) {
-        const kind = err?.name === 'TimeoutError' || err?.name === 'AbortError' ? 'timeout' : 'network'
+      } catch (error) {
+        const kind = error?.name === 'TimeoutError' || error?.name === 'AbortError' ? 'timeout' : 'network'
         return {success: false, error: {kind, message: 'network error'}}
       }
     },
@@ -356,8 +356,8 @@ export function buildLaunchClient(opts) {
           return {success: true, data: {runId: data.runId}}
         }
         return {success: false, error: {kind: 'http', status: res.status}}
-      } catch (err) {
-        const kind = err?.name === 'TimeoutError' || err?.name === 'AbortError' ? 'timeout' : 'network'
+      } catch (error) {
+        const kind = error?.name === 'TimeoutError' || error?.name === 'AbortError' ? 'timeout' : 'network'
         return {success: false, error: {kind, message: 'network error'}}
       }
     },

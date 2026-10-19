@@ -1432,7 +1432,7 @@ describe('operator-launch — security: no data-repo/data-status on the optimist
 // ---------------------------------------------------------------------------
 
 describe('submitLaunch — timeout outcome mapping (rm-1983)', () => {
-  type Err = {readonly kind: string; readonly status?: number; readonly message?: string}
+  interface Err {readonly kind: string; readonly status?: number; readonly message?: string}
   type CsrfRow = {readonly ok: true; readonly csrfToken: string} | {readonly ok: false; readonly error: Err}
   type LaunchRow = {readonly ok: true; readonly runId: string} | {readonly ok: false; readonly error: Err}
 
