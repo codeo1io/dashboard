@@ -10,6 +10,8 @@
  * - CSP on /sw.js: no page CSP applied (workers don't inherit page CSP)
  * - Static response compression (rm-602): gzip sidecar selection by Accept-Encoding
  *   on the web/dist serveStatic family, Vary: Accept-Encoding, identity fallback,
+ *   SSE exclusion. rm-1488 adds the brotli tier: `<name>.br` sidecars beside the
+ *   `.gz` ones, br preferred over gzip when the client accepts both.
  *   and the operator-stream family's identity disposition
  */
 import type {GitHubOAuthClient} from '../src/auth/oauth.ts'
@@ -18,7 +20,7 @@ import {existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, s
 import {tmpdir} from 'node:os'
 import {join, resolve} from 'node:path'
 import process from 'node:process'
-import {gunzipSync} from 'node:zlib'
+import {brotliDecompressSync, gunzipSync} from 'node:zlib'
 import {Hono} from 'hono'
 import {afterEach, describe, expect, it} from 'vitest'
 import {PINNED_CONTRACT_VERSION} from '../public/operator-stream.js'
@@ -1556,8 +1558,13 @@ describe('rm-690 — Cache-Control policy for static surfaces', () => {
 // Accept-Encoding (Content-Encoding: gzip + Vary: Accept-Encoding, with
 // Content-Length/Last-Modified from the sidecar). The production proxy
 // compresses nothing (marcusrbrown/infra Caddyfile carries no `encode`
-// directive — gate discharged 2026-10-09), so compression is an app-layer
+// directive — gate discharged 2026-10-09, re-verified 2026-10-19 at
+// latest-touch commit 50ff7e4d for rm-1488), so compression is an app-layer
 // concern and precomputed build artifacts beat a runtime middleware.
+// rm-1488 (repository-maintenance cycle 1, run c4fb65b154a7) adds the brotli
+// tier: the same generator pass emits `<name>.br` at max static quality, and
+// @hono/node-server's ENCODINGS order (br → zstd → gzip) prefers it whenever
+// the client accepts br — zero server change.
 // SSE exclusion is structural: nothing in this scheme compresses a stream —
 // only files that exist before the request arrives — and the operator-stream
 // family stays identity by disposition (no sidecars in tracked public/).
@@ -1587,6 +1594,59 @@ describe('static response compression — gzip sidecars (rm-602)', () => {
     }
     const bundle = `web/dist/assets/${hashedBundle()}`
     expect(statSync(`${bundle}.gz`).size).toBeLessThan(statSync(bundle).size)
+  })
+
+  it('build:web emitted a .br sidecar for every compressible file in web/dist (rm-1488)', () => {
+    expect(existsSync('web/dist')).toBe(true)
+    const roots = ['web/dist', 'web/dist/assets']
+    let checked = 0
+    for (const root of roots) {
+      for (const name of readdirSync(root)) {
+        if (!COMPRESSIBLE.some(ext => name.endsWith(ext))) continue
+        checked++
+        expect(existsSync(join(root, `${name}.br`))).toBe(true)
+      }
+    }
+    expect(checked).toBeGreaterThan(5)
+  })
+
+  it('brotli sidecars are valid brotli of the original bytes and beat gzip on the hashed bundle (rm-1488)', () => {
+    for (const rel of ['web/dist/index.html', 'web/dist/manifest.webmanifest', 'web/dist/sw.js', `web/dist/assets/${hashedBundle()}`]) {
+      const original = readFileSync(rel)
+      const sidecar = readFileSync(`${rel}.br`)
+      expect(brotliDecompressSync(sidecar).equals(original)).toBe(true)
+    }
+    const bundle = `web/dist/assets/${hashedBundle()}`
+    expect(statSync(`${bundle}.br`).size).toBeLessThan(statSync(bundle).size)
+    // The measured rm-1488 win on this class: max-quality brotli under gzip-9
+    // on minified JS (build-to-build variance in the bytes, not the ordering).
+    expect(statSync(`${bundle}.br`).size).toBeLessThan(statSync(`${bundle}.gz`).size)
+  })
+
+  it('GET /assets/<bundle>.js with Accept-Encoding: br serves the brotli sidecar variant (rm-1488)', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request(`/assets/${hashedBundle()}`, {
+      headers: {'accept-encoding': 'br'},
+    })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-encoding')).toBe('br')
+    expect((res.headers.get('vary') ?? '').toLowerCase()).toContain('accept-encoding')
+    const sidecar = readFileSync(`web/dist/assets/${hashedBundle()}.br`)
+    expect(Number(res.headers.get('content-length'))).toBe(sidecar.byteLength)
+    const body = Buffer.from(await res.arrayBuffer())
+    expect(body.equals(sidecar)).toBe(true)
+    expect(brotliDecompressSync(body).equals(readFileSync(`web/dist/assets/${hashedBundle()}`))).toBe(true)
+  })
+
+  it('dual Accept-Encoding (gzip, br) prefers brotli — server ENCODINGS order, not client order (rm-1488)', async () => {
+    const app = await buildTestApp(false)
+    const res = await app.request(`/assets/${hashedBundle()}`, {
+      headers: {'accept-encoding': 'gzip, br'},
+    })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-encoding')).toBe('br')
+    const sidecar = readFileSync(`web/dist/assets/${hashedBundle()}.br`)
+    expect(Number(res.headers.get('content-length'))).toBe(sidecar.byteLength)
   })
 
   it('GET /assets/<bundle>.js with Accept-Encoding: gzip serves the sidecar variant', async () => {

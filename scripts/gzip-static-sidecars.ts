@@ -6,10 +6,17 @@
 // that @hono/node-server's `serveStatic({precompressed: true})` selects by
 // Accept-Encoding (Content-Encoding: gzip + Vary: Accept-Encoding, with
 // Content-Length/Last-Modified taken from the sidecar).
+// rm-1488 (repository-maintenance cycle 1, run c4fb65b154a7) — brotli tier:
+// the same pass now also emits a `<name>.br` sibling at max static quality.
+// The server prefers br over gzip when the client accepts both
+// (ENCODINGS order br → zstd → gzip in @hono/node-server), so this is purely
+// additive: zero server change, existing `.gz` semantics untouched.
 //
-// Decision context (discharged gate, 2026-10-09): the production proxy does
-// not compress (marcusrbrown/infra@3216bb06 apps/dashboard/config/Caddyfile
-// carries no `encode` directive), so compression belongs in the app layer —
+// Decision context (discharged gate, 2026-10-09; re-verified 2026-10-19 for
+// rm-1488): the production proxy does
+// not compress (marcusrbrown/infra — the dashboard Caddyfile was re-fetched
+// at latest-touch commit 50ff7e4d and still carries no `encode` directive),
+// so compression belongs in the app layer —
 // and since the dashboard is read-only JSON+SPA traffic, precomputed build
 // artifacts beat a runtime CPU/latency middleware. Scope: the web/dist SPA
 // family ONLY. The public/ operator runtime files are tracked sources copied
@@ -25,7 +32,7 @@
 import {readdirSync, readFileSync, statSync, writeFileSync} from 'node:fs'
 import {join} from 'node:path'
 import process from 'node:process'
-import {gzipSync} from 'node:zlib'
+import {brotliCompressSync, gzipSync, constants as zlibConstants} from 'node:zlib'
 
 /** Text formats worth a sidecar; binary media (woff2/png/ico) are skipped. */
 const COMPRESSIBLE_EXTENSIONS: readonly string[] = [
@@ -44,6 +51,10 @@ const COMPRESSIBLE_EXTENSIONS: readonly string[] = [
 const COMPRESSED_EXTENSIONS: readonly string[] = ['.gz', '.br', '.zst', '.zstd']
 
 const GZIP_LEVEL = 9
+// rm-1488: max-quality static brotli — one-time build cost, best-in-class
+// ratio for the text/JS/CSS class this script covers. The server negotiates
+// br ahead of gzip (`precompressed: true`, @hono/node-server ENCODINGS order).
+const BROTLI_QUALITY = zlibConstants.BROTLI_MAX_QUALITY
 
 function isCompressible(name: string): boolean {
   if (COMPRESSED_EXTENSIONS.some(ext => name.endsWith(ext))) return false
@@ -74,26 +85,51 @@ function main(): number {
     return 1
   }
 
-  const stats = {files: 0, filesCompressed: 0, originalBytes: 0, sidecarBytes: 0}
+  const stats = {
+    files: 0,
+    gzFiles: 0,
+    gzOriginalBytes: 0,
+    gzBytes: 0,
+    brFiles: 0,
+    brOriginalBytes: 0,
+    brBytes: 0,
+  }
   for (const file of walk(root)) {
     if (!isCompressible(file)) continue
     stats.files++
     const original = readFileSync(file)
-    const compressed = gzipSync(original, {level: GZIP_LEVEL})
-    // Skip a sidecar that would not shrink the transfer (tiny files can
-    // outgrow their gzip framing) — identity fallback serves those fine.
-    if (compressed.byteLength >= original.byteLength) continue
-    writeFileSync(`${file}.gz`, compressed)
-    stats.filesCompressed++
-    stats.originalBytes += original.byteLength
-    stats.sidecarBytes += compressed.byteLength
+    // Each variant carries the no-shrink skip independently: gzip framing can
+    // outgrow a tiny file where brotli still shrinks it (and vice versa).
+    // Files with no surviving variant fall back to identity serving.
+    const gz = gzipSync(original, {level: GZIP_LEVEL})
+    if (gz.byteLength < original.byteLength) {
+      writeFileSync(`${file}.gz`, gz)
+      stats.gzFiles++
+      stats.gzOriginalBytes += original.byteLength
+      stats.gzBytes += gz.byteLength
+    }
+    const br = brotliCompressSync(original, {
+      params: {[zlibConstants.BROTLI_PARAM_QUALITY]: BROTLI_QUALITY},
+    })
+    if (br.byteLength < original.byteLength) {
+      writeFileSync(`${file}.br`, br)
+      stats.brFiles++
+      stats.brOriginalBytes += original.byteLength
+      stats.brBytes += br.byteLength
+    }
   }
 
-  const ratio =
-    stats.originalBytes > 0 ? ((1 - stats.sidecarBytes / stats.originalBytes) * 100).toFixed(1) : '0.0'
+  const gzRatio =
+    stats.gzOriginalBytes > 0 ? ((1 - stats.gzBytes / stats.gzOriginalBytes) * 100).toFixed(1) : '0.0'
   console.log(
-    `gzip-static-sidecars: ${stats.filesCompressed}/${stats.files} compressible files in ${root}` +
-    ` (${stats.originalBytes} → ${stats.sidecarBytes} bytes, -${ratio}%)`,
+    `gzip-static-sidecars: ${stats.gzFiles}/${stats.files} compressible files in ${root}` +
+    ` (${stats.gzOriginalBytes} → ${stats.gzBytes} bytes, -${gzRatio}%)`,
+  )
+  const brRatio =
+    stats.brOriginalBytes > 0 ? ((1 - stats.brBytes / stats.brOriginalBytes) * 100).toFixed(1) : '0.0'
+  console.log(
+    `gzip-static-sidecars: brotli ${stats.brFiles}/${stats.files} compressible files in ${root}` +
+    ` (${stats.brOriginalBytes} → ${stats.brBytes} bytes, -${brRatio}%)`,
   )
   return 0
 }
