@@ -63,7 +63,7 @@ import {buildApiRouter} from './routes/api.ts'
 import {buildAuthRouter} from './routes/auth.ts'
 import {buildListenerRouter} from './routes/listener.ts'
 import {readOptionalMultilineSecret, readOptionalSecret} from './secrets.ts'
-import {loadCookieKey, SessionManager} from './session.ts'
+import {loadCookieKey, loadSessionRevocationStore, SessionManager, type SessionRevocationStore} from './session.ts'
 import {installShutdownHandlers} from './shutdown.ts'
 import {createPublicStatic} from './static-files.ts'
 
@@ -450,6 +450,15 @@ export interface DashboardAppConfig {
    */
   cookieKey?: Buffer | undefined
   /**
+   * Injectable session-revocation store (rm-2063).
+   * If undefined, a file-backed store is constructed from
+   * `DASHBOARD_SESSION_REVOCATIONS_FILE` (default `/data/session-revocations.json`).
+   * Only meaningful when auth is active (`operatorLogin` set — same condition as
+   * `cookieKey`); ignored in deny-all mode. An absent record file is an empty
+   * denylist (behaviorally inert), so the default is safe on dev/test boxes.
+   */
+  sessionRevocations?: SessionRevocationStore | undefined
+  /**
    * GitHub OAuth client. If undefined, constructs from env vars.
    */
   oauthClient?: GitHubOAuthClient | undefined
@@ -626,7 +635,12 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       )
     }
     // SessionManager constructor validates key length (throws if <32 bytes)
-    sessionManager = new SessionManager(opts.cookieKey)
+    // rm-2063: the revocation store rides the manager so verify() rejects
+    // revoked session ids fail-closed (absent record file = empty denylist).
+    sessionManager = new SessionManager(
+      opts.cookieKey,
+      opts.sessionRevocations ?? loadSessionRevocationStore(),
+    )
   }
 
   // Resolve OAuth client
