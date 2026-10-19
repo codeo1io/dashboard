@@ -8,6 +8,20 @@
     <link rel="apple-touch-icon" href="/icon-192.svg" />
     <link rel="stylesheet" href="/src/index.css" />
     <title>Fro Bot operator push notifications privacy</title>
+    <!-- Explicit role sizes for the design check: the detector reads declared
+         font-sizes, and Tailwind utilities (text-4xl/text-2xl/…) are opaque to
+         it, so body/h1/h2 otherwise compute as a flat 16px and trip
+         flat-type-hierarchy. These values mirror the utilities at every
+         breakpoint — keep them in lockstep with the text-* classes below
+         (unlayered CSS wins over Tailwind's layered utilities). -->
+    <style>
+      h1 { font-size: 2.25rem; }
+      h2 { font-size: 1.5rem; }
+      @media (min-width: 640px) {
+        h1 { font-size: 3rem; }
+        h2 { font-size: 1.875rem; }
+      }
+    </style>
   </head>
   <body class="min-h-screen bg-bg font-body text-text antialiased">
     <main class="mx-auto max-w-3xl px-6 py-12 sm:px-8 sm:py-16 lg:py-24">
