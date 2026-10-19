@@ -128,7 +128,13 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
       path: '/auth',
     })
 
-    const authURL = oauthClient.createAuthorizationURL(state, ['read:user'], {
+    // rm-2029: operator sign-in requests ZERO OAuth scopes — the callback
+    // only consumes the operator's public GitHub id and login for the
+    // allowlist check, so no scope grant is needed (mirrors upstream
+    // fro-bot/agent v0.123.1, PR #1856). Caveat carried in the landing
+    // evidence: a previously granted read:user survives per-operator until
+    // the app authorization is revoked manually.
+    const authURL = oauthClient.createAuthorizationURL(state, [], {
       codeChallenge,
       codeChallengeMethod: 'S256',
     })

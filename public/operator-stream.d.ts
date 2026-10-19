@@ -24,6 +24,13 @@ export declare const RETRY_MAX_COUNT: number
 export declare const MAX_SSE_BUFFER_BYTES: number
 
 /**
+ * rm-1484: UTF-8 byte length of the stream buffer. The cap constant is
+ * BYTES-named; callers must never compare it against a UTF-16 `.length`
+ * (undercounts astral 2x and CJK 3x).
+ */
+export declare function sseBufferByteLength(text: string): number
+
+/**
  * rm-477: append one decoded read() chunk to the stream buffer, holding a
  * trailing CR back so a CRLF pair split across chunks cannot forge a phantom
  * record boundary. The server reader carries the same pending-CR logic inline.
@@ -855,7 +862,22 @@ export interface StreamHandle {
   getQuestionNotes: () => readonly QuestionNote[]
   /** The status of one request, or null when the stream knows nothing about it. */
   getQuestionStatus: (requestID: string) => QuestionRequestStatus | null
+  /**
+   * Set the page-wide Rendered/Raw output preference and repaint this card now, even over a text
+   * selection. Any other value is ignored. A closed handle updates the preference but paints nothing.
+   */
+  setOutputView: (view: OutputView) => void
 }
+
+/** The page-wide output display preference: Markdown rendered as DOM, or the raw text. */
+export type OutputView = 'rendered' | 'raw'
+
+/**
+ * Builds the DOM for run output. It receives the stream's document and the page origin, and returns a
+ * fragment. It may throw or return no node; that attachment then paints plain text until the view
+ * changes, with one retry on the final frame or a terminal status.
+ */
+export type RenderOutput = (text: string, context: {readonly doc: Document; readonly origin: string}) => DocumentFragment
 
 /** Browser-direct approval client interface (for testing injection). */
 export interface ApprovalClient {
@@ -904,6 +926,11 @@ export interface InitOptions {
    * it is live, the run is not terminal, and no output, open approval or open question is showing.
    */
   readonly waitingEl?: (HTMLElement & {hidden: boolean}) | null
+  /**
+   * Output toolbar region (data-role="run-output-tools"). The stream fills it with the Rendered/Raw
+   * toggle and the Copy raw button, and shows it only while there is output to act on.
+   */
+  readonly toolsEl?: (HTMLElement & {hidden: boolean}) | null
   /** Cancel control container element (data-role="run-cancel"). */
   readonly cancelEl?: (HTMLElement & {hidden: boolean}) | null
   /**
@@ -934,7 +961,16 @@ export interface InitOptions {
    * attaches normally.
    */
   readonly finishedRecord?: FinishedRunRecord
+  /**
+   * Optional renderer for output text. With it, streaming output paints through the renderer, throttled
+   * to a gap of 4 times the last render's duration (between 100 ms and 1 s), with a final frame or
+   * terminal status flushing at once. Without it, output paints as plain text.
+   */
+  readonly renderOutput?: RenderOutput
 }
+
+/** Return the page-wide output preference to Rendered. It does not touch the finished-run store. */
+export declare function resetOutputView(): void
 
 export declare function initOperatorStream(opts: InitOptions): StreamHandle
 
