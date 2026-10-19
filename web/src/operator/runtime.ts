@@ -914,6 +914,9 @@ async function defaultRuntimeLoader(opts?: {
     streamMod.resetOutputView()
     streamMod.clearFinishedRuns()
     stopRefreshTimer()
+    // A launch still in flight is stale now: it inserts no card and attaches no stream. Its idempotency
+    // key stays held, so a repeat of the same launch after the next sign-in reuses it.
+    launchMod.resetLaunchState()
     // No session: a pending or arriving jump has nothing to open.
     _setJumpSlot(epoch, {mode: 'refuse'})
     opts?.onStateChange?.('auth-required')
@@ -931,6 +934,8 @@ async function defaultRuntimeLoader(opts?: {
   }
 
   const onRunLaunched = (runId: string, card: HTMLElement) => {
+    // A launch can resolve after cleanup or sign-out; this runtime no longer owns a stream or the hash.
+    if (disposed || authRequired) return
     const statusEl = card.querySelector('[data-role="run-status"]') ?? null
     const noticeEl = typeof document !== 'undefined'
       ? document.querySelector('[data-role="stream-status"]')

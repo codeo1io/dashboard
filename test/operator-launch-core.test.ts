@@ -269,6 +269,69 @@ describe('submitLaunch — refreshCsrf failure', () => {
 })
 
 // ---------------------------------------------------------------------------
+// submitLaunch — which failures leave the launch outcome unknown
+// ---------------------------------------------------------------------------
+
+describe('submitLaunch — indeterminate failures', () => {
+  interface ClientError {
+    kind: string
+    status?: number
+    message?: string
+  }
+  const ok = {success: true as const, data: {csrfToken: 'tok'}}
+  const fail = (error: ClientError) => ({success: false as const, error})
+
+  function clientWith(launchErrors: ClientError[], csrf: Awaited<ReturnType<LaunchClient['refreshCsrf']>> = ok): LaunchClient {
+    let launch = 0
+    return {
+      refreshCsrf: async () => csrf,
+      launchRun: async () => fail(launchErrors[launch++] ?? launchErrors.at(-1) ?? {kind: 'network'}),
+    }
+  }
+
+  it('a network failure on the launch is a failure marked indeterminate', async () => {
+    const outcome = await submitLaunch(clientWith([{kind: 'network', message: 'network error'}]), {repo: 'o/r', prompt: 'p'}, 'key-net')
+    expect(outcome).toEqual({kind: 'failure', indeterminate: true})
+  })
+
+  it('a network failure on the CSRF retry is a failure marked indeterminate', async () => {
+    const outcome = await submitLaunch(clientWith([{kind: 'http', status: 400}, {kind: 'network'}]), {repo: 'o/r', prompt: 'p'}, 'key-net-retry')
+    expect(outcome).toEqual({kind: 'failure', indeterminate: true})
+  })
+
+  it('a 429 on the CSRF retry is a failure marked indeterminate, since it says nothing about an earlier attempt', async () => {
+    const outcome = await submitLaunch(clientWith([{kind: 'http', status: 400}, {kind: 'http', status: 429}]), {repo: 'o/r', prompt: 'p'}, 'key-429-retry')
+    expect(outcome).toEqual({kind: 'failure', indeterminate: true})
+  })
+
+  it('a network failure on the CSRF refresh is a failure marked indeterminate', async () => {
+    const outcome = await submitLaunch(clientWith([], fail({kind: 'network'})), {repo: 'o/r', prompt: 'p'}, 'key-net-csrf')
+    expect(outcome).toEqual({kind: 'failure', indeterminate: true})
+  })
+
+  it.each([502, 503, 504])('a %i on the launch is a failure marked indeterminate, since a proxy can answer it after the gateway accepted the launch', async status => {
+    const outcome = await submitLaunch(clientWith([{kind: 'http', status}]), {repo: 'o/r', prompt: 'p'}, 'key-proxy')
+    expect(outcome).toEqual({kind: 'failure', indeterminate: true})
+  })
+
+  it.each([502, 503, 504])('a %i on the CSRF retry is a failure marked indeterminate', async status => {
+    const outcome = await submitLaunch(clientWith([{kind: 'http', status: 400}, {kind: 'http', status}]), {repo: 'o/r', prompt: 'p'}, 'key-proxy-retry')
+    expect(outcome).toEqual({kind: 'failure', indeterminate: true})
+  })
+
+  it.each([
+    ['a 500', [{kind: 'http', status: 500}]],
+    ['a 500 on the CSRF retry', [{kind: 'http', status: 400}, {kind: 'http', status: 500}]],
+    ['a 501', [{kind: 'http', status: 501}]],
+    ['a protocol error', [{kind: 'protocol', message: 'invalid runId in launch response'}]],
+    ['two 400s', [{kind: 'http', status: 400}, {kind: 'http', status: 400}]],
+  ])('%s is a definitive failure', async (_name, errors) => {
+    const outcome = await submitLaunch(clientWith(errors), {repo: 'o/r', prompt: 'p'}, 'key-definitive')
+    expect(outcome).toEqual({kind: 'failure'})
+  })
+})
+
+// ---------------------------------------------------------------------------
 // mintIdempotencyKey
 // ---------------------------------------------------------------------------
 
@@ -916,8 +979,8 @@ describe('buildLaunchClient — getScenario read at submit time', () => {
   })
 })
 
-describe('buildLaunchClient — production body shape (no idempotencyKey, no scenario, no fixtureSessionId)', () => {
-  it('production launchRun sends JSON body with exactly repo and prompt — no idempotencyKey, no scenario, no fixtureSessionId', async () => {
+describe('buildLaunchClient — production body shape (repo, prompt and idempotencyKey; no scenario, no fixtureSessionId)', () => {
+  it('production launchRun sends JSON body with exactly repo, prompt and idempotencyKey — no scenario, no fixtureSessionId', async () => {
     let capturedBody: Record<string, unknown> | undefined
     let capturedHeaders: Record<string, string> | undefined
 
@@ -947,16 +1010,12 @@ describe('buildLaunchClient — production body shape (no idempotencyKey, no sce
 
     globalThis.fetch = origFetch
 
-    // Body must contain exactly repo and prompt
-    expect(capturedBody).toBeDefined()
-    expect(capturedBody?.repo).toBe('owner/repo')
-    expect(capturedBody?.prompt).toBe('test prompt')
-    // idempotencyKey must NOT be in the body for production
-    expect(capturedBody?.idempotencyKey).toBeUndefined()
-    // scenario and fixtureSessionId must not appear either
+    // The gateway reads the key from the body, so the body carries exactly repo, prompt and the key
+    expect(capturedBody).toEqual({repo: 'owner/repo', prompt: 'test prompt', idempotencyKey: 'idem-key-prod-001'})
+    // scenario and fixtureSessionId must not appear
     expect(capturedBody?.scenario).toBeUndefined()
     expect(capturedBody?.fixtureSessionId).toBeUndefined()
-    // idempotency-key must be in the header
+    // the header carries the same key
     expect(capturedHeaders?.['idempotency-key']).toBe('idem-key-prod-001')
   })
 })
