@@ -12,9 +12,34 @@ census 250/0/rm-859, guard pin 859) → prioritize `c65cc606` → stewardship `d
 implement `f9f29312` → targeted `c4a7010a` → full `b12e1e33` (supervisor-authorized
 two-mirror local battery while repo Actions stay run-disabled). Nothing was re-validated
 at compound; every outcome below is consumed from the recorded typed results. Authoritative
-cumulative deliverable: `delegate/compound-19c024286fc4-b2800b21.patch` — it supersedes
-`delegate/implement-19c024286fc4-f9f29312.patch` (byte-stable at supersede time, md5
-`163de9f496d0a86f10e5d3be45cf22a7`); apply ONE against pristine `88e423a`.
+cumulative deliverable — RE-POINTED 2026-10-18 at review-fix 279ad7a6 (independent review
+b790c4a6 F3; the pre-fix text named `delegate/compound-19c024286fc4-b2800b21.patch`, which
+is superseded twice over and still ships the five original false claims cured only at
+588aeb7c): `delegate/reviewfix-19c024286fc4-279ad7a6.patch` — it supersedes
+`delegate/reviewfix-19c024286fc4-588aeb7c.patch` (recorded md5
+`8210a74df7111416f7cb49abb5df633c`), which superseded
+`delegate/compound-19c024286fc4-b2800b21.patch` (recorded md5
+`4c3c100c38ddf33924328223d2e3a980`), which superseded
+`delegate/implement-19c024286fc4-f9f29312.patch` (recorded md5
+`163de9f496d0a86f10e5d3be45cf22a7`); apply ONE against pristine `88e423a`, never an
+earlier patch in the chain. CUSTODY (2026-10-18): the 588aeb7c-and-earlier spool patch
+artifacts were swept from the delegate spool; their final applied state is preserved
+verbatim in run-worktree salvage commit `1a51239c18b02696edc6a3bfb83483d1041aa2e0` (author
+Conductor Terminal Landing, `Salvage-Run: 19c024286fc4408ab3ba87e180e588c2`, 8 files
++428/-105 vs 88e423a); the authoritative patch above IS that salvage diff plus this review-fix-2's four doc
+cures AND the validation-leg pairing repair (scripts/release-paths.ts WORKFLOW_TRIGGER_ONLY_PATHS
++= 'scripts/gzip-static-sidecars.ts', rider at rm-248 — mixed-tree cure for main
+debde80's release.yaml path gain; debde80 is the 2026-10-17 integrate of run
+f2821fb57c34, the rm-602 sidecar run — attribution trued 2026-10-19 at 00988404 from an
+earlier draft's false '5ab50da0', a descendant merge) plus the adoption disclosure at
+ext #39 (adoption completed 2026-10-19 by attempt 00988404, which verified the
+reaped-mid-turn attempts' tree work against review b790c4a6 finding-by-finding —
+279ad7a6 authored the pairing repair, c69ec129 the doc cures but died pre-emission
+with its draft's emission/retest claims trued, 8f336ac4 verified and changed nothing,
+then 00988404 trued the custody and attribution claims, emitted the patch, and
+recorded the retest) — verify by applying it to pristine `88e423a` and diffing
+against the salvage commit: only ROADMAP.md, the two prioritization docs, and
+scripts/release-paths.ts may differ.
 
 ## Cycle outcome (compounded)
 
@@ -64,7 +89,11 @@ obligations).
   superseded-by closure rider, never code.
 - **Rider claims are not patch content.** This cycle's roadmap rider said the vite/hono
   pair was "already staged"; hunk-grepping every unlanded implement patch proved it unbuilt
-  (corrected in-patch by the prioritize CONFIRMATION rider). A "staged/landed/built" claim
+  (corrected in the prioritize decision record itself — this cycle's batch doc, U1 lane,
+  "corrected here" — and in the implement-phase rider at rm-760 in ROADMAP.md; no rider
+  named "CONFIRMATION" exists anywhere in this run's ledger — the phrase in this bullet
+  was a phantom citation, rewritten 2026-10-18 at review-fix 279ad7a6, independent review
+  b790c4a6 F2). A "staged/landed/built" claim
   must cite a patch hunk, not another rider's text.
 - **Hand-composed patches must round-trip a real tree.** The prioritize patch omitted its
   `@@` hunk header; `git apply --check` passed vacuously (a create with zero hunks applies

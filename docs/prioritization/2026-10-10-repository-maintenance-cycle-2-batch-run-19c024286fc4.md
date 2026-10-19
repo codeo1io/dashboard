@@ -62,6 +62,9 @@ Union with sibling lanes by content (the 1930644a996e rule): if 493bbbf2/533ad14
 - **Batch-record repair at compound:** this file rode the prioritize and implement patches
   EMPTY — the prioritize patch omitted its `@@` hunk header, so `git apply` created a
   0-byte file (blob e69de29) that every downstream diff carried along. The compound layer
-  restores the authored selection content verbatim (byte-identical to the spool decision
-  doc) plus this outcome appendix; prevention rule:
+  restores the authored selection content verbatim — byte-identical to the spool decision
+  doc except the npm publish-date line in the U1 lane above (corrected 2026-10-10 at
+  review-fix 588aeb7c, mirroring the compound record's repair note) and this exception
+  parenthetical itself (added 2026-10-18 at review-fix 279ad7a6, independent review
+  b790c4a6 F4) — plus this outcome appendix; prevention rule:
   docs/solutions/workflow-issues/patch-new-file-hunk-header-empty-blob-2026-10-10.md.
