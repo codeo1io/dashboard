@@ -56,6 +56,7 @@ the exact request body and a timestamp. No GitHub identity, no session cookie.
 | `content-type` | `application/json` |
 | `x-listener-timestamp` | Unix seconds, integer, as a string |
 | `x-listener-signature` | `sha256=<hex>` |
+| `x-github-delivery` | Optional per-delivery GUID (GitHub webhook convention). When present it is the dedupe key for the replay guard below; send a fresh one per delivery. |
 
 ### Signature
 
@@ -71,6 +72,23 @@ x-listener-signature = "sha256=" + hex(signature)
   time. Any mismatch is a `401` with no detail.
 - The timestamp must be within **±300 seconds** of server time, else `401`
   (replay window). Producers should send the same timestamp they signed.
+
+### Replay guard (rm-2008)
+
+After a signature verifies, the server keeps a bounded in-memory record of
+the delivery — keyed by `x-github-delivery` when present, else by the HMAC
+digest of the signed message plus the timestamp bucket. A **byte-identical
+redelivery of an already-verified delivery inside the ±300-second window** is
+rejected with `401` before the store is touched; after the entry expires
+(same window scale) the same delivery re-admits, so a genuine late
+redelivery is not lost. The cache is per server instance: a restart clears
+it, nothing persists, and its size is capped (expired entries swept first,
+then oldest-inserted evicted).
+
+Producers need do nothing new: every genuine delivery is either freshly
+signed (new timestamp bucket) or carries a fresh delivery GUID, and both land
+on a fresh key. Only an exact byte-for-byte replay of a verified POST inside
+the window — the attack the guard exists for — is denied.
 
 ### Request body
 
@@ -126,7 +144,7 @@ a new message.
 | --- | --- | --- |
 | `202 Accepted` | Stored (inserted or upserted) | `{ "id": "...", "receivedAt": "..." }` |
 | `400 Bad Request` | Schema violation | `{ "error": "<fixed reason>" }` |
-| `401 Unauthorized` | Bad/missing/expired signature | `{ "error": "unauthorized" }` |
+| `401 Unauthorized` | Bad/missing/expired signature, or replayed delivery | `{ "error": "unauthorized" }` |
 | `413 Payload Too Large` | Body over cap | `{ "error": "payload too large" }` |
 | `429 Too Many Requests` | Rate limited | `{ "error": "rate limited" }` |
 
