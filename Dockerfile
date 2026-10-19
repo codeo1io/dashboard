@@ -24,7 +24,13 @@ ARG DASHBOARD_VERSION=dev
 # Digest-pinned multi-arch index. The bare version tag must equal package.json
 # packageManager (enforced by test/bun-version-pin.test.ts). Only the bun binary
 # is copied out of this stage; nothing from it reaches the runtime image.
-FROM oven/bun:1.4.3@sha256:ec06c3b6cea04192ae6770c434f668ca41d343ad19fa6472216c7b48be39c598 AS bun
+# rm-558 (Bun-migration repair, 2026-10-19): pinned to BUILDPLATFORM like every
+# other toolchain stage — under multi-platform builds the index otherwise
+# resolves the TARGET arch (aarch64 bun copied into the amd64 node stage →
+# '/lib/ld-linux-aarch64.so.1' loader failure in prod-deps; release run
+# 39255231972). Bun is a static binary; the build-platform one serves both
+# targets.
+FROM --platform=$BUILDPLATFORM oven/bun:1.4.3@sha256:ec06c3b6cea04192ae6770c434f668ca41d343ad19fa6472216c7b48be39c598 AS bun
 
 # ── Builder stage ─────────────────────────────────────────────────────────────
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS builder
