@@ -114,7 +114,7 @@ describe('listener store rm-187 (degraded links cell never 500s the messages rea
     })
 
     const res = await app.request('/api/listener/messages', {
-      headers: {cookie: `session=${new SessionManager(TEST_KEY).sign('octocat')}`},
+      headers: {cookie: `__Host-session=${new SessionManager(TEST_KEY).sign('octocat')}`},
     })
 
     expect(res.status).toBe(200)

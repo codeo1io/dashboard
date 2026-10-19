@@ -21,8 +21,18 @@
 // Zero-dependency by design (node:fs/node:path/node:zlib + process only) so it
 // runs in any stage that has Node — including the Docker builder stage, which
 // is what makes the sidecars ship inside the image.
+//
+// rm-1489 (repository-maintenance cycle 4, run 9ee060d1): stale-sidecar
+// cleanup. The walk is not the whole job — a rebuild can leave sidecars
+// whose truth changed or vanished, and `serveStatic({precompressed: true})`
+// happily serves those stale bytes: (a) an orphan `<name>.gz` whose source
+// file no longer exists (removed/renamed between builds — hashed bundles
+// rename every content change), and (b) a sidecar for a source that no
+// longer takes one (grew, or stopped shrinking) where the OLD compressed
+// bytes would shadow the fresh identity fallback. Both classes are unlinked
+// every run; only `.gz` files this scheme could have produced are touched.
 
-import {readdirSync, readFileSync, statSync, writeFileSync} from 'node:fs'
+import {readdirSync, readFileSync, rmSync, statSync, writeFileSync} from 'node:fs'
 import {join} from 'node:path'
 import process from 'node:process'
 import {gzipSync} from 'node:zlib'
@@ -44,6 +54,9 @@ const COMPRESSIBLE_EXTENSIONS: readonly string[] = [
 const COMPRESSED_EXTENSIONS: readonly string[] = ['.gz', '.br', '.zst', '.zstd']
 
 const GZIP_LEVEL = 9
+
+/** Sidecar suffix this script produces — cleanup never touches `.br`/`.zst`. */
+const SIDECAR_SUFFIX = '.gz'
 
 function isCompressible(name: string): boolean {
   if (COMPRESSED_EXTENSIONS.some(ext => name.endsWith(ext))) return false
@@ -74,16 +87,38 @@ function main(): number {
     return 1
   }
 
-  const stats = {files: 0, filesCompressed: 0, originalBytes: 0, sidecarBytes: 0}
-  for (const file of walk(root)) {
+  const stats = {files: 0, filesCompressed: 0, originalBytes: 0, sidecarBytes: 0, staleRemoved: 0}
+  // Materialize the walk once so sidecar-orphan checks can consult the full
+  // source population regardless of directory iteration order.
+  const allFiles = [...walk(root)]
+  const presentSources = new Set(allFiles)
+  for (const file of allFiles) {
+    // rm-1489(a): orphan sidecar — its source file is gone (removed or
+    // renamed between builds), so the sidecar serves bytes that no longer
+    // correspond to anything. Unlink it. A `.gz` whose source EXISTS is left
+    // to the source's own iteration below (rewritten, or stale-dropped there).
+    if (file.endsWith(SIDECAR_SUFFIX)) {
+      const source = file.slice(0, -SIDECAR_SUFFIX.length)
+      if (!presentSources.has(source)) {
+        rmSync(file, {force: true})
+        stats.staleRemoved++
+      }
+      continue
+    }
     if (!isCompressible(file)) continue
     stats.files++
     const original = readFileSync(file)
     const compressed = gzipSync(original, {level: GZIP_LEVEL})
     // Skip a sidecar that would not shrink the transfer (tiny files can
     // outgrow their gzip framing) — identity fallback serves those fine.
-    if (compressed.byteLength >= original.byteLength) continue
-    writeFileSync(`${file}.gz`, compressed)
+    if (compressed.byteLength >= original.byteLength) {
+      // rm-1489(b): a source that no longer takes a sidecar must not keep
+      // one from an earlier run — `precompressed: true` would serve the OLD
+      // compressed bytes instead of the fresh identity fallback.
+      rmSync(`${file}${SIDECAR_SUFFIX}`, {force: true})
+      continue
+    }
+    writeFileSync(`${file}${SIDECAR_SUFFIX}`, compressed)
     stats.filesCompressed++
     stats.originalBytes += original.byteLength
     stats.sidecarBytes += compressed.byteLength
@@ -93,7 +128,7 @@ function main(): number {
     stats.originalBytes > 0 ? ((1 - stats.sidecarBytes / stats.originalBytes) * 100).toFixed(1) : '0.0'
   console.log(
     `gzip-static-sidecars: ${stats.filesCompressed}/${stats.files} compressible files in ${root}` +
-    ` (${stats.originalBytes} → ${stats.sidecarBytes} bytes, -${ratio}%)`,
+    ` (${stats.originalBytes} → ${stats.sidecarBytes} bytes, -${ratio}%), removed ${stats.staleRemoved} stale sidecars`,
   )
   return 0
 }

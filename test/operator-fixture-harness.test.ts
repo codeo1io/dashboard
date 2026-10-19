@@ -80,7 +80,7 @@ async function buildFixtureTestApp(opts: FixtureAppOpts = {}) {
 // Used to prove routes are not mounted (404) vs auth-blocked (302/401).
 async function authedGet(app: Awaited<ReturnType<typeof buildFixtureTestApp>>, path: string): Promise<Response> {
   const cookie = makeSessionCookie()
-  return app.request(path, {headers: {cookie: `session=${cookie}`}})
+  return app.request(path, {headers: {cookie: `__Host-session=${cookie}`}})
 }
 
 async function authedPost(
@@ -91,7 +91,7 @@ async function authedPost(
   const cookie = makeSessionCookie()
   return app.request(path, {
     method: 'POST',
-    headers: {cookie: `session=${cookie}`, 'content-type': 'application/json'},
+    headers: {cookie: `__Host-session=${cookie}`, 'content-type': 'application/json'},
     body: JSON.stringify(body),
   })
 }

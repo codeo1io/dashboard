@@ -76,15 +76,22 @@ Access is single-operator: GitHub OAuth authenticates the request and an exact, 
 login allowlist gates every non-public route. Sessions are HttpOnly, Secure, SameSite=Lax signed
 cookies; logout is CSRF-protected.
 
-The `Secure` attribute on the OAuth state and session cookies is set when the request URL is
-`https://` **or** the `x-forwarded-proto` request header is exactly `https` (rm-604). This makes
-TLS-terminating reverse proxies work without extra configuration, but it means the proxy must
-**overwrite** `x-forwarded-proto` with the real client-facing protocol — never merely append to
-it. Behind an appending proxy, a plain-HTTP client can send `x-forwarded-proto: https` itself;
-the only consequence is that its own already-insecure response cookies carry `Secure`, which
-cannot mint or weaken authentication (cookies are HttpOnly + SameSite=Lax and the session is
-HMAC-signed), but a proxy that appends should be reconfigured to overwrite. Serve direct TLS
-or use an overwriting proxy.
+The `Secure` attribute on the short-lived OAuth state and PKCE cookies is set when the request
+URL is `https://` **or** the `x-forwarded-proto` request header is exactly `https` (rm-604).
+This makes TLS-terminating reverse proxies work without extra configuration, but it means the
+proxy must **overwrite** `x-forwarded-proto` with the real client-facing protocol — never
+merely append to it. Behind an appending proxy, a plain-HTTP client can send
+`x-forwarded-proto: https` itself; the only consequence is that its own already-insecure
+response cookies carry `Secure`, which cannot mint or weaken authentication (cookies are
+HttpOnly + SameSite=Lax and the session is HMAC-signed), but a proxy that appends should be
+reconfigured to overwrite. Serve direct TLS or use an overwriting proxy.
+
+The long-lived session cookie is named `__Host-session` and carries `Secure` unconditionally
+(rm-1490): browsers enforce the `__Host-` prefix by name — `Secure` required, `Path=/`
+required, no `Domain` attribute allowed — so a cookie minted by a sibling subdomain or with
+a `Domain` scope can never override the operator session. A browser refuses the cookie on a
+plain-HTTP non-localhost origin, which fails closed by design; `http://localhost` and
+`127.0.0.1` are potentially-trustworthy origins, so local development keeps working.
 
 The cookie-signing key (`DASHBOARD_COOKIE_KEY`, or a file via
 `DASHBOARD_COOKIE_KEY_FILE` defaulting to `/data/cookie.key`) must decode to
