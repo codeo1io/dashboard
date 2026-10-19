@@ -1,4 +1,5 @@
 ---
+title: Maintenance-cycle learnings — dependency-security cure, audit gate, comment truth (cycle 2, run 23d39aa7467e)
 module: 'dashboard'
 tags: ['maintenance-cycle', 'pnpm-audit', 'override-floors', 'lint-preflight', 'roadmap-ledger']
 problem_type: 'process'

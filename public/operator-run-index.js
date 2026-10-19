@@ -82,6 +82,12 @@ const WAITING_ROLE = 'run-waiting'
 const QUESTIONS_ROLE = 'run-questions'
 
 /**
+ * Output toolbar region (data-role="run-output-tools"): the Rendered/Raw toggle and Copy raw controls,
+ * built by operator-stream.js. It sits right after the output region on every card shape.
+ */
+const OUTPUT_TOOLS_ROLE = 'run-output-tools'
+
+/**
  * The card's hidden substructure regions in DOM order. The checkout-detail region leads the
  * list, so anything inserted "before the first hidden region" lands ahead of it too. The
  * question region sits right after the approvals region on every card shape.
@@ -90,6 +96,7 @@ const SUBSTRUCTURE_ROLES = [
   CHECKOUT_DETAIL_ROLE,
   WAITING_ROLE,
   'run-output',
+  OUTPUT_TOOLS_ROLE,
   'run-output-coalesced',
   'run-output-gap',
   'run-approvals',
@@ -941,6 +948,12 @@ function renderRunCard(view, onSelectRun) {
   outputEl.hidden = true
   card.append(outputEl)
 
+  // Output toolbar — directly after run-output. Populated and shown by the stream.
+  const outputToolsEl = document.createElement('div')
+  outputToolsEl.dataset.role = OUTPUT_TOOLS_ROLE
+  outputToolsEl.hidden = true
+  card.append(outputToolsEl)
+
   const coalescedEl = document.createElement('div')
   coalescedEl.dataset.role = 'run-output-coalesced'
   coalescedEl.hidden = true
@@ -1003,7 +1016,25 @@ function bindCardActivation(card, runId, onSelectRun) {
   const activate = () => {
     toggleCardExpansion(card, runId, onSelectRun)
   }
-  card.addEventListener('click', activate)
+  // Whether the latest press began on a link or button inside the card. A press that starts on a control
+  // and ends elsewhere (the toolbar moved under the pointer as output streamed in) is dispatched as a click
+  // on the nearest common ancestor, so the click target alone cannot say where the press began. The flag
+  // belongs to one press: a new press replaces it, a cancelled press and every click clear it, and only a
+  // click that ends a pointer press (click count of 1 or more) honors it. Keyboard and synthetic clicks
+  // report a count of 0 and are judged by their target alone.
+  let pressBeganOnControl = false
+  card.addEventListener('pointerdown', event => {
+    pressBeganOnControl = controlWithin(card, event.target)
+  })
+  card.addEventListener('pointercancel', () => {
+    pressBeganOnControl = false
+  })
+  card.addEventListener('click', event => {
+    const pressed = pressBeganOnControl && event.detail > 0
+    pressBeganOnControl = false
+    if (pressed || clickBelongsToContent(card, event)) return
+    activate()
+  })
   card.addEventListener('keydown', e => {
     // Keys bubbling up from nested controls (e.g. the run-cancel buttons) belong to
     // those controls: only a keydown on the card itself toggles expansion.
@@ -1012,6 +1043,34 @@ function bindCardActivation(card, runId, onSelectRun) {
     if (e.key === ' ') e.preventDefault()
     activate()
   })
+}
+
+/**
+ * Whether a click belongs to the card's content, not the card itself: it landed on a link or
+ * a button inside the card, or the reader is selecting text there. Such a click never toggles the card.
+ * A press that began on a link or button is also content, wherever the click lands (see bindCardActivation).
+ * This guard is the only mechanism: nothing inside the card stops propagation for it.
+ */
+function clickBelongsToContent(card, event) {
+  const target = event?.target
+  if (target !== card && controlWithin(card, target)) return true
+  return selectionInside(card)
+}
+
+/** True when `target` is, or sits inside, a link or button that belongs to `card`. */
+function controlWithin(card, target) {
+  if (typeof target?.closest !== 'function') return false
+  const control = target.closest('a[href], button')
+  return control !== null && control !== undefined && (typeof card.contains !== 'function' || card.contains(control))
+}
+
+/** True when a non-collapsed text selection starts or ends inside `card`. */
+function selectionInside(card) {
+  if (typeof card.contains !== 'function') return false
+  const doc = card.ownerDocument ?? globalThis.document
+  const selection = typeof doc?.getSelection === 'function' ? doc.getSelection() : null
+  if (selection === null || selection === undefined || selection.isCollapsed || selection.rangeCount === 0) return false
+  return card.contains(selection.anchorNode) || card.contains(selection.focusNode)
 }
 
 /**
@@ -1073,6 +1132,15 @@ function ensureRunCardAnatomy(card, view, onSelectRun) {
     waitingEl.dataset.role = WAITING_ROLE
     waitingEl.hidden = true
     insertBeforeFirstRole(card, waitingEl, SUBSTRUCTURE_ROLES.filter(role => role !== CHECKOUT_DETAIL_ROLE && role !== WAITING_ROLE))
+  }
+
+  // Output toolbar: same slot renderRunCard gives it (right after run-output, ahead of every later
+  // region). Only created when missing — exactly one per card.
+  if (card.querySelector(`[data-role="${OUTPUT_TOOLS_ROLE}"]`) === null) {
+    const outputToolsEl = document.createElement('div')
+    outputToolsEl.dataset.role = OUTPUT_TOOLS_ROLE
+    outputToolsEl.hidden = true
+    insertBeforeFirstRole(card, outputToolsEl, SUBSTRUCTURE_ROLES.slice(SUBSTRUCTURE_ROLES.indexOf(OUTPUT_TOOLS_ROLE) + 1))
   }
 
   // Question region: same slot renderRunCard gives it (after run-approvals, ahead of the badge
