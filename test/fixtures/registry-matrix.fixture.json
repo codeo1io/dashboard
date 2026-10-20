@@ -1,0 +1,86 @@
+{
+  "schema": "registry-matrix/v1",
+  "generated_at": "2026-10-21T17:40:00.000Z",
+  "strict": false,
+  "rows": [
+    {
+      "kind": "npm",
+      "name": "hono",
+      "pinned": "^4.13.0",
+      "latest": "4.13.13",
+      "status": "current",
+      "detail": "latest satisfies ^4.13.0 (package.json)"
+    },
+    {
+      "kind": "npm",
+      "name": "react",
+      "pinned": "19.2.0",
+      "latest": "19.3.1",
+      "status": "stale",
+      "detail": "latest outside 19.2.0 (package.json)"
+    },
+    {
+      "kind": "npm",
+      "name": "@types/node",
+      "pinned": "workspace:*",
+      "latest": "26.1.0",
+      "status": "unknown",
+      "detail": "unsupported range form (package.json)"
+    },
+    {
+      "kind": "npm",
+      "name": "left-pad",
+      "pinned": "^1.3.0",
+      "latest": null,
+      "status": "unknown",
+      "detail": "probe failed: dist-tag GET failed"
+    },
+    {
+      "kind": "action",
+      "name": "actions/checkout",
+      "pinned": "3d3c42e5aac5ba805825da76410c181273ba90b1",
+      "latest": "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b",
+      "status": "stale",
+      "detail": "pinned sha predates latest release v7.0.1"
+    },
+    {
+      "kind": "action",
+      "name": "ossf/scorecard-action",
+      "pinned": "fa7117db83c52d787ae5a89f350999701505d78e",
+      "latest": "fa7117db83c52d787ae5a89f350999701505d78e",
+      "status": "current",
+      "detail": "pinned sha is latest release v2.5.0"
+    },
+    {
+      "kind": "docker",
+      "name": "node:24-trixie-slim",
+      "pinned": "sha256:7f486cabe892…",
+      "latest": "sha256:a5f4366e1234…",
+      "status": "stale",
+      "detail": "tag moved past pinned digest"
+    },
+    {
+      "kind": "runtime",
+      "name": "bun",
+      "pinned": "bun@1.4.3",
+      "latest": "bun-v1.4.3",
+      "status": "current",
+      "detail": "pinned packageManager is latest release"
+    },
+    {
+      "kind": "runtime",
+      "name": "node",
+      "pinned": ">=24",
+      "latest": null,
+      "status": "unknown",
+      "detail": "probe failed: nodejs/Release schedule document unavailable"
+    }
+  ],
+  "summary": {
+    "total": 9,
+    "current": 3,
+    "stale": 3,
+    "unknown": 3,
+    "probe_failures": 2
+  }
+}

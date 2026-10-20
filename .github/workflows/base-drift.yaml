@@ -78,9 +78,29 @@ jobs:
           # gh --created: a bare date matches runs ON that day only and the
           # open-ended 'date..' form returns nothing — pass the CLOSED range,
           # or the dedupe can only suppress on a success exactly 6 days back.
-          recent="$(gh run list -R "$GITHUB_REPOSITORY" --workflow base-drift.yaml \
-            --status success --created "${since}..${today}" --json databaseId --jq 'length')"
-          echo "recent-successes=$recent window=${since}..${today}"
+          # rm-1961 hollow-success cure (2026-10-21, run 42466e744796
+          # cycle:4 U1, red-first pinned by test/workflow-fallback-gate-guard.test.ts):
+          # a skip-path fire concludes SUCCESS at the run level (this gate
+          # succeeds, the real jobs are skipped), so a run-level success
+          # count chains its own hollow fires into six-day coverage. Coverage
+          # now counts EXECUTED work only: candidates are main-branch
+          # successes, and each must show a non-gate job that concluded
+          # success. gh failures degrade toward running the work (skip=false).
+          ids="$(gh run list -R "$GITHUB_REPOSITORY" --workflow base-drift.yaml \
+            --branch main --status success --created "${since}..${today}" \
+            --json databaseId --jq '.[].databaseId')"
+          recent=0
+          checked=0
+          for id in $ids; do
+            checked=$((checked + 1))
+            if gh run view "$id" -R "$GITHUB_REPOSITORY" --json jobs \
+              --jq 'any(.jobs[]; .name != "fallback-gate" and .conclusion == "success")' \
+              | grep -q true; then
+              recent=$((recent + 1))
+              break
+            fi
+          done
+          echo "executed-successes=$recent checked=$checked window=${since}..${today}"
           if [ "$recent" -gt 0 ]; then
             echo 'skip=true' >> "$GITHUB_OUTPUT"
           else
@@ -293,7 +313,11 @@ jobs:
           while IFS= read -r pkg; do
             [ -n "$pkg" ] || continue
             TOTAL=$((TOTAL + 1))
-            PINNED="$(node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('package.json','utf8')); console.log(p.dependencies?.['$pkg'] ?? p.devDependencies?.['$pkg'] ?? '?')")"
+            # Web-dep coverage (2026-10-21, run 42466e744796 cycle:4 U3): the
+            # PKGS enumeration spans BOTH manifests (root + web/), so the pin
+            # lookup must too — a web-only dep previously resolved to '?' and
+            # silently skipped the drift check as unresolvable.
+            PINNED="$(node -e "const fs=require('fs'); const root=JSON.parse(fs.readFileSync('package.json','utf8')); const web=JSON.parse(fs.readFileSync('web/package.json','utf8')); const dep='$pkg'; console.log(root.dependencies?.[dep] ?? root.devDependencies?.[dep] ?? web.dependencies?.[dep] ?? web.devDependencies?.[dep] ?? '?')")"
             LATEST="$(npm view "$pkg" version 2>/dev/null || true)"
             if [ -z "$LATEST" ]; then
               continue # private/local/unresolvable — not a drift signal
