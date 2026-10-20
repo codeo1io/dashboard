@@ -179,3 +179,95 @@ describe('batch-doc gate-record existence (rm-877)', () => {
     expect(stale, 'Tolerated-missing entries whose files exist again — prune them.').toEqual([])
   })
 })
+
+// ---------------------------------------------------------------------------
+// Deliverable-marker half (rm-857, run 3d6aa134904b) — grafted onto the
+// rm-877 guard at integrate conflict case 5e13305c (2026-10-20).
+//
+// The rm-877 gate-record half above checks the NEWEST cohort of batch docs;
+// this half checks the opt-in `## Deliverables` marker convention the
+// 3d6aa134904b batch established (its doc is the first carrier): a
+// marker-bearing doc declares repo-relative paths in backticked bullets, and
+// the guard fails if any declared path is absent at HEAD OR if the newest
+// marker-bearing doc's census claim diverges from the live ledger — the exact
+// 237-live-vs-247-claimed divergence the 2026-10-09 landing merge (3e3664c)
+// hid for six days. Census-claim reads take the LAST match in the doc, so an
+// integrate-time Landing-record re-census supersedes the at-mint claim
+// without rewriting dated history (first-landed-wins parallel mints
+// legitimately grow the ledger past an older doc's claim).
+// ---------------------------------------------------------------------------
+
+const DELIVERABLES_HEADING = /^## Deliverables$/m
+const CENSUS_CLAIM = /(\d+) defs \/ (\d+) dups \/ max rm-(\d+)/g
+
+function deliverablesFrom(docText: string): string[] {
+  if (!DELIVERABLES_HEADING.test(docText)) return []
+  const after = docText.split(DELIVERABLES_HEADING)[1] ?? ''
+  const section = after.split(/^## /m)[0] ?? ''
+  return [...section.matchAll(/^- `([^`\n]+)`(?: —|:|$)/gm)].map(m => m[1] ?? '')
+}
+
+function missingDeliverables(docText: string): string[] {
+  return deliverablesFrom(docText).filter(path => !existsSync(join(repoRoot, path)))
+}
+
+describe('batch-doc deliverable marker (rm-857)', () => {
+  it('parses deliverable bullets (fixture red-proof of the parser half)', () => {
+    const fixture = [
+      '# batch doc',
+      '',
+      '## Deliverables',
+      '',
+      '- `scripts/roadmap-census.ts` — the census half',
+      '- `test/roadmap-integrity-guard.test.ts` — the schema half',
+      '- `no/such/file-anywhere.ts` — deliberately absent',
+      '',
+      '## Notes',
+      '',
+      '- `not-a-deliverable.ts` — outside the section, must be ignored',
+    ].join('\n')
+    expect(deliverablesFrom(fixture)).toEqual([
+      'scripts/roadmap-census.ts',
+      'test/roadmap-integrity-guard.test.ts',
+      'no/such/file-anywhere.ts',
+    ])
+    expect(missingDeliverables(fixture)).toEqual(['no/such/file-anywhere.ts'])
+  })
+
+  it('every declared deliverable in every marker-bearing batch doc exists', () => {
+    const docs = readdirSync(PRIORITIZATION_DIR)
+      .filter(name => name.endsWith('.md'))
+      .map(name => ({name, text: readFileSync(join(PRIORITIZATION_DIR, name), 'utf8')}))
+    const missing: string[] = []
+    let carriers = 0
+    for (const doc of docs) {
+      if (!DELIVERABLES_HEADING.test(doc.text)) continue
+      carriers += 1
+      for (const path of missingDeliverables(doc.text)) missing.push(`${doc.name}: ${path}`)
+    }
+    expect(carriers, 'no marker-bearing batch doc — the rm-857 convention lost its carrier').toBeGreaterThan(0)
+    expect(
+      missing,
+      'Marker-bearing batch docs declare deliverables that are missing at HEAD — ' +
+      'restore the file or disposition the drop explicitly (the 3e3664c class).',
+    ).toEqual([])
+  })
+
+  it('the newest marker-bearing batch doc states the true census', () => {
+    const carriers = readdirSync(PRIORITIZATION_DIR)
+      .filter(name => name.endsWith('.md'))
+      .map(name => ({name, text: readFileSync(join(PRIORITIZATION_DIR, name), 'utf8')}))
+      .filter(doc => DELIVERABLES_HEADING.test(doc.text))
+    expect(carriers.length).toBeGreaterThan(0)
+    const newest = carriers.reduce((a, b) => (b.name >= a.name ? b : a))
+    // Last match wins: an integrate Landing-record re-census supersedes the
+    // at-mint claim without rewriting dated history.
+    const claims = [...newest.text.matchAll(CENSUS_CLAIM)]
+    const claim = claims.at(-1)
+    expect(claim, `no census claim in ${newest.name}`).not.toBeUndefined()
+    const live = census()
+    expect(Number(claim?.[1]), `${newest.name} claims stale defs`).toBe(live.defs)
+    expect(Number(claim?.[2]), `${newest.name} claims stale dups`).toBe(live.dups)
+    expect(Number(claim?.[3]), `${newest.name} claims stale max id`).toBe(live.max)
+  })
+})
