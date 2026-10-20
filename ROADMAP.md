@@ -2260,4 +2260,30 @@ HTML_SINK_PATTERN with a fixture at this integrate. Everything else auto-merged 
 and rides unmodified (fro-bot.yaml HAS_FRO_BOT_PAT gate restoration, codeql.yaml,
 AGENTS.md, test/workflow-hardening-guard.test.ts, the cycle compound doc). Render
 census after this graft: 314 def ids / 0 dups / max rm-2005 / next free rm-2006. -->
+<!-- conductor integrate 74a1f8f3 merge-resolution graft (2026-10-20, integrate conflict case
+74a1f8f381d2426abbf7145fe8c2a340, integration 128e5bb61d1f4416b99994682be30e1c, run
+ba5f6d7ddd6741b58817ac63b8a5fb1b candidate commit 8f42afba authored at base 364272b, ours 62778fb8):
+same regime as the a4a65bec/7742e11/6834460b grafts — the landed managed render stays authoritative
+and this parked batch lands by disposition, because the render already adopted its content. Dispositions:
+(1) rm-149 OAuth PKCE — the render's `done` def already carries the adoption rider citing this very
+commit ("adopted from parked run ba5f6d7ddd67 (commit 8f42afb, batch rm-149/281) via the PR #295 review");
+all four code/test surfaces (src/routes/auth.ts, src/auth/oauth.ts, test/auth.test.ts, test/auth-pkce.test.ts)
+arrive at this merge byte-identical to HEAD (blob-equality verified at the integrate) — no flip owed.
+(2) rm-281 — stays the render's in_progress: the recipe half (in-test suppression / no-direct-hash shape)
+is inside the adopted test file, and the CodeQL-green acceptance clause stays gated on the Actions
+re-enable per the batch's own deferred-with-reason record.
+(3) the pnpm 11.28.5 pin half of the batch is SUPERSEDED by the landed 2026-10-17 pnpm-to-Bun migration
+(packageManager bun@1.4.3, digest-pinned oven/bun toolchain stage with the rm-558 BUILDPLATFORM repair,
+pnpm-lock retired) — dropped at every site (package.json, Dockerfile, test/fork-exclusion-guard.test.ts);
+the guard now asserts pnpm@/corepack never return, so the pin cannot re-land as-authored.
+(4) the batch's own ledger artifacts (its fog-marked platform-disable watch def, its rm-252/rm-157/rm-760
+dated riders, its extension #41 / compound #42 tail comments, its 246/0/831 census and 831 guard-pin notes)
+are NOT grafted: the render owns their content by adoption or newer supersession (Actions-darkness
+ownership moved to rm-1450/rm-1453 and the outage-validation runbook; rm-252 carries the 2026-10-16 absorb
+OUTCOME rider; rm-760 carries the live lockstep-failure rider), the fog rm-831 convention already names
+this run, and the rm-678 guard-pin design those notes reference was superseded by the rm-877 floor redesign.
+(5) the batch's durable docs land verbatim (docs/prioritization/2026-10-09-repository-maintenance-cycle-2-
+batch-run-ba5f6d7ddd67.md + docs/solutions/workflow-issues/actions-platform-disable-full-validation-
+local-dual-mirror-2026-10-09.md); the fork-exclusion and roadmap-integrity guards resolve to main's current
+shapes (Bun pins; rm-877 floors). Comments add no defs: render census unchanged 314/0/rm-2005. -->
 <!-- managed by hermes-roadmap render; do not edit by hand -->
