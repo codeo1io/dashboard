@@ -54,10 +54,17 @@ visibility belongs to the dashboard UI's own fields (rm-708, unlanded): once
 those land, an EXTERNAL probe may additionally gate on staleness — the
 in-container healthcheck never will.
 
-The probe URL hard-codes the `DASHBOARD_PORT` default (3000). A deployment
-overriding `DASHBOARD_PORT` must override the `HEALTHCHECK` (or the
-orchestrator's equivalent liveness command) to match, or the container will
-report unhealthy against the wrong port.
+The probe URL follows the server's bind port rather than hard-coding it:
+`DASHBOARD_PORT` first (the server's documented bind override), then `PORT`
+as a conventional fallback, then the `3000` default matching `EXPOSE`;
+`HEALTHCHECK_URL` replaces the whole URL for exotic probe targets. A
+deployment overriding `DASHBOARD_PORT` therefore needs no `HEALTHCHECK`
+override — the probe follows the bind port. A 4.5s in-process watchdog
+exits 1 just under the 5s probe timeout so a hung fetch cannot outlive the
+runtime kill. (Env-aware URL + watchdog folded 2026-10-19 at the integrate
+of run c8b5d2ec cycle-1 batch B2 / rm-233, superseding rm-743's original
+hard-coded `127.0.0.1:3000` probe; the r.ok-only liveness gate and the
+aggregator-cadence tuning are unchanged.)
 
 ## Maintenance of this document
 

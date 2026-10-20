@@ -30,6 +30,7 @@ import type * as LaunchModule from '../../../public/operator-launch.js'
 import type * as RunIndexModule from '../../../public/operator-run-index.js'
 import type * as StreamModule from '../../../public/operator-stream.js'
 import type {FinishedRunRecord, RunSummaryStatus, StreamHandle} from '../../../public/operator-stream.js'
+import {loadOutputRenderer, type OutputRenderer} from './renderer-source.ts'
 import type {OperatorState} from './state.ts'
 import {clearGatewaySignInRedirectGuard, maybeAutoRedirectToGatewaySignIn} from './sign-in-recovery.ts'
 
@@ -59,6 +60,7 @@ type StreamTargetEl = HTMLElement & {hidden: boolean}
  */
 export function discoverCardStreamTargets(runId: string): {
   outputEl: StreamTargetEl | null
+  toolsEl: StreamTargetEl | null
   coalescedEl: StreamTargetEl | null
   approvalsEl: StreamTargetEl | null
   badgeEl: StreamTargetEl | null
@@ -77,6 +79,7 @@ export function discoverCardStreamTargets(runId: string): {
     : null
   return {
     outputEl: card?.querySelector<StreamTargetEl>('[data-role="run-output"]') ?? null,
+    toolsEl: card?.querySelector<StreamTargetEl>('[data-role="run-output-tools"]') ?? null,
     coalescedEl: card?.querySelector<StreamTargetEl>('[data-role="run-output-coalesced"]') ?? null,
     approvalsEl: card?.querySelector<StreamTargetEl>('[data-role="run-approvals"]') ?? null,
     badgeEl: card?.querySelector<StreamTargetEl>('[data-role="approval-badge"]') ?? null,
@@ -94,11 +97,14 @@ export function discoverCardStreamTargets(runId: string): {
  * Run-list summary status → hyphenated class token: a mirror of RUN_STATUS_CLASS_TOKENS in
  * public/operator-run-index.js, which the run index writes onto each card's run-status element.
  * The seven summary statuses are exactly the run index parser's VALID_RUN_SUMMARY_STATUSES; the
- * stream-only blocked status is not a summary.
+ * stream-only blocked status is not a summary (the waiting pair joined the summary allowlist
+ * with operator contract 1.11.0 — upstream PR #619; rm-884's re-derivation concurs).
  *
  * Mirrored, not imported: this file only takes types from public/ — the run index is loaded at
  * runtime from /static (see _runIndexSpecifier) and must not be bundled a second time into the
- * client. runtime.test.ts pins the two maps together (parity), so they cannot drift silently.
+ * client. web/src/operator/runtime.test.ts pins the two maps together (parity), and
+ * test/operator-contract-allowlist-guard.test.ts pins the run index against the vendored
+ * contract's RUN_SUMMARY_STATUSES — the declarations cannot drift silently.
  */
 export const STATUS_CLASS_TOKENS = {
   queued: 'status-queued',
@@ -438,6 +444,11 @@ export function requestRunJump(runId: string): void {
 }
 
 
+/** Whether the list still has a card for `runId`. */
+function _cardIsListed(runId: string): boolean {
+  return typeof document !== 'undefined' && document.querySelector(`[data-run-id="${CSS.escape(runId)}"]`) !== null
+}
+
 /** Fixed copy: the run ID is never echoed. */
 const JUMP_MISS_COPY = "That run isn't in your recent runs."
 
@@ -487,6 +498,22 @@ function _clearRunHash(): void {
   }
 }
 
+/**
+ * The first attach waits for the output renderer's import to settle, but never longer than this since the
+ * loader started. A stalled import then costs one short delay, and every stream attaches as plain text.
+ */
+const RENDERER_LOAD_CAP_MS = 2000
+
+/**
+ * The attach waiting for the renderer, if any. Module-level so the card-collapse
+ * check can see it; closing the active stream cancels it (the loader wraps its
+ * instance owner's close to clear these — rm-283 keeps ownership instance-scoped).
+ */
+let _deferredAttach: object | null = null
+
+/** The run whose attach is waiting. Cleared with `_deferredAttach`; a second click on its card is a collapse. */
+let _parkedRunId: string | null = null
+
 async function defaultRuntimeLoader(opts?: {
   endpointBase?: string
   fixtureSessionId?: string
@@ -504,14 +531,54 @@ async function defaultRuntimeLoader(opts?: {
 
   // rm-283 (fork hardening): active-stream ownership is INSTANCE-scoped — one owner per
   // loader (see createActiveStreamOwner) — a late first-mount cleanup can never close
-  // another instance's stream.
+  // another instance's stream. Upstream's renderer-wait state (#646) is module-level
+  // (the collapse check must see it), so the owner's close also cancels a parked attach.
   const streamOwner = createActiveStreamOwner()
+  const closeOwnedStream = streamOwner.close
+  streamOwner.close = (): void => {
+    _deferredAttach = null
+    _parkedRunId = null
+    closeOwnedStream()
+  }
+
+  // The renderer imports alongside the operator modules and is not awaited here, so a stalled import
+  // cannot hold up the run index or launch. It starts first, before any module import, so its cap counts
+  // from the loader's start and a slow module import does not add to it. A recorded repaint is one synchronous paint with no later
+  // frame to upgrade it, so the first attach waits for the import to settle (see _attachStream), at most
+  // RENDERER_LOAD_CAP_MS. A renderer that is missing, fails to load or is too slow is no renderer, and
+  // that stream paints plain text.
+  let renderer: OutputRenderer | undefined
+  let rendererSettled = false
+  let rendererCapTimer: ReturnType<typeof setTimeout> | undefined
+  const rendererReady = new Promise<void>(resolve => {
+    const settle = () => {
+      if (rendererSettled) return
+      rendererSettled = true
+      clearTimeout(rendererCapTimer)
+      resolve()
+    }
+    rendererCapTimer = setTimeout(settle, RENDERER_LOAD_CAP_MS)
+    // A late renderer is still kept: only the attaches that already went ahead lack it.
+    let loading: Promise<OutputRenderer | undefined>
+    try {
+      loading = loadOutputRenderer()
+    } catch {
+      loading = Promise.resolve(undefined)
+    }
+    loading.then(
+      loaded => {
+        renderer = loaded
+        settle()
+      },
+      settle,
+    )
+  })
 
   // The casts name the sidecar types, so renaming or retyping a member the runtime uses fails
   // check-types instead of surfacing as a silently skipped call. Only the members listed are read.
   const streamMod = await import(/* @vite-ignore */ _streamSpecifier) as Pick<
     typeof StreamModule,
-    'initOperatorStream' | 'takeUsableFinishedRun' | 'pruneFinishedRuns' | 'clearFinishedRuns'
+    'initOperatorStream' | 'takeUsableFinishedRun' | 'pruneFinishedRuns' | 'clearFinishedRuns' | 'resetOutputView'
   >
   _clearFinishedRuns = () => streamMod.clearFinishedRuns()
   // Streams attach on expand, launch, restore and jump only; the stream module's own bootstrap is not run here.
@@ -538,12 +605,40 @@ async function defaultRuntimeLoader(opts?: {
     _cancelPendingExpand()
     streamOwner.close()
 
+    if (rendererSettled) {
+      _attachStreamNow(runId, statusEl, noticeEl, takenRecord)
+      return
+    }
+    // Only the attaches before the renderer settles wait; closing the active stream cancels the wait.
+    const token = {}
+    _deferredAttach = token
+    _parkedRunId = runId
+    void rendererReady.then(() => {
+      if (_deferredAttach !== token) return
+      _deferredAttach = null
+      _parkedRunId = null
+      if (disposed || authRequired) return
+      // The list may have dropped the card while the attach waited; there is nothing left to stream into.
+      if (!_cardIsListed(runId)) {
+        _clearRunHash()
+        return
+      }
+      _attachStreamNow(runId, statusEl, noticeEl, takenRecord)
+    })
+  }
+
+  function _attachStreamNow(
+    runId: string,
+    statusEl: Element | null,
+    noticeEl: Element | null,
+    takenRecord?: FinishedRunRecord,
+  ): void {
     // Discover the per-card render targets so live output, coalescing hints,
     // approval prompts, and the approval badge all render — not just status.
-    const {outputEl, coalescedEl, gapEl, approvalsEl, badgeEl, reasonEl, cancelEl, checkoutEl, questionsEl, timeEl, waitingEl} = discoverCardStreamTargets(runId)
+    const {outputEl, toolsEl, coalescedEl, gapEl, approvalsEl, badgeEl, reasonEl, cancelEl, checkoutEl, questionsEl, timeEl, waitingEl} = discoverCardStreamTargets(runId)
     const summaryStatus = discoverCardSummaryStatus(runId)
     // A run the page already saw finish paints from its record, with no stream. Every other run, and
-    // a record that no longer matches what the list shows for the card, attaches live as before.
+    // a record that does not match what the list shows for the card, attaches live.
     const finishedRecord = takenRecord ?? streamMod.takeUsableFinishedRun(runId, summaryStatus, opts?.fixtureSessionId)
 
     // A re-expanded card must never keep question DOM from a previous attach: the stream and
@@ -556,6 +651,7 @@ async function defaultRuntimeLoader(opts?: {
         statusEl,
         noticeEl,
         outputEl,
+        toolsEl,
         coalescedEl,
         gapEl,
         approvalsEl,
@@ -568,6 +664,7 @@ async function defaultRuntimeLoader(opts?: {
         questionsEl,
         ...(summaryStatus === undefined ? {} : {summaryStatus}),
         ...(finishedRecord === undefined ? {} : {finishedRecord}),
+        ...(renderer === undefined ? {} : {renderOutput: renderer}),
         endpointBase: opts?.endpointBase,
         fixtureSessionId: opts?.fixtureSessionId,
       })
@@ -733,7 +830,8 @@ async function defaultRuntimeLoader(opts?: {
   // _attachStream makes the same check, so the record is also used after a refresh lands.
   const onSelectRun = (runId: string): Promise<void> | void => {
     cancelPendingCardReveal()
-    if (streamOwner.activeRunId === runId) {
+    if (streamOwner.activeRunId === runId || _parkedRunId === runId) {
+      // The active stream, or the attach still waiting on the renderer: either way this is a collapse.
       _cancelPendingExpand()
       streamOwner.close()
       _clearRunHash()
@@ -776,12 +874,10 @@ async function defaultRuntimeLoader(opts?: {
     const pending = {runId, release: wait.release}
     _pendingExpand = pending
     return wait.settled.then(() => {
-      if (disposed || _pendingExpand !== pending) return
+      if (disposed || authRequired || _pendingExpand !== pending) return
       _pendingExpand = null
       // The refresh may have dropped the run from the list; there is nothing left to stream into.
-      const stillListed = typeof document !== 'undefined'
-        && document.querySelector(`[data-run-id="${CSS.escape(runId)}"]`) !== null
-      if (!stillListed) {
+      if (!_cardIsListed(runId)) {
         _clearRunHash()
         return
       }
@@ -847,8 +943,14 @@ async function defaultRuntimeLoader(opts?: {
   // The one place the page learns its session is gone, from either the first load or a refresh. The
   // store is dropped here so a finished result cannot outlive the sign-in it was shown under, and
   // attachments that started earlier can no longer record.
+  // The active stream closes too, so no frame or toggle click paints once the session is gone; DOM that
+  // is already painted stays as it is. The view preference returns to Rendered for the next sign-in.
   const onAuthRequired = () => {
     authRequired = true
+    // An expand still waiting on the refresh has no session to stream under.
+    _cancelPendingExpand()
+    streamOwner.close()
+    streamMod.resetOutputView()
     streamMod.clearFinishedRuns()
     stopRefreshTimer()
     // No session: a pending or arriving jump has nothing to open.
@@ -1010,6 +1112,7 @@ async function defaultRuntimeLoader(opts?: {
 
   return () => {
     disposed = true
+    clearTimeout(rendererCapTimer)
     cancelPendingCardReveal()
     jumpsRecoverable = false
     _setJumpSlot(epoch, {mode: 'queue', pending: null})

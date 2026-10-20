@@ -11,7 +11,16 @@ export default defineConfig(
     // .agents/ is a vendored shared-skill bundle (e.g. .agents/skills/impeccable) of
     // third-party .mjs/.md files — not our source; linting it reports tens of thousands
     // of errors.
-    ignores: ['docs/plans/**', 'docs/solutions/**', 'docs/brainstorms/**', 'web/**', '.agents/**', '.opencode/**'],
+    // wiki-writer is excluded from this fork entirely (never-absorb doctrine,
+    // rm-252/259): its directory does not exist, so nothing needs an ignore.
+    ignores: [
+      'docs/plans/**',
+      'docs/solutions/**',
+      'docs/brainstorms/**',
+      'web/**',
+      '.agents/**',
+      '.opencode/**',
+    ],
     typescript: {
       tsconfigPath: './tsconfig.json',
       // Enforce Node 24 strip-only TypeScript compatibility: rejects parameter properties,

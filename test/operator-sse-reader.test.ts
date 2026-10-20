@@ -46,6 +46,33 @@ function makeEmptyResponse(status: number): Response {
   return new Response(null, {status})
 }
 
+/**
+ * rm-1485 lifecycle helper: a fetch stub whose stream records reader.cancel()
+ * reasons. `closeStream = false` keeps the stream open when a test drives a
+ * mid-stream exit — reader.cancel() on an already-closed stream is a no-op
+ * and never reaches the underlying source's cancel callback.
+ */
+function makeSpiedFetch(chunks: Uint8Array[], closeStream = true): {
+  fetchImpl: (path: string, init?: RequestInit) => Promise<Response>
+  cancels: string[]
+} {
+  const cancels: string[] = []
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk)
+      if (closeStream) controller.close()
+    },
+    cancel(reason) {
+      cancels.push(String(reason))
+    },
+  })
+  const response = new Response(stream, {
+    status: 200,
+    headers: {'content-type': 'text/event-stream'},
+  })
+  return {fetchImpl: async () => response, cancels}
+}
+
 interface RecordedFetchCall {
   path: string
   init: RequestInit | undefined
@@ -3024,5 +3051,81 @@ describe('operator SSE reader: zero-frame streams fail closed (rm-851)', () => {
     expect(frames).toContain('ready')
     expect(calls.filter(c => c.startsWith('error:'))).toEqual([])
     expect(calls.at(-1)).toBe('close')
+  })
+})
+
+describe('reader lifecycle — release on non-completion exits (rm-1485)', () => {
+  const READY = () => `event: ready\ndata: {"contractVersion":"${OPERATOR_CONTRACT_VERSION}"}\n\n`
+
+  const utf8 = (text: string) => new TextEncoder().encode(text)
+
+  const openQuietly = async (reader: ReturnType<typeof createOperatorSseReader>) =>
+    reader.open('/operator/runs/run-001/stream', {
+      onEvent: () => {},
+      onError: () => {},
+      onClose: () => {},
+    })
+
+  it('cancels the body when the byte cap trips mid-stream', async () => {
+    const flood = '𝕏'.repeat(MAX_SSE_BUFFER_BYTES / 4 + 1)
+    const {fetchImpl, cancels} = makeSpiedFetch([utf8(READY()), utf8(flood)], false)
+    const reader = createOperatorSseReader({fetchImpl})
+    await openQuietly(reader)
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(cancels).toHaveLength(1)
+    expect(cancels[0]).toContain('overflow')
+  })
+
+  it('cancels the body when the first frame is not ready', async () => {
+    const firstFrameNotReady = `event: reset\ndata: ${JSON.stringify({runId: 'run-001', reason: 'no-snapshot'})}\n\n`
+    const {fetchImpl, cancels} = makeSpiedFetch([utf8(firstFrameNotReady)], false)
+    const reader = createOperatorSseReader({fetchImpl})
+    await openQuietly(reader)
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(cancels).toHaveLength(1)
+    expect(cancels[0]).toContain('first frame')
+  })
+
+  it('cancels the body on contract version mismatch', async () => {
+    const mismatch = 'event: ready\ndata: {"contractVersion":"0.0.0"}\n\n'
+    const {fetchImpl, cancels} = makeSpiedFetch([utf8(mismatch)], false)
+    const reader = createOperatorSseReader({fetchImpl})
+    await openQuietly(reader)
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(cancels).toHaveLength(1)
+    expect(cancels[0]).toContain('contract')
+  })
+
+  it('does not cancel on clean completion', async () => {
+    const {fetchImpl, cancels} = makeSpiedFetch([utf8(READY())])
+    const reader = createOperatorSseReader({fetchImpl})
+    await openQuietly(reader)
+    expect(cancels).toHaveLength(0)
+  })
+
+  it('keeps the byte count exact across arbitrary byte-offset chunk splits (astral + CJK + CR junctions)', async () => {
+    const resetFrame = `event: reset\ndata: ${JSON.stringify({runId: 'run-001', reason: 'no-snapshot'})}\n\n`
+    const sseText = `${READY()}: 日本語😀 keepalive comment with astral tail 🚀\n\n${resetFrame}: mixed 日 本 😀 text 🚀 comment\r\n\n${READY()}`
+    // Split at byte offsets that cut astral sequences and the CRLF junction
+    // in half — TextDecoder(stream) plus the held-CR rule must reassemble
+    // every frame, and the incrementally-maintained byte count must neither
+    // overflow early nor drift from the buffer's true length.
+    const bytes = new TextEncoder().encode(sseText)
+    const chunks: Uint8Array[] = []
+    for (let offset = 0; offset < bytes.length; offset += 7) {
+      chunks.push(bytes.subarray(offset, offset + 7))
+    }
+    const {fetchImpl, cancels} = makeSpiedFetch(chunks)
+    const frames: string[] = []
+    const errors: string[] = []
+    const reader = createOperatorSseReader({fetchImpl})
+    await reader.open('/operator/runs/run-001/stream', {
+      onEvent: frame => frames.push(frame.type),
+      onError: error => errors.push(error.message),
+      onClose: () => {},
+    })
+    expect(errors).toEqual([])
+    expect(frames).toEqual(['ready', 'reset', 'ready'])
+    expect(cancels).toHaveLength(0)
   })
 })

@@ -160,6 +160,11 @@ export function AppShell({
   const [notificationsRestoreNonce, setNotificationsRestoreNonce] = useState(0)
   const [installRestoreNonce, setInstallRestoreNonce] = useState(0)
   const logoutInFlight = useRef(false)
+  // Release version shown in the footer, baked at build time (release.yaml's
+  // compute-release-tag step → Dockerfile ARG DASHBOARD_VERSION →
+  // VITE_DASHBOARD_VERSION). 'dev' in local builds; a calver-shaped version
+  // links to this fork's release notes. Build-time constant only — never a
+  // gateway or operator-contract read.
   const dashboardVersion: string = import.meta.env.VITE_DASHBOARD_VERSION || 'dev'
   const releaseNotesUrl = /^\d{4}\.\d{2}\.\d+$/.test(dashboardVersion)
     ? `https://github.com/codeo1io/dashboard/releases/tag/${dashboardVersion}`
@@ -205,8 +210,9 @@ export function AppShell({
     logoutInFlight.current = true
     setLoggingOut(true)
 
-    // Purge operator runtime caches before navigating away so a
-    // logged-out user cannot see cached operator data offline.
+    // Sweep operator-side caches before navigating away so a logged-out user
+    // cannot see stale cached data offline (rm-274 truthing: legacy sweep only
+    // — operator responses are network-only/no-store, nothing else is cached).
     purgeOperatorCache()
 
     // Abort any in-flight push subscribe (e.g. started from the Notifications
