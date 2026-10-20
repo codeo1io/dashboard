@@ -21,6 +21,16 @@ runs:
         node-version: '24'
         cache: pnpm
 
+    # 2026-10-20 (run 806c5fc8 full_tests, layer-1 bridge): the engine's
+    # cloud-CI snapshot grafts CURRENT origin/main's .github/workflows onto
+    # this pre-Bun worktree lineage; those workflows drive lint/types/tests
+    # through `bun run <script>`. Provision bun alongside pnpm (deps still
+    # install via pnpm below — nothing runs `bun install`, so no bun.lock is
+    # needed) so the grafted steps find the runner. Remove when this lineage
+    # absorbs the pnpm→Bun migration.
+    - name: Setup Bun (bridge for grafted workflow runner)
+      uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+
     - name: Install dependencies
       run: pnpm install --frozen-lockfile
       shell: bash -Eeuo pipefail {0}
