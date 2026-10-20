@@ -13,11 +13,13 @@
 # --platform flag and COPY cannot express deletions, so this is the minimal
 # target-executed step the design allows — see the rm-558 CI-time note in
 # .github/workflows/release.yaml).
-# rm-648 digest refresh (2026-10-19, run eb13ca8a implement 05d868a7): the
-# 2026-10-14 node 24.22.0 release was twin-pushed — 24-slim and 24-trixie-slim
-# carry separate manifest indexes built 7s apart (a5f4366e vs 7f486cab, same
-# node build) — which armed the base-drift tripwire red. Pinned to the 24-slim
-# twin so the tag matches the tripwire's own comparison target exactly.
+# rm-648 digest refresh (2026-10-19, run eb13ca8a implement 05d868a7;
+# digest re-verified live 2026-10-20 by implement 5ec62dfc): the 2026-10-14
+# node 24.22.0 release was twin-pushed — 24-slim and 24-trixie-slim carry
+# separate manifest indexes pushed 29s apart per the Hub API (20:39:23Z vs
+# 20:39:52Z; a5f4366e vs 7f486cab, same node build) — which armed the
+# base-drift tripwire red. Pinned to the 24-slim twin so the tag matches the
+# tripwire's own comparison target exactly.
 ARG NODE_IMAGE=node:24-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5
 
 # rm-1483 (#641 residual, run 9511a1b5): release-channel tag baked into the
