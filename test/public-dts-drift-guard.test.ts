@@ -57,11 +57,17 @@ const ALLOWED_UNDECLARED: Readonly<Record<string, readonly string[]>> = {
  * 7a0e2163 landing merged the guard without re-pinning, leaving main red on
  * exactly these two assertions. The adoption is the deliberate .d.ts edit this
  * pin exists to witness; value-export parity was unaffected.
+ * Re-pinned 2026-10-19 (run 377dee0b, targeted_tests attempt 37cc15ed): the
+ * markdown run-output absorb (upstream #646/#650 pair, rm-1484) grew
+ * operator-stream by `OutputView` + `RenderOutput` (two `export type`
+ * declarations mirroring the rendered/raw toggle + the renderer seam in the
+ * vendored .js). That absorb is the deliberate .d.ts edit this pin exists to
+ * witness; value-export parity was unaffected.
  */
 const TYPE_ONLY_COUNTS: Readonly<
   Record<string, {readonly type: number; readonly interface: number}>
 > = {
-  'operator-stream': {type: 32, interface: 35},
+  'operator-stream': {type: 34, interface: 35},
   'operator-launch': {type: 1, interface: 2},
   'operator-run-index': {type: 4, interface: 2},
 }
