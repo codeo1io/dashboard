@@ -33,9 +33,15 @@ and names every by-design deviation in [docs/runbooks/security-posture.md](docs/
   (`src/read-body.ts` — 16 KiB wire-byte cap, ingest + logout; rm-497).
 - **Client** — [Vite](https://vite.dev) + [React 19](https://react.dev) +
   [Tailwind CSS v4](https://tailwindcss.com), shipped as an installable PWA via
-  [vite-plugin-pwa](https://vite-pwa-org.netlify.app). The service worker is a
-  kill-switch (`web/src/sw.ts`): it purges caches and unregisters itself — the
-  app does no offline caching.
+  [vite-plugin-pwa](https://vite-pwa-org.netlify.app). The service worker
+  (`web/src/sw.ts`) is a deny-by-default offline router: it precaches the app
+  shell and hashed assets and serves navigations from that offline shell
+  (`/auth/`, `/operator/auth/`, `/api/`, `/privacy/` denylisted), while every
+  `/auth/*`, `/operator/auth/*`, and `/api/*` request is `NetworkOnly` —
+  operator data is never cached by the SW, and runtime caches purge on logout
+  or auth change. The SW also carries the `push`, `notificationclick`, and
+  `pushsubscriptionchange` handlers for the notification surface; new-worker
+  activation stays prompt-gated (the operator's Refresh click).
 - pnpm, [Vitest](https://vitest.dev).
 
 ## Quick Start

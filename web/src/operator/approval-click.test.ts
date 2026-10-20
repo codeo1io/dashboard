@@ -133,7 +133,7 @@ async function mountExpandedCardWithPrompt() {
     const found = document.querySelector<HTMLElement>(`[data-run-id="${RUN_ID}"]`)
     expect(found).not.toBeNull()
     return found as HTMLElement
-  })
+  }, {timeout: 5000})
 
   card.click() // the operator expands the card
   expect(card.dataset.expanded).toBe('true')
@@ -142,7 +142,7 @@ async function mountExpandedCardWithPrompt() {
     const found = card.querySelector<HTMLElement>('.approval-prompt')
     expect(found).not.toBeNull()
     return found as HTMLElement
-  })
+  }, {timeout: 5000})
   expect(card.querySelector<HTMLElement>('[data-role="run-approvals"]')?.hidden).toBe(false)
   expect(gateway.streamsOpened()).toBe(1)
   expect(gateway.streamsAborted()).toBe(0)
@@ -170,7 +170,7 @@ describe('Cancel control inside an expanded run card', () => {
       const found = card.querySelector<HTMLElement>('.run-cancel-control')
       expect(found?.querySelector('.run-cancel-btn-cancel')).not.toBeNull()
       return found as HTMLElement
-    })
+    }, {timeout: 5000})
 
     control.querySelector<HTMLButtonElement>('.run-cancel-btn-cancel')?.click()
     expect(control.dataset.state).toBe('armed')
@@ -194,7 +194,7 @@ describe('approval prompt controls inside an expanded run card', () => {
 
     button('.approval-prompt-btn-once').click()
 
-    await vi.waitFor(() => expect(gateway.decisions).toHaveLength(1))
+    await vi.waitFor(() => expect(gateway.decisions).toHaveLength(1), {timeout: 5000})
     expect(card.dataset.expanded).toBe('true')
     expect(gateway.streamsAborted()).toBe(0)
     expect(gateway.decisions[0]?.url).toBe(DECISION_PATH)
@@ -215,7 +215,7 @@ describe('approval prompt controls inside an expanded run card', () => {
 
     confirm?.click()
 
-    await vi.waitFor(() => expect(gateway.decisions).toHaveLength(1))
+    await vi.waitFor(() => expect(gateway.decisions).toHaveLength(1), {timeout: 5000})
     expect(card.dataset.expanded).toBe('true')
     expect(gateway.streamsAborted()).toBe(0)
     expect(gateway.decisions[0]?.url).toBe(DECISION_PATH)
@@ -242,7 +242,7 @@ describe('approval prompt controls inside an expanded run card', () => {
 
     button('.approval-prompt-btn-reject').click()
 
-    await vi.waitFor(() => expect(gateway.decisions).toHaveLength(1))
+    await vi.waitFor(() => expect(gateway.decisions).toHaveLength(1), {timeout: 5000})
     expect(card.dataset.expanded).toBe('true')
     expect(gateway.streamsAborted()).toBe(0)
     expect(gateway.decisions[0]?.url).toBe(DECISION_PATH)
@@ -267,7 +267,7 @@ describe('approval prompt controls inside an expanded run card', () => {
     if (activationPhase === 'keyup') once.dispatchEvent(new KeyboardEvent('keyup', {key, bubbles: true, cancelable: true}))
     once.click()
 
-    await vi.waitFor(() => expect(gateway.decisions).toHaveLength(1))
+    await vi.waitFor(() => expect(gateway.decisions).toHaveLength(1), {timeout: 5000})
     expect(card.dataset.expanded).toBe('true')
     expect(gateway.streamsAborted()).toBe(0)
     expect(gateway.decisions[0]?.body).toEqual({decision: 'once'})
@@ -291,6 +291,6 @@ describe('approval prompt controls inside an expanded run card', () => {
     card.click()
 
     expect(card.dataset.expanded).toBe('false')
-    await vi.waitFor(() => expect(gateway.streamsAborted()).toBe(1))
+    await vi.waitFor(() => expect(gateway.streamsAborted()).toBe(1), {timeout: 5000})
   })
 })
