@@ -92,6 +92,7 @@ const MOVED_DOCKERFILE = [
   '# syntax=docker/dockerfile:1',
   `ARG NODE_IMAGE=node:26-noble-slim@sha256:${MOVED_HEX}`,
   'ARG DASHBOARD_VERSION=dev',
+  // eslint-disable-next-line no-template-curly-in-string -- Dockerfile fixture: ${NODE_IMAGE} is the ARG's own expansion syntax, not a JS template
   'FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS builder',
   'RUN corepack enable',
   '',
@@ -157,6 +158,7 @@ describe('base-drift tag derivation (rm-856, rm-779 class second site)', () => {
       'the buildx inspect target must be the ARG-derived $TAG, not a literal',
     ).toBe(true)
     expect(
+      // eslint-disable-next-line no-template-curly-in-string -- asserted workflow text: shell param expansion, not a JS template
       text.includes('manifests/${TAG#node:}'),
       'the registry HEAD fallback must target the derived tag too — a literal fallback URL guards the wrong tag family',
     ).toBe(true)
