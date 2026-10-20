@@ -8,7 +8,8 @@ import {DatabaseSync} from 'node:sqlite'
  * See docs/contracts/operator-listener-channel.md — retention policy (500 rows
  * / 30 days) and idempotency (dedupeKey upsert) are enforced here.
  */
-import {parseLinks, type IngestMessage, type ListenerLink, type ListenerMessage, type MessagesResponse} from './contract.ts'
+import {logger, sanitizeErrorMessage} from '../logger.ts'
+import {isListenerSeverity, isListenerSource, parseLinks, type IngestMessage, type ListenerLink, type ListenerMessage, type MessagesResponse} from './contract.ts'
 
 export interface ListenerStore {
   insert: (input: IngestMessage) => {id: string; receivedAt: string}
@@ -48,7 +49,9 @@ const MAX_LIST_LIMIT = 200
  * twin in src/github/snapshot-store.ts landed guarded; this closes the gap:
  * a corrupt cell degrades to "no links" with every other field intact, and
  * every degraded read logs once so silent data loss cannot recur (the
- * endpoint stays 200 with the healthy rows).
+ * endpoint stays 200 with the healthy rows). rm-1459 extends the same
+ * degrade-not-500 discipline to the source/severity cells via the shared
+ * ingest-side predicates — a drift-shaped cell skips its row visibly.
  */
 function parseLinksCell(raw: string, id: string): readonly ListenerLink[] {
   try {
@@ -63,21 +66,50 @@ function parseLinksCell(raw: string, id: string): readonly ListenerLink[] {
     if (!validated.success) throw new Error(validated.error.message)
     return validated.data
   } catch (error) {
-    console.warn(
-      `[listener-store] degraded links cell on message ${id}: ${
-        error instanceof Error ? error.message : String(error)
-      } — serving empty links, other fields intact`,
+    // rm-1459 (assess-F5 fold): degradation logs ride the structured logger
+    // (redaction seam + level routing), not a bare console.warn — with this
+    // migration the listener store carries no console.* of its own
+    // (src/shutdown.ts's injected default remains the only one under src/).
+    // rm-2009 (2026-10-20, run bcdcf49b59a144598e8c873a07a2b23f): the reason
+    // must never interpolate verbatim cell payload either — the SyntaxError
+    // class of a bare JSON.parse reduces to a fixed content-free reason (V8
+    // < 12 embeds a raw snippet of the offending JSON in error.message;
+    // Node 24's is position-based — the reduction is engine-independent
+    // defence), and every other error class passes through
+    // sanitizeErrorMessage (which strips credential shapes, not arbitrary
+    // persisted content — the ingest validator's messages are value-free by
+    // design, so nothing real is lost).
+    const reason =
+      error instanceof SyntaxError
+        ? 'links cell is not valid JSON'
+        : sanitizeErrorMessage(error instanceof Error ? error.message : String(error))
+    logger.warning(
+      `[listener-store] degraded links cell on message ${id}: ${reason} — serving empty links, other fields intact`,
     )
     return []
   }
 }
 
-function rowToMessage(row: MessageRow): ListenerMessage {
+/**
+ * rm-1459: the `links` cell degrades per-field (empty links, other fields
+ * intact) via the ingest-side canonical validator. Source and severity are
+ * re-validated through the SAME shared predicates parseIngestBody uses — a
+ * drift-shaped cell (hand-edit, torn write, enum change from an older
+ * format) skips the row visibly with a structured warning instead of
+ * smuggling an invalid enum value into the typed message stream.
+ */
+function rowToMessage(row: MessageRow): ListenerMessage | null {
+  if (!isListenerSource(row.source) || !isListenerSeverity(row.severity)) {
+    logger.warning(
+      `[listener-store] degraded row on message ${row.id}: source/severity cell failed the ingest-side vocabulary (source=${String(row.source)} severity=${String(row.severity)}) — skipping the row`,
+    )
+    return null
+  }
   return {
     id: row.id,
-    source: row.source as ListenerMessage['source'],
+    source: row.source,
     kind: row.kind,
-    severity: row.severity as ListenerMessage['severity'],
+    severity: row.severity,
     title: row.title,
     body: row.body,
     links: parseLinksCell(row.links, row.id),
@@ -116,15 +148,34 @@ export function createListenerStore(dbPath: string): ListenerStore {
       WHERE dedupe_key IS NOT NULL
   `)
 
-  const findByDedupeStmt = db.prepare('SELECT id FROM messages WHERE source = ? AND dedupe_key = ?')
-  const insertStmt = db.prepare(`
+  // rm-232 (rm-227 in the cycle-1 snapshot; renumbered above main's landed
+  // rm-227 fleet-license-columns def per the landed-meanings-win convention):
+  // one atomic statement replaces the old check-then-insert pair.
+  // That pair was TOCTOU-unsound against the partial UNIQUE index
+  // idx_messages_source_dedupe: two ingests with the same (source, dedupe_key)
+  // racing the SELECT-then-INSERT would see the loser die on
+  // SQLITE_CONSTRAINT_UNIQUE and surface a 500 to the webhook caller. Under
+  // the current single-process deployment (node:sqlite is synchronous, no
+  // await between the two statements) the interleaving is a hazard, not an
+  // observed race — it becomes live for a second process sharing the DB file
+  // or a future async driver. ON CONFLICT against the partial index (the
+  // conflict target repeats its WHERE clause) makes duplicate delivery
+  // idempotent by construction regardless; rows with a NULL dedupe_key never
+  // match the partial index and always insert fresh.
+  const upsertStmt = db.prepare(`
     INSERT INTO messages (id, source, kind, severity, title, body, links, dedupe_key, created_at, received_at, read_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-  `)
-  const updateByIdStmt = db.prepare(`
-    UPDATE messages
-    SET kind = ?, severity = ?, title = ?, body = ?, links = ?, created_at = ?, received_at = ?, read_at = messages.read_at
-    WHERE id = ?
+    ON CONFLICT (source, dedupe_key) WHERE dedupe_key IS NOT NULL
+    DO UPDATE SET
+      kind = excluded.kind,
+      severity = excluded.severity,
+      title = excluded.title,
+      body = excluded.body,
+      links = excluded.links,
+      created_at = excluded.created_at,
+      received_at = excluded.received_at,
+      read_at = messages.read_at
+    RETURNING id
   `)
   const selectAllStmt = db.prepare('SELECT * FROM messages ORDER BY received_at DESC LIMIT ?')
   const selectUnreadStmt = db.prepare('SELECT * FROM messages WHERE read_at IS NULL ORDER BY received_at DESC LIMIT ?')
@@ -152,30 +203,12 @@ export function createListenerStore(dbPath: string): ListenerStore {
     const receivedAt = new Date().toISOString()
     const linksJson = JSON.stringify(input.links)
 
-    if (input.dedupeKey !== null) {
-      const existing = findByDedupeStmt.get(input.source, input.dedupeKey) as unknown as {id: string} | undefined
-      if (existing !== undefined) {
-        // rm-169: replay (dedupe hit) refreshes content but PRESERVES read_at —
-        // a redelivered webhook must not silently un-ack an operator-read
-        // message. The SQL sets read_at = messages.read_at (no-op on itself).
-        updateByIdStmt.run(
-          input.kind,
-          input.severity,
-          input.title,
-          input.body,
-          linksJson,
-          input.createdAt,
-          receivedAt,
-          existing.id,
-        )
-        prune()
-        return {id: existing.id, receivedAt}
-      }
-    }
-
-    const id = randomUUID()
-    insertStmt.run(
-      id,
+    // rm-169: a replay (dedupe hit) refreshes content but PRESERVES read_at —
+    // a redelivered webhook must not silently un-ack an operator-read message.
+    // The DO UPDATE arm sets read_at = messages.read_at (a no-op on the row
+    // itself), so ack state survives redelivery exactly as before.
+    const row = upsertStmt.get(
+      randomUUID(),
       input.source,
       input.kind,
       input.severity,
@@ -185,9 +218,10 @@ export function createListenerStore(dbPath: string): ListenerStore {
       input.dedupeKey,
       input.createdAt,
       receivedAt,
-    )
+    ) as unknown as {id: string}
+
     prune()
-    return {id, receivedAt}
+    return {id: row.id, receivedAt}
   }
 
   function list(opts: {unreadOnly?: boolean; limit?: number}): MessagesResponse {
@@ -202,7 +236,7 @@ export function createListenerStore(dbPath: string): ListenerStore {
     const unreadCountRow = countUnreadStmt.get() as unknown as {n: number}
 
     return {
-      messages: rows.map(rowToMessage),
+      messages: rows.map(rowToMessage).filter((m): m is ListenerMessage => m !== null),
       unreadCount: unreadCountRow.n,
       prunedCount: prunedTotal,
     }
