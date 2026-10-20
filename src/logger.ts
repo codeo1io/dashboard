@@ -67,15 +67,33 @@ function isSensitiveField(fieldName: string, patterns: readonly string[]): boole
 /**
  * Recursively replace string values of sensitive-named fields with `[REDACTED]`.
  * Non-string sensitive values pass through (a `{key: {...}}` object is walked,
- * not masked) — matching the runtime helper's behavior.
+ * not masked) — matching the runtime helper's behavior. Cyclic references
+ * degrade to the `[REDACTED]` marker instead of recursing forever (rm-2306:
+ * a cyclic context previously hit RangeError before any redaction ran).
  */
-export function redactSensitiveFields<T>(value: T, patterns: readonly string[] = DEFAULT_SENSITIVE_FIELDS): T {
+export function redactSensitiveFields<T>(
+  value: T,
+  patterns: readonly string[] = DEFAULT_SENSITIVE_FIELDS,
+): T {
+  return redactWithSeen(value, patterns, new WeakSet())
+}
+
+function redactWithSeen<T>(
+  value: T,
+  patterns: readonly string[],
+  seen: WeakSet<object>,
+): T {
   if (value == null || typeof value !== 'object') {
     return value
   }
 
+  if (seen.has(value as object)) {
+    return REDACTED as T
+  }
+  seen.add(value as object)
+
   if (Array.isArray(value)) {
-    return value.map((item: unknown) => redactSensitiveFields(item, patterns)) as T
+    return value.map((item: unknown) => redactWithSeen(item, patterns, seen)) as T
   }
 
   const result: Record<string, unknown> = {}
@@ -83,7 +101,7 @@ export function redactSensitiveFields<T>(value: T, patterns: readonly string[] =
     if (isSensitiveField(fieldName, patterns) && typeof fieldValue === 'string') {
       result[fieldName] = REDACTED
     } else if (fieldValue != null && typeof fieldValue === 'object') {
-      result[fieldName] = redactSensitiveFields(fieldValue, patterns)
+      result[fieldName] = redactWithSeen(fieldValue, patterns, seen)
     } else {
       result[fieldName] = fieldValue
     }
