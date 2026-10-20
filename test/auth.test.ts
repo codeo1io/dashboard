@@ -1268,3 +1268,28 @@ describe('/auth/callback — CSRF state compare (timing-safe)', () => {
     expect(res.status).not.toBe(500)
   })
 })
+
+describe('operator sign-in OAuth scope posture (rm-2100)', () => {
+  it('/auth/login requests NO OAuth scopes — sign-in only needs the public GitHub login', async () => {
+    const capturedScopes: string[][] = []
+    const fakeClient: GitHubOAuthClient = {
+      createAuthorizationURL: (state: string, scopes: string[]) => {
+        capturedScopes.push(scopes)
+        return new URL(`https://github.example/login/oauth/authorize?state=${state}`)
+      },
+      validateAuthorizationCode: async () => ({accessToken: () => 'gho_test_token'}),
+    }
+    const app = await buildDashboardApp({
+      operatorLogin: 'octocat',
+      cookieKey: TEST_KEY,
+      oauthClient: fakeClient,
+      fetchUserLogin: async () => 'octocat',
+    })
+    const res = await app.request('/auth/login')
+    expect(res.status).toBe(302)
+    expect(
+      capturedScopes,
+      'operator sign-in must mint the authorize URL with an empty scope set (upstream fro-bot/agent v0.123.1 #1856: the previous read:user request exposed access to additional private profile fields without being needed for sign-in)',
+    ).toEqual([[]])
+  })
+})

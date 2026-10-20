@@ -81,6 +81,18 @@ This drops everything the gateway holds in memory: operator browser sessions and
 store. Sometimes that is the point — a saturated OAuth attempt cap clears instantly, where
 otherwise it waits out a 10-minute TTL. It also forces every operator to sign in again.
 
+### Scopeless sign-in (rm-2100)
+
+Since 2026-10-20 the dashboard's operator sign-in requests **no** OAuth
+scopes: the sign-in flow only needs the operator's public GitHub login
+(`GET /user` returns it without any scope). Upstream `fro-bot/agent` made the
+same move in v0.123.1 (PR #1856) — the previous `read:user` request exposed
+access to additional private profile fields without being needed for
+sign-in. Existing grants are **not** auto-revoked by the change: an operator
+who signed in before it still carries the granted `read:user` until they
+sign out and sign back in once — one re-auth sheds the scope. A gateway
+restart (above) is one way operators end up re-authenticating anyway.
+
 Never restart in place to rotate the mitmproxy CA — workspaces lose trust in the egress proxy.
 Restore from backup instead.
 

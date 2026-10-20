@@ -128,7 +128,14 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
       path: '/auth',
     })
 
-    const authURL = oauthClient.createAuthorizationURL(state, ['read:user'], {
+    // rm-2100 (repository-maintenance cycle:1, run 8da4f582f921): no OAuth
+    // scopes for operator sign-in — the callback only needs the operator's
+    // public GitHub login (GET /user requires no scope). The previous
+    // read:user request exposed access to additional private profile fields
+    // without being needed for sign-in (upstream fro-bot/agent v0.123.1,
+    // PR #1856). Existing grants are NOT auto-revoked: one re-auth sheds
+    // the scope.
+    const authURL = oauthClient.createAuthorizationURL(state, [], {
       codeChallenge,
       codeChallengeMethod: 'S256',
     })
