@@ -25,6 +25,23 @@
 # ref can never undercount the window the way the 2026-10-14 run did
 # (2 recorded vs 4 real). This workflow stays the scheduled alert; the
 # script is the truth source for absorb planning.
+#
+# Absorb-verify companion (rm-1972 gate + rm-2060 Bun-aware semantics,
+# 2026-10-19): scripts/absorb-verify.ts is the required absorb step named by
+# rm-252 — run it in the absorb worktree BEFORE folding (the working tree is
+# the cure under review) and again with --ours-ref against the landed tip
+# for integrate evidence. It checks dependency parity for every window
+# dependency (manifest specifier AND root-importer lockfile resolution —
+# PR #644 was a lockfile-only bump, so a manifest-only diff never catches
+# that drop class). Windows spanning upstream 2d791a52 (#648, pnpm -> Bun)
+# verify under Bun-aware semantics instead of fail-closing: the upstream
+# lockfile absence is derived STRUCTURALLY (a deletion event inside the
+# window, or absence on both ends), manifest parity + fork-side
+# installability are enforced in its place, and deliberate fork divergences
+# are cited from the script's AHEAD/never-absorb allowlist (kept lockfile,
+# packageManager, wiki capability) instead of redding every window. Exit
+# codes mirror absorb-window.ts: 0 clean, 1 usage, 3 fail-closed
+# indeterminacy, 4 dependency verdict red.
 name: Upstream drift check
 
 on:
