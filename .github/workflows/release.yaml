@@ -7,11 +7,11 @@ on:
     paths:
       - Dockerfile
       - package.json
-      - pnpm-lock.yaml
-      # rm-154 (cycle-9): COPY'd into BOTH Docker stages (builder + prod-deps);
-      # carries allowBuilds/shamefullyHoist/minimumReleaseAge — build-behavior
-      # config that changes image contents with zero code diff.
-      - pnpm-workspace.yaml
+      - bun.lock
+      - bunfig.toml
+      # rm-154 (cycle-9): build-behavior config that changes image contents with
+      # zero code diff — in the Bun world this lives in bunfig.toml (linker,
+      # minimumReleaseAge, excludes) and bun.lock, all listed above.
       - 'tsconfig*.json'
       - 'src/**'
       - 'web/**'
@@ -191,7 +191,7 @@ jobs:
       # target dies exec-format-error at that RUN (local builds only pass
       # because this host has binfmt-registered qemu).
       - name: 🐋 Set up QEMU (arm64 target emulation)
-        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
 
       - name: 🏗️ Build and push candidate image
         id: build
@@ -281,12 +281,17 @@ jobs:
             exit 1
           fi
 
-          for tool in npm npx pnpm pnpx corepack yarn yarnpkg; do
-            if docker run --rm "$IMG" sh -ec "command -v '$tool' >/dev/null 2>&1"; then
-              echo "SMOKE FAILED: package-manager command is present: $tool"
-              exit 1
-            fi
-          done
+          if ! docker run --rm --entrypoint sh "$IMG" -ec '
+            for tool in npm npx pnpm pnpx corepack yarn yarnpkg bun bunx; do
+              if command -v "$tool" >/dev/null 2>&1; then
+                echo "package-manager command is present: $tool" >&2
+                exit 1
+              fi
+            done
+          '; then
+            echo "SMOKE FAILED: package-manager command is present"
+            exit 1
+          fi
 
           if ! docker run --rm --user 0 --entrypoint sh "$IMG" -ec '
             for path in \
@@ -297,11 +302,14 @@ jobs:
               /usr/local/bin/corepack \
               /usr/local/bin/yarn \
               /usr/local/bin/yarnpkg \
+              /usr/local/bin/bun \
+              /usr/local/bin/bunx \
               /usr/local/lib/node_modules/npm \
               /usr/local/lib/node_modules/corepack \
               /root/.cache \
               /root/.npm \
               /root/.local/share/pnpm \
+              /root/.bun \
               /usr/local/share/.cache; do
               if [ -e "$path" ] || [ -L "$path" ]; then
                 echo "package-manager filesystem path is present: $path" >&2
