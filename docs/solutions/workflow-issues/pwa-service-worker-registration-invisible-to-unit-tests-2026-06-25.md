@@ -45,7 +45,7 @@ registerRoute(                          // 5. then the navigation handler
 )
 ```
 
-(Fork note, 2026-09-21: the `/operator/auth` and `/privacy` denylist entries in this example are upstream's later sw.ts shape — they never existed in this fork, whose `web/src/sw.ts` is a kill-switch with no NavigationRoute at all. The doc is absorbed verbatim for the class of trap; cross-check code shapes against this fork before treating examples as current.)
+(Fork note, 2026-09-21: the `/operator/auth` and `/privacy` denylist entries in this example are upstream's later sw.ts shape — they never existed in this fork, whose `web/src/sw.ts` is a kill-switch with no NavigationRoute at all. The doc is absorbed verbatim for the class of trap; cross-check code shapes against this fork before treating examples as current. Update 2026-10-20: as of b16d061 (#638, absorbed via the 2026.10.43 adoption lineage) this fork's `web/src/sw.ts` IS the deny-by-default precaching shape — `precacheAndRoute(self.__WB_MANIFEST)`, NavigationRoute offline shell with the `/auth/`, `/operator/auth/`, `/api/`, `/privacy/` denylist, NetworkOnly on the auth/API surfaces, push/notificationclick/pushsubscriptionchange handlers, runtime caches purged on logout; see rm-2032's completion rider. The code-shape caveat above still applies to the worked example.)
 
 ### 2. The precached shell URL must match what the server serves with a 200
 

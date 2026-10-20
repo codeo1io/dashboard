@@ -16,8 +16,11 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       // injectManifest ships our hand-written SW (web/src/sw.ts) — a
-      // kill-switch that purges caches and unregisters itself. It performs no
-      // fetch routing and no caching; the emitted precache manifest is inert.
+      // deny-by-default router. The emitted precache manifest IS load-bearing:
+      // the SW precaches it (precacheAndRoute) and serves navigations offline
+      // from it via createHandlerBoundToURL('/'), while /auth/*,
+      // /operator/auth/*, and /api/* stay NetworkOnly (sw.ts owns the routing
+      // order, the runtime-cache purge, and the push handlers).
       strategies: 'injectManifest',
       srcDir: 'src',
       filename: 'sw.ts',
@@ -40,10 +43,9 @@ export default defineConfig({
 
         // Rewrite the precache manifest entry for index.html → '/' so the
         // generated workbox manifest stays consistent with the server's '/'
-        // route (GET /index.html has no route and 404s). The deployed SW is a
-        // kill-switch (web/src/sw.ts) that purges caches, unregisters itself,
-        // and never precaches or serves — this transform only shapes the
-        // manifest the build emits.
+        // route (GET /index.html has no route and 404s) and with the SW's
+        // createHandlerBoundToURL('/') offline-shell handler, which resolves
+        // this exact URL against the precache at activation time.
         manifestTransforms: [
           (entries) => {
             const manifest = entries.map((entry) =>

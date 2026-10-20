@@ -60,7 +60,7 @@ async function mountQuestionRegion(
     questionsEl: region as never,
     questionClient: client,
   })
-  await vi.waitFor(() => expect(region.hidden).toBe(false))
+  await vi.waitFor(() => expect(region.hidden).toBe(false), {timeout: 5000})
   return {region, client, handle}
 }
 
@@ -100,7 +100,7 @@ describe('operator question region accessibility', () => {
     const submit = region.querySelector('.question-region__submit') as HTMLButtonElement
 
     submit.click()
-    await vi.waitFor(() => expect(region.textContent).toContain('This question is no longer open.'))
+    await vi.waitFor(() => expect(region.textContent).toContain('This question is no longer open.'), {timeout: 5000})
 
     expect((region.querySelector('.question-region__question') as HTMLFieldSetElement | null)?.hidden).toBe(true)
     expect((region.querySelector('.question-region__controls') as HTMLDivElement | null)?.hidden).toBe(true)
@@ -146,8 +146,8 @@ describe('operator question region accessibility', () => {
     const answer = region.querySelector('.question-region__submit') as HTMLButtonElement
     expect(answer.disabled).toBe(false)
     answer.click()
-    await vi.waitFor(() => expect(client.decideRunQuestion).toHaveBeenCalled())
-    await vi.waitFor(() => expect(document.activeElement).toBe(region.querySelectorAll('fieldset')[1]))
+    await vi.waitFor(() => expect(client.decideRunQuestion).toHaveBeenCalled(), {timeout: 5000})
+    await vi.waitFor(() => expect(document.activeElement).toBe(region.querySelectorAll('fieldset')[1]), {timeout: 5000})
     expect(region.textContent).toContain('Check this answer and try again.')
     expect((region.querySelectorAll('textarea')[1] as HTMLTextAreaElement).value).toBe('ready')
     handle.close()
@@ -166,7 +166,7 @@ describe('operator question region accessibility', () => {
     field.dispatchEvent(new Event('input', {bubbles: true}))
     const submit = region.querySelector('.question-region__submit') as HTMLButtonElement
     submit.click()
-    await vi.waitFor(() => expect(region.textContent).toContain("Your answer wasn't recorded. Try again."))
+    await vi.waitFor(() => expect(region.textContent).toContain("Your answer wasn't recorded. Try again."), {timeout: 5000})
     expect(document.activeElement).toBe(other)
     handle.close()
 

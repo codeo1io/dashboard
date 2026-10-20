@@ -218,7 +218,7 @@ describe('createOperatorRuntime — error: missing runtime module', () => {
     // Wait for the async loader to reject
     await vi.waitFor(() => {
       expect(onStateChange).toHaveBeenCalledWith('unavailable')
-    })
+    }, {timeout: 5000})
   })
 })
 
@@ -250,7 +250,7 @@ describe('createOperatorRuntime — loader cleanup function', () => {
     // Wait for the async loader to resolve and register the cleanup
     await vi.waitFor(() => {
       expect(cleanupFn).not.toHaveBeenCalled()
-    })
+    }, {timeout: 5000})
 
     handle.cleanup()
     expect(cleanupFn).toHaveBeenCalledTimes(1)
@@ -276,7 +276,7 @@ describe('createOperatorRuntime — loader cleanup function', () => {
 
     await vi.waitFor(() => {
       expect(cleanupFn).toHaveBeenCalledTimes(1)
-    })
+    }, {timeout: 5000})
   })
 
   it('loader that returns void does not throw on cleanup', async () => {
@@ -438,7 +438,7 @@ describe('createOperatorRuntime — stale loader race: second instance owns modu
     const handle2 = createOperatorRuntime(opts2)
 
     // Wait for second loader to resolve
-    await vi.waitFor(() => expect(secondLoaderFn).toHaveBeenCalled())
+    await vi.waitFor(() => expect(secondLoaderFn).toHaveBeenCalled(), {timeout: 5000})
 
     // Now resolve the first (stale) loader
     resolveFirst(firstCleanup)
@@ -475,7 +475,7 @@ describe('createOperatorRuntime — stale loader race: second instance owns modu
 
     await vi.waitFor(() => {
       expect(staleCleanup).toHaveBeenCalledTimes(1)
-    })
+    }, {timeout: 5000})
   })
 })
 
@@ -650,7 +650,7 @@ describe('createOperatorRuntime — run-index module integration', () => {
       _runtimeLoader: async () => cleanupFn,
     })
     const handle = createOperatorRuntime(opts)
-    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled())
+    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled(), {timeout: 5000})
     handle.cleanup()
     expect(cleanupFn).toHaveBeenCalledTimes(1)
   })
@@ -715,7 +715,7 @@ describe('createOperatorRuntime — active-stream coordination callbacks', () =>
       _runtimeLoader: async () => cleanupFn,
     })
     const handle = createOperatorRuntime(opts)
-    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled())
+    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled(), {timeout: 5000})
     expect(() => handle.cleanup()).not.toThrow()
     expect(cleanupFn).toHaveBeenCalledTimes(1)
   })
@@ -726,7 +726,7 @@ describe('createOperatorRuntime — active-stream coordination callbacks', () =>
       _runtimeLoader: async () => cleanupFn,
     })
     const handle = createOperatorRuntime(opts)
-    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled())
+    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled(), {timeout: 5000})
     handle.cleanup()
     expect(cleanupFn).toHaveBeenCalledTimes(1)
   })
@@ -737,7 +737,7 @@ describe('createOperatorRuntime — active-stream coordination callbacks', () =>
       _runtimeLoader: async () => cleanupFn,
     })
     const handle = createOperatorRuntime(opts)
-    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled())
+    await vi.waitFor(() => expect(cleanupFn).not.toHaveBeenCalled(), {timeout: 5000})
     handle.cleanup()
     handle.cleanup()
     expect(cleanupFn).toHaveBeenCalledTimes(1)

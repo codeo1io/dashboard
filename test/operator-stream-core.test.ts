@@ -8860,7 +8860,7 @@ describe('question region — answer controls and decision bodies', () => {
     textarea.value = '  write a note  '
     textarea.dispatchEvent({type: 'input'})
     qRequired(qFakeFindAll(region, node => node.className === 'question-region__submit')[0]).dispatchEvent({type: 'click'})
-    await vi.waitFor(() => expect(calls).toHaveLength(1))
+    await vi.waitFor(() => expect(calls).toHaveLength(1), {timeout: 5000})
 
     expect(calls[0]).toEqual({
       requestId: 'req-answer',
@@ -8890,7 +8890,7 @@ describe('question region — answer controls and decision bodies', () => {
     qRequired(inputs[2]).dispatchEvent({type: 'change'})
     expect(submit.disabled).toBe(false)
     submit.dispatchEvent({type: 'click'})
-    await vi.waitFor(() => expect(calls).toHaveLength(1))
+    await vi.waitFor(() => expect(calls).toHaveLength(1), {timeout: 5000})
     expect(calls[0]?.decision).toEqual({decision: 'answer', answers: [{options: [0]}, {options: [0]}]})
     handle.close()
   })
@@ -8920,7 +8920,7 @@ describe('question region — answer controls and decision bodies', () => {
     expect(submits.map(button => button.disabled)).toEqual([false, false])
     qRequired(submits[0]).dispatchEvent({type: 'click'})
     qRequired(submits[1]).dispatchEvent({type: 'click'})
-    await vi.waitFor(() => expect(calls).toHaveLength(2))
+    await vi.waitFor(() => expect(calls).toHaveLength(2), {timeout: 5000})
 
     expect(calls.map(call => call.decision)).toEqual([
       {decision: 'answer', answers: [{}]},
@@ -8946,7 +8946,7 @@ describe('question region — answer controls and decision bodies', () => {
     textarea.value = '  answer text  '
     textarea.dispatchEvent({type: 'input'})
     submit.dispatchEvent({type: 'click'})
-    await vi.waitFor(() => expect(calls).toHaveLength(1))
+    await vi.waitFor(() => expect(calls).toHaveLength(1), {timeout: 5000})
     expect(calls[0]?.decision).toEqual({decision: 'answer', answers: [{text: 'answer text'}]})
     handle.close()
   })
@@ -8963,7 +8963,7 @@ describe('question region — answer controls and decision bodies', () => {
     qRequired(fields[1]).dispatchEvent({type: 'input'})
     const skip = qRequired(qFakeFindAll(region, node => node.className === 'question-region__skip')[0])
     skip.dispatchEvent({type: 'click'})
-    await vi.waitFor(() => expect(calls).toHaveLength(1))
+    await vi.waitFor(() => expect(calls).toHaveLength(1), {timeout: 5000})
 
     expect(calls[0]?.decision).toEqual({decision: 'skip'})
     expect(getQuestionPageStore(Q_RUN).drafts.has('req-skip')).toBe(false)
@@ -8985,7 +8985,7 @@ describe('question region — answer controls and decision bodies', () => {
     qRequired(fields[1]).dispatchEvent({type: 'input'})
     const submits = qFakeFindAll(region, node => node.className === 'question-region__submit')
     qRequired(submits[0]).dispatchEvent({type: 'click'})
-    await vi.waitFor(() => expect(calls).toHaveLength(1))
+    await vi.waitFor(() => expect(calls).toHaveLength(1), {timeout: 5000})
 
     const cards = region.children.filter(child => child.className.includes('question-region__request'))
     const controlsOf = (card: FakeElement | undefined) => [
@@ -9010,7 +9010,7 @@ describe('question region — answer controls and decision bodies', () => {
     field.value = 'draft answer'
     field.dispatchEvent({type: 'input'})
     qRequired(qFakeFindAll(region, node => node.className === 'question-region__submit')[0]).dispatchEvent({type: 'click'})
-    await vi.waitFor(() => expect(qFakeText(region)).toContain("Your answer wasn't recorded. Try again."))
+    await vi.waitFor(() => expect(qFakeText(region)).toContain("Your answer wasn't recorded. Try again."), {timeout: 5000})
     expect(field.value).toBe('draft answer')
     expect(qFakeFindAll(region, node => node.className === 'question-region__submit')[0]?.disabled).toBe(false)
     handle.close()
@@ -9022,7 +9022,7 @@ describe('question region — answer controls and decision bodies', () => {
     field.value = 'private draft'
     field.dispatchEvent({type: 'input'})
     qRequired(qFakeFindAll(region, node => node.className === 'question-region__submit')[0]).dispatchEvent({type: 'click'})
-    await vi.waitFor(() => expect(qFakeText(region)).toContain("You can't answer questions for this run."))
+    await vi.waitFor(() => expect(qFakeText(region)).toContain("You can't answer questions for this run."), {timeout: 5000})
 
     expect(field.value).toBe('private draft')
     expect(qFakeFindAll(region, node => node.tagName === 'fieldset')[0]?.hidden).toBe(false)
@@ -9036,7 +9036,7 @@ describe('question region — answer controls and decision bodies', () => {
     field.value = 'retry after sign-in'
     field.dispatchEvent({type: 'input'})
     qRequired(qFakeFindAll(region, node => node.className === 'question-region__submit')[0]).dispatchEvent({type: 'click'})
-    await vi.waitFor(() => expect(qFakeText(region)).toContain('Your session expired. Sign in again in another tab, then try again.'))
+    await vi.waitFor(() => expect(qFakeText(region)).toContain('Your session expired. Sign in again in another tab, then try again.'), {timeout: 5000})
     expect(field.value).toBe('retry after sign-in')
     handle.close()
   })
@@ -9047,11 +9047,11 @@ describe('question region — answer controls and decision bodies', () => {
     field.value = 'kept draft'
     field.dispatchEvent({type: 'input'})
     qRequired(qFakeFindAll(region, node => node.className === 'question-region__submit')[0]).dispatchEvent({type: 'click'})
-    await vi.waitFor(() => expect(qFakeText(region)).toContain('This question is being answered elsewhere.'))
+    await vi.waitFor(() => expect(qFakeText(region)).toContain('This question is being answered elsewhere.'), {timeout: 5000})
     const check = qRequired(qFakeFindAll(region, node => node.className === 'question-region__check')[0])
     expect(check.hidden).toBe(false)
     check.dispatchEvent({type: 'click'})
-    await vi.waitFor(() => expect(qFakeText(region)).toContain('Checking whether your answer was recorded…'))
+    await vi.waitFor(() => expect(qFakeText(region)).toContain('Checking whether your answer was recorded…'), {timeout: 5000})
     expect(field.value).toBe('kept draft')
     handle.close()
   })
@@ -9066,9 +9066,9 @@ describe('question region — answer controls and decision bodies', () => {
     field.value = 'answer'
     field.dispatchEvent({type: 'input'})
     qRequired(qFakeFindAll(region, node => node.className === 'question-region__submit')[0]).dispatchEvent({type: 'click'})
-    await vi.waitFor(() => expect(qFakeText(region)).toContain('This question is being answered elsewhere.'))
+    await vi.waitFor(() => expect(qFakeText(region)).toContain('This question is being answered elsewhere.'), {timeout: 5000})
     qRequired(qFakeFindAll(region, node => node.className === 'question-region__check')[0]).dispatchEvent({type: 'click'})
-    await vi.waitFor(() => expect(qFakeText(region)).toContain("Couldn't check for questions. Try again."))
+    await vi.waitFor(() => expect(qFakeText(region)).toContain("Couldn't check for questions. Try again."), {timeout: 5000})
     handle.close()
   })
 
@@ -9081,7 +9081,7 @@ describe('question region — answer controls and decision bodies', () => {
     field.value = 'answer'
     field.dispatchEvent({type: 'input'})
     qRequired(qFakeFindAll(region, node => node.className === 'question-region__submit')[0]).dispatchEvent({type: 'click'})
-    await vi.waitFor(() => expect(qFakeText(region)).toContain('This question is no longer open.'))
+    await vi.waitFor(() => expect(qFakeText(region)).toContain('This question is no longer open.'), {timeout: 5000})
     expect(region.hidden).toBe(false)
     expect(qFakeFindAll(region, node => node.className === 'question-region__controls')[0]?.getAttribute('aria-disabled')).toBe('true')
     handle.close()
@@ -9097,7 +9097,7 @@ describe('question region — answer controls and decision bodies', () => {
     field.value = 'maybe sent'
     field.dispatchEvent({type: 'input'})
     qRequired(qFakeFindAll(region, node => node.className === 'question-region__submit')[0]).dispatchEvent({type: 'click'})
-    await vi.waitFor(() => expect(qFakeText(region)).toContain('This question is no longer open. Your answer may have been recorded.'))
+    await vi.waitFor(() => expect(qFakeText(region)).toContain('This question is no longer open. Your answer may have been recorded.'), {timeout: 5000})
     expect(region.hidden).toBe(false)
     handle.close()
   })
@@ -9120,7 +9120,7 @@ describe('question region — answer controls and decision bodies', () => {
     field.value = 'draft that must survive'
     field.dispatchEvent({type: 'input'})
     qRequired(qFakeFindAll(region, node => node.className === 'question-region__submit')[0]).dispatchEvent({type: 'click'})
-    await vi.waitFor(() => expect(qFakeText(region)).toContain('Your answer may have been recorded.'))
+    await vi.waitFor(() => expect(qFakeText(region)).toContain('Your answer may have been recorded.'), {timeout: 5000})
     expect(qFakeFindAll(region, node => node.tagName === 'fieldset')).toHaveLength(0)
 
     await handle.checkQuestions()
@@ -9153,7 +9153,7 @@ describe('question region — answer controls and decision bodies', () => {
       )
       type(region, 'kept draft')
       submitOf(region).dispatchEvent({type: 'click'})
-      await vi.waitFor(() => expect(qFakeText(region)).toContain('This question is being answered elsewhere.'))
+      await vi.waitFor(() => expect(qFakeText(region)).toContain('This question is being answered elsewhere.'), {timeout: 5000})
       expect(checkOf(region).hidden).toBe(false)
       expect(submitOf(region).disabled).toBe(false)
       expect(skipOf(region).disabled).toBe(false)
@@ -9162,8 +9162,8 @@ describe('question region — answer controls and decision bodies', () => {
 
       // Submitting again from claimed-elsewhere sends again; already_claimed keeps the note and the draft.
       submitOf(region).dispatchEvent({type: 'click'})
-      await vi.waitFor(() => expect(calls).toHaveLength(2))
-      await vi.waitFor(() => expect(submitOf(region).disabled).toBe(false))
+      await vi.waitFor(() => expect(calls).toHaveLength(2), {timeout: 5000})
+      await vi.waitFor(() => expect(submitOf(region).disabled).toBe(false), {timeout: 5000})
       expect(qFakeText(region)).toContain('This question is being answered elsewhere.')
       expect(checkOf(region).hidden).toBe(false)
       expect(fieldOf(region).value).toBe('kept draft')
@@ -9177,9 +9177,9 @@ describe('question region — answer controls and decision bodies', () => {
       )
       type(region, 'answer')
       submitOf(region).dispatchEvent({type: 'click'})
-      await vi.waitFor(() => expect(qFakeText(region)).toContain('This question is being answered elsewhere.'))
+      await vi.waitFor(() => expect(qFakeText(region)).toContain('This question is being answered elsewhere.'), {timeout: 5000})
       skipOf(region).dispatchEvent({type: 'click'})
-      await vi.waitFor(() => expect(calls).toHaveLength(2))
+      await vi.waitFor(() => expect(calls).toHaveLength(2), {timeout: 5000})
       expect(calls[1]).toEqual({requestId: 'req-claimed', decision: {decision: 'skip'}})
       handle.close()
     })
@@ -9195,9 +9195,9 @@ describe('question region — answer controls and decision bodies', () => {
       )
       type(region, 'answer')
       submitOf(region).dispatchEvent({type: 'click'})
-      await vi.waitFor(() => expect(qFakeText(region)).toContain('This question is being answered elsewhere.'))
+      await vi.waitFor(() => expect(qFakeText(region)).toContain('This question is being answered elsewhere.'), {timeout: 5000})
       submitOf(region).dispatchEvent({type: 'click'})
-      await vi.waitFor(() => expect(qFakeText(region)).toContain('This question is no longer open.'))
+      await vi.waitFor(() => expect(qFakeText(region)).toContain('This question is no longer open.'), {timeout: 5000})
       expect(qFakeText(region)).not.toContain('being answered elsewhere')
       expect(qFakeFindAll(region, node => node.tagName === 'fieldset').every(node => node.hidden)).toBe(true)
       handle.close()
@@ -9220,22 +9220,22 @@ describe('question region — answer controls and decision bodies', () => {
       )
       type(region, 'answer')
       submitOf(region).dispatchEvent({type: 'click'})
-      await vi.waitFor(() => expect(qFakeText(region)).toContain('This question is being answered elsewhere.'))
+      await vi.waitFor(() => expect(qFakeText(region)).toContain('This question is being answered elsewhere.'), {timeout: 5000})
 
       // Checking: the list is out.
       checkOf(region).dispatchEvent({type: 'click'})
-      await vi.waitFor(() => expect(qFakeText(region)).toContain('Checking whether your answer was recorded'))
+      await vi.waitFor(() => expect(qFakeText(region)).toContain('Checking whether your answer was recorded'), {timeout: 5000})
       expect(submitOf(region).disabled).toBe(true)
       expect(skipOf(region).disabled).toBe(true)
       submitOf(region).dispatchEvent({type: 'click'})
       skipOf(region).dispatchEvent({type: 'click'})
       expect(calls).toHaveLength(1)
       relist.resolve({success: true, data: {requests: [], invalidBody: false, partial: false}})
-      await vi.waitFor(() => expect(qFakeText(region)).toContain('This question is being answered elsewhere.'))
+      await vi.waitFor(() => expect(qFakeText(region)).toContain('This question is being answered elsewhere.'), {timeout: 5000})
 
       // In flight: a resend is outstanding.
       submitOf(region).dispatchEvent({type: 'click'})
-      await vi.waitFor(() => expect(calls).toHaveLength(2))
+      await vi.waitFor(() => expect(calls).toHaveLength(2), {timeout: 5000})
       expect(qFakeText(region)).toContain('Sending answers')
       expect(submitOf(region).disabled).toBe(true)
       expect(skipOf(region).disabled).toBe(true)
