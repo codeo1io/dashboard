@@ -112,9 +112,10 @@ Read-only dependency source repositories are available under
 `.slim/clonedeps/repos/` for inspection. Do not edit these clones.
 
 - `.slim/clonedeps/repos/fro-bot__agent/` — `fro-bot/agent` at the CI-pinned
-  tag `v0.122.1` (pin source: `.github/workflows/fro-bot.yaml`; mirror
-  re-provisioned 2026-10-15 — provision with `git clone --depth 1 --branch
-  <pin>` if absent); the gateway's operator OAuth return path contract, GitHub
+  tag `v0.123.1` (pin source: `.github/workflows/fro-bot.yaml`; mirror
+  re-provisioned 2026-10-15 at the then-pin v0.122.1, re-truthed to the live
+  pin 2026-10-20 — provision with `git clone --depth 1 --branch <pin>` if
+  absent); the gateway's operator OAuth return path contract, GitHub
   App client, secret readers, Hono build/serve split, and runtime
   logger/Result primitives that this app mirrors.
 
@@ -130,13 +131,15 @@ Read-only dependency source repositories are available under
   post-merge emptiness check stands, because a candidate lineage's landing
   commit can still carry already-tracked breadcrumbs. Root mechanism + cure:
   `docs/solutions/workflow-issues/validation-clone-exclude-pathspec-drops-staged-breadcrumb-deletion-2026-09-24.md`.
-- Branch protection on `main` is a shell today: the protection object exists
-  but carries no required checks and does not enforce for admins (re-probed
-  2026-09-25; rm-116 tracks filling it with the Main job conclusions + CodeQL,
-  strict, admin-enforced). Nothing structurally blocks red-check merges until
-  rm-116 lands — verify the live object before relying on any protection
-  claim. Once checks are in force, if a hotfix must land while a required
-  check cannot run, the override path is: temporarily
+- Branch protection on `main` is FILLED (live GET readback 2026-10-20:
+  strict=true, enforce_admins.enabled=true, seven required contexts — Check
+  Types, Lint, Test, Design Check, Test Scripts Load, Check Workflows,
+  Analyze; filled in place 2026-10-19, tracked closed by rm-878 — the
+  2026-09-25 "empty shell" state this note used to describe, and the
+  orphaned rm-116 lane before it, are history). Red-check merges are
+  structurally blocked; still verify the live object before relying on any
+  protection claim. Now that checks are in force, if a hotfix must land
+  while a required check cannot run, the override path is: temporarily
   `enforce_admins.enabled=false` via `gh api -X PUT
   /repos/codeo1io/dashboard/branches/main/protection` with the full protection
   body preserved, land, then re-enable enforcement in the same session — never

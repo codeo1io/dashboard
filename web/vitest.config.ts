@@ -13,7 +13,13 @@ export default defineConfig({
     // Mirror the root vitest.config.ts rationale: a contended runner regularly
     // needs more than vitest's 5000ms default per test (sized 2026-09 on the
     // then-shared self-hosted runner), which produced full-suite timeout
-    // flakes while isolated runs passed.
+    // flakes while isolated runs passed. The vi.waitFor arm is closed too
+    // (2026-10-19, rm-2088): every real waitFor call in
+    // web/src/operator/runtime.test.ts carries its own explicit
+    // {timeout: 5_000} (7fd1aa1 floor + e36b2b2 repair, absorbed with
+    // 2026.10.48), so waitFor's separate 1000ms default is never the binding
+    // deadline under contention — and a blanket testTimeout raise stays the
+    // wrong cure because it would mask live contention instead of bounding it.
     testTimeout: 30_000,
     // vite-plugin-pwa virtual modules are not resolvable in the test environment.
     // Alias them to stub files so tests that import components using useRegisterSW
