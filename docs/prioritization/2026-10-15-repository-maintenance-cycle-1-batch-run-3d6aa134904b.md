@@ -133,3 +133,11 @@ union. Cured by adding the entry to the workflow-issues section (count 90→91);
 no other orphan, dead link, or frontmatter gap exists. Root-leg re-verified
 green on the doc guards (index/frontmatter/roadmap-integrity), the web vitest
 project (41 files), and the SW/static-asset guards after a fresh `build:web`.
+
+Landing-record re-census (2026-10-21, run 318fb8c06eda cycle:3 roadmap
+64e10b47, extension #52): ledger mints rm-2135 through rm-2138 (trivy scanner
+currency, web-test-only release skip, actions/cache v6.1.0, integrity-guard
+marker hardening) plus riders to rm-252 and rm-1524 — the ledger now reads
+329 defs / 0 dups / max rm-2138 and the at-mint claim above is superseded per
+the guard's last-match rule; this doc remains the sole Deliverables carrier
+and its declared paths are unchanged.
