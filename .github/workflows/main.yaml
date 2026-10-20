@@ -57,7 +57,7 @@ jobs:
       - env:
           TIMING: 1
         name: 💅🏽 Lint
-        run: pnpm lint
+        run: bun run lint
 
   design-check:
     name: Design Check
@@ -78,8 +78,11 @@ jobs:
 
       - name: 🎨 Detect UI anti-patterns
         run: |
-          # Pinned: an older major ignores .impeccable/config.json ignoreValues and would fail the gate on intentional brand tokens.
-          findings=$(npx --yes impeccable@3.2.1 detect --json web/src web/privacy.html)
+          # Pinned exact for reproducibility. 4.x honors .impeccable/config.json
+          # ignoreValues (verified against the --ease-spring bounce-easing token
+          # in web/src/styles/tokens.css); web/privacy.html declares its role
+          # sizes explicitly because Tailwind utilities are opaque to the detector.
+          findings=$(npx --yes impeccable@4.6.0 detect --json web/src web/privacy.html)
           if [ "$findings" != "[]" ]; then
             echo "$findings"
             echo "Impeccable detected UI anti-patterns. Address them or, for an intentional brand choice, add a scoped ignore via 'impeccable ignores add-value'."
@@ -105,7 +108,7 @@ jobs:
         uses: ./.github/actions/setup
 
       - name: ✅ Validate Types
-        run: pnpm check-types
+        run: bun run check-types
 
   test:
     name: Test
@@ -127,7 +130,7 @@ jobs:
       # No explicit "Build web" step: the pretest hook (package.json) builds the
       # client before vitest runs, so a separate step would build it twice.
       - name: 🧪 Run Tests
-        run: pnpm test
+        run: bun run test
 
   check-workflows:
     name: Check Workflows
