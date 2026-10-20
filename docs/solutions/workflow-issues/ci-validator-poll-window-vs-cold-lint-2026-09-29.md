@@ -1,4 +1,5 @@
 ---
+title: CI validator poll window vs cold lint on the shared runner pool
 module: 'workflows'
 tags: ['ci', 'lint', 'validation', 'hermes-conductor']
 problem_type: 'process'

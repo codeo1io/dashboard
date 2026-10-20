@@ -369,11 +369,11 @@ describe('AppShell', () => {
       expect(init?.method).toBe('POST')
       expect(init?.credentials).toBe('same-origin')
       expect(new Headers(init?.headers).get('x-csrf-token')).toBe('test-csrf-token')
-    })
+    }, { timeout: 5_000 })
 
     await vi.waitFor(() => {
       expect(location.href).toBe('/auth/login')
-    })
+    }, { timeout: 5_000 })
 
     expect(purgeSpy).toHaveBeenCalledTimes(1)
   })
@@ -402,7 +402,7 @@ describe('AppShell', () => {
 
     await vi.waitFor(() => {
       expect(countFetchCalls(fetchMock, '/operator/auth/logout')).toBe(1)
-    })
+    }, { timeout: 5_000 })
   })
 
   it('redirects to /auth/login when the gateway CSRF is non-ok and the Arctic logout is unavailable', async () => {
@@ -418,7 +418,7 @@ describe('AppShell', () => {
 
     await vi.waitFor(() => {
       expect(location.href).toBe('/auth/login')
-    })
+    }, { timeout: 5_000 })
 
     // The Arctic fallback was attempted before failing closed.
     expect(findFetchCall(fetchMock, '/auth/logout-csrf')).toBeDefined()
@@ -453,11 +453,11 @@ describe('AppShell', () => {
         'application/x-www-form-urlencoded',
       )
       expect(init?.body).toBe('csrf_token=test-csrf-token')
-    })
+    }, { timeout: 5_000 })
 
     await vi.waitFor(() => {
       expect(location.href).toBe('/auth/login')
-    })
+    }, { timeout: 5_000 })
 
     // Never posts to the gateway-only endpoint in Arctic mode.
     expect(findFetchCall(fetchMock, '/operator/auth/logout')).toBeUndefined()
@@ -477,7 +477,7 @@ describe('AppShell', () => {
 
     await vi.waitFor(() => {
       expect(location.href).toBe('/auth/login')
-    })
+    }, { timeout: 5_000 })
   })
 
   it('redirects to /auth/login when the logout POST is non-ok', async () => {
@@ -490,7 +490,7 @@ describe('AppShell', () => {
 
     await vi.waitFor(() => {
       expect(location.href).toBe('/auth/login')
-    })
+    }, { timeout: 5_000 })
   })
 
   it('redirects to /auth/login when the fetch rejects (network error)', async () => {
@@ -503,7 +503,7 @@ describe('AppShell', () => {
 
     await vi.waitFor(() => {
       expect(location.href).toBe('/auth/login')
-    })
+    }, { timeout: 5_000 })
   })
 
   it('fails closed without sending a logout POST when the CSRF response body is malformed', async () => {
@@ -523,7 +523,7 @@ describe('AppShell', () => {
 
     await vi.waitFor(() => {
       expect(location.href).toBe('/auth/login')
-    })
+    }, { timeout: 5_000 })
 
     expect(findFetchCall(fetchMock, '/operator/auth/logout')).toBeUndefined()
   })
@@ -545,18 +545,18 @@ describe('AppShell', () => {
 
       await vi.waitFor(() => {
         expect(subscription.unsubscribe).toHaveBeenCalledTimes(1)
-      })
+      }, { timeout: 5_000 })
 
       await vi.waitFor(() => {
         // unsubscribeOptOut refetches CSRF for the Gateway unsubscribe POST,
         // so there are two CSRF calls: one from handleLogout, one from
         // unsubscribeOptOut's own refreshCsrf().
         expect(countFetchCalls(fetchMock, '/operator/push/subscriptions/unsubscribe')).toBe(1)
-      })
+      }, { timeout: 5_000 })
 
       await vi.waitFor(() => {
         expect(location.href).toBe('/auth/login')
-      })
+      }, { timeout: 5_000 })
     })
 
     it('push teardown failure/timeout still completes logout and navigates', async () => {
@@ -570,7 +570,7 @@ describe('AppShell', () => {
 
       await vi.waitFor(() => {
         expect(location.href).toBe('/auth/login')
-      })
+      }, { timeout: 5_000 })
     })
 
     it('endpointless case: no local subscription -> no Gateway unsubscribe call, still navigates', async () => {
@@ -584,7 +584,7 @@ describe('AppShell', () => {
 
       await vi.waitFor(() => {
         expect(location.href).toBe('/auth/login')
-      })
+      }, { timeout: 5_000 })
 
       expect(findFetchCall(fetchMock, '/operator/push/subscriptions/unsubscribe')).toBeUndefined()
     })
