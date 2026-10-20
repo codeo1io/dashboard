@@ -5,7 +5,7 @@ import type {ListenerStore} from '../src/listener/store.ts'
 import {Buffer} from 'node:buffer'
 import {createHmac} from 'node:crypto'
 import process from 'node:process'
-import {beforeEach, describe, expect, it} from 'vitest'
+import {beforeEach, describe, expect, it, vi} from 'vitest'
 import {createListenerStore} from '../src/listener/store.ts'
 import {deriveAckCsrfToken} from '../src/routes/listener.ts'
 import {buildDashboardApp} from '../src/server.ts'
@@ -403,6 +403,74 @@ describe('operator listener channel routes', () => {
       headers: ackHeaders(Date.now() - 60 * 60 * 1000),
     })
     expect(res.status).toBe(202)
+  })
+
+  // ---------------------------------------------------------------------------
+  // ingest replay-window guard (rm-2106) — a captured signed payload must not
+  // store twice while its timestamp still authenticates. Red-first: before
+  // the guard, the verbatim replay below returned 202 and stored a second row.
+  // ---------------------------------------------------------------------------
+
+  it('POST /ingest verbatim replay within the window → 409, stored exactly once (rm-2106)', async () => {
+    const app = await buildTestApp({listenerStore: store, listenerIngestKey: INGEST_KEY})
+    const headers = ingestHeaders(VALID_BODY)
+
+    const first = await app.request('/api/listener/ingest', {method: 'POST', headers, body: VALID_BODY})
+    expect(first.status).toBe(202)
+
+    const replay = await app.request('/api/listener/ingest', {method: 'POST', headers, body: VALID_BODY})
+    expect(replay.status).toBe(409)
+    const replayJson = (await replay.json()) as {error: string}
+    expect(replayJson.error).toBe('duplicate ingest')
+
+    const listRes = await app.request('/api/listener/messages', {
+      headers: {cookie: sessionCookieHeader()},
+    })
+    const listJson = (await listRes.json()) as {messages: unknown[]; unreadCount: number}
+    expect(listJson.messages).toHaveLength(1) // store.insert never reached for the replay
+  })
+
+  it('replay guard bounds at the auth window: original timestamp 401s at window+1s, fresh signature re-accepted (rm-2106)', async () => {
+    vi.useFakeTimers()
+    try {
+      const startMs = Date.parse('2026-10-20T12:00:00Z')
+      vi.setSystemTime(startMs)
+      const app = await buildTestApp({listenerStore: store, listenerIngestKey: INGEST_KEY})
+
+      const first = await app.request('/api/listener/ingest', {
+        method: 'POST',
+        headers: ingestHeaders(VALID_BODY), // signed at startMs
+        body: VALID_BODY,
+      })
+      expect(first.status).toBe(202)
+
+      // Advance 1s past the 300s window: the verbatim replay's ORIGINAL
+      // timestamp no longer authenticates (the signature window co-bounds)…
+      vi.setSystemTime(startMs + 301_000)
+      const staleReplay = await app.request('/api/listener/ingest', {
+        method: 'POST',
+        headers: ingestHeaders(VALID_BODY, INGEST_KEY, startMs / 1000),
+        body: VALID_BODY,
+      })
+      expect(staleReplay.status).toBe(401)
+
+      // …and a freshly-signed redelivery of the SAME body is accepted again:
+      // the replay cache expired at the window and never outlives it.
+      const redelivery = await app.request('/api/listener/ingest', {
+        method: 'POST',
+        headers: ingestHeaders(VALID_BODY), // signs at the advanced fake now
+        body: VALID_BODY,
+      })
+      expect(redelivery.status).toBe(202)
+
+      const listRes = await app.request('/api/listener/messages', {
+        headers: {cookie: sessionCookieHeader()},
+      })
+      const listJson = (await listRes.json()) as {messages: unknown[]}
+      expect(listJson.messages).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('router built WITHOUT ackCsrf config fails closed: mutations 403, token endpoint 503', async () => {
