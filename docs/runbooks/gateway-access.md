@@ -77,9 +77,16 @@ ssh root@"$GATEWAY_HOST" "cd /opt/gateway/deploy && docker compose restart gatew
 bunx @marcusrbrown/infra gateway status
 ```
 
-This drops everything the gateway holds in memory: operator browser sessions and the OAuth state
-store. Sometimes that is the point — a saturated OAuth attempt cap clears instantly, where
-otherwise it waits out a 10-minute TTL. It also forces every operator to sign in again.
+This drops everything the gateway holds in memory: the OAuth state store — and with it a
+saturated OAuth attempt cap; sometimes that is the point, where otherwise it waits out a
+10-minute TTL.
+
+Operator browser sessions survive the restart at gateway **v0.123.x and later**: sessions became
+durable (object-store persisted, HMAC-signed, with the expiry FIXED at sign-in — 7 days, extended
+by neither idling nor any request; re-login rotates the cookie). Before v0.123.x the restart
+dropped in-memory sessions and forced every operator to sign in again. Re-check this paragraph
+whenever the gateway pin in `.github/workflows/fro-bot.yaml` moves (fro-bot/agent #1855;
+truth-up tracked as rm-2048).
 
 Never restart in place to rotate the mitmproxy CA — workspaces lose trust in the egress proxy.
 Restore from backup instead.

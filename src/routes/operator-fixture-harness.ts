@@ -388,12 +388,25 @@ export function buildFixtureHarnessRouter(): Hono {
   })
 
   // GET /session — synthetic session; each call mints a fresh fixtureSessionId.
+  // fro-bot/agent v0.123.x durable-session semantics (rm-2048, upstream #1855):
+  // the session lifetime is FIXED at sign-in — 7 days, extended by neither
+  // idling nor requests — and survives gateway restarts. The fixture
+  // session-info shape pins that contract so client code and tests model the
+  // post-v0.123 gateway estate instead of the pre-v0.123 idle-expiry model.
+  const DURABLE_SESSION_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000
+
   router.get('/session', c => {
     logger.debug('fixture-harness: GET /session', {status: 200})
     const fixtureSessionId = generateFixtureSessionId()
     validFixtureSessionIds.add(fixtureSessionId)
-    sessionStartedAtMs.set(fixtureSessionId, Date.now())
-    const res = c.json({...FIXTURE_SESSION, fixtureMode: true, fixtureSessionId})
+    const startedAtMs = Date.now()
+    sessionStartedAtMs.set(fixtureSessionId, startedAtMs)
+    const res = c.json({
+      ...FIXTURE_SESSION,
+      expiresAt: startedAtMs + DURABLE_SESSION_LIFETIME_MS,
+      fixtureMode: true,
+      fixtureSessionId,
+    })
     setNoStore(res.headers)
     return res
   })

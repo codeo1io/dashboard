@@ -170,3 +170,54 @@ describe('rm-419 gateway session-validation cache (middleware)', () => {
     expect(getCurrentSessionSpy).toHaveBeenCalledTimes(2)
   })
 })
+
+// ---------------------------------------------------------------------------
+// rm-2048: fro-bot/agent v0.123.x durable sessions (upstream #1855) — expiry
+// fixed at sign-in (7 days, no idle extension), sessions persist across gateway
+// restarts, rotation on re-login, revocation honored. The cache must stay
+// correct under those semantics: cookie-keyed (rotation → revalidate),
+// expiresAt-bounded (fixed expiry → monotonic bound), failures never cached.
+// ---------------------------------------------------------------------------
+
+describe('gateway session cache under v0.123.x durable sessions (rm-2048)', () => {
+  it('unit: a cached durable session keeps its minted expiresAt — no idle refresh — and stops being served past it', () => {
+    // A multi-day TTL so the test observes the expiresAt bound, not the TTL.
+    const cache = createGatewaySessionCache(() => fakeNow, 8 * 24 * 60 * 60 * 1000)
+    const mintedAt = fakeNow
+    const durable: SessionDto = {
+      operatorId: 12345,
+      login: 'octocat',
+      expiresAt: mintedAt + 7 * 24 * 60 * 60 * 1000,
+    }
+    cache.set(COOKIE_A, durable)
+
+    fakeNow = mintedAt + 6 * 24 * 60 * 60 * 1000 // six idle days, inside the fixed 7-day lifetime
+    const afterIdle = cache.get(COOKIE_A)
+    expect(afterIdle).toBeDefined()
+    expect(afterIdle?.expiresAt).toBe(durable.expiresAt) // fixed at sign-in, never idle-extended
+
+    fakeNow = durable.expiresAt + 1 // past the fixed expiry → no longer served
+    expect(cache.get(COOKIE_A)).toBeUndefined()
+    fakeNow = mintedAt // restore for neighboring tests
+  })
+
+  it('middleware: a rotated cookie whose upstream lookup now rejects (revocation) fails closed without caching a positive verdict', async () => {
+    let calls = 0
+    const {client, getCurrentSessionSpy} = makeFakeOperatorClient(async () => {
+      calls++
+      return calls === 1 ? ok(validSession()) : err(GATEWAY_ERROR)
+    })
+    const app = await buildApp(client)
+
+    const first = await app.request('/', {headers: {cookie: COOKIE_A}})
+    expect(first.status).toBe(200)
+
+    // Rotation to a cookie the gateway no longer vouches for: fail closed, and
+    // never cache a positive verdict for the rejected cookie.
+    const rotated = await app.request('/', {headers: {cookie: COOKIE_B}})
+    expect(rotated.status).toBe(302)
+    const rotatedAgain = await app.request('/', {headers: {cookie: COOKIE_B}})
+    expect(rotatedAgain.status).toBe(302)
+    expect(getCurrentSessionSpy).toHaveBeenCalledTimes(3)
+  })
+})

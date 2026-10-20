@@ -102,11 +102,15 @@ Read-only dependency source repositories are available under
 `.slim/clonedeps/repos/` for inspection. Do not edit these clones.
 
 - `.slim/clonedeps/repos/fro-bot__agent/` — `fro-bot/agent` at the CI-pinned
-  tag `v0.122.1` (pin source: `.github/workflows/fro-bot.yaml`; mirror
-  re-provisioned 2026-10-15 — provision with `git clone --depth 1 --branch
-  <pin>` if absent); the gateway's operator OAuth return path contract, GitHub
-  App client, secret readers, Hono build/serve split, and runtime
-  logger/Result primitives that this app mirrors.
+  tag; the single source of truth for that tag is
+  `.github/workflows/fro-bot.yaml` (never pin a version number in this file —
+  it has gone stale before). Verify with `node scripts/verify-clonedeps.ts`
+  (exit 0 = mirror HEAD is exactly the pinned tag) and re-provision with
+  `git clone --depth 1 --branch <pin> https://github.com/fro-bot/agent
+  .slim/clonedeps/repos/fro-bot__agent` when the check fails; the gateway's
+  operator OAuth return path contract, GitHub App client, secret readers,
+  Hono build/serve split, and runtime logger/Result primitives that this app
+  mirrors.
 
 ## Landing-pipeline traps
 

@@ -32,6 +32,26 @@ interface CookiePayload {
 const SESSION_TTL_SECONDS = 24 * 60 * 60
 
 /**
+ * Session-cookie name on the plain-HTTP dev branch (rm-2050).
+ *
+ * Dev mint (server.ts devAutoLogin) and plain-HTTP callbacks keep this name;
+ * `__Host-` is unusable without Secure, so the dev branch cannot carry it.
+ */
+export const SESSION_COOKIE_NAME = 'session'
+
+/**
+ * Session-cookie name on the Secure branch (rm-2050).
+ *
+ * The `__Host-` prefix rules (no Domain attribute, Path=/, Secure required,
+ * browsers reject the cookie over plain HTTP) match the session cookie
+ * exactly once Secure is in force — the same hardening the gateway's own
+ * operator session cookie already uses. Read paths accept BOTH names for one
+ * release window (rolling deploys serve old and new names side by side);
+ * logout clears both. After the window closes, drop the plain-name read.
+ */
+export const SECURE_SESSION_COOKIE_NAME = '__Host-session'
+
+/**
  * Manages signed session cookies using HMAC-SHA256.
  *
  * Cookie format: `<base64url(json)>.<base64url(hmac)>`

@@ -125,6 +125,18 @@ describe('fixture session — fixtureMode and fixtureSessionId fields', () => {
     expect(body.fixtureSessionId).toMatch(/^fixture-session-/)
   })
 
+  it('GET /session expiresAt models v0.123.x durable semantics: fixed at sign-in, 7 days out (rm-2048)', async () => {
+    const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
+    const beforeRequestMs = Date.now()
+    const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/session`)
+    expect(res.status).toBe(200)
+    const body = await res.json() as {expiresAt: number}
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000
+    // Fixed at sign-in — not idle-extended, not a far-future placeholder.
+    expect(body.expiresAt).toBeGreaterThanOrEqual(beforeRequestMs + sevenDaysMs)
+    expect(body.expiresAt).toBeLessThanOrEqual(Date.now() + sevenDaysMs + 5_000)
+  })
+
   it('GET /session still returns operatorId, login, and expiresAt', async () => {
     const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
     const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/session`)

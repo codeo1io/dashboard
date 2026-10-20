@@ -22,7 +22,7 @@
 // runs in any stage that has Node — including the Docker builder stage, which
 // is what makes the sidecars ship inside the image.
 
-import {readdirSync, readFileSync, statSync, writeFileSync} from 'node:fs'
+import {readdirSync, readFileSync, rmSync, statSync, writeFileSync} from 'node:fs'
 import {join} from 'node:path'
 import process from 'node:process'
 import {gzipSync} from 'node:zlib'
@@ -74,8 +74,18 @@ function main(): number {
     return 1
   }
 
-  const stats = {files: 0, filesCompressed: 0, originalBytes: 0, sidecarBytes: 0}
+  const stats = {files: 0, filesCompressed: 0, originalBytes: 0, sidecarBytes: 0, staleSidecarsRemoved: 0}
+  const writtenSidecars = new Set<string>()
+  const existingSidecars = new Set<string>()
   for (const file of walk(root)) {
+    // rm-2049: inventory every present sidecar before deciding what to write —
+    // serveStatic({precompressed: true}) serves any present variant regardless
+    // of freshness, so a sidecar this pass does not rewrite is stale by
+    // construction and must be unlinked, not left to shadow its source.
+    if (file.endsWith('.gz')) {
+      existingSidecars.add(file)
+      continue
+    }
     if (!isCompressible(file)) continue
     stats.files++
     const original = readFileSync(file)
@@ -84,16 +94,29 @@ function main(): number {
     // outgrow their gzip framing) — identity fallback serves those fine.
     if (compressed.byteLength >= original.byteLength) continue
     writeFileSync(`${file}.gz`, compressed)
+    writtenSidecars.add(`${file}.gz`)
     stats.filesCompressed++
     stats.originalBytes += original.byteLength
     stats.sidecarBytes += compressed.byteLength
+  }
+
+  // rm-2049: unlink stale sidecars — sources deleted since the last build, and
+  // sources that no longer shrink past the threshold (their old sidecar would
+  // otherwise outlive the truth of the file it shadows — unhashed filenames
+  // are served indefinitely, `index.html`/`sw.js`/`manifest.webmanifest` are
+  // the load-bearing cases).
+  for (const sidecar of existingSidecars) {
+    if (writtenSidecars.has(sidecar)) continue
+    rmSync(sidecar)
+    stats.staleSidecarsRemoved++
   }
 
   const ratio =
     stats.originalBytes > 0 ? ((1 - stats.sidecarBytes / stats.originalBytes) * 100).toFixed(1) : '0.0'
   console.log(
     `gzip-static-sidecars: ${stats.filesCompressed}/${stats.files} compressible files in ${root}` +
-    ` (${stats.originalBytes} → ${stats.sidecarBytes} bytes, -${ratio}%)`,
+    ` (${stats.originalBytes} → ${stats.sidecarBytes} bytes, -${ratio}%), ` +
+    `${stats.staleSidecarsRemoved} stale sidecars removed`,
   )
   return 0
 }

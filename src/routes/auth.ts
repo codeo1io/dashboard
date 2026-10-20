@@ -24,6 +24,7 @@ import {Hono} from 'hono'
 import {deleteCookie, getCookie, setCookie} from 'hono/cookie'
 import {logger, sanitizeErrorMessage} from '../logger.ts'
 import {MAX_REQUEST_BODY_BYTES, readBodyCapped} from '../read-body.ts'
+import {SECURE_SESSION_COOKIE_NAME, SESSION_COOKIE_NAME} from '../session.ts'
 
 /** State cookie TTL: 10 minutes */
 const STATE_COOKIE_MAX_AGE = 10 * 60
@@ -34,8 +35,9 @@ const STATE_COOKIE_NAME = 'oauth_state'
 /** Name of the PKCE code-verifier cookie (rm-149). Same shape/scope/TTL as state. */
 const PKCE_COOKIE_NAME = 'oauth_pkce_verifier'
 
-/** Name of the session cookie */
-const SESSION_COOKIE_NAME = 'session'
+// Session-cookie names live in ../session.ts (SESSION_COOKIE_NAME on the
+// plain-HTTP dev branch, SECURE_SESSION_COOKIE_NAME — the `__Host-` prefix —
+// on the Secure branch, rm-2050) so every read/write/delete site shares them.
 
 export interface AuthRouteConfig {
   /** Exact GitHub login that is allowed to authenticate. */
@@ -215,10 +217,18 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
     // drift apart: a proxy deployment where the session cookie loses Secure
     // while the state cookie kept it would ship the long-lived credential
     // over the plaintext hop while only protecting the short-TTL one.
+    //
+    // rm-2050: on the Secure branch the cookie takes the `__Host-` prefix
+    // (`__Host-session`); the prefix itself enforces no-Domain/Path=/, and
+    // browsers reject it over plain HTTP — which is exactly why the plain-HTTP
+    // branch keeps the unprefixed name. Read paths accept both names for one
+    // release window; see ../session.ts.
     const sessionValue = sessionManager.sign(login)
-    setCookie(c, SESSION_COOKIE_NAME, sessionValue, {
+    const sessionCookieSecure =
+      c.req.url.startsWith('https://') || c.req.header('x-forwarded-proto') === 'https'
+    setCookie(c, sessionCookieSecure ? SECURE_SESSION_COOKIE_NAME : SESSION_COOKIE_NAME, sessionValue, {
       httpOnly: true,
-      secure: c.req.url.startsWith('https://') || c.req.header('x-forwarded-proto') === 'https',
+      secure: sessionCookieSecure,
       sameSite: 'Lax',
       maxAge: 24 * 60 * 60,
       path: '/',
@@ -302,7 +312,14 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
       return c.text('Forbidden: invalid CSRF token', 403)
     }
 
+    // rm-2050: clear BOTH session-cookie names — during the dual-name release
+    // window a client may still hold the pre-`__Host-` cookie, and a logout
+    // that misses it would leave the old credential live. The `__Host-`
+    // deletion must carry Secure itself: the prefix rules bind every
+    // Set-Cookie, deletions included — a Secure-less deletion header is
+    // rejected by the browser and the cookie would survive the logout.
     deleteCookie(c, SESSION_COOKIE_NAME, {path: '/'})
+    deleteCookie(c, SECURE_SESSION_COOKIE_NAME, {path: '/', secure: true})
     return c.redirect('/auth/login', 302)
   })
 

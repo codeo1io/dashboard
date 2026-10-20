@@ -59,6 +59,19 @@ Scorecard's Maintained check wants commit activity across a ~90-day window;
 the fork was created 2026-08-10, so the check cannot pass yet. Expected to
 self-resolve around 2026-11-08. No action.
 
+## Session-cookie prefix hardening (rm-2050, added 2026-10-19)
+
+The dashboard's own session cookie takes the `__Host-` prefix
+(`__Host-session`) on the Secure branch (HTTPS or `x-forwarded-proto:
+https`) — the prefix binds no-Domain/Path=/ Secure, the same hardening the
+gateway's operator cookie already uses. The plain-HTTP dev branch keeps the
+unprefixed `session` name, because a `__Host-` cookie is unusable without
+Secure. Constraint and dual-name window, for rolling deploys: read paths
+accept BOTH names (preferring `__Host-session` when both are present) and
+logout clears both, so an in-flight operator is never signed out mid-roll;
+after one release window the plain-name read is dropped. The names live in
+`src/session.ts`; the read site is the auth middleware in `src/server.ts`.
+
 ## Maintenance of this document
 
 Re-verify this table whenever the weekly Scorecard run refreshes (badge data

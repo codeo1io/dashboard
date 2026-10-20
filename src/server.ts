@@ -63,7 +63,7 @@ import {buildApiRouter} from './routes/api.ts'
 import {buildAuthRouter} from './routes/auth.ts'
 import {buildListenerRouter} from './routes/listener.ts'
 import {readOptionalMultilineSecret, readOptionalSecret} from './secrets.ts'
-import {loadCookieKey, SessionManager} from './session.ts'
+import {loadCookieKey, SECURE_SESSION_COOKIE_NAME, SESSION_COOKIE_NAME, SessionManager} from './session.ts'
 import {installShutdownHandlers} from './shutdown.ts'
 import {createPublicStatic} from './static-files.ts'
 
@@ -1156,7 +1156,15 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
         return c.text('Unauthorized', 401)
       }
 
-      const cookieValue = getCookie(c, 'session')
+      // rm-2050 dual-name window: accept both the `__Host-session` name the
+      // Secure branch now mints and the plain pre-`__Host-` name (rolling
+      // deploys serve old cookies side by side; the dev branch, which can
+      // never be Secure, keeps the plain name). The fresh `__Host-` name is
+      // preferred when both are present — during the window a browser can
+      // hold a TTL-expired legacy cookie alongside a freshly minted one, and
+      // plain-name-first would 401 on the dead credential. Retire the
+      // plain-name fallback after one release window.
+      const cookieValue = getCookie(c, SECURE_SESSION_COOKIE_NAME) ?? getCookie(c, SESSION_COOKIE_NAME)
       const sm = sessionManager as SessionManager
 
       const session =
@@ -1170,7 +1178,7 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
           const sessionValue = sm.sign(operatorLogin)
           // secure:false — dev-only path runs over http://localhost; a Secure cookie
           // would be dropped by the browser. Production /auth/callback still sets Secure.
-          setCookie(c, 'session', sessionValue, {
+          setCookie(c, SESSION_COOKIE_NAME, sessionValue, {
             httpOnly: true,
             secure: false,
             sameSite: 'Lax',

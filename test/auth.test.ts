@@ -315,7 +315,9 @@ describe('OAuth flow', () => {
 
       expect(cookieAttributes(getSetCookie(loginRes, 'oauth_state'))).toContain('secure')
       expect(callbackRes.status).toBe(302)
-      expect(cookieAttributes(getSetCookie(callbackRes, 'session'))).toContain('secure')
+      // rm-2050: the Secure branch mints ONLY the `__Host-`-prefixed name.
+      expect(cookieAttributes(getSetCookie(callbackRes, '__Host-session'))).toContain('secure')
+      expect(getSetCookie(callbackRes, 'session')).toBeUndefined()
     })
 
     it('direct TLS: https:// request URL, no XFP header → Secure on BOTH cookie sites', async () => {
@@ -329,7 +331,9 @@ describe('OAuth flow', () => {
 
       expect(cookieAttributes(getSetCookie(loginRes, 'oauth_state'))).toContain('secure')
       expect(callbackRes.status).toBe(302)
-      expect(cookieAttributes(getSetCookie(callbackRes, 'session'))).toContain('secure')
+      // rm-2050: the Secure branch mints ONLY the `__Host-`-prefixed name.
+      expect(cookieAttributes(getSetCookie(callbackRes, '__Host-session'))).toContain('secure')
+      expect(getSetCookie(callbackRes, 'session')).toBeUndefined()
     })
 
     it('plain HTTP, no XFP → NOT Secure on either site (Secure would break cookie delivery); XFP: http is exactly-not-https → NOT Secure', async () => {
@@ -1266,5 +1270,89 @@ describe('/auth/callback — CSRF state compare (timing-safe)', () => {
     // cookie rides along so only the STATE gate is under test here.)
     expect(res.status).not.toBe(403)
     expect(res.status).not.toBe(500)
+  })
+})
+
+describe('session cookie naming — `__Host-` prefix on the Secure branch (rm-2050)', () => {
+  it('callback on the Secure branch (x-forwarded-proto https) sets __Host-session', async () => {
+    const app = await buildTestApp({operatorLogin: 'octocat'})
+    const {callbackRes} = await runOAuthFlow(app, async () => app.request('/auth/login'), {'x-forwarded-proto': 'https'})
+    expect(callbackRes.status).toBe(302)
+    const secure = getSetCookie(callbackRes, '__Host-session')
+    expect(secure).toBeDefined()
+    const attrs = cookieAttributes(secure)
+    // `__Host-` prefix rules are exactly these: Secure, Path=/, no Domain.
+    expect(attrs).toContain('secure')
+    expect(attrs).toContain('httponly')
+    expect(attrs).toContain('samesite=lax')
+    expect(attrs).toContain('path=/')
+    expect(attrs.join(';')).not.toContain('domain=')
+  })
+
+  it('the plain session name is NOT set on the Secure branch (one authoritative cookie)', async () => {
+    const app = await buildTestApp({operatorLogin: 'octocat'})
+    const {callbackRes} = await runOAuthFlow(app, async () => app.request('/auth/login'), {'x-forwarded-proto': 'https'})
+    expect(getSetCookie(callbackRes, 'session')).toBeUndefined()
+  })
+
+  it('callback on the plain branch keeps the unprefixed session cookie without Secure', async () => {
+    const app = await buildTestApp({operatorLogin: 'octocat'})
+    const {callbackRes} = await runOAuthFlow(app, async () => app.request('/auth/login'), {})
+    const plain = getSetCookie(callbackRes, 'session')
+    expect(plain).toBeDefined()
+    expect(cookieAttributes(plain)).not.toContain('secure')
+    expect(getSetCookie(callbackRes, '__Host-session')).toBeUndefined()
+  })
+
+  it('the auth middleware accepts the __Host-session name (dual-name rolling window)', async () => {
+    const app = await buildTestApp({operatorLogin: 'octocat'})
+    const cookie = new SessionManager(TEST_KEY).sign('octocat')
+    const res = await app.request('/', {headers: {cookie: `__Host-session=${cookie}`}})
+    expect(res.status).toBe(200)
+  })
+
+  it('the auth middleware still accepts the legacy plain name during the window', async () => {
+    const app = await buildTestApp({operatorLogin: 'octocat'})
+    const cookie = new SessionManager(TEST_KEY).sign('octocat')
+    const res = await app.request('/', {headers: {cookie: `session=${cookie}`}})
+    expect(res.status).toBe(200)
+  })
+
+  it('when both names are present the fresh __Host-session wins over a dead legacy cookie', async () => {
+    // During the window a browser can hold a TTL-expired (or tampered)
+    // legacy `session` cookie alongside a freshly minted `__Host-session`.
+    // Plain-name-first would 401 on the dead credential; the read must
+    // prefer the authoritative prefixed name.
+    const app = await buildTestApp({operatorLogin: 'octocat'})
+    const valid = new SessionManager(TEST_KEY).sign('octocat')
+    const tamperedLegacy = `tampered.${valid.split('.')[1]}`
+    const res = await app.request('/', {
+      headers: {cookie: `session=${tamperedLegacy}; __Host-session=${valid}`},
+    })
+    expect(res.status).toBe(200)
+  })
+
+  it('logout clears BOTH names during the dual-name window', async () => {
+    const app = await buildTestApp({operatorLogin: 'octocat'})
+    const sessionCookie = new SessionManager(TEST_KEY).sign('octocat')
+    const csrfToken = deriveLogoutCsrfToken(TEST_KEY, 'octocat')
+    const res = await app.request('/auth/logout', {
+      method: 'POST',
+      headers: {
+        cookie: `__Host-session=${sessionCookie}`,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({csrf_token: csrfToken}).toString(),
+    })
+    expect([302, 303]).toContain(res.status)
+    for (const name of ['session', '__Host-session']) {
+      const cleared = getSetCookie(res, name)
+      expect(cleared, `cookie ${name} must be cleared`).toBeDefined()
+      expect(cleared?.toLowerCase()).toMatch(/max-age=0|expires=.*1970/)
+    }
+    // The `__Host-` prefix rules bind every Set-Cookie, deletions included —
+    // a Secure-less deletion header is browser-rejected and the cookie would
+    // survive the logout.
+    expect(cookieAttributes(getSetCookie(res, '__Host-session'))).toContain('secure')
   })
 })
