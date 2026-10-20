@@ -78,9 +78,15 @@ COPY package.json bun.lock bunfig.toml ./
 RUN bun install --frozen-lockfile --production --ignore-scripts
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
-# 2026-09-20: in-image libpcre2-8-0 patch retired — the pinned base digest
-# (0e0ff40, upstream #492) ships libpcre2-8-0 10.42-1+deb12u1, so the fix is
-# absorbed at the base. History: docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md
+# 2026-09-20: in-image libpcre2-8-0 patch retired — the then-pinned base digest
+# (0e0ff40, upstream #492) shipped libpcre2-8-0 10.42-1+deb12u1, so the fix is
+# absorbed at the base. 2026-10-15 (rm-863): the base digest is re-pinned on
+# the ARG line above (7f486c at the 2026-10-20 integrate; 173f1258 at the
+# rm-863 batch, moved again by later base refreshes — never cite it as fixed);
+# the retirement claim was verified against 0e0ff40 only, so re-verify the
+# current base's libpcre2-8-0 version (dpkg-query) before relying on it
+# whenever the digest moves again.
+# History: docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md
 
 FROM ${NODE_IMAGE}
 
