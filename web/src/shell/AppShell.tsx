@@ -17,7 +17,6 @@ import {type ReactNode, useCallback, useEffect, useRef, useState} from 'react'
 import {triggerLogoutAbort} from '../push/logout-abort.ts'
 import {buildPushClient, unsubscribeOptOut} from '../push/subscribe.ts'
 import {DISMISS_KEY as INSTALL_DISMISS_KEY, InstallPrompt} from '../pwa/InstallPrompt.tsx'
-import {ReloadPrompt} from '../pwa/ReloadPrompt.tsx'
 import {purgeOperatorCache} from '../pwa/logout-purge.ts'
 import {DISMISS_SETTINGS_KEY as NOTIFICATIONS_DISMISS_KEY, Notifications} from '../views/Notifications.tsx'
 
@@ -605,8 +604,6 @@ export function AppShell({
           )}
         </div>
       </footer>
-
-      <ReloadPrompt />
     </div>
   )
 }
