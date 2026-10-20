@@ -16,8 +16,8 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       // injectManifest ships our hand-written SW (web/src/sw.ts) — a
-      // kill-switch that purges caches and unregisters itself. It performs no
-      // fetch routing and no caching; the emitted precache manifest is inert.
+      // deny-by-default fetch router (network-only auth/API, precached hashed
+      // shell) with push handling and auto-update activation.
       strategies: 'injectManifest',
       srcDir: 'src',
       filename: 'sw.ts',
@@ -26,7 +26,11 @@ export default defineConfig({
       // The <link rel="manifest"> stays in web/index.html (already present).
       manifest: false,
 
-      // registerType omitted → defaults to 'prompt' (never silently reload).
+      // Auto-update (rm-1960): the SW skips waiting and claims clients itself;
+      // claimed pages pick up the new shell on their next navigation (the
+      // emitted registerSW.js is the bare register — no silent reload), so
+      // deploys reach installed clients without operator action.
+      registerType: 'autoUpdate',
 
       injectManifest: {
         // Exclude the SW itself and the manifest from the precache list.
@@ -40,10 +44,8 @@ export default defineConfig({
 
         // Rewrite the precache manifest entry for index.html → '/' so the
         // generated workbox manifest stays consistent with the server's '/'
-        // route (GET /index.html has no route and 404s). The deployed SW is a
-        // kill-switch (web/src/sw.ts) that purges caches, unregisters itself,
-        // and never precaches or serves — this transform only shapes the
-        // manifest the build emits.
+        // route (GET /index.html has no route and 404s) — the deployed SW
+        // (web/src/sw.ts) precaches and serves this shell offline.
         manifestTransforms: [
           (entries) => {
             const manifest = entries.map((entry) =>
