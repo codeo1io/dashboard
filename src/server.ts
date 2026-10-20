@@ -60,7 +60,7 @@ import {createListenerStore} from './listener/store.ts'
 import {logger, sanitizeErrorMessage} from './logger.ts'
 import {isOk} from './result.ts'
 import {buildApiRouter} from './routes/api.ts'
-import {buildAuthRouter} from './routes/auth.ts'
+import {buildAuthRouter, SESSION_COOKIE_NAME} from './routes/auth.ts'
 import {buildListenerRouter} from './routes/listener.ts'
 import {readOptionalMultilineSecret, readOptionalSecret} from './secrets.ts'
 import {loadCookieKey, SessionManager} from './session.ts'
@@ -302,8 +302,8 @@ export function resetRateLimitForTesting(): void {
 
 // Gateway operator-session mode: unauthenticated/invalid requests must recover through
 // the GATEWAY operator login (which mints the __Host-session the gateway requires),
-// never the dashboard's Arctic flow (which mints a `session` cookie the gateway
-// rejects, causing a re-auth loop on gateway restart — see issue #70).
+// never the dashboard's Arctic flow (which mints a `__Host-dashboard-session`
+// cookie the gateway rejects, causing a re-auth loop on gateway restart — see issue #70).
 //
 // INVARIANT: return_to MUST be /operator — Gateway validates return_to against an
 // exact allowlist and rejects any other value. Do NOT derive from the request.
@@ -1156,7 +1156,7 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
         return c.text('Unauthorized', 401)
       }
 
-      const cookieValue = getCookie(c, 'session')
+      const cookieValue = getCookie(c, SESSION_COOKIE_NAME)
       const sm = sessionManager as SessionManager
 
       const session =
@@ -1168,11 +1168,17 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       if (validSession === null) {
         if (devAutoLogin) {
           const sessionValue = sm.sign(operatorLogin)
-          // secure:false — dev-only path runs over http://localhost; a Secure cookie
-          // would be dropped by the browser. Production /auth/callback still sets Secure.
-          setCookie(c, 'session', sessionValue, {
+          // rm-1490: the session cookie is `__Host-`-prefixed and Secure
+          // UNCONDITIONALLY — including this dev-only path, which runs over
+          // http://localhost. Browsers treat localhost/127.0.0.1 as
+          // potentially-trustworthy origins, so a Secure cookie IS stored
+          // from localhost and the __Host- prefix holds in dev; the old
+          // secure:false carve-out would make the browser drop the prefixed
+          // cookie entirely. Production /auth/callback sets the same name
+          // and attributes.
+          setCookie(c, SESSION_COOKIE_NAME, sessionValue, {
             httpOnly: true,
-            secure: false,
+            secure: true,
             sameSite: 'Lax',
             maxAge: 24 * 60 * 60,
             path: '/',
@@ -1192,7 +1198,7 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   if (gatewayOperatorSessionEnabled) {
     // Gateway mode: /auth/login → gateway operator login. Do NOT mount /auth/callback
     // or any Arctic path — the dashboard session-minting flow must not be reachable
-    // (a dashboard `session` cookie cannot satisfy the gateway; see issue #70).
+    // (a dashboard `__Host-dashboard-session` cookie cannot satisfy the gateway; see issue #70).
     const gatewayAuthRouter = new Hono()
     gatewayAuthRouter.get('/login', c => c.redirect(GATEWAY_LOGIN_REDIRECT, 302))
     app.route('/auth', gatewayAuthRouter)

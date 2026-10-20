@@ -146,7 +146,7 @@ describe('GET /auth/callback (PKCE enforcement, rm-149)', () => {
     expect(exchangeCalls).toHaveLength(1)
     expect(exchangeCalls[0]?.code).toBe('auth-code-123')
     expect(exchangeCalls[0]?.pkce?.codeVerifier).toBe(verifier)
-    expect(getSetCookie(res, 'session')).toBeDefined()
+    expect(getSetCookie(res, '__Host-dashboard-session')).toBeDefined()
   })
 
   it('fails closed BEFORE the token exchange when the verifier cookie is missing', async () => {
@@ -162,7 +162,7 @@ describe('GET /auth/callback (PKCE enforcement, rm-149)', () => {
     expect(res.status).toBe(403)
     expect(await res.text()).toContain('missing PKCE verifier')
     expect(exchangeCalls).toHaveLength(0)
-    expect(getSetCookie(res, 'session')).toBeUndefined()
+    expect(getSetCookie(res, '__Host-dashboard-session')).toBeUndefined()
   })
 
   it('fails closed when the verifier cookie is present but empty', async () => {
@@ -195,7 +195,7 @@ describe('GET /auth/callback (PKCE enforcement, rm-149)', () => {
     // the stolen-code-without-cookie case is the 403 above
     expect(res.status).not.toBe(302)
     expect(exchangeCalls).toHaveLength(1)
-    expect(getSetCookie(res, 'session')).toBeUndefined()
+    expect(getSetCookie(res, '__Host-dashboard-session')).toBeUndefined()
   })
 
   it('spends both one-time cookies (verifier + state cleared after a completed exchange)', async () => {

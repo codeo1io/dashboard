@@ -34,8 +34,25 @@ const STATE_COOKIE_NAME = 'oauth_state'
 /** Name of the PKCE code-verifier cookie (rm-149). Same shape/scope/TTL as state. */
 const PKCE_COOKIE_NAME = 'oauth_pkce_verifier'
 
-/** Name of the session cookie */
-const SESSION_COOKIE_NAME = 'session'
+/**
+ * Name of the session cookie (rm-1490). The `__Host-` prefix makes browsers
+ * enforce the cookie's shape BY NAME: Secure required, Path=/ required, and
+ * NO Domain attribute allowed — a cookie minted by a sibling subdomain (or
+ * with a Domain scope) can never override or shadow the operator session.
+ * Supersedes the rm-604 branch-(b) conditional-Secure rule FOR THIS COOKIE
+ * ONLY: the session cookie now carries Secure unconditionally, so a browser
+ * on a non-trustworthy plain-HTTP origin refuses it outright (fail-closed by
+ * design). `http://localhost`/`127.0.0.1` are potentially-trustworthy
+ * origins, so local development keeps working. The short-TTL state and PKCE
+ * cookies below keep the rm-604 conditional rule.
+ *
+ * The name is deliberately DISTINCT from the gateway's own operator cookie
+ * `__Host-session` (fro-bot/agent): supported topologies expose only one of
+ * the two mint surfaces per origin, but a distinct name keeps the two
+ * credential domains from ever sharing one cookie slot in mixed or
+ * misconfigured topologies (issue #70 is that confusion class).
+ */
+export const SESSION_COOKIE_NAME = '__Host-dashboard-session'
 
 export interface AuthRouteConfig {
   /** Exact GitHub login that is allowed to authenticate. */
@@ -209,16 +226,21 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
 
     // Issue session cookie
     //
-    // Secure attribution mirrors the /auth/login state cookie exactly (same
-    // rm-604 branch-(b) decision-of-record — see the /login comment above):
-    // request scheme OR x-forwarded-proto === 'https'. The two sites MUST NOT
-    // drift apart: a proxy deployment where the session cookie loses Secure
-    // while the state cookie kept it would ship the long-lived credential
-    // over the plaintext hop while only protecting the short-TTL one.
+    // rm-1490: `__Host-`-prefixed with Secure UNCONDITIONALLY — the prefix
+    // requires it (a browser drops the cookie otherwise), so the rm-604
+    // scheme||XFP attribution no longer applies HERE. That can only
+    // strengthen the old rm-604 invariant that the state and session sites
+    // "MUST NOT drift apart": the session cookie can never lose Secure
+    // while the state cookie kept it — it is now always at least as strong.
+    // Plain-HTTP non-localhost clients lose session issuance entirely (their
+    // browser refuses the prefixed cookie), which the documented deployment
+    // requirement (overwriting TLS proxy or direct TLS — README
+    // Configuration) already excludes; localhost is potentially-trustworthy
+    // and unaffected.
     const sessionValue = sessionManager.sign(login)
     setCookie(c, SESSION_COOKIE_NAME, sessionValue, {
       httpOnly: true,
-      secure: c.req.url.startsWith('https://') || c.req.header('x-forwarded-proto') === 'https',
+      secure: true,
       sameSite: 'Lax',
       maxAge: 24 * 60 * 60,
       path: '/',
@@ -302,7 +324,10 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
       return c.text('Forbidden: invalid CSRF token', 403)
     }
 
-    deleteCookie(c, SESSION_COOKIE_NAME, {path: '/'})
+    // rm-1490: the serializer enforces __Host- semantics (Secure required) —
+    // the deletion cookie must carry the same shape as the mint, or the
+    // cookie library throws and the route would 500 instead of logging out.
+    deleteCookie(c, SESSION_COOKIE_NAME, {path: '/', secure: true})
     return c.redirect('/auth/login', 302)
   })
 

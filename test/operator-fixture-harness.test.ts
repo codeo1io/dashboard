@@ -80,7 +80,7 @@ async function buildFixtureTestApp(opts: FixtureAppOpts = {}) {
 // Used to prove routes are not mounted (404) vs auth-blocked (302/401).
 async function authedGet(app: Awaited<ReturnType<typeof buildFixtureTestApp>>, path: string): Promise<Response> {
   const cookie = makeSessionCookie()
-  return app.request(path, {headers: {cookie: `session=${cookie}`}})
+  return app.request(path, {headers: {cookie: `__Host-dashboard-session=${cookie}`}})
 }
 
 async function authedPost(
@@ -91,7 +91,7 @@ async function authedPost(
   const cookie = makeSessionCookie()
   return app.request(path, {
     method: 'POST',
-    headers: {cookie: `session=${cookie}`, 'content-type': 'application/json'},
+    headers: {cookie: `__Host-dashboard-session=${cookie}`, 'content-type': 'application/json'},
     body: JSON.stringify(body),
   })
 }
@@ -508,7 +508,7 @@ describe('fixture routes — no credential echo in responses', () => {
   it('inbound cookie value is not reflected in session response', async () => {
     const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
     const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/session`, {
-      headers: {cookie: '__Host-session=REAL_SECRET_COOKIE_VALUE_12345'},
+      headers: {cookie: '__Host-dashboard-session=REAL_SECRET_COOKIE_VALUE_12345'},
     })
     expect(res.status).toBe(200)
     expect(await res.text()).not.toContain('REAL_SECRET_COOKIE_VALUE_12345')

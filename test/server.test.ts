@@ -525,7 +525,7 @@ describe('GET /privacy — public policy route', () => {
     const sm = new SessionManager(TEST_KEY)
     const cookieValue = sm.sign(TEST_OPERATOR)
     const authedRes = await authedApp.request('/privacy', {
-      headers: {cookie: `session=${cookieValue}`},
+      headers: {cookie: `__Host-dashboard-session=${cookieValue}`},
     })
     const authedBody = await authedRes.text()
 
@@ -621,7 +621,7 @@ describe('GET /.well-known/security.txt — RFC 9116 security contact', () => {
     const sm = new SessionManager(TEST_KEY)
     const cookieValue = sm.sign(TEST_OPERATOR)
     const authedRes = await authedApp.request('/.well-known/security.txt', {
-      headers: {cookie: `session=${cookieValue}`},
+      headers: {cookie: `__Host-dashboard-session=${cookieValue}`},
     })
     expect(authedRes.status).toBe(200)
     expect(await authedRes.text()).toBe(anonBody)

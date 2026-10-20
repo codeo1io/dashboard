@@ -125,7 +125,7 @@ describe('/operator → / redirect — happy path', () => {
   it('GET /operator returns a redirect (3xx) to / when operatorUiEnabled=true', async () => {
     const app = await buildArcticApp(true)
     const cookie = makeSessionCookie()
-    const res = await app.request('/operator', {headers: {cookie: `session=${cookie}`}})
+    const res = await app.request('/operator', {headers: {cookie: `__Host-dashboard-session=${cookie}`}})
     expect(res.status).toBeGreaterThanOrEqual(300)
     expect(res.status).toBeLessThan(400)
     expect(res.headers.get('location')).toBe('/')
@@ -134,7 +134,7 @@ describe('/operator → / redirect — happy path', () => {
   it('GET /operator returns 302 specifically (not 301 permanent)', async () => {
     const app = await buildArcticApp(true)
     const cookie = makeSessionCookie()
-    const res = await app.request('/operator', {headers: {cookie: `session=${cookie}`}})
+    const res = await app.request('/operator', {headers: {cookie: `__Host-dashboard-session=${cookie}`}})
     expect(res.status).toBe(302)
     expect(res.headers.get('location')).toBe('/')
   })
@@ -148,7 +148,7 @@ describe('/operator → / redirect — flag-independent', () => {
   it('GET /operator redirects to / even when operatorUiEnabled=false (authenticated)', async () => {
     const app = await buildArcticApp(false)
     const cookie = makeSessionCookie()
-    const res = await app.request('/operator', {headers: {cookie: `session=${cookie}`}})
+    const res = await app.request('/operator', {headers: {cookie: `__Host-dashboard-session=${cookie}`}})
     expect(res.status).toBe(302)
     expect(res.headers.get('location')).toBe('/')
   })
@@ -156,7 +156,7 @@ describe('/operator → / redirect — flag-independent', () => {
   it('GET /operator redirects to / when operatorUiEnabled=true (authenticated)', async () => {
     const app = await buildArcticApp(true)
     const cookie = makeSessionCookie()
-    const res = await app.request('/operator', {headers: {cookie: `session=${cookie}`}})
+    const res = await app.request('/operator', {headers: {cookie: `__Host-dashboard-session=${cookie}`}})
     expect(res.status).toBe(302)
     expect(res.headers.get('location')).toBe('/')
   })
@@ -170,7 +170,7 @@ describe('/operator redirect — response body safety', () => {
   it('GET /operator redirect response body does not contain "monitoring" text', async () => {
     const app = await buildArcticApp(true)
     const cookie = makeSessionCookie()
-    const res = await app.request('/operator', {headers: {cookie: `session=${cookie}`}})
+    const res = await app.request('/operator', {headers: {cookie: `__Host-dashboard-session=${cookie}`}})
     expect(res.status).toBe(302)
     const body = await res.text()
     expect(body.toLowerCase()).not.toContain('monitoring')
@@ -179,7 +179,7 @@ describe('/operator redirect — response body safety', () => {
   it('GET /operator redirect response body does not contain fixture or mock-only copy', async () => {
     const app = await buildArcticApp(true)
     const cookie = makeSessionCookie()
-    const res = await app.request('/operator', {headers: {cookie: `session=${cookie}`}})
+    const res = await app.request('/operator', {headers: {cookie: `__Host-dashboard-session=${cookie}`}})
     expect(res.status).toBe(302)
     const body = await res.text()
     expect(body).not.toContain('Gateway Operator Controls')
@@ -190,7 +190,7 @@ describe('/operator redirect — response body safety', () => {
   it('GET /operator redirect response body does not contain "Gateway Operator Controls" skeleton', async () => {
     const app = await buildArcticApp(false)
     const cookie = makeSessionCookie()
-    const res = await app.request('/operator', {headers: {cookie: `session=${cookie}`}})
+    const res = await app.request('/operator', {headers: {cookie: `__Host-dashboard-session=${cookie}`}})
     expect(res.status).toBe(302)
     const body = await res.text()
     expect(body).not.toContain('Gateway Operator Controls')

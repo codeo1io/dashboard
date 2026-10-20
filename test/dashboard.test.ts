@@ -93,7 +93,7 @@ async function buildTestApp(snapshot: AggregatorSnapshot, operatorLogin: string 
 /** Authed request helper — injects a valid session cookie. */
 async function authedGet(app: Awaited<ReturnType<typeof buildTestApp>>, path: string): Promise<Response> {
   const cookie = makeSessionCookie()
-  return app.request(path, {headers: {cookie: `session=${cookie}`}})
+  return app.request(path, {headers: {cookie: `__Host-dashboard-session=${cookie}`}})
 }
 
 // ---------------------------------------------------------------------------
@@ -113,7 +113,7 @@ describe('dashboard SPA root — GET /', () => {
 
     it('GET / with invalid session cookie → denied', async () => {
       const app = await buildTestApp(makeSnapshot())
-      const res = await app.request('/', {headers: {cookie: 'session=invalid.garbage'}})
+      const res = await app.request('/', {headers: {cookie: '__Host-dashboard-session=invalid.garbage'}})
       expect([302, 303, 401]).toContain(res.status)
     })
   })
@@ -346,7 +346,7 @@ describe('/api/monitoring — BFF aggregation endpoint', () => {
 
     it('GET /api/monitoring with invalid session cookie → denied', async () => {
       const app = await buildTestApp(makeSnapshot())
-      const res = await app.request('/api/monitoring', {headers: {cookie: 'session=bad.cookie'}})
+      const res = await app.request('/api/monitoring', {headers: {cookie: '__Host-dashboard-session=bad.cookie'}})
       expect([302, 303, 401]).toContain(res.status)
     })
   })
@@ -539,7 +539,7 @@ describe('/api/status', () => {
 
     it('GET /api/status with invalid session cookie → denied', async () => {
       const app = await buildTestApp(makeSnapshot())
-      const res = await app.request('/api/status', {headers: {cookie: 'session=bad.cookie'}})
+      const res = await app.request('/api/status', {headers: {cookie: '__Host-dashboard-session=bad.cookie'}})
       expect([302, 303, 401]).toContain(res.status)
     })
   })
@@ -653,7 +653,7 @@ describe('/auth/logout-csrf — auth-gate', () => {
 
   it('GET /auth/logout-csrf with invalid session → 302/401 (not 200)', async () => {
     const app = await buildTestApp(makeSnapshot())
-    const res = await app.request('/auth/logout-csrf', {headers: {cookie: 'session=bad.garbage'}})
+    const res = await app.request('/auth/logout-csrf', {headers: {cookie: '__Host-dashboard-session=bad.garbage'}})
     expect([302, 303, 401]).toContain(res.status)
     expect(res.status).not.toBe(200)
   })
@@ -760,7 +760,7 @@ describe('devAutoLogin — DEV-ONLY auth bypass', () => {
       expect(res.status).toBe(200)
       const setCookieHeader = res.headers.get('set-cookie')
       expect(setCookieHeader).not.toBeNull()
-      expect(setCookieHeader).toContain('session=')
+      expect(setCookieHeader).toContain('__Host-dashboard-session=')
       expect(setCookieHeader).toContain('HttpOnly')
       expect(setCookieHeader).toContain('SameSite=Lax')
     })
@@ -780,7 +780,7 @@ describe('devAutoLogin — DEV-ONLY auth bypass', () => {
 
       // Extract the session cookie value
       const setCookieHeader = res.headers.get('set-cookie') ?? ''
-      const match = /session=([^;]+)/.exec(setCookieHeader)
+      const match = /__Host-dashboard-session=([^;]+)/.exec(setCookieHeader)
       expect(match).not.toBeNull()
       const sessionValue = (match as RegExpExecArray)[1] as string
 
@@ -805,12 +805,12 @@ describe('devAutoLogin — DEV-ONLY auth bypass', () => {
       // First request: get the minted cookie
       const firstRes = await app.request('/')
       const setCookieHeader = firstRes.headers.get('set-cookie') ?? ''
-      const match = /session=([^;]+)/.exec(setCookieHeader)
+      const match = /__Host-dashboard-session=([^;]+)/.exec(setCookieHeader)
       expect(match).not.toBeNull()
       const sessionValue = (match as RegExpExecArray)[1] as string
 
       // Second request: replay the cookie — should still be 200
-      const secondRes = await app.request('/', {headers: {cookie: `session=${sessionValue}`}})
+      const secondRes = await app.request('/', {headers: {cookie: `__Host-dashboard-session=${sessionValue}`}})
       expect(secondRes.status).toBe(200)
     })
   })
@@ -867,7 +867,7 @@ describe('devAutoLogin — DEV-ONLY auth bypass', () => {
         const res = await app.request('/')
         expect(res.status).toBe(200)
         const setCookieHeader = res.headers.get('set-cookie')
-        expect(setCookieHeader).toContain('session=')
+        expect(setCookieHeader).toContain('__Host-dashboard-session=')
       } finally {
         delete process.env.DASHBOARD_DEV_AUTOLOGIN
       }
@@ -989,7 +989,7 @@ describe('devAutoLogin — DEV-ONLY auth bypass', () => {
       expect(res.status).toBe(401)
       const setCookieHeader = res.headers.get('set-cookie')
       if (setCookieHeader !== null) {
-        expect(setCookieHeader).not.toContain('session=')
+        expect(setCookieHeader).not.toContain('__Host-dashboard-session=')
       }
     })
   })
