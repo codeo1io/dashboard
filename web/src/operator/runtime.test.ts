@@ -1225,8 +1225,12 @@ describe('defaultRuntimeLoader — run-list refresh triggers', () => {
     }
     expect(onSelectRun).toBeDefined()
     expect(onRunLaunched).toBeDefined()
-    // The loader finishes its setup (interval, listener, cleanup registration) a few microtasks later.
-    await new Promise(resolve => realSetTimeout(resolve, 5))
+    // The loader finishes its setup (interval, listener, cleanup registration) a few
+    // microtasks later (rm-2146): drain the microtask queue deterministically
+    // instead of sleeping on the wall clock.
+    for (let i = 0; i < 12; i++) {
+      await Promise.resolve()
+    }
     return {
       runtime,
       handle,
