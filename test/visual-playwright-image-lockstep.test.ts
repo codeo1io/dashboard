@@ -48,20 +48,20 @@ function readPins(): PlaywrightPins {
     devDependencies?: Record<string, string>
   }
   const visualYaml = readFileSync(resolve(repoRoot, '.github/workflows/visual.yaml'), 'utf8')
-  const lockfile = readFileSync(resolve(repoRoot, 'pnpm-lock.yaml'), 'utf8')
+  // bun.lock (since upstream #648): the root importer's devDependencies map
+  // carries the exact specifier; the package table carries the resolved pin.
+  const lockfile = readFileSync(resolve(repoRoot, 'bun.lock'), 'utf8')
 
   const image = IMAGE_PATTERN.exec(visualYaml)
-  // Root importer's devDependencies entry (6-space key, 8-space fields).
-  const lockEntry = /^ {6}'@playwright\/test':\n {8}specifier: ([^\n]+)\n {8}version: ([^\n]+)$/m.exec(
-    lockfile,
-  )
+  const lockSpecifierEntry = /"@playwright\/test": "([^"]+)"/.exec(lockfile)
+  const lockResolvedEntry = /"@playwright\/test@([^"]+)"/.exec(lockfile)
 
   return {
     specifier: pkg.devDependencies?.['@playwright/test'] ?? '',
     imageVersion: image?.[1],
     imageDigest: image?.[2],
-    lockfileSpecifier: lockEntry?.[1]?.trim(),
-    lockfileVersion: lockEntry?.[2]?.trim(),
+    lockfileSpecifier: lockSpecifierEntry?.[1]?.trim(),
+    lockfileVersion: lockResolvedEntry?.[1]?.trim(),
   }
 }
 
@@ -88,7 +88,7 @@ describe('Visual-gate Playwright lockstep (rm-142 / rm-760)', () => {
   })
 
   it('package.json, pnpm-lock.yaml and the visual image agree on one Playwright version', () => {
-    expect(pins.lockfileVersion, 'pnpm-lock.yaml must resolve @playwright/test for the root importer').toBeDefined()
+    expect(pins.lockfileVersion, 'bun.lock must resolve @playwright/test for the root importer').toBeDefined()
     const versions = [floorVersion(pins.specifier), pins.lockfileVersion ?? '', pins.imageVersion ?? '']
     expect(
       new Set(versions).size,
@@ -99,7 +99,7 @@ describe('Visual-gate Playwright lockstep (rm-142 / rm-760)', () => {
   it('the lockfile specifier mirrors package.json', () => {
     expect(
       pins.lockfileSpecifier,
-      'pnpm-lock.yaml must record the same @playwright/test specifier package.json declares',
+      'bun.lock must record the same @playwright/test specifier package.json declares',
     ).toBe(pins.specifier)
   })
 })

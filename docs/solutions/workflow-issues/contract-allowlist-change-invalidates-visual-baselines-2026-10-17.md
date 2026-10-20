@@ -1,4 +1,5 @@
 ---
+title: Contract allowlist changes invalidate visual baselines (operator-dark grew 966→3410px)
 module: visual-tests
 tags: [playwright, visual-baseline, operator-contract, fixtures, allowlist]
 problem_type: test-infrastructure

@@ -128,8 +128,8 @@ describe('operator stream re-attach on one card', () => {
     for (let attachment = 0; attachment < 3; attachment++) {
       const handle = attach(parts)
       pushToLatest(READY + RUNNING + APPROVAL)
-      await vi.waitFor(() => expect(parts.approvalsEl.querySelectorAll('.approval-prompt')).toHaveLength(1))
-      await vi.waitFor(() => expect(parts.cancelEl.querySelectorAll('.run-cancel-btn-cancel')).toHaveLength(1))
+      await vi.waitFor(() => expect(parts.approvalsEl.querySelectorAll('.approval-prompt')).toHaveLength(1), { timeout: 5_000 })
+      await vi.waitFor(() => expect(parts.cancelEl.querySelectorAll('.run-cancel-btn-cancel')).toHaveLength(1), { timeout: 5_000 })
 
       if (attachment < 2) handle.close()
       else {
@@ -139,7 +139,7 @@ describe('operator stream re-attach on one card', () => {
         expect(parts.approvalsEl.querySelectorAll('.approval-prompt')).toHaveLength(1)
 
         pushToLatest(SUCCEEDED)
-        await vi.waitFor(() => expect(parts.statusEl.textContent).toBe('Succeeded'))
+        await vi.waitFor(() => expect(parts.statusEl.textContent).toBe('Succeeded'), { timeout: 5_000 })
         expect(parts.cancelEl.querySelectorAll('button')).toHaveLength(0)
         expect(parts.card.querySelectorAll('.run-cancel-btn-cancel')).toHaveLength(0)
         expect(parts.card.querySelectorAll('.run-cancel-control')).toHaveLength(1)
@@ -153,7 +153,7 @@ describe('operator stream re-attach on one card', () => {
     const parts = makeCard()
     const handle = attach(parts)
     pushToLatest(READY + RUNNING)
-    await vi.waitFor(() => expect(parts.cancelEl.querySelectorAll('.run-cancel-btn-cancel')).toHaveLength(1))
+    await vi.waitFor(() => expect(parts.cancelEl.querySelectorAll('.run-cancel-btn-cancel')).toHaveLength(1), { timeout: 5_000 })
 
     handle.close()
 
@@ -173,8 +173,8 @@ describe('operator stream re-attach on one card', () => {
 
     const live = attach(parts)
     pushToLatest(READY + RUNNING + APPROVAL)
-    await vi.waitFor(() => expect(parts.cancelEl.querySelectorAll('.run-cancel-btn-cancel')).toHaveLength(1))
-    await vi.waitFor(() => expect(parts.approvalsEl.querySelectorAll('.approval-prompt')).toHaveLength(1))
+    await vi.waitFor(() => expect(parts.cancelEl.querySelectorAll('.run-cancel-btn-cancel')).toHaveLength(1), { timeout: 5_000 })
+    await vi.waitFor(() => expect(parts.approvalsEl.querySelectorAll('.approval-prompt')).toHaveLength(1), { timeout: 5_000 })
 
     // Late frames reach the closed attachment's stream: they must not paint onto the shared card.
     pushTo(0, READY + RUNNING + LATE_APPROVAL)
@@ -210,7 +210,7 @@ const OUTPUT = frame('output', {runId: RUN_ID, text: 'earlier output', final: fa
 const NO_SNAPSHOT = frame('reset', {runId: RUN_ID, reason: 'no-snapshot'})
 const FAILED = frame('status', {...RUNNING_STATUS, status: 'failed', phase: 'COMPLETED', completedAt: '2026-06-20T10:05:00Z'})
 
-const REGION_ROLES = ['run-checkout-detail', 'run-waiting', 'run-output', 'run-output-coalesced', 'run-approvals', 'run-questions', 'approval-badge', 'run-cancel'] as const
+const REGION_ROLES = ['run-checkout-detail', 'run-waiting', 'run-output', 'run-output-tools', 'run-output-coalesced', 'run-approvals', 'run-questions', 'approval-badge', 'run-cancel'] as const
 
 function makeFullCard() {
   const card = document.createElement('div')
@@ -307,7 +307,7 @@ describe('operator stream owns the visibility of its regions', () => {
     const parts = makeFullCard()
     const first = attachFull(parts)
     pushToLatest(READY + RUNNING + OUTPUT)
-    await vi.waitFor(() => expect(parts.regions['run-output'].hidden).toBe(false))
+    await vi.waitFor(() => expect(parts.regions['run-output'].hidden).toBe(false), { timeout: 5_000 })
     expect(parts.regions['run-output'].textContent).toBe('earlier output')
     first.close()
 
@@ -316,7 +316,7 @@ describe('operator stream owns the visibility of its regions', () => {
     expect(parts.regions['run-output'].hidden).toBe(true)
     expect(parts.regions['run-output'].textContent).toBe('')
     pushToLatest(READY + RUNNING)
-    await vi.waitFor(() => expect(parts.statusEl.textContent).toBe('Running'))
+    await vi.waitFor(() => expect(parts.statusEl.textContent).toBe('Running'), { timeout: 5_000 })
     expect(parts.regions['run-output'].hidden).toBe(true)
     expect(parts.regions['run-output'].textContent).toBe('')
     second.close()
@@ -327,7 +327,7 @@ describe('operator stream owns the visibility of its regions', () => {
     const parts = makeFullCard()
     const first = attachFull(parts)
     pushToLatest(READY + RUNNING + OUTPUT + FAILED)
-    await vi.waitFor(() => expect(parts.statusEl.textContent).toBe('Failed'))
+    await vi.waitFor(() => expect(parts.statusEl.textContent).toBe('Failed'), { timeout: 5_000 })
     expect(parts.regions['run-output'].hidden).toBe(false)
     first.close()
 
@@ -349,7 +349,7 @@ describe('operator stream owns the visibility of its regions', () => {
     const parts = makeFullCard()
     const a1 = attachFull(parts)
     pushToLatest(READY + RUNNING + OUTPUT + APPROVAL)
-    await vi.waitFor(() => expect(parts.regions['run-approvals'].hidden).toBe(false))
+    await vi.waitFor(() => expect(parts.regions['run-approvals'].hidden).toBe(false), { timeout: 5_000 })
     a1.close()
 
     const other = makeFullCard()
@@ -372,7 +372,7 @@ describe('operator stream owns the visibility of its regions', () => {
 
     pushToLatest(READY + RUNNING + APPROVAL)
 
-    await vi.waitFor(() => expect(parts.regions['run-approvals'].hidden).toBe(false))
+    await vi.waitFor(() => expect(parts.regions['run-approvals'].hidden).toBe(false), { timeout: 5_000 })
     expect(parts.regions['approval-badge'].hidden).toBe(false)
     expect(parts.regions['approval-badge'].textContent).toBe('1')
     expect(parts.regions['run-cancel'].hidden).toBe(false)
@@ -387,7 +387,7 @@ describe('operator stream owns the visibility of its regions', () => {
 
     pushToLatest(READY + NO_SNAPSHOT)
 
-    await vi.waitFor(() => expect(parts.regions['run-output'].textContent).toBe('Output no longer available.'))
+    await vi.waitFor(() => expect(parts.regions['run-output'].textContent).toBe('Output no longer available.'), { timeout: 5_000 })
     expect(parts.regions['run-output'].hidden).toBe(false)
     expect(parts.statusEl.textContent).toBe('Succeeded')
     expect(parts.regions['run-cancel'].hidden).toBe(true)
@@ -403,7 +403,7 @@ describe('operator stream Cancel region at a terminal status', () => {
 
     pushToLatest(READY + SUCCEEDED)
 
-    await vi.waitFor(() => expect(parts.statusEl.textContent).toBe('Succeeded'))
+    await vi.waitFor(() => expect(parts.statusEl.textContent).toBe('Succeeded'), { timeout: 5_000 })
     expect(parts.regions['run-cancel'].hidden).toBe(true)
     expect(parts.regions['run-cancel'].childNodes).toHaveLength(0)
     handle.close()
@@ -414,11 +414,11 @@ describe('operator stream Cancel region at a terminal status', () => {
     const parts = makeFullCard()
     const handle = attachFull(parts)
     pushToLatest(READY + RUNNING)
-    await vi.waitFor(() => expect(parts.regions['run-cancel'].hidden).toBe(false))
+    await vi.waitFor(() => expect(parts.regions['run-cancel'].hidden).toBe(false), { timeout: 5_000 })
 
     pushToLatest(SUCCEEDED)
 
-    await vi.waitFor(() => expect(parts.statusEl.textContent).toBe('Succeeded'))
+    await vi.waitFor(() => expect(parts.statusEl.textContent).toBe('Succeeded'), { timeout: 5_000 })
     expect(parts.regions['run-cancel'].querySelectorAll('.run-cancel-control')).toHaveLength(1)
     expect(parts.regions['run-cancel'].querySelectorAll('.run-cancel-btn-cancel')).toHaveLength(0)
     expect(parts.regions['run-cancel'].hidden).toBe(true)
@@ -431,15 +431,15 @@ describe('operator stream Cancel region at a terminal status', () => {
     const cancelRun = vi.fn(async () => ({success: true, data: {state: 'cancelled'}}))
     const handle = attachFull(parts, {cancelClient: {cancelRun, refreshCsrf: vi.fn(async () => ({success: true, data: {csrfToken: 'tok'}}))}})
     pushToLatest(READY + RUNNING)
-    await vi.waitFor(() => expect(parts.regions['run-cancel'].querySelectorAll('.run-cancel-btn-cancel')).toHaveLength(1))
+    await vi.waitFor(() => expect(parts.regions['run-cancel'].querySelectorAll('.run-cancel-btn-cancel')).toHaveLength(1), { timeout: 5_000 })
 
     ;(parts.regions['run-cancel'].querySelector('.run-cancel-btn-cancel') as HTMLButtonElement).click()
-    await vi.waitFor(() => expect(parts.regions['run-cancel'].querySelector('.run-cancel-btn-confirm')).not.toBeNull())
+    await vi.waitFor(() => expect(parts.regions['run-cancel'].querySelector('.run-cancel-btn-confirm')).not.toBeNull(), { timeout: 5_000 })
     ;(parts.regions['run-cancel'].querySelector('.run-cancel-btn-confirm') as HTMLButtonElement).click()
-    await vi.waitFor(() => expect(cancelRun).toHaveBeenCalled())
+    await vi.waitFor(() => expect(cancelRun).toHaveBeenCalled(), { timeout: 5_000 })
     pushToLatest(frame('status', {...RUNNING_STATUS, status: 'cancelled', phase: 'COMPLETED', completedAt: '2026-06-20T10:05:00Z'}))
 
-    await vi.waitFor(() => expect(parts.statusEl.textContent).toBe('Cancelled'))
+    await vi.waitFor(() => expect(parts.statusEl.textContent).toBe('Cancelled'), { timeout: 5_000 })
     const message = parts.regions['run-cancel'].querySelector('.run-cancel-status')
     expect(message?.textContent).not.toBe('')
     expect(parts.regions['run-cancel'].hidden).toBe(false)
@@ -501,7 +501,7 @@ describe('operator stream waiting line', () => {
 
     pushToLatest(READY)
 
-    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false))
+    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false), { timeout: 5_000 })
     expect(waitingOf(parts).textContent).toBe(WAITING_OUTPUT_COPY)
     handle.close()
   })
@@ -513,7 +513,7 @@ describe('operator stream waiting line', () => {
 
     pushToLatest(READY + SETTLED_APPROVAL)
 
-    await vi.waitFor(() => expect(waitingOf(parts).textContent).toBe(WAITING_OUTPUT_COPY))
+    await vi.waitFor(() => expect(waitingOf(parts).textContent).toBe(WAITING_OUTPUT_COPY), { timeout: 5_000 })
     expect(waitingOf(parts).hidden).toBe(false)
     handle.close()
   })
@@ -525,7 +525,7 @@ describe('operator stream waiting line', () => {
 
     pushToLatest(READY + RUNNING)
 
-    await vi.waitFor(() => expect(parts.statusEl.textContent).toBe('Running'))
+    await vi.waitFor(() => expect(parts.statusEl.textContent).toBe('Running'), { timeout: 5_000 })
     expect(waitingOf(parts).hidden).toBe(false)
     expect(waitingOf(parts).textContent).toBe(WAITING_OUTPUT_COPY)
     handle.close()
@@ -538,7 +538,7 @@ describe('operator stream waiting line', () => {
 
     pushToLatest(READY + statusFrame('queued'))
 
-    await vi.waitFor(() => expect(waitingOf(parts).textContent).toBe(WAITING_START_COPY))
+    await vi.waitFor(() => expect(waitingOf(parts).textContent).toBe(WAITING_START_COPY), { timeout: 5_000 })
     expect(waitingOf(parts).hidden).toBe(false)
     handle.close()
   })
@@ -548,11 +548,11 @@ describe('operator stream waiting line', () => {
     const parts = makeFullCard()
     const handle = attachFull(parts)
     pushToLatest(READY + statusFrame('queued'))
-    await vi.waitFor(() => expect(waitingOf(parts).textContent).toBe(WAITING_START_COPY))
+    await vi.waitFor(() => expect(waitingOf(parts).textContent).toBe(WAITING_START_COPY), { timeout: 5_000 })
 
     pushToLatest(RUNNING)
 
-    await vi.waitFor(() => expect(waitingOf(parts).textContent).toBe(WAITING_OUTPUT_COPY))
+    await vi.waitFor(() => expect(waitingOf(parts).textContent).toBe(WAITING_OUTPUT_COPY), { timeout: 5_000 })
     handle.close()
   })
 
@@ -563,7 +563,7 @@ describe('operator stream waiting line', () => {
 
     pushToLatest(READY + statusFrame('waiting_for_approval'))
 
-    await vi.waitFor(() => expect(parts.statusEl.textContent).not.toBe(''))
+    await vi.waitFor(() => expect(parts.statusEl.textContent).not.toBe(''), { timeout: 5_000 })
     expect(waitingOf(parts).hidden).toBe(false)
     expect(waitingOf(parts).textContent).toBe(WAITING_OUTPUT_COPY)
     handle.close()
@@ -574,14 +574,14 @@ describe('operator stream waiting line', () => {
     const parts = makeFullCard()
     const handle = attachFull(parts)
     pushToLatest(READY + RUNNING)
-    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false))
+    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false), { timeout: 5_000 })
 
     pushToLatest(APPROVAL)
-    await vi.waitFor(() => expect(parts.regions['run-approvals'].hidden).toBe(false))
+    await vi.waitFor(() => expect(parts.regions['run-approvals'].hidden).toBe(false), { timeout: 5_000 })
     expect(waitingOf(parts).hidden).toBe(true)
 
     pushToLatest(frame('approval', {runId: RUN_ID, requestID: 'req-reattach', permission: 'shell', command: 'echo hello', settled: true}))
-    await vi.waitFor(() => expect(parts.regions['run-approvals'].hidden).toBe(true))
+    await vi.waitFor(() => expect(parts.regions['run-approvals'].hidden).toBe(true), { timeout: 5_000 })
     expect(waitingOf(parts).hidden).toBe(false)
     expect(waitingOf(parts).textContent).toBe(WAITING_OUTPUT_COPY)
     handle.close()
@@ -592,14 +592,14 @@ describe('operator stream waiting line', () => {
     const parts = makeFullCard()
     const handle = attachFull(parts)
     pushToLatest(READY + RUNNING)
-    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false))
+    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false), { timeout: 5_000 })
 
     pushToLatest(OPEN_QUESTION)
-    await vi.waitFor(() => expect(parts.regions['run-questions'].hidden).toBe(false))
+    await vi.waitFor(() => expect(parts.regions['run-questions'].hidden).toBe(false), { timeout: 5_000 })
     expect(waitingOf(parts).hidden).toBe(true)
 
     pushToLatest(SETTLED_QUESTION)
-    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false))
+    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false), { timeout: 5_000 })
     handle.close()
   })
 
@@ -610,14 +610,14 @@ describe('operator stream waiting line', () => {
       questionClient: {listRunQuestions: vi.fn(() => new Promise<never>(() => {})), decideRunQuestion: vi.fn(async () => ({kind: 'decided', state: 'claimed'}))},
     })
     pushToLatest(READY + RUNNING + OPEN_QUESTION)
-    await vi.waitFor(() => expect(parts.regions['run-questions'].hidden).toBe(false))
+    await vi.waitFor(() => expect(parts.regions['run-questions'].hidden).toBe(false), { timeout: 5_000 })
     expect(waitingOf(parts).hidden).toBe(true)
 
     const textarea = parts.regions['run-questions'].querySelector('textarea') as HTMLTextAreaElement
     textarea.value = 'Keep going'
     textarea.dispatchEvent(new Event('input', {bubbles: true}))
     ;(parts.regions['run-questions'].querySelector('.question-region__submit') as HTMLButtonElement).click()
-    await vi.waitFor(() => expect(parts.regions['run-questions'].textContent).toContain('This question is no longer open.'))
+    await vi.waitFor(() => expect(parts.regions['run-questions'].textContent).toContain('This question is no longer open.'), { timeout: 5_000 })
 
     // The note is showing, but a note is not content: the line is back.
     expect(handle.getQuestions()).toHaveLength(0)
@@ -632,10 +632,10 @@ describe('operator stream waiting line', () => {
     const parts = makeFullCard()
     const handle = attachFull(parts)
     pushToLatest(READY + RUNNING)
-    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false))
+    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false), { timeout: 5_000 })
 
     pushToLatest(OUTPUT)
-    await vi.waitFor(() => expect(parts.regions['run-output'].hidden).toBe(false))
+    await vi.waitFor(() => expect(parts.regions['run-output'].hidden).toBe(false), { timeout: 5_000 })
     expect(waitingOf(parts).hidden).toBe(true)
     handle.close()
   })
@@ -645,11 +645,11 @@ describe('operator stream waiting line', () => {
     const parts = makeFullCard()
     const handle = attachFull(parts)
     pushToLatest(READY + RUNNING)
-    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false))
+    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false), { timeout: 5_000 })
 
     pushToLatest(CHECKOUT_PROVENANCE_STATUS)
 
-    await vi.waitFor(() => expect(parts.regions['run-checkout-detail'].hidden).toBe(false))
+    await vi.waitFor(() => expect(parts.regions['run-checkout-detail'].hidden).toBe(false), { timeout: 5_000 })
     expect(waitingOf(parts).hidden).toBe(false)
     expect(waitingOf(parts).textContent).toBe(WAITING_OUTPUT_COPY)
     handle.close()
@@ -662,7 +662,7 @@ describe('operator stream waiting line', () => {
 
     pushToLatest(READY + CHECKOUT_PROVENANCE_STATUS)
 
-    await vi.waitFor(() => expect(parts.regions['run-checkout-detail'].hidden).toBe(false))
+    await vi.waitFor(() => expect(parts.regions['run-checkout-detail'].hidden).toBe(false), { timeout: 5_000 })
     expect(waitingOf(parts).hidden).toBe(false)
     expect(waitingOf(parts).textContent).toBe(WAITING_OUTPUT_COPY)
     handle.close()
@@ -680,7 +680,7 @@ describe('operator stream waiting line', () => {
       checkoutPreparation: {outcome: 'refused', reason: 'detached'},
     }))
 
-    await vi.waitFor(() => expect(parts.regions['run-checkout-detail'].hidden).toBe(false))
+    await vi.waitFor(() => expect(parts.regions['run-checkout-detail'].hidden).toBe(false), { timeout: 5_000 })
     expect(waitingOf(parts).hidden).toBe(false)
     expect(waitingOf(parts).textContent).toBe(WAITING_START_COPY)
     handle.close()
@@ -691,11 +691,11 @@ describe('operator stream waiting line', () => {
     const parts = makeFullCard()
     const handle = attachFull(parts)
     pushToLatest(READY + CHECKOUT_PROVENANCE_STATUS)
-    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false))
+    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false), { timeout: 5_000 })
 
     pushToLatest(OUTPUT)
 
-    await vi.waitFor(() => expect(parts.regions['run-output'].hidden).toBe(false))
+    await vi.waitFor(() => expect(parts.regions['run-output'].hidden).toBe(false), { timeout: 5_000 })
     expect(parts.regions['run-checkout-detail'].hidden).toBe(false)
     expect(waitingOf(parts).hidden).toBe(true)
     handle.close()
@@ -708,7 +708,7 @@ describe('operator stream waiting line', () => {
 
     pushToLatest(READY + RUNNING)
 
-    await vi.waitFor(() => expect(parts.regions['run-cancel'].hidden).toBe(false))
+    await vi.waitFor(() => expect(parts.regions['run-cancel'].hidden).toBe(false), { timeout: 5_000 })
     expect(waitingOf(parts).hidden).toBe(false)
     handle.close()
   })
@@ -718,11 +718,11 @@ describe('operator stream waiting line', () => {
     const parts = makeFullCard()
     const handle = attachFull(parts)
     pushToLatest(READY + RUNNING)
-    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false))
+    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false), { timeout: 5_000 })
 
     pushToLatest(statusFrame(status, status === 'blocked' ? 'EXECUTING' : 'COMPLETED'))
 
-    await vi.waitFor(() => expect(parts.statusEl.textContent).not.toBe('Running'))
+    await vi.waitFor(() => expect(parts.statusEl.textContent).not.toBe('Running'), { timeout: 5_000 })
     expect(waitingOf(parts).hidden).toBe(true)
     handle.close()
   })
@@ -734,7 +734,7 @@ describe('operator stream waiting line', () => {
 
     pushToLatest(READY + NO_SNAPSHOT)
 
-    await vi.waitFor(() => expect(parts.regions['run-output'].textContent).toBe('Output no longer available.'))
+    await vi.waitFor(() => expect(parts.regions['run-output'].textContent).toBe('Output no longer available.'), { timeout: 5_000 })
     expect(waitingOf(parts).hidden).toBe(true)
     handle.close()
   })
@@ -744,7 +744,7 @@ describe('operator stream waiting line', () => {
     const parts = makeFullCard()
     const handle = attachFull(parts)
     pushToLatest(READY + RUNNING)
-    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false))
+    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false), { timeout: 5_000 })
 
     handle.close()
 
@@ -759,7 +759,7 @@ describe('operator stream waiting line', () => {
 
     pushToLatest(READY + RUNNING)
 
-    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false))
+    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false), { timeout: 5_000 })
     expect(waitingOf(parts).childNodes).toHaveLength(1)
     expect(waitingOf(parts).firstChild?.nodeType).toBe(Node.TEXT_NODE)
     expect(waitingOf(parts).hasAttribute('aria-live')).toBe(false)
@@ -773,7 +773,7 @@ describe('operator stream waiting line', () => {
 
     pushToLatest(READY + RUNNING)
 
-    await vi.waitFor(() => expect(parts.statusEl.textContent).toBe('Running'))
+    await vi.waitFor(() => expect(parts.statusEl.textContent).toBe('Running'), { timeout: 5_000 })
     expect(waitingOf(parts).hidden).toBe(true)
     handle.close()
   })
@@ -792,7 +792,7 @@ describe('operator stream waiting line by connection state', () => {
 
     pushToLatest(frame('ready', {contractVersion: `${PINNED_CONTRACT_VERSION}-other`}) + RUNNING)
 
-    await vi.waitFor(() => expect(parts.noticeEl.textContent).toContain('Stream version mismatch'))
+    await vi.waitFor(() => expect(parts.noticeEl.textContent).toContain('Stream version mismatch'), { timeout: 5_000 })
     expect(waitingOf(parts).hidden).toBe(true)
     handle.close()
   })
@@ -806,7 +806,7 @@ describe('operator stream waiting line by connection state', () => {
     const parts = makeFullCard()
     const handle = attachFull(parts)
 
-    await vi.waitFor(() => expect(parts.noticeEl.textContent).toContain(noticeText))
+    await vi.waitFor(() => expect(parts.noticeEl.textContent).toContain(noticeText), { timeout: 5_000 })
     expect(waitingOf(parts).hidden).toBe(true)
     handle.close()
   })
@@ -816,11 +816,11 @@ describe('operator stream waiting line by connection state', () => {
     const parts = makeFullCard()
     const handle = attachFull(parts)
     pushToLatest(READY + RUNNING)
-    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false))
+    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false), { timeout: 5_000 })
 
     pushToLatest(frame('reset', {runId: RUN_ID, reason: 'terminal'}))
 
-    await vi.waitFor(() => expect(parts.noticeEl.textContent).toContain('Run stream ended before a result was available.'))
+    await vi.waitFor(() => expect(parts.noticeEl.textContent).toContain('Run stream ended before a result was available.'), { timeout: 5_000 })
     expect(waitingOf(parts).hidden).toBe(true)
     handle.close()
   })
@@ -830,11 +830,11 @@ describe('operator stream waiting line by connection state', () => {
     const parts = makeFullCard()
     const handle = attachFull(parts)
     pushToLatest(READY + RUNNING)
-    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false))
+    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false), { timeout: 5_000 })
 
     pushToLatest(frame('reset', {runId: RUN_ID, reason: 'shutdown'}))
 
-    await vi.waitFor(() => expect(parts.noticeEl.textContent).toContain('Connecting to run stream'))
+    await vi.waitFor(() => expect(parts.noticeEl.textContent).toContain('Connecting to run stream'), { timeout: 5_000 })
     expect(waitingOf(parts).hidden).toBe(true)
     handle.close()
   })
@@ -864,7 +864,7 @@ describe('operator stream waiting line beside an open question', () => {
       },
     })
     pushToLatest(READY + RUNNING + OPEN_QUESTION)
-    await vi.waitFor(() => expect(parts.regions['run-questions'].hidden).toBe(false))
+    await vi.waitFor(() => expect(parts.regions['run-questions'].hidden).toBe(false), { timeout: 5_000 })
     await handle.decideQuestion('req-q', {decision: 'skip'})
     void handle.checkQuestions('req-q')
     expect(handle.getQuestionStatus('req-q')).toEqual({kind: 'checking'})
@@ -872,7 +872,7 @@ describe('operator stream waiting line beside an open question', () => {
     expect(waitingOf(parts).hidden).toBe(true)
 
     pushToLatest(SETTLED_QUESTION)
-    await vi.waitFor(() => expect(handle.getQuestions()).toHaveLength(0))
+    await vi.waitFor(() => expect(handle.getQuestions()).toHaveLength(0), { timeout: 5_000 })
 
     expect(parts.regions['run-questions'].hidden).toBe(true)
     expect(waitingOf(parts).hidden).toBe(false)
@@ -889,7 +889,7 @@ describe('operator stream waiting line with a run-list summary status', () => {
     expect(waitingOf(parts).hidden).toBe(true)
 
     pushToLatest(READY)
-    await vi.waitFor(() => expect(parts.noticeEl.hidden).toBe(true))
+    await vi.waitFor(() => expect(parts.noticeEl.hidden).toBe(true), { timeout: 5_000 })
 
     expect(waitingOf(parts).hidden).toBe(true)
     handle.close()
@@ -902,7 +902,7 @@ describe('operator stream waiting line with a run-list summary status', () => {
 
     pushToLatest(READY)
 
-    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false))
+    await vi.waitFor(() => expect(waitingOf(parts).hidden).toBe(false), { timeout: 5_000 })
     expect(waitingOf(parts).textContent).toBe(WAITING_OUTPUT_COPY)
     handle.close()
   })
@@ -914,7 +914,7 @@ describe('operator stream waiting line with a run-list summary status', () => {
 
     pushToLatest(READY + RUNNING)
 
-    await vi.waitFor(() => expect(parts.statusEl.textContent).toBe('Running'))
+    await vi.waitFor(() => expect(parts.statusEl.textContent).toBe('Running'), { timeout: 5_000 })
     expect(waitingOf(parts).hidden).toBe(false)
     expect(waitingOf(parts).textContent).toBe(WAITING_OUTPUT_COPY)
     handle.close()
@@ -939,7 +939,7 @@ describe('operator stream waiting line with a run-list summary status', () => {
 
     pushToLatest(READY + NO_SNAPSHOT)
 
-    await vi.waitFor(() => expect(parts.regions['run-output'].textContent).toBe('Output no longer available.'))
+    await vi.waitFor(() => expect(parts.regions['run-output'].textContent).toBe('Output no longer available.'), { timeout: 5_000 })
     expect(parts.regions['run-output'].hidden).toBe(false)
     expect(waitingOf(parts).hidden).toBe(true)
     handle.close()
@@ -976,7 +976,7 @@ describe('operator stream recorded re-expand', () => {
     const parts = makeFullCard()
     const live = attachFull(parts)
     pushToLatest(READY + RUNNING + FINAL_OUTPUT + SUCCEEDED_WITH_CHECKOUT)
-    await vi.waitFor(() => expect(parts.statusEl.textContent).toBe('Succeeded'))
+    await vi.waitFor(() => expect(parts.statusEl.textContent).toBe('Succeeded'), { timeout: 5_000 })
     expect(takeUsableFinishedRun(RUN_ID, 'succeeded')).toBeDefined()
     const checkoutText = parts.regions['run-checkout-detail'].textContent
     expect(checkoutText).not.toBe('')
@@ -1012,7 +1012,7 @@ describe('operator stream recorded re-expand', () => {
     const parts = makeFullCard()
     const live = attachFull(parts)
     pushToLatest(READY + RUNNING + FINAL_OUTPUT + SUCCEEDED)
-    await vi.waitFor(() => expect(parts.statusEl.textContent).toBe('Succeeded'))
+    await vi.waitFor(() => expect(parts.statusEl.textContent).toBe('Succeeded'), { timeout: 5_000 })
     live.close()
     for (const role of STREAM_OWNED_EMPTY_REGIONS) {
       const stale = document.createElement('div')

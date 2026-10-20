@@ -16,9 +16,14 @@ import AxeBuilder from '@axe-core/playwright'
  * 2026-10-11..17 upstream adoptions while the gate sat unrunnable on the
  * stale 1.63.0 image) — so baseline capture and comparison share one
  * deterministic render environment. Regen procedure: delete the baseline
- * PNGs, then run `pnpm exec playwright test --update-snapshots` inside that
+ * PNGs, then run `bunx playwright test --update-snapshots` inside that
  * image (the container block in .github/workflows/visual.yaml documents the
- * same).
+ * same; bun.sh/install + PATH since the 2026.10.48 Bun adoption).
+ * 2026-10-19 fourth regen (2026.10.48 adoption, PR #1026): all three
+ * baselines rewritten in the same image — the adoption's markdown output
+ * toolbar (run-output-tools region + Rendered/Raw toggle) grows the operator
+ * page and the privacy.html section-class rework shifts privacy; in-image
+ * clean compare re-ran 3/3 green at the new captures.
  * 2026-10-17 second regen (run 8fd22b8b integrate, conflict case 0310ad63):
  * dashboard-operator-dark.png rewritten once more in the same image — the
  * #619 absorb (contract 1.11.0 collapsed waiting cards, run-jump notices)

@@ -16,9 +16,9 @@
 export const HARD_RELEASE_FILE_PATHS: readonly string[] = [
   // Image definition.
   'Dockerfile',
-  // Workspace config carries the security overrides and allowBuilds list,
-  // and the Dockerfile COPYs it into both build stages.
-  'pnpm-workspace.yaml',
+  // Bun install policy (linker, minimumReleaseAge, excludes) — the Dockerfile
+  // COPYs it, with bun.lock, into both build stages.
+  'bunfig.toml',
   // The release pipeline itself.
   '.github/workflows/release.yaml',
   'scripts/should-release.ts',
@@ -46,12 +46,12 @@ export const HARD_RELEASE_ROOT_TSCONFIG_GLOB = 'tsconfig*.json'
 /**
  * Entries that appear in release.yaml's on.push.paths filter but are NOT
  * hard-release for the guard. package.json delegates to the guard's
- * package.json field diffing; pnpm-lock.yaml is handled by the guard's own
+ * package.json field diffing; bun.lock is handled by the guard's own
  * lockfile-only branch (fail open → release, step 3), not by the hard
  * corpus. Any NEW workflow-only entry must be added here consciously or the
  * corpus-sync test reds.
  */
 export const WORKFLOW_TRIGGER_ONLY_PATHS: readonly string[] = [
   'package.json',
-  'pnpm-lock.yaml',
+  'bun.lock',
 ]
