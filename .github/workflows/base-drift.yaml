@@ -1,4 +1,7 @@
-# Weekly read-only drift check for the Dockerfile's node:24-slim base pins,
+# Weekly read-only drift check for the Dockerfile's ARG NODE_IMAGE base pin
+# (rm-856: the tag under inspection is DERIVED from the Dockerfile's ARG
+# line — the rm-779 cve-tripwire cure mirrored at this second site — so a
+# tag-family move in the Dockerfile can never desync this workflow again),
 # plus a report-only pin-drift job (rm-204) covering packageManager, npm
 # ranges, and GitHub Action pins — drift the digest job cannot see.
 #
@@ -53,11 +56,30 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Compare Dockerfile pins to live node:24-slim digest
+      - name: Compare the Dockerfile ARG base pin to its live tag digest
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+
+          # rm-856 (the rm-779 class cured at its second site): the tag under
+          # inspection is DERIVED from the Dockerfile's ARG NODE_IMAGE line,
+          # with the byte-identical sed program cve-tripwire.yaml's resolve
+          # step carries (the cross-workflow agreement is pinned by
+          # test/base-drift-tag-derivation.test.ts). This workflow was born
+          # inspecting a hardcoded literal the Dockerfile did not pin at that
+          # moment ('node:24-slim' here while ad8f21e had already moved the
+          # ARG to node:24-trixie-slim), so the weekly check compared the real
+          # pins against the WRONG tag family's digest — a silent no-guard. A
+          # family move now only touches the Dockerfile, never this workflow.
+          PIN="$(sed -nE 's/^ARG NODE_IMAGE=(node:[^@[:space:]]+@sha256:[0-9a-f]{64})$/\1/p' Dockerfile | head -1 || true)"
+          if [ -z "$PIN" ]; then
+            echo '::error::no ARG NODE_IMAGE=<image>@sha256:<64-hex> pin found in Dockerfile — the drift sentinel needs a digest-pinned base to guard (rm-856)'
+            exit 1
+          fi
+          TAG="${PIN%@sha256:*}"
+          PINNED_DIGEST="sha256:${PIN##*@sha256:}"
+          echo "Dockerfile ARG resolves ${TAG} @ ${PINNED_DIGEST}"
 
           # Digest readback (rm-166/rm-178 — cycle-11/12 landed this buildx
           # primary; rm-182 — the third same-day convergence — adds the
@@ -65,7 +87,7 @@ jobs:
           # each substitution so a CLI failure (e.g. anonymous manifest-auth
           # rate limiting) reaches the empty-digest guard instead of tripping
           # set -e first.
-          LIVE_DIGEST="$(docker buildx imagetools inspect node:24-slim | awk '/^Digest:/{print $2; exit}' || true)"
+          LIVE_DIGEST="$(docker buildx imagetools inspect "$TAG" | awk '/^Digest:/{print $2; exit}' || true)"
           if [ -z "$LIVE_DIGEST" ]; then
             echo '::warning::buildx imagetools inspect yielded no Digest: line — trying the Docker Hub token + registry HEAD fallback (rm-182)'
             # Fallback (proven 2026-09-24, research b27ad37b): anonymous token
@@ -77,7 +99,7 @@ jobs:
               LIVE_DIGEST="$(curl -fsSI --max-time 20 \
                 -H "Authorization: Bearer $TOKEN" \
                 -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
-                'https://registry-1.docker.io/v2/library/node/manifests/24-slim' \
+                "https://registry-1.docker.io/v2/library/node/manifests/${TAG#node:}" \
                 | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:"{print $2; exit}' || true)"
             fi
           fi
@@ -85,30 +107,17 @@ jobs:
             echo '::error::live digest EXTRACTION FAILED (empty) — this is a readback/extraction failure (rm-166/rm-178/rm-182), NOT drift: buildx imagetools inspect produced no Digest: line and the auth.docker.io/registry-1.docker.io HEAD fallback failed too. Re-run this workflow before drawing any drift conclusion.'
             exit 1
           fi
-          echo "live node:24-slim digest: $LIVE_DIGEST"
+          echo "live ${TAG} digest: $LIVE_DIGEST"
 
-          PINNED="$(grep -oE 'sha256:[0-9a-f]{64}' Dockerfile | sort -u)"
-          if [ -z "$PINNED" ]; then
-            echo '::error::no pinned digests found in Dockerfile'
-            exit 1
-          fi
-          echo "pinned digests:"
-          echo "$PINNED"
-
-          DRIFT=0
-          for pin in $PINNED; do
-            if [ "$pin" != "$LIVE_DIGEST" ]; then
-              echo "drift: pin $pin != live $LIVE_DIGEST"
-              DRIFT=1
-            else
-              echo "current: $pin"
-            fi
-          done
-
-          if [ "$DRIFT" = '0' ]; then
-            echo 'no drift — Dockerfile is current'
+          # Single-sourced comparison (rm-856): the ARG pin IS the drift
+          # subject — its digest vs the live digest of its own tag. (The old
+          # grep-every-digest form compared any future second digest pin
+          # against the node tag's digest — a permanent false drift verdict.)
+          if [ "$PINNED_DIGEST" = "$LIVE_DIGEST" ]; then
+            echo "no drift — Dockerfile ${TAG} is current (${LIVE_DIGEST})"
             exit 0
           fi
+          echo "drift: pinned ${TAG}@${PINNED_DIGEST} != live ${LIVE_DIGEST}"
 
           # Surface the drift as a tracking issue (deduplicated while one is
           # open). Best-effort only: issues are DISABLED on this fork
@@ -125,14 +134,11 @@ jobs:
               gh issue create \
                 --repo "$GITHUB_REPOSITORY" \
                 --label base-image-drift \
-                --title 'Base image drift: Dockerfile pins behind node:24-slim' \
-                --body "The weekly drift check found pinned digests that no longer match the live \`node:24-slim\` tag.
+                --title "Base image drift: Dockerfile pin behind $TAG" \
+                --body "The weekly drift check found the \`ARG NODE_IMAGE\` pin no longer matching the live \`$TAG\` tag.
 
             Live digest: \`$LIVE_DIGEST\`
-            Pinned digests (from \`Dockerfile\`):
-            \`\`\`
-            $PINNED
-            \`\`\`
+            Pinned digest (from \`Dockerfile\` \`ARG NODE_IMAGE\`): \`$PINNED_DIGEST\`
 
             Action: re-pin in a PR that goes through the normal Release scan gate. Do not auto-bump." >/dev/null
             else

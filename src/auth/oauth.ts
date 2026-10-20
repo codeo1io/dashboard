@@ -74,10 +74,16 @@ export function makeGitHubOAuthClient(
         client_id: clientId,
         redirect_uri: redirectURI,
         state,
-        scope: scopes.join(' '),
         response_type: 'code',
         code_challenge: pkce.codeChallenge,
         code_challenge_method: pkce.codeChallengeMethod,
+      }
+      // rm-2092: an empty scope list OMITS the parameter entirely — GitHub's
+      // documented no-scope request shape (a 'scope=' empty-value parameter
+      // is a different request). The route hands this an empty list for the
+      // zero-scope sign-in (upstream fro-bot/agent v0.123.1 #1856).
+      if (scopes.length > 0) {
+        params.scope = scopes.join(' ')
       }
       const url = new URL('https://github.com/login/oauth/authorize')
       url.search = new URLSearchParams(params).toString()

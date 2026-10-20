@@ -243,7 +243,11 @@ What each producer needs to do, against this contract:
    to opening a GitHub issue once migrated.
 
 - **`marcusrbrown/infra`** — replace the deploy-health / autoheal issue-open
-  step. `source: "infra"`, `kind: "deploy-health" | "autoheal"`.
+  step. `source: "infra"`, `kind: "deploy-health" | "autoheal"`, `dedupeKey`
+  keyed on the deployment id (deploy-health) / the incident-day (autoheal) so
+  a replayed or re-run workflow updates rather than duplicates (same
+  convention as the agent row; the store's dedupe uniqueness is
+  source-agnostic).
 - **`fro-bot/agent`** — replace the Daily Maintenance Report issue-open step.
   `source: "agent"`, `kind: "daily-maintenance-report"`,
   `dedupeKey` keyed on the run date so a re-run updates rather than duplicates.
