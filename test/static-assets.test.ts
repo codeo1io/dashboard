@@ -1277,7 +1277,7 @@ describe('security — operator-stream.js contract pin and checkout-field bounda
 // sink cannot trip it and a sink cannot hide behind a bracket or quote.
 // ---------------------------------------------------------------------------
 
-const HTML_SINK_PATTERN = /(?:innerHTML|outerHTML|insertAdjacentHTML|setHTMLUnsafe|createContextualFragment|parseFromString|srcdoc|document\.write)['"\]\s]*(?:\+?=|\()/
+const HTML_SINK_PATTERN = /(?:innerHTML|outerHTML|insertAdjacentHTML|setHTMLUnsafe|createContextualFragment|parseFromString|srcdoc|document\.write(?:ln)?)['"\]\s]*(?:\+?=|\()/
 const HREF_SINK_PATTERN = /setAttribute\(\s*['"]href|\.href\s*=(?!=)/
 const MARKDOWN_RENDERER_PATH = 'web/src/operator/markdown-output.ts'
 const SINK_SCAN_DIRS = ['public', 'web/src/operator'] as const
@@ -1317,6 +1317,7 @@ describe('security — HTML and href sinks across operator output modules', () =
     ['new DOMParser().parseFromString(x, "text/html")'],
     ['frame.srcdoc = x'],
     ['document.write(x)'],
+    ['document.writeln(x)'],
     ['el["innerHTML"] += x'],
     ["x = 'a//'; el.innerHTML = y"],
     ["x = 'https://x'; el.innerHTML = y"],
