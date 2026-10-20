@@ -2859,6 +2859,44 @@ describe('review fix P2-1 — last-good snapshot re-filtered against the fresh d
     expect(persisted.repos.map(r => r.node_id)).toEqual(['NODE_BOOT'])
   })
 
+  it('rm-601: scrub also catches a row whose node_id format skews from the fresh denylist entry (cross-format, dual-key)', async () => {
+    // The persisted row carries the LEGACY base64 node_id shape; the fresh
+    // repos.yaml redaction records the SAME repo under the new `R_` shape
+    // with an explicit database_id. A node_id-only filter misses (skew) —
+    // the derived-databaseId secondary key must still scrub the row, the
+    // same dual-key guard buildWorkingSet applies on the live union path
+    // (cf. the rm-255 join test for this skew's auth-context half).
+    const legacyNodeId = Buffer.from('010:Repository4242', 'ascii').toString('base64')
+    const snapshotStore = {load: vi.fn(() => ({
+      ...makeBootSnapshot(),
+      repos: [
+        makeBootSnapshotRepo({node_id: 'NODE_BOOT', full_name: 'fro-bot/agent'}),
+        makeBootSnapshotRepo({node_id: legacyNodeId, full_name: 'fro-bot/secret'}),
+      ],
+    })), persist: vi.fn()}
+    const deps = makeDeps({
+      snapshotStore,
+      // Fresh metadata: the redaction is the NEW-format node_id + explicit
+      // database_id 4242 — the exact cross-format skew rm-601 guards.
+      readMetadata: vi.fn().mockResolvedValue(ok(makeMetadataResult({
+        redactedNodeIds: ['R_kgDOJ_bMaQ'],
+        redactedDatabaseIds: [4242],
+      }))),
+      // Empty channel → warm-empty guard would otherwise serve last-good.
+      enumerate: vi.fn().mockResolvedValue(makeEnumerateResult([])),
+    })
+
+    const agg = createAggregator(fakeInstallationsClient, fakeMetadataReader, deps)
+    await agg.refresh()
+    const snap = agg.getSnapshot()
+
+    // The legacy-format row is scrubbed via its derived databaseId — the
+    // redacted name is neither served NOR re-persisted.
+    expect(snap.repos.map(r => r.full_name)).toEqual(['fro-bot/agent'])
+    const persisted = snapshotStore.persist.mock.calls.at(-1)?.[0] as AggregatorSnapshot
+    expect(persisted.repos.map(r => r.node_id)).toEqual(['NODE_BOOT'])
+  })
+
   it('enumeration failure after boot also re-filters before serving last-good', async () => {
     const snapshotStore = {load: vi.fn(() => makeBootSnapshotWithRedactedRow()), persist: vi.fn()}
     const deps = makeDeps({

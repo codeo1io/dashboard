@@ -1418,10 +1418,16 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   // branches via isPublicPath above), so authenticated and unauthenticated
   // visitors get byte-identical responses. Serves ONLY the clean /privacy
   // path (plus its trailing-slash variant, matching isPublicPath above) —
-  // /privacy.html itself is never registered as a route, which is what keeps
-  // the service worker's precache exclusion correct (see sw.ts). NOTE: unlike
-  // upstream, this fork's service worker is a cacheless SW-off switch that
-  // never serves navigations, so no SW denylist exemption is needed here.
+  // /privacy.html itself is never registered as a route. NOTE (rm-2077,
+  // truth-at-head): this fork's service worker is NOT a kill-switch — it
+  // precaches the SPA shell + hashed assets and serves an offline shell for
+  // navigations via a workbox NavigationRoute, with prompt-gated
+  // SKIP_WAITING and push/notificationclick handlers (web/src/sw.ts). Two
+  // SW-side exemptions are therefore LOAD-BEARING for this route: /privacy
+  // sits in the NavigationRoute denylist (navigations here always reach the
+  // server instead of the cached shell) and privacy.html is excluded from
+  // the precache manifest (web/vite.config.ts globIgnores) — remove either
+  // and the cached SPA shell would shadow this public policy page.
   app.get('/privacy', serveStatic({root: webDistRoot, path: 'privacy.html', precompressed: true})) // rm-602
   app.get('/privacy/', serveStatic({root: webDistRoot, path: 'privacy.html', precompressed: true})) // rm-602
 

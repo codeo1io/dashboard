@@ -73,6 +73,17 @@ export function createGatewaySessionCache(
 
   const set = (cookie: string, session: SessionDto): void => {
     if (entries.size >= maxEntries) {
+      // rm-2078 decision of record: cap overflow flushes EVERY entry, not one
+      // victim. Deliberate trade-off, accepted for this app's single-operator
+      // persona: entries are short-TTL positive verdicts only, so a flush
+      // costs at most one extra upstream validation per live session
+      // (repopulated on that session's next request) — churn, never a
+      // correctness or security loss. The cap exists to bound hostile cookie
+      // rotation, where evicting one entry per set() would not keep the map
+      // bounded anyway. Per-identity eviction is rejected as unearned
+      // bookkeeping: it would only matter in a multi-operator deployment,
+      // where one operator's sign-in past the cap would otherwise evict every
+      // other operator's cached session.
       entries.clear()
     }
     entries.set(cookie, {session, storedAt: now()})
@@ -82,6 +93,9 @@ export function createGatewaySessionCache(
     get,
     set,
     clear: () => {
+      // rm-2078: same flush-all trade-off as the cap-overflow path in set() —
+      // the whole-map wipe is the contract of this invalidation seam (tests,
+      // manual invalidation), not an accident.
       entries.clear()
     },
     get size(): number {
