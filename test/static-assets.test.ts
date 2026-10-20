@@ -115,12 +115,14 @@ function hashedBundle(): string {
 // ---------------------------------------------------------------------------
 // PWA SW asset serving — /registerSW.js
 // ---------------------------------------------------------------------------
-// NOTE (rm-274 truthing): registerSW.js IS emitted on every build. No component
-// imports the virtual register module (ReloadPrompt is a deliberate no-op
-// stub), so vite-plugin-pwa's 'auto' injectRegister falls back to the script-tag
-// form: <script id="vite-plugin-pwa:register-sw" src="/registerSW.js"> lands in
-// web/dist/index.html and registration runs on load. The public route is
-// load-bearing.
+// NOTE (rm-274 truing, rm-1960 update): registerSW.js IS emitted. With no virtual-module
+// import in the client (auto-update needs no useRegisterSW wiring — the
+// ReloadPrompt surface was retired with the autoUpdate switch),
+// vite-plugin-pwa's default injectRegister 'auto' emits the loader asset and
+// injects the script tag into index.html — the old 'NOT emitted because
+// ReloadPrompt uses useRegisterSW' note described a wiring that never existed.
+// The production-artifact describe below asserts both facts against the real
+// build output.
 
 // ---------------------------------------------------------------------------
 // PWA manifest serving — /manifest.webmanifest
@@ -890,6 +892,16 @@ describe('production build artifacts — no fixture strings in web/dist JS', () 
     const fs = await import('node:fs/promises')
     const src = await fs.readFile('web/dist/index.html', 'utf8')
     expect(src).not.toContain('/__fixture')
+  })
+
+  it('emits registerSW.js and index.html injects the loader (rm-274)', async () => {
+    // Auto-update registration is real: the loader asset exists in the build
+    // and the built page pulls it in. The retired 'registerSW.js is NOT
+    // emitted' claim was fiction.
+    const fs = await import('node:fs')
+    expect(fs.existsSync('web/dist/registerSW.js'), 'web/dist/registerSW.js should be emitted').toBe(true)
+    const html = fs.readFileSync('web/dist/index.html', 'utf8')
+    expect(html).toMatch(/registerSW\.js/)
   })
 
   it('web/dist JS bundle does not contain /__fixture route string', async () => {

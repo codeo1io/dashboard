@@ -23,7 +23,8 @@ export default defineConfig({
       // The emitted precache manifest is live — precacheAndRoute installs
       // it, so the shell serves offline. Only the dev-only synthetic push
       // receiver is build-time DEV-gated (rm-2003); everything else here
-      // ships in production.
+      // ships in production. Activation is auto-update (rm-1960): the worker
+      // skips waiting and claims clients itself.
       strategies: 'injectManifest',
       srcDir: 'src',
       filename: 'sw.ts',
@@ -32,7 +33,11 @@ export default defineConfig({
       // The <link rel="manifest"> stays in web/index.html (already present).
       manifest: false,
 
-      // registerType omitted → defaults to 'prompt' (never silently reload).
+      // Auto-update (rm-1960): the SW skips waiting and claims clients itself;
+      // claimed pages pick up the new shell on their next navigation (the
+      // emitted registerSW.js is the bare register — no silent reload), so
+      // deploys reach installed clients without operator action.
+      registerType: 'autoUpdate',
 
       injectManifest: {
         // Exclude the SW itself and the manifest from the precache list.

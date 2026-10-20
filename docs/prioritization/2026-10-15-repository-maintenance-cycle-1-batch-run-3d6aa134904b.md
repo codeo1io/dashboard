@@ -96,3 +96,40 @@ deliverable-marker half grafted into test/roadmap-integrity-guard.test.ts
 (presence check + newest-carrier census-claim check); the banded lint-proxy
 baselines retired under main's stronger rm-1454 zero-error eslint leg. All
 seven declared deliverables above are present in the landed tree.
+
+## Landing record (2026-10-21, integrate conflict case 8f25cf43)
+
+Landed by the conductor integrate merge of run f376b01916294a42bf77b2582a0ae93d
+(repository-maintenance cycle:3 "deliverability + observability revival",
+candidate 0cf9e38, base 64cd2f6) into advanced main (192193d). Integrate
+re-census, superseding the 2026-10-20 record above per the guard's
+last-match-wins rule (this merge re-lands the 2026-10-18 cycle:3 roadmap ledger
+content — mints rm-1960/rm-1961 plus its rider additions — on top of main's
+later, larger ledger; no collisions: both ids were absent at main):
+
+**(325 defs / 0 dups / max rm-2032)**
+
+Resolution summary: the run's executable legs auto-merged clean (autoUpdate SW
+mechanics in web/src/sw.ts + web/vite.config.ts, guard
+test/sw-auto-update-guard.test.ts, ReloadPrompt retirement, rm-1961
+fallback-gate wiring on the schedule workflows); ROADMAP.md resolved across
+seven zones as chronological rider unions with landed supersessions owning
+their def text (rm-249, rm-274), the tail extension #51 re-seated at its
+authored anchor, and rm-1960 flipped to implemented at this landing (its
+implement rider deferred the final flip to the commit gate); audit.yaml
+composes the rm-1961 fallback-gate needs/if with main's bun-audit name; the
+operator-dark visual baseline stays main's 8c072ef fourth regen. This doc's
+own deliverables are all present in the landed tree, as before.
+
+Follow-up (same landing, integrate conflict case 2935447e): the first validation
+of the merged tree red exactly once — `test/docs-solutions-index.test.ts`
+flagged the candidate's new solution doc
+`workflow-issues/gh-cli-created-bare-date-open-ended-empty-2026-10-18.md` as an
+index orphan. Root cause is pure base skew: the doc was authored on the run's
+base 64cd2f6a, which predates main's rm-234 solutions index
+(`docs/solutions/README.md` + its two-direction guard test, landed later), so
+the candidate never carried an index entry and the auto-merge had nothing to
+union. Cured by adding the entry to the workflow-issues section (count 90→91);
+no other orphan, dead link, or frontmatter gap exists. Root-leg re-verified
+green on the doc guards (index/frontmatter/roadmap-integrity), the web vitest
+project (41 files), and the SW/static-asset guards after a fresh `build:web`.
