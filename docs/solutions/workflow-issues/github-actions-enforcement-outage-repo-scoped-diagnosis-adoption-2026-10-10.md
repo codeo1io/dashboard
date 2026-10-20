@@ -1,4 +1,5 @@
 ---
+title: "GitHub Actions repo-scoped run-creation enforcement outage: diagnose with cross-repo controls, do not churn refs, adopt byte-identical executions"
 module: workflow-issues
 tags: ['ci', 'actions', 'outage', 'conductor', 'validation']
 problem_type: blocked-verification
