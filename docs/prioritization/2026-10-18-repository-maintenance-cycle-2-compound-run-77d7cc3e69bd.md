@@ -94,9 +94,14 @@ re-verification exposed; the landed leg-4 shape above is the bounded result.
    advance (this cycle did, on rm-1437's adjudication rider).
 5. Claim a registry/alias break only after a double-probed stable read (the
    research phase re-probed at 07:15Z before recording MATERIALIZED).
-6. Ephemeral-CI green proves guard shape, not rider-lineage union: the
-   snapshot applies dirty files wholesale onto the live head — the landing
-   gate must merge riders with main's same-def additions chronologically.
+6. Ephemeral-CI green proves nothing until delta presence is asserted on
+   the ephemeral head itself: PR #976 proved the snapshot's delta application
+   can silently no-op (zero batch files rode the head), so the authored
+   premise — "the snapshot applies dirty files wholesale onto the live head"
+   — did not hold for this run; the landing gate must assert a delta-presence
+   marker first, and even a genuine wholesale application proves guard shape
+   only, never rider-lineage union (riders still merge with main's same-def
+   additions chronologically).
 7. node_modules wipes recur between phases (twice this run); the cure is a
    frozen install (~16s) and the cloud validation route is immune.
 8. Record a validator's PR evidence from the PR itself — head-commit content,
@@ -105,10 +110,13 @@ re-verification exposed; the landed leg-4 shape above is the bounded result.
    requires checks (rm-116). The rc=0 that never validated anything is this
    cycle's costliest lesson.
 
-## Review fix (2026-10-19, independent_review:fix — reaped attempts 534ea459
-and 33561473 authored the code + ledger corrections, provider death took
-both before their result envelopes; completed and first-hand re-verified by
-f87d1a0b)
+## Review fix (2026-10-19, independent_review:fix — reaped attempts 534ea459,
+33561473, and f87d1a0b authored the code + ledger corrections; provider death
+took all three before their result envelopes. The engine salvaged the
+accumulated tree (last touched by f87d1a0b) into commit 473da4af on
+`conductor/run-77d7cc3e69bd` (2026-10-19 13:19:47 +0200, content
+preservation, no validation claim); attempt 1c1e4045 verified every fix
+line-by-line at that commit and recorded the retest below)
 
 Cures all 8 findings of independent_review 1cffb5e0 (NEEDS_CHANGES): the
 false validation record corrected here and at the five ROADMAP locations
@@ -120,10 +128,12 @@ truth moved v0.78.0 -> v0.123.0 on both @fro-bot entries (pin truth now one
 tag across fro-bot.yaml:313 + AGENTS.md + the manifest);
 test/listener-store-degradation.test.ts gains the warning-shape pins (ONE
 `[warning]`-prefixed logger line, V8 snippet tail stripped, 200-char cap);
-the targeted per-suite attribution withdrawn above. First-hand retest at
-this worktree: see the phase record (targeted runner rc=0 over the 4 changed
-surfaces, roadmap guards, census, eslint, check-types, actionlint — all
-green; per-suite numbers on the attempt record f87d1a0b).
+the targeted per-suite attribution withdrawn above. First-hand retest (attempt 1c1e4045, 2026-10-20, at salvage commit
+473da4af): targeted runner over the 4 changed surfaces rc=0 — 6 files, 90/90
+tests (endpoint-parity-guard, listener-routes, listener-store-degradation
+8/8, listener-store 11/11, release-channel-staleness 22/22, snapshot-store);
+roadmap guards 15/15; census 285 defs / 0 dups / max rm-1483; eslint rc=0;
+check-types rc=0; actionlint 1.7.12 clean over both edited workflows.
 
 ## Next-cycle candidates (concrete, existing ledger ids only)
 
@@ -149,12 +159,14 @@ green; per-suite numbers on the attempt record f87d1a0b).
 
 ## Fold map / landing notes
 
-- Uncommitted delta (11 tracked-file entries: base-drift.yaml, fro-bot.yaml,
+- Delta (11 tracked-file entries: base-drift.yaml, fro-bot.yaml,
   .slim/clonedeps.json, AGENTS.md, ROADMAP.md, release-channel-staleness.ts,
   store.ts, listener-store-degradation.test.ts,
   release-channel-staleness.test.ts, the cycle batch doc, this compound doc
   — clonedeps.json and the degradation test joined at the 2026-10-19 review
-  fix).
+  fix) — engine-salvaged into commit 473da4af on
+  `conductor/run-77d7cc3e69bd` (content preservation, no validation claim;
+  the integration fleet still owns landing).
 - ROADMAP.md compound delta: 4 validation-outcome riders (rm-856, rm-740,
   rm-252, rm-187) + the rm-856 status flip candidate -> implemented
   (pending landing) + the cycle:2 compound trailer; the 5 roadmap-phase
