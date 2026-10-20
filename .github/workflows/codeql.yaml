@@ -3,7 +3,7 @@ name: CodeQL
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, 'conductor/ci-base-**']
     types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
@@ -17,22 +17,48 @@ permissions:
 jobs:
   analyze:
     name: Analyze
-    runs-on: ubuntu-latest
+    # rm-188 (cycle 13, 2026-09-25): pinned ubuntu-24.04 — ubuntu-26.04 images are
+    # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
+    # at the rm-139 Node-26 window (2026-10-28).
+    # 2026-10-18 (run 5723bb0a, repository-maintenance cycle:2): re-pinned after
+    # the 2026.10.43 absorb reverted this block to ubuntu-latest.
+    runs-on: ubuntu-24.04
+    # rm-603 (2026-10-04): bounded so a wedged analysis can never hold a runner
+    # indefinitely. Sized from the last 30 successful runs (gh api): typical
+    # 69-142s, worst observed 565s (9.4m) — 20 gives ~2.1x headroom over the
+    # worst and matches main.yaml's CodeQL-era 20-minute job ceiling.
+    timeout-minutes: 20
     permissions:
       contents: read
       security-events: write
+    env:
+      # 2026-09-20 (ci fix): CodeQL's bundled typescript-parser-wrapper resolves
+      # 'typescript' via this override or a bare require from the _tool cache
+      # path (no node_modules anywhere up that tree on this runner). Upstream
+      # passes on hosted runners where the wrapper resolves on its own; here
+      # autobuild never sets the override, so point it at the repo-installed
+      # typescript (pinned toolchain, installed by the Setup step below).
+      SEMMLE_TYPESCRIPT_HOME: ${{ github.workspace }}/node_modules/typescript
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      # 2026-09-20: autobuild under build-mode none needs node_modules/typescript
+      # (this repo has no `main` entrypoint), and checkout's git-clean wipes
+      # node_modules — install deps before codeql-init so autobuild finds the
+      # toolchain. Also feeds SEMMLE_TYPESCRIPT_HOME (job env above) with the
+      # pinned typescript.
+      - name: 📦 Setup
+        uses: ./.github/actions/setup
+
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
+        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           languages: javascript-typescript
           build-mode: none
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4
+        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
