@@ -133,3 +133,15 @@ union. Cured by adding the entry to the workflow-issues section (count 90→91);
 no other orphan, dead link, or frontmatter gap exists. Root-leg re-verified
 green on the doc guards (index/frontmatter/roadmap-integrity), the web vitest
 project (41 files), and the SW/static-asset guards after a fresh `build:web`.
+
+## Re-census (2026-10-21, run d9bcb108 cycle:7 roadmap mint)
+
+Dated re-census per the guard's last-match-wins rule: the cycle:7 roadmap
+mint (attempt f17b7787cc6d4dffb86d794bedef8f04, repository-maintenance) adds
+defs rm-2033..rm-2037 plus one rm-252 window rider at the run's worktree
+base; unlanded at append time. Parallel-mint coordination: a sibling run's
+unlanded envelope claims ids in the rm-2135..rm-2138 band, so this mint
+stayed at or below rm-2037; any later parallel mint must re-census for the
+next free id (rm-2038 on this tree) before claiming.
+
+**(330 defs / 0 dups / max rm-2037)**
