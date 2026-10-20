@@ -16,15 +16,30 @@ import AxeBuilder from '@axe-core/playwright'
  * 2026-10-11..17 upstream adoptions while the gate sat unrunnable on the
  * stale 1.63.0 image) — so baseline capture and comparison share one
  * deterministic render environment. Regen procedure: delete the baseline
- * PNGs, then run `pnpm exec playwright test --update-snapshots` inside that
+ * PNGs, then run `bunx playwright test --update-snapshots` inside that
  * image (the container block in .github/workflows/visual.yaml documents the
- * same).
+ * same; bun.sh/install + PATH since the 2026.10.48 Bun adoption).
+ * 2026-10-19 fourth regen (2026.10.48 adoption, PR #1026): all three
+ * baselines rewritten in the same image — the adoption's markdown output
+ * toolbar (run-output-tools region + Rendered/Raw toggle) grows the operator
+ * page and the privacy.html section-class rework shifts privacy; in-image
+ * clean compare re-ran 3/3 green at the new captures.
  * 2026-10-17 second regen (run 8fd22b8b integrate, conflict case 0310ad63):
  * dashboard-operator-dark.png rewritten once more in the same image — the
  * #619 absorb (contract 1.11.0 collapsed waiting cards, run-jump notices)
  * grew the operator page 3178px→3294px past the morning capture; listener
  * and privacy stayed byte-identical and the in-image clean compare re-ran
  * 3/3 green.
+ * 2026-10-18 third regen (integrate conflict case b21ecdf5, run 3d12d72f
+ * landing): dashboard-operator-dark.png rewritten again in the same image —
+ * main's 2026.10.43 adoption (#636 containment + #639/#640/#641/#643 UI
+ * batch) plus the AppShell release-link union grew the operator page
+ * 3294px→3410px after the 2026-10-17 captures; three independent visual runs
+ * on main's tip (39035335916/39039230117/39053384731) all failed 3294-vs-3410
+ * with byte-identical 153655-px diffs while listener/privacy stayed green.
+ * Regen ran twice in-image (both rounds md5 56b8f398…, 346452 B, 1280x3410)
+ * and a no-flag compare round re-verified 3/3 green; listener and privacy
+ * baselines untouched.
  * Axe: fails only on `critical`/`serious` impact violations (moderate/minor are
  * logged for visibility). Any pre-existing fixture-page violations are scoped
  * or disabled inline with a justification — see `axeCommon()` below.

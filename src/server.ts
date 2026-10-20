@@ -166,6 +166,86 @@ const defaultRateLimitTrustedProxy = (): boolean =>
   ['1', 'true', 'yes'].includes((process.env.RATE_LIMIT_TRUSTED_PROXY ?? '').trim().toLowerCase())
 
 /**
+ * rm-183 — XFF-collapse detector for the DEFAULT (untrusted-proxy) limiter
+ * topology.
+ *
+ * With trusted-proxy OFF, buckets key on the connection's direct address.
+ * When the app nonetheless sits behind a proxy, EVERY proxied client shares
+ * the proxy's address, so per-path-class budgets collapse into one shared
+ * bucket (a single client's 60 req/min is the whole deployment's). The only
+ * in-band signal of that misconfiguration is the X-Forwarded-For header: a
+ * request that arrives with XFF carries a value that VARIES with the real
+ * client when the proxy forwards per-client identity. Observing two DISTINCT
+ * XFF values against the SAME direct address therefore proves multiple real
+ * clients are being keyed into one bucket.
+ *
+ * The detector is deliberately cheap and log-once (rm-183):
+ * - it runs ONLY in default topology, ONLY on limiter-covered paths, and ONLY
+ *   when an XFF header is present (un-proxied traffic pays nothing);
+ * - bookkeeping is bounded: at most one XFF sample per tracked direct address,
+ *   at most `XFF_COLLAPSE_MAX_TRACKED_KEYS` tracked addresses, each sample
+ *   truncated to `XFF_COLLAPSE_SAMPLE_MAX_CHARS`;
+ * - once a collapse is detected the state is cleared and the detector goes
+ *   inert for the rest of the process lifetime — one warning, ever.
+ */
+const XFF_COLLAPSE_MAX_TRACKED_KEYS = 1024
+const XFF_COLLAPSE_SAMPLE_MAX_CHARS = 128
+
+const xffCollapseState = {
+  warned: false,
+  firstXffByDirectAddress: new Map<string, string>(),
+}
+
+export interface XffCollapseDetected {
+  /** The direct connection address whose bucket collapsed (the proxy's). */
+  readonly directAddress: string
+  /** The two distinct XFF fingerprints that proved the collapse. */
+  readonly firstXff: string
+  readonly secondXff: string
+}
+
+/**
+ * Observe one default-topology limiter decision. Returns a
+ * `XffCollapseDetected` exactly ONCE per process — on the first observation
+ * of two distinct XFF fingerprints against the same direct address — and
+ * `null` on every other observation, including after the warning fired.
+ * Exported for the rm-183 unit suite.
+ */
+export function observeXffCollapse(
+  directAddress: string,
+  xForwardedFor: string,
+): XffCollapseDetected | null {
+  if (xffCollapseState.warned) return null
+  const fingerprint = xForwardedFor.trim().slice(0, XFF_COLLAPSE_SAMPLE_MAX_CHARS)
+  if (fingerprint === '') return null
+  const seen = xffCollapseState.firstXffByDirectAddress.get(directAddress)
+  if (seen === undefined) {
+    // Bounded memory: once the address table is full, new addresses are
+    // ignored (the detector never becomes a resource-exhaustion vector).
+    if (xffCollapseState.firstXffByDirectAddress.size >= XFF_COLLAPSE_MAX_TRACKED_KEYS) {
+      return null
+    }
+    xffCollapseState.firstXffByDirectAddress.set(directAddress, fingerprint)
+    return null
+  }
+  if (seen === fingerprint) return null
+  xffCollapseState.warned = true
+  xffCollapseState.firstXffByDirectAddress.clear()
+  return {directAddress, firstXff: seen, secondXff: fingerprint}
+}
+
+/** Test-only reset of the rm-183 collapse-detector state. */
+export function resetXffCollapseForTesting(): void {
+  xffCollapseState.warned = false
+  xffCollapseState.firstXffByDirectAddress.clear()
+}
+
+/** Test/observability accessor: direct addresses currently under watch. */
+export function xffCollapseTrackedKeys(): number {
+  return xffCollapseState.firstXffByDirectAddress.size
+}
+
+/**
  * Classify a sensitive path into its rate-limit budget class.
  * Related to — but deliberately NOT identical to — the isPublicPath auth
  * allowlist defined in the middleware below; the two knowledge sets diverge
@@ -845,6 +925,28 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
         // rateLimitMap without bound inside the sweep window. A
         // deterministic prefix cap keeps each spoofed token on ONE key.
         if (firstHop !== undefined && firstHop !== '') ip = firstHop.slice(0, 64)
+      } else {
+        // rm-183 — default topology: keying IGNORES XFF, so if a proxy sits
+        // in front anyway, every proxied client shares this direct address's
+        // per-class bucket. Watch (bounded, log-once) for two distinct XFF
+        // values against one address — the in-band proof that multiple real
+        // clients collapsed into one budget — and surface it exactly once
+        // per process. Un-proxied traffic (no XFF header) pays nothing.
+        const xff = c.req.header('x-forwarded-for')
+        if (xff !== undefined && xff.trim() !== '') {
+          const collapse = observeXffCollapse(ip, xff)
+          if (collapse !== null) {
+            logger.warning(
+              'Rate limiter client collapse: multiple X-Forwarded-For values hit one direct-address bucket — set RATE_LIMIT_TRUSTED_PROXY=1 ONLY if the proxy overwrites X-Forwarded-For with the real client (behind an appending proxy first-hop keying is client-spoofable)',
+              {
+                directAddress: collapse.directAddress,
+                firstXff: collapse.firstXff,
+                secondXff: collapse.secondXff,
+                pathClass: classifyRateLimitPath(path),
+              },
+            )
+          }
+        }
       }
 
       if (!checkRateLimit(ip, Date.now(), classifyRateLimitPath(path))) {
@@ -1183,7 +1285,15 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       return c.html(spaShellCache.injected)
     })
   } else {
-    app.get('/', serveStatic({root: webDistRoot, path: 'index.html'}))
+    // rm-602: precompressed shell — build:web emits index.html.gz sidecars
+    // (scripts/gzip-static-sidecars.ts), and precompressed:true lets
+    // serveStatic select one by Accept-Encoding (Content-Encoding + Vary:
+    // Accept-Encoding). The push-enabled branch above stays inline/identity
+    // by necessity (the injected body is request-independent but must be
+    // served as-built HTML), so this compresses the default deployment's
+    // shell. SSE streams are untouched by construction: nothing in this
+    // scheme compresses a stream — only files that exist before the request.
+    app.get('/', serveStatic({root: webDistRoot, path: 'index.html', precompressed: true}))
   }
 
   // ── /operator and /operator/ → / redirect (unconditional, flag-independent) ──
@@ -1212,6 +1322,16 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   app.use('/static/operator-launch.js', publicStatic.serve)
   app.use('/static/operator-run-index.js', publicStatic.serve)
   app.use('/static/operator-time.js', publicStatic.serve)
+  // rm-602 disposition (2026-10-09, re-anchored onto the #619-absorbed
+  // implementation at the 6834460b integrate): these public/ mounts and the
+  // flag-gated /static/* catch-all below stay IDENTITY (no precompressed:true)
+  // — public/ is tracked source copied verbatim into the image (no build step
+  // could emit sidecars), the rm-478 revalidation policy in src/static-files.ts
+  // composes its ETag from the identity bytes and rewrites 304s, and this
+  // family stays separate from the operator-contract 1.8.0 work in flight on
+  // these files (run 28cd8f6c). Compressing the operator runtime JS is future
+  // work that first needs a build step for public/ (see the rm-602 def-line in
+  // ROADMAP.md).
 
   // ── Operator UI skeleton route ────────────────────────────────────────────────
   // Only mounted when operatorUiEnabled is true (default: false).
@@ -1222,8 +1342,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   if (operatorUiEnabled) {
     // Serves public/ at /static/* — flag-gated alongside the operator UI flag.
     // /static/ is in isPublicPath so unauthenticated browsers can load assets.
-    // Note: operator-stream.js and operator-launch.js are already mounted above;
-    // this catch-all additionally serves operator.css and any other static assets.
+    // Note: operator-stream.js, operator-launch.js, operator-run-index.js and
+    // operator-time.js are already mounted above; this catch-all additionally
+    // serves operator.css and any other static assets. publicStatic.revalidate
+    // (mounted before it, flag-independent) adds the cache validators.
     app.use('/static/*', publicStatic.serve)
   }
 
@@ -1259,14 +1381,14 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       c.res.headers.set('cache-control', 'public, max-age=31536000, immutable')
     }
   })
-  app.use('/assets/*', serveStatic({root: webDistRoot}))
+  app.use('/assets/*', serveStatic({root: webDistRoot, precompressed: true})) // rm-602: gzip sidecars
   app.use('/icon-*', async (c, next) => {
     await next()
     if (c.res.status === 200) {
       c.res.headers.set('cache-control', 'no-cache')
     }
   })
-  app.use('/icon-*', serveStatic({root: webDistRoot}))
+  app.use('/icon-*', serveStatic({root: webDistRoot, precompressed: true})) // rm-602: gzip sidecars
 
   // ── PWA manifest ─────────────────────────────────────────────────────────
   // serveStatic serves .webmanifest as application/octet-stream by default.
@@ -1278,18 +1400,18 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
     c.res.headers.set('content-type', 'application/manifest+json; charset=UTF-8')
     c.res.headers.set('cache-control', 'no-cache')
   })
-  app.use('/manifest.webmanifest', serveStatic({root: webDistRoot}))
+  app.use('/manifest.webmanifest', serveStatic({root: webDistRoot, precompressed: true})) // rm-602
 
   // ── PWA service worker + registration helper ──────────────────────────────
   // /sw.js and /registerSW.js must be served at root scope so the SW covers the
   // entire origin. CSP is removed from /sw.js by the pre-secureHeaders middleware.
-  app.use('/sw.js', serveStatic({root: webDistRoot}))
+  app.use('/sw.js', serveStatic({root: webDistRoot, precompressed: true})) // rm-602: gzip sidecar
 
   app.use('/registerSW.js', async (c, next) => {
     await next()
     c.res.headers.set('cache-control', 'no-cache, no-store, must-revalidate')
   })
-  app.use('/registerSW.js', serveStatic({root: webDistRoot}))
+  app.use('/registerSW.js', serveStatic({root: webDistRoot, precompressed: true})) // rm-602
 
   // ── Public privacy policy — unconditional, flag-independent ────────────────
   // Reads no cookie and validates no session (registered outside both auth
@@ -1300,8 +1422,8 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   // the service worker's precache exclusion correct (see sw.ts). NOTE: unlike
   // upstream, this fork's service worker is a cacheless SW-off switch that
   // never serves navigations, so no SW denylist exemption is needed here.
-  app.get('/privacy', serveStatic({root: webDistRoot, path: 'privacy.html'}))
-  app.get('/privacy/', serveStatic({root: webDistRoot, path: 'privacy.html'}))
+  app.get('/privacy', serveStatic({root: webDistRoot, path: 'privacy.html', precompressed: true})) // rm-602
+  app.get('/privacy/', serveStatic({root: webDistRoot, path: 'privacy.html', precompressed: true})) // rm-602
 
   // ── RFC 9116 security contact ────────────────────────────────────────────────
   // Served inline (not via serveStatic) so it carries no dependency on the SPA
@@ -1318,7 +1440,7 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   // Warn early if the SPA build artifact is missing (GET / will 404 silently).
   if (!existsSync(`${webDistRoot}/index.html`)) {
     logger.warning(
-      `${webDistRoot}/index.html not found — GET / will return 404. Run \`pnpm build:web\` to build the SPA.`,
+      `${webDistRoot}/index.html not found — GET / will return 404. Run \`bun run build:web\` to build the SPA.`,
     )
   }
 

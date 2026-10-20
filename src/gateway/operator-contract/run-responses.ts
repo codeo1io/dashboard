@@ -71,6 +71,7 @@ const VALID_WEB_STATUSES: ReadonlySet<string> = new Set([
   'blocked',
   'running',
   'waiting_for_approval',
+  'waiting_for_question',
   'succeeded',
   'failed',
   'cancelled',

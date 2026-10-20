@@ -1,4 +1,5 @@
 ---
+title: Maintenance-cycle learnings — SIGPIPE-proof gates, superseded-by-content, re-anchor discipline (cycle 1, run 2365e728d55e)
 module: 'dashboard'
 tags: ['maintenance-cycle', 'sigpipe', 'pipefail', 'workflow-gates', 'superseded-by-content', 're-anchor', 'reaped-session-forensics']
 problem_type: 'process'

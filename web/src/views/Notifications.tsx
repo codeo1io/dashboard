@@ -513,7 +513,9 @@ export function Notifications({
             {inFlight ? 'Updating push subscription…' : `${copy.headline}: ${copy.detail}`}
           </div>
 
-          {/* DEV-gated synthetic push button */}
+          {/* DEV-gated synthetic push button — dev-only end to end: the SW
+              receiver (web/src/sw.ts) is gated by the same import.meta.env.DEV
+              flag, so a production build strips both sides (rm-2003). */}
           {import.meta.env.DEV && (
             <button
               type="button"
