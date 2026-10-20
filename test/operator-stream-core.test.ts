@@ -10179,6 +10179,19 @@ describe('question status — label, wire acceptance and styling', () => {
     expect(css).toMatch(/\[data-theme="light"\] \.run-status\.status-waiting-for-question\b/)
   })
 
+  it('styles primary actions as disabled and excludes them from hover changes', async () => {
+    const fs = await import('node:fs/promises')
+    const css = await fs.readFile(new URL('../web/src/index.css', import.meta.url).pathname, 'utf8')
+    // The light-theme selector keeps the muted text winning over the light theme's color rule by
+    // specificity, not by source order.
+    const disabledRule = css.match(
+      /\.operator-primary-action:disabled,\s*\[data-theme="light"\] \.operator-primary-action:disabled\s*\{([^}]*)\}/,
+    )
+    expect(disabledRule?.[1]).toMatch(/color:\s*var\(--color-text-muted\);/)
+    expect(disabledRule?.[1]).toMatch(/opacity:\s*1;/)
+    expect(css).toMatch(/\.operator-primary-action:hover:not\(:disabled\)/)
+  })
+
   it('keeps run-status badges on one line at narrow widths', async () => {
     const fs = await import('node:fs/promises')
     const css = await fs.readFile(new URL('../web/src/index.css', import.meta.url).pathname, 'utf8')
