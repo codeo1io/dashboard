@@ -96,3 +96,22 @@ deliverable-marker half grafted into test/roadmap-integrity-guard.test.ts
 (presence check + newest-carrier census-claim check); the banded lint-proxy
 baselines retired under main's stronger rm-1454 zero-error eslint leg. All
 seven declared deliverables above are present in the landed tree.
+
+## Landing record (2026-10-21, integrate conflict case b2b570a87582474986bd0cd450d2007b)
+
+Landed by the conductor integrate merge of run f376b01916294a42bf77b2582a0ae93d
+repository-maintenance cycle:3 (candidate 0cf9e38, base 64cd2f6a) into advanced
+main 192193d. Integrate re-census, superseding the 2026-10-20 claim above per
+the guard's last-match-wins rule (the merge grafts the batch's rm-1960/rm-1961
+def lines onto main's ledger):
+
+**(325 defs / 0 dups / max rm-2032)**
+
+Resolution summary: all seven conflict surfaces resolved by union — the
+rm-1960 autoUpdate mechanics land as staged (sw.ts skipWaiting/clientsClaim,
+registerType 'autoUpdate', sw-auto-update guard, ReloadPrompt
+modify-vs-delete resolved DELETE), rm-1961's fallback-gate lands on
+canary/audit/base-drift over main's Bun job bodies, and every prose surface
+(README bullet, vite.config comments, static-assets note) is trued to the
+denied-by-default router + auto-update reality with main's Bun tooling truth
+retained. Details recorded in the ROADMAP tail graft comment for this case.
