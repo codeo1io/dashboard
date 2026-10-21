@@ -34,13 +34,67 @@ on:
   schedule:
     - cron: '37 3 * * 1' # Mondays 03:37 UTC — before the 04:13 base-drift check
   workflow_dispatch: {}
+  # rm-1961 (cycle 3, 2026-10-17): the shared scheduler silently misses cron
+  # fires — this audit's Monday fire was missed the week of 2026-10-12 and the
+  # 2026-10-05 scheduled fire failed. A completed Main run re-arms this
+  # workflow; the fallback-gate job keeps the weekly cadence.
+  workflow_run:
+    workflows: [Main]
+    types: [completed]
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
+  fallback-gate:
+    # rm-1961: gate for the workflow_run fallback trigger above. Fallback
+    # fires that are off-main (PR-triggered Main runs) or already covered by
+    # a success inside the recency window are skipped; scheduled and manual
+    # fires always pass (skip=false).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      skip: ${{ steps.recency.outputs.skip }}
+    steps:
+      - name: Fallback-fire recency dedupe
+        id: recency
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          # Env-mapped, never interpolated inline in the shell string, so
+          # event-derived values cannot end up inside the command text.
+          if [ "$EVENT_NAME" != 'workflow_run' ]; then
+            echo 'skip=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$HEAD_BRANCH" != 'main' ]; then
+            echo 'skip=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          since="$(date -u -d '6 days ago' +%Y-%m-%d)"
+          today="$(date -u +%Y-%m-%d)"
+          # gh --created: a bare date matches runs ON that day only and the
+          # open-ended 'date..' form returns nothing — pass the CLOSED range,
+          # or the dedupe can only suppress on a success exactly 6 days back.
+          recent="$(gh run list -R "$GITHUB_REPOSITORY" --workflow audit.yaml \
+            --status success --created "${since}..${today}" --json databaseId --jq 'length')"
+          echo "recent-successes=$recent window=${since}..${today}"
+          if [ "$recent" -gt 0 ]; then
+            echo 'skip=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'skip=false' >> "$GITHUB_OUTPUT"
+          fi
+
   audit:
-    name: pnpm audit --recursive
+    # rm-1961: fallback-gate wiring (workflow_run re-arm) rides the merge;
+    # the audit itself stays bun audit per the landed 2026.10.48 Bun
+    # adoption (upstream #648) — the run's pnpm phrasing predates it.
+    needs: fallback-gate
+    if: needs.fallback-gate.outputs.skip != 'true'
+    name: bun audit
     # rm-188 (cycle 13, 2026-09-25): pinned ubuntu-24.04 — ubuntu-26.04 images are
     # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
     # at the rm-139 Node-26 window (2026-10-28).
@@ -52,26 +106,20 @@ jobs:
         with:
           persist-credentials: false
 
-      # pnpm audit reads pnpm-lock.yaml and queries the registry — NO
-      # dependency install is needed, so no ./.github/actions/setup (its
-      # frozen install is heavyweight for a weekly watch); canary.yaml's
-      # setup-node-only shape is the precedent, and the no-install audit was
-      # verified locally 2026-09-30 (a bare lockfile+workspace copy audits
-      # clean with no node_modules).
-      - name: Install pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      # bun audit reads bun.lock and queries the registry — NO dependency
+      # install is needed, so no ./.github/actions/setup (its frozen install
+      # is heavyweight for a weekly watch). Migrated from pnpm audit with the
+      # 2026.10.48 Bun adoption (upstream #648); bun audit verified clean
+      # against the merged lockfile 2026-10-19 (815 packages, 0 advisories).
+      - name: Install Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
 
-      - name: Set up Node 24
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '24'
-
-      - name: Audit every workspace resolution
+      - name: Audit every resolved package
         run: |
           set -euo pipefail
-          if pnpm audit --recursive; then
+          if bun audit; then
             echo 'audit clean — zero known advisories against every resolved version'
             exit 0
           fi
-          echo '::error::pnpm audit --recursive found advisories against the resolved set (rm-278 weekly signal). Cure: raise the offending override floor in pnpm-workspace.yaml with its GHSA rationale and re-resolve pnpm-lock.yaml in the SAME change (rm-276 convention), then verify locally with pnpm audit --recursive returning zero. Known designed red: no indexed undici advisory touches 7.29.1+ (verified 2026-10-01), so an undici 7.x red here means a newly indexed advisory — that points to the undici 8 + jsdom 30 majors migration (rm-271 window), not a floor bump.'
+          echo '::error::bun audit found advisories against the resolved set (rm-278 weekly signal). Cure: raise the offending floor in package.json (exact pin) with its GHSA rationale and regenerate bun.lock in the SAME change (rm-276 convention), then verify locally with bun audit returning zero.'
           exit 1

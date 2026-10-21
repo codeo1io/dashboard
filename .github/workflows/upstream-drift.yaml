@@ -11,11 +11,8 @@
 # ALERT-ONLY by design: this workflow never merges, rebases, fast-forwards,
 # or opens PRs. Absorption stays a human/agent-reviewed batch with its own
 # validation (automerge is deliberately sequenced behind rm-116's required
-# checks, which do not exist yet). Since 2026-10-19 (rm-2060,
-# annotate-don't-fail) the run concludes GREEN on drift and the alarm rides
-# the workflow annotation + step summary + deduplicated issue — being behind
-# is the expected between-batches state, so default-branch reds mean real
-# regressions; the action is always an explicit absorb batch.
+# checks, which do not exist yet). The red run + deduplicated issue are the
+# signal; the action is always an explicit absorb batch.
 #
 # Topology note: the local `autonomy-upstream` remote convention does not
 # exist on a fresh Actions checkout, so upstream is fetched by URL into
@@ -84,7 +81,7 @@ jobs:
             # rm-516: sed -n reads the whole stream, so its consumer cannot
             # SIGPIPE git the way head -15's early exit can under set -o
             # pipefail (exit 141 kills this step before the alert-issue draft
-            # and the drift annotation below when drift output is large).
+            # and the intentional exit 1 below when drift output is large).
             git log --oneline --reverse "origin/$DEFAULT_BRANCH..$UPSTREAM" | sed -n '1,15p'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
@@ -92,9 +89,8 @@ jobs:
           # Surface the drift as a tracking issue (deduplicated while one is
           # open). Best-effort: issues are DISABLED on this fork
           # (has_issues=false → the issue API 410s) — the same guard as
-          # base-drift.yaml. The workflow annotation + step summary below
-          # are the authoritative drift signal (the run concludes green by
-          # design, rm-2060).
+          # base-drift.yaml. The unconditional exit 1 below is the
+          # authoritative drift signal.
           ISSUES_ENABLED="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.has_issues' 2>/dev/null || echo 'false')"
           if [ "$ISSUES_ENABLED" = 'true' ]; then
             gh label create upstream-drift --color D4E8F7 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || true
@@ -111,18 +107,8 @@ jobs:
               echo "open upstream-drift issue already exists ($OPEN) — skipping creation"
             fi
           else
-            echo '::warning::issues disabled on this repository — drift tracking issue skipped; the annotation and step summary below carry the drift signal (run green by design, rm-2060)'
+            echo '::warning::issues disabled on this repository — drift tracking issue skipped; the red run is the drift signal'
           fi
 
-          # rm-2060 (2026-10-19, annotate-don't-fail): being behind is the
-          # expected between-batches state, so conclude GREEN and carry the
-          # alarm as a workflow annotation + step summary instead —
-          # default-branch reds stay reserved for real regressions.
-          # base-drift.yaml deliberately KEEPS its true red: it gates the
-          # real image-digest cure (rm-886).
-          echo "::error::upstream drift: fork main is $BEHIND commits behind fro-bot/dashboard (and $AHEAD ahead) — annotate-don't-fail, this run is green by design (rm-2060); schedule an absorb batch through the normal validation gates"
-          {
-            echo
-            echo '### Green by design (rm-2060: annotate, do not fail)'
-            echo "Drift alarm: fork main is **$BEHIND behind** and $AHEAD ahead of upstream fro-bot/dashboard. The alarm is this summary + the run annotation + the tracking issue above; the run itself is green so default-branch reds mean real regressions. Action: schedule an absorb batch through the normal validation gates."
-          } >> "$GITHUB_STEP_SUMMARY"
+          # Non-zero so the run is visibly red on drift.
+          exit 1
