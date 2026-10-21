@@ -18,7 +18,7 @@ import {endpointHash} from './endpoint-hash.ts'
 import type {HandoffState, PushInactiveReason, PushSubscriptionMetadata, VapidKeyResponse} from './push-types.ts'
 import {VALID_PUSH_INACTIVE_REASONS} from './push-types.ts'
 import {derivePushHandoffState, reconcile} from './reconcile.ts'
-import {urlB64ToUint8Array} from './vapid-key.ts'
+import {parseVapidKeyResponse, urlB64ToUint8Array} from './vapid-key.ts'
 
 // ---------------------------------------------------------------------------
 // Browser-direct push client
@@ -170,15 +170,11 @@ export function buildPushClient(opts?: BuildPushClientOptions): PushClient {
         if (res.status === 404) return ok({pushDisabled: true, vapidKey: undefined})
         if (!res.ok) return err({kind: 'http', status: res.status})
         const data = (await res.json()) as unknown
-        if (
-          data === null ||
-          typeof data !== 'object' ||
-          typeof (data as {publicKey?: unknown}).publicKey !== 'string' ||
-          typeof (data as {keyVersion?: unknown}).keyVersion !== 'string'
-        ) {
-          return err({kind: 'protocol'})
-        }
-        return ok({pushDisabled: false, vapidKey: data as VapidKeyResponse})
+        // rm-1508: adopt the fail-closed parser — the previous inline check
+        // accepted empty-string publicKey/keyVersion the parser rejects.
+        const parsed = parseVapidKeyResponse(data)
+        if (!parsed.success) return err({kind: 'protocol'})
+        return ok({pushDisabled: false, vapidKey: parsed.data})
       } catch {
         return err({kind: 'network'})
       }
@@ -312,6 +308,8 @@ export type SubscribeOutcome =
   | {readonly kind: 'unsupported'}
   | {readonly kind: 'dismissed'}
   | {readonly kind: 'denied'}
+  /** rm-1508: caller passed `{prompt: false}` (sweep path) while permission is undecided — no prompt may be shown, so no subscription is possible. */
+  | {readonly kind: 'permission-required'}
   | {readonly kind: 'subscribe-failed'}
   | {readonly kind: 'aborted'}
 
@@ -403,7 +401,10 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | 'ti
  * An `AbortSignal` (e.g. from a logout mid-flow) discards the result before
  * any POST — the caller passes `deps.signal` through.
  */
-export async function subscribeOptIn(deps: SubscribeDeps): Promise<SubscribeOutcome> {
+export async function subscribeOptIn(
+  deps: SubscribeDeps,
+  opts: {readonly prompt?: boolean} = {},
+): Promise<SubscribeOutcome> {
   const getSupport = deps.getSupport ?? getPushSupport
   const getPermission = deps.getPermission ?? getNotificationPermission
   const mintKey = deps.mintIdempotencyKey ?? mintIdempotencyKey
@@ -428,6 +429,11 @@ export async function subscribeOptIn(deps: SubscribeDeps): Promise<SubscribeOutc
   if (currentPermission === 'granted') {
     // Already granted (e.g. a subscribe-failed retry) — never re-prompt.
     permission = 'granted'
+  } else if (opts.prompt === false) {
+    // rm-1508: sweep callers may never prompt — only the explicit opt-in
+    // button may surface the permission dialog (reconcile.ts invariant).
+    // Without permission a subscription cannot be created, so stop here.
+    return {kind: 'permission-required'}
   } else {
     permission = await deps.requestPermission()
   }

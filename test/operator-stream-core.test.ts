@@ -4322,6 +4322,65 @@ function makeSseResponse(chunks: string[], opts: {keepOpen?: boolean} = {}): Res
   } as unknown as Response
 }
 
+describe('initOperatorStream — SSE byte-cap stress (rm-1507)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('astral payload crossing the byte ceiling while UTF-16 length stays under it → terminal failure, exactly one fetch (no reconnect)', async () => {
+    // '𝕏' (U+1D54F) is 4 UTF-8 bytes but 2 UTF-16 code units. 250_001 chars =
+    // 1_000_004 bytes (over MAX_SSE_BUFFER_BYTES) yet only 500_002 string
+    // code units (under it) — the pre-rm-114 `.length` cap admitted exactly
+    // this buffer shape. The byte-true counter must abort the reader and
+    // dispatch buffer-overflow, which nextStreamState fails CLOSED with no
+    // reconnect — so the stubbed fetch is hit exactly once, however long the
+    // stream stays dark. This is the reader-level companion of the server
+    // twin's rm-114 test (test/operator-sse-reader.test.ts) and the
+    // incremental-counter property (test/operator-stream-sse-parity.test.ts).
+    const astral = '𝕏'.repeat(Math.ceil((MAX_SSE_BUFFER_BYTES + 4) / 4))
+    expect(astral.length).toBeLessThan(MAX_SSE_BUFFER_BYTES) // the bug's precondition
+
+    const client = {
+      refreshCsrf: async () => ({success: true as const, data: {csrfToken: 'csrf'}}),
+      decideRunApproval: async () => ({success: true as const, data: {state: 'claimed'}}),
+      listRunApprovals: async () => ({success: true as const, data: {approvals: []}}),
+    }
+
+    const approvalsEl = makeFakeEl('div')
+    approvalsEl.hidden = true
+    approvalsEl.attributes['data-role'] = 'run-approvals'
+    const badgeEl = makeFakeEl('span')
+    badgeEl.hidden = true
+    const statusEl = makeFakeEl('span')
+    const noticeEl = makeFakeEl('div')
+
+    let fetchCount = 0
+    vi.stubGlobal('document', {
+      createElement: (tag: string) => makeFakeEl(tag),
+      querySelector: () => null,
+      readyState: 'complete',
+      addEventListener: () => {},
+    })
+    vi.stubGlobal('fetch', async () => {
+      fetchCount += 1
+      return makeSseResponse([astral])
+    })
+    vi.stubGlobal('addEventListener', () => {})
+
+    initOperatorStream({
+      runId: 'run-001',
+      statusEl,
+      noticeEl,
+      approvalsEl,
+      badgeEl,
+      approvalClient: client,
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 2500))
+    expect(fetchCount).toBe(1)
+  }, 10000)
+})
+
 describe('reconcileApprovals — wired integration (corrective prune)', () => {
   afterEach(() => {
     vi.unstubAllGlobals()

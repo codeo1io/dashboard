@@ -16,7 +16,8 @@
     "lint": "eslint --cache --cache-location node_modules/.cache/eslint/",
     "fix": "eslint --fix",
     "pretest": "bun run build:web",
-    "test": "vitest run && vitest run --config web/vitest.config.ts"
+    "test": "vitest run && vitest run --config web/vitest.config.ts",
+    "preflight": "node scripts/preflight.ts"
   },
   "overrides": {
     "brace-expansion@2": ">=2.1.7 <3.0.0",

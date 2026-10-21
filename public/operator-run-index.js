@@ -15,6 +15,12 @@ export {formatRelativeTime}
 
 export const RUN_INDEX_CAP = 100
 
+// rm-1446: the gateway session's push-health vocabulary, mirrored from the
+// operator contract (src/gateway/operator-contract/responses.ts). The parity
+// suite (test/operator-push-health-parity.test.ts) pins all three sources —
+// contract, web runtime, and this vendored twin — to the same static list.
+export const OPERATOR_PUSH_HEALTH_STATUSES = ['ready', 'degraded', 'unknown']
+
 /** Timeout for the /runs fetch — matches server-side Gateway fetch timeout precedent. */
 export const FETCH_TIMEOUT_MS = 10_000
 

@@ -76,7 +76,9 @@ function parseLinksCell(raw: string, id: string): readonly ListenerLink[] {
     // aggregator.ts:576) — a V8 SyntaxError message can embed a raw snippet of
     // the corrupt cell (2026-10-18 independent-review fix). Warning-level
     // still lands on stderr via the console-backed sink, so log-channel
-    // assertions keep observing it.
+    // assertions keep observing it. (The fa1a9c89 lane's rm-1511 minted the
+    // same read-path validation in parallel; main's rm-1459 landed first, so
+    // this superset text — sanitize + the rm-232 atomic upsert — stays.)
     logger.warning(
       `[listener-store] degraded links cell on message ${id}: ${
         sanitizeErrorMessage(error instanceof Error ? error.message : String(error))

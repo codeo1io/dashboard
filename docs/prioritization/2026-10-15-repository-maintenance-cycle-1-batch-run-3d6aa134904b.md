@@ -133,3 +133,41 @@ union. Cured by adding the entry to the workflow-issues section (count 90→91);
 no other orphan, dead link, or frontmatter gap exists. Root-leg re-verified
 green on the doc guards (index/frontmatter/roadmap-integrity), the web vitest
 project (41 files), and the SW/static-asset guards after a fresh `build:web`.
+
+## Landing record (2026-10-21, integrate conflict case 43bccb0c)
+
+Landed by the conductor integrate merge of run
+fa1a9c89b26b4f588dde806ed872ec07 (repository-maintenance cycle:2 "push
+contract, client seams, landing hygiene", terminal-salvage candidate c095989
+over salvage ce4b634, base f157cb8b) into post-2026.10.59 main (6d31d7e).
+Integrate re-census, superseding the 2026-10-21 record above per the guard's
+last-match-wins rule (this merge grafts the run's ext#47 mints rm-1506
+through rm-1511 — six defs, all ids absent at main — and flips rm-1446 to
+implemented; max id stays main's rm-2032):
+
+**(331 defs / 0 dups / max rm-2032)**
+
+Resolution summary: the run's six defs land with this-merge status truth
+(rm-1507/rm-1508/rm-1509/rm-1510 implemented at this integrate; rm-1511
+implemented via mainline supersession — main's rm-1459 landed the identical
+listener read-path validation on 2026-10-18, so the merge keeps main's
+superset store text wholesale and the batch's byte-identical degradation
+suite stands; rm-1506 stays candidate — its TTL/Urgency/Topic contract work
+did not ride the salvage commit). Companion code resolutions: the SSE twins
+adopt rm-1507's junction-only incremental byte counter in both
+src/gateway/operator-sse-reader.ts (superseding rm-1485's per-fragment
+encode, keeping its releaseBody and providerFailureReason gating verbatim)
+and public/operator-stream.js (sseBufferUtf8Bytes + the rm-1484-named
+sseBufferByteLength alias, cap site comparing the maintained bufferBytes
+counter), pinned by test/operator-stream-sse-parity.test.ts;
+web/src/views/Notifications.tsx is a union (the rm-1446 health badge over
+main's post-#629 install-steps card); Notifications.test.tsx restores the
+rm-600 VAPID wiring describe that main's 2026.10.43 adoption dropped against
+the still-live getCurrentKeyVersion wiring; subscribe.ts carries rm-1508's
+{prompt: false} gate + parseVapidKeyResponse adoption over main's post-#631
+client; eslint.config.ts gains '.slim/**' (rm-1510's mirrors carry their own
+configs); scripts/preflight.ts is re-truthed to the Bun-era tool spawns
+(bunx) per rm-1509's rider; .slim/clonedeps.json re-pins to main's live
+v0.124.1/0e317f0c fro-bot.yaml pin so test/clonedeps-lockstep.test.ts holds
+green. This doc's own deliverables remain present in the landed tree, as
+before.
