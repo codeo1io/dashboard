@@ -19,6 +19,11 @@ import AxeBuilder from '@axe-core/playwright'
  * PNGs, then run `bunx playwright test --update-snapshots` inside that
  * image (the container block in .github/workflows/visual.yaml documents the
  * same; bun.sh/install + PATH since the 2026.10.48 Bun adoption).
+ * 2026-10-21 fifth regen (2026.10.59 adoption, PR #1104): only
+ * dashboard-operator-dark.png rewritten in the same image — the adoption's
+ * launch-bounds/dedupe UI (#678/#679) + contract 1.12/1.13 surfaces grow the
+ * operator page 3526px→4405px; privacy + listener unchanged (in-image clean
+ * compare 3/3 green at the new capture).
  * 2026-10-19 fourth regen (2026.10.48 adoption, PR #1026): all three
  * baselines rewritten in the same image — the adoption's markdown output
  * toolbar (run-output-tools region + Rendered/Raw toggle) grows the operator

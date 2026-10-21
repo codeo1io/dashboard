@@ -117,8 +117,29 @@ jobs:
           ' "$work"); then
             echo "::error::Impeccable could not scan: stdout is not a JSON array (exit $rc)."
             echo "$findings"
+            cat "$work/stderr"
+            exit 1
+          fi
+          primary_count=${counts% *}
+          advisory_count=${counts#* }
+
+          if [ "$primary_count" -gt 0 ]; then
+            cat "$work/primary.json"
+            echo
             echo "Impeccable detected UI anti-patterns. Address them or, for an intentional brand choice, add a scoped ignore via 'impeccable ignores add-value'."
             exit 1
+          fi
+          if [ "$rc" -eq 2 ]; then
+            echo "::error::Impeccable exited 2 but reported no primary findings; treating the output as inconsistent."
+            echo "$findings"
+            exit 1
+          fi
+          if [ "$advisory_count" -gt 0 ]; then
+            echo "::notice::Impeccable reported $advisory_count advisory finding(s); advisories do not block."
+            cat "$work/advisory.json"
+            echo
+            echo "No blocking UI anti-patterns detected."
+            exit 0
           fi
           echo "No UI anti-patterns detected."
 
