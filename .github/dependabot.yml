@@ -15,9 +15,12 @@
 #   the fork's single self-hosted runner — became historical when PR #11/#12
 #   moved CI to GitHub-hosted runners on 2026-09-22.)
 # - cooldown.default-days: 1 holds every PR one day after upstream publication
-#   (rm-135's dependabot half; mirrors pnpm-workspace.yaml's minimumReleaseAge:
-#   1440 at :13, which carries the matching minimumReleaseAgeExclude list).
-#   Units differ: dependabot cooldown is DAYS, pnpm minimumReleaseAge is MINUTES.
+#   (rm-135's dependabot half). The install-side gate is separate and
+#   stronger: bunfig.toml:5 minimumReleaseAge = 259200 (72 h) refuses any
+#   release younger than 72 h at install time. (Pre-2026-10-22 this header
+#   claimed a mirror of pnpm-workspace.yaml's minimumReleaseAge: 1440 — a
+#   ghost citation: that file does not exist on this fork; repaired together
+#   with the npm->bun ecosystem migration, rm-2380.)
 #   GitHub does not apply cooldown to security updates — they land without
 #   delay. But do not expect a security update to cure a TRANSITIVE override
 #   floor — observed behavior 2026-09-30 (rm-276 review-fix softened the
@@ -45,7 +48,13 @@ updates:
         patterns:
           - '*'
 
-  - package-ecosystem: npm
+  # 2026-10-22: migrated npm -> bun (rm-2380). dependabot-core v0.400.0+
+  # supports Bun 1.4 and bun.lock lockfileVersion 3; the npm ecosystem
+  # updater cannot write bun.lock, so its PRs were structurally unmergeable
+  # against the frozen-lockfile gate. Verification-first: the first weekly
+  # run is the pinned evidence — if it errors server-side, fall back to the
+  # npm stanza with a dated re-evaluation (never assert success).
+  - package-ecosystem: bun
     directory: /
     schedule:
       interval: weekly
@@ -53,17 +62,19 @@ updates:
       default-days: 1
     open-pull-requests-limit: 3
     groups:
-      npm-and-workspaces:
+      bun-deps:
         patterns:
           - '*'
     ignore:
-      # Major updates are deferred until a migration is planned (2026-09-21,
-      # cycle-5 batch B6 / rm-133). Vitest 5 removes reporters/flags the suite
-      # relies on; TypeScript 7 must be re-verified against the strip-only
-      # erasableSyntaxOnly pipeline. Minor/patch updates stay open.
-      # Re-evaluate: 2026-10-21.
-      - dependency-name: vitest
-        update-types: ['version-update:semver-major']
+      # Major-update re-evaluation executed 2026-10-22 (the recorded
+      # 'Re-evaluate: 2026-10-21' date was one day past due):
+      # - vitest ignore RETIRED — the fork sits at 5.0.5 == registry latest;
+      #   the old 'Vitest 5 removes reporters/flags' rationale was consumed
+      #   by the completed 5.x migration.
+      # - typescript KEEP — typescript-eslint's peer range (>=4.8.4 <6.1.0,
+      #   verified 2026-10-22) rejects TS 7.x while the fork sits at 6.0.3;
+      #   bound to the rm-271 toolchain gate.
+      # Re-evaluate: 2027-01-21.
       - dependency-name: typescript
         update-types: ['version-update:semver-major']
 
