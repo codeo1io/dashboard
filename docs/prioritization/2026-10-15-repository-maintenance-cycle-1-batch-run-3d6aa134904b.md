@@ -133,3 +133,52 @@ union. Cured by adding the entry to the workflow-issues section (count 90→91);
 no other orphan, dead link, or frontmatter gap exists. Root-leg re-verified
 green on the doc guards (index/frontmatter/roadmap-integrity), the web vitest
 project (41 files), and the SW/static-asset guards after a fresh `build:web`.
+
+## Landing record (2026-10-22, integrate conflict case 72dd4a92)
+
+Landed by the conductor integrate merge of run 6abf380ea73b42549d333437bf62138b
+(repository-maintenance cycle:3 batch rm-2133 + rm-2134, candidate 847f179,
+base 62778fb) into advanced main (02146a1, post-2026.10.59 adoption).
+Integrate re-census, superseding the 2026-10-21 record above per the guard's
+last-match-wins rule (this merge lands the cycle:3 ledger — mints
+rm-2133/rm-2134 plus four standalone roadmap riders, with the two defs
+carrying their own implement and compound riders — onto main's later,
+larger ledger; no collisions: both ids were absent at main):
+
+**(327 defs / 0 dups / max rm-2134)**
+
+Resolution summary: `scripts/should-release.ts` auto-merged clean as a true
+union — main's upstream #683 web-test-file exception composes with the
+candidate's rm-2134 bun.lock comment trues, and the reworded hard-release doc
+block matches `scripts/release-paths.ts` line for line; the other three
+executable/doc surfaces (`scripts/gzip-static-sidecars.ts`,
+`.github/copilot-instructions.md`, `test/copilot-instructions-guard.test.ts`
+with the rm-612 guard flip) carried candidate-only changes. ROADMAP.md
+resolved at its two rider-append collisions (rm-271 and rm-139) as
+chronological rider unions — main's 2026-10-18/19 riders first, the run's
+2026-10-20 census riders after; every line of both sides' actual deltas is
+preserved (verified by stage-2/stage-3 containment diff: zero HEAD-side lines
+lost, and the only candidate-side lines absent are byte-identical to the merge
+base, i.e. main's later edits of rm-1501/rm-673 correctly won). rm-2133 lands
+as its recorded ZERO-TREE-EDIT supersession (the red tip was already cured on
+main) and rm-2134 as implemented-pending-landing; the compound record
+(`2026-10-21-repository-maintenance-cycle-3-compound-run-6abf380ea73b.md`)
+joins the tree as the newest cohort doc with all its claimed paths present.
+
+Follow-up (same landing, independent review conflict case
+88855db5b27744ac84195a264bfec0e4): the combined tree was re-reviewed for
+latent semantic conflicts before the merge concluded; the review confirmed
+the resolution and corrected this record. Confirmed first-hand on the
+resolved tree: zero conflict markers tree-wide; both-sides containment
+re-proven for every candidate-touched file (zero HEAD-side or candidate-side
+added lines lost, zero HEAD-deleted lines resurrected); the live census
+equals the re-census claim above (327 defs / 0 dups / max rm-2134, per `node
+scripts/roadmap-census.ts`); the roadmap/copilot/prose/fork/query guard
+batteries and the impacted release surfaces (release-trigger-paths,
+should-release, static-assets — 279 tests) all green; eslint rc=0 on every
+touched file including ROADMAP.md, so the rm-2133 supersession holds with no
+no-space-in-emphasis regression; `git ls-files .conductor` empty. One
+correction applied by the review: the re-census preamble above originally
+read "five riders" — the landed delta carries four standalone roadmap riders
+(rm-252 window census, majors/impeccable, rm-689 pin sweep, rm-139 node gate)
+plus the implement and compound riders recorded inside the two defs.
