@@ -1,5 +1,6 @@
 import {useCallback, useEffect, useRef, useState} from 'react'
 import {getPushSupport} from '../push/capability.ts'
+import {fetchSessionPushStatus, pushHealthLabel, type PushHealthStatus} from '../push/health.ts'
 import {getLogoutAbortSignal} from '../push/logout-abort.ts'
 import {
   INITIAL_RECONCILE_SWEEP_CACHE,
@@ -60,6 +61,9 @@ export function Notifications({
 }: NotificationsProps = {}) {
   const configReady = pushConfigReady ?? true
   const [metaEnabled] = useState<boolean>(readPushEnabledMeta)
+  // rm-1446: gateway session push health (ready/degraded/unknown). null =
+  // absent — never rendered, never blocks the session surface (fail-open).
+  const [pushHealth, setPushHealth] = useState<PushHealthStatus | null>(null)
   const [currentUiState, setCurrentUiState] = useState<NotificationUiState>('not-requested')
   const [inFlight, setInFlight] = useState(false)
   const [isCardDismissed, setIsCardDismissed] = useState<boolean>(() => {
@@ -180,12 +184,18 @@ export function Notifications({
     if (result.action && result.action !== 'none') {
       try {
         if (result.action === 'register') {
-          const outcome = await subscribeOptIn({
-            serviceWorkerReady: () => navigator.serviceWorker.ready as unknown as Promise<MinimalServiceWorkerRegistration>,
-            requestPermission: () => Notification.requestPermission(),
-            pushClient,
-            signal: getLogoutAbortSignal(),
-          })
+          // rm-1508: the sweep may never surface a permission prompt —
+          // subscribeOptIn enforces this ({prompt: false}) and returns
+          // 'permission-required' instead of prompting.
+          const outcome = await subscribeOptIn(
+            {
+              serviceWorkerReady: () => navigator.serviceWorker.ready as unknown as Promise<MinimalServiceWorkerRegistration>,
+              requestPermission: () => Notification.requestPermission(),
+              pushClient,
+              signal: getLogoutAbortSignal(),
+            },
+            {prompt: false},
+          )
           if (outcome.kind === 'subscribed') {
             setCurrentUiState('subscribed')
           } else if (outcome.kind === 'subscribe-failed') {
@@ -197,6 +207,10 @@ export function Notifications({
             setCurrentUiState('sw-unavailable')
           } else if (outcome.kind === 'dismissed') {
             setCurrentUiState('dismissed')
+          } else if (outcome.kind === 'permission-required') {
+            // rm-1508: permission is undecided and the sweep cannot ask —
+            // fall back to the default enable affordance (button-only prompt).
+            setCurrentUiState('not-requested')
           }
         } else if (result.action === 'resubscribe') {
           const outcome = await resubscribeStaleKey({
@@ -348,6 +362,24 @@ export function Notifications({
     }
   }, [currentUiState])
 
+  // rm-1446: surface the gateway's session push-health field. Fail-open by
+  // construction — every failure path resolves null and renders nothing.
+  // Review-fix (2026-10-19): fetch only when the card actually renders — the
+  // same condition as the early-return below — so a dismissed or
+  // push-disabled mount pays no /operator/session request. Re-runs when the
+  // footer re-entry clears the dismissal latch, so a re-shown card still
+  // hydrates its badge.
+  useEffect(() => {
+    if (!metaEnabled || isCardDismissed) return
+    const controller = new AbortController()
+    void fetchSessionPushStatus({}, controller.signal).then(status => {
+      setPushHealth(status)
+    })
+    return () => {
+      controller.abort()
+    }
+  }, [metaEnabled, isCardDismissed])
+
   if (!metaEnabled || isCardDismissed) {
     return null
   }
@@ -380,6 +412,11 @@ export function Notifications({
       } else if (outcome.kind === 'denied') {
         setCurrentUiState('denied')
       }
+    } catch {
+      // rm-1508: parity with the sweep path — a throwing dep (e.g. an
+      // injected serviceWorkerReady that rejects) surfaces as a bounded
+      // failure state, never an unhandled rejection.
+      setCurrentUiState('subscribe-failed')
     } finally {
       setInFlight(false)
       enableInFlightRef.current = false
@@ -397,6 +434,11 @@ export function Notifications({
         pushClient,
       })
       setCurrentUiState('not-requested')
+    } catch {
+      // rm-1508: bounded failure parity with the enable path — the UI keeps a
+      // defined state instead of an unhandled rejection; the next sweep
+      // re-evaluates from the Gateway record.
+      setCurrentUiState('subscribe-failed')
     } finally {
       setInFlight(false)
       disableInFlightRef.current = false
@@ -512,6 +554,21 @@ export function Notifications({
           >
             {inFlight ? 'Updating push subscription…' : `${copy.headline}: ${copy.detail}`}
           </div>
+
+          {/* rm-1446: gateway push health — degraded is visually distinct
+              (warning tone); ready/unknown render muted. Absent (null) or
+              unreachable → not rendered at all (fail-open). */}
+          {pushHealth !== null && (
+            <span
+              data-testid="push-health-badge"
+              data-health={pushHealth}
+              className={`text-label font-mono uppercase tracking-label ${
+                pushHealth === 'degraded' ? 'text-warning' : 'text-text-muted'
+              }`}
+            >
+              {pushHealthLabel(pushHealth)}
+            </span>
+          )}
 
           {/* DEV-gated synthetic push button — dev-only end to end: the SW
               receiver (web/src/sw.ts) is gated by the same import.meta.env.DEV

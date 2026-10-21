@@ -13,6 +13,12 @@ export default defineConfig(
     // of errors.
     // wiki-writer is excluded from this fork entirely (never-absorb doctrine,
     // rm-252/259): its directory does not exist, so nothing needs an ignore.
+    // .slim/ holds the cloned dependency-source mirrors (.slim/clonedeps/repos/*).
+    // Mirrors are provisioned on demand (AGENTS.md recipe, rm-1510's lockstep
+    // re-provision instructions) and each carries its OWN eslint config needing
+    // plugins this repo does not install — without this ignore, any provisioned
+    // mirror derails `bun run lint` with an unrelated "could not find plugin"
+    // configuration error.
     ignores: [
       'docs/plans/**',
       'docs/solutions/**',
@@ -20,6 +26,7 @@ export default defineConfig(
       'web/**',
       '.agents/**',
       '.opencode/**',
+      '.slim/**',
     ],
     typescript: {
       tsconfigPath: './tsconfig.json',

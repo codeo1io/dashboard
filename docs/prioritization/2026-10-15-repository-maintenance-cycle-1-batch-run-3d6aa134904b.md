@@ -133,3 +133,36 @@ union. Cured by adding the entry to the workflow-issues section (count 90→91);
 no other orphan, dead link, or frontmatter gap exists. Root-leg re-verified
 green on the doc guards (index/frontmatter/roadmap-integrity), the web vitest
 project (41 files), and the SW/static-asset guards after a fresh `build:web`.
+
+## Landing record (2026-10-21, integrate conflict case f143267b317048ecaf8545eed62d6ddc)
+
+Landed by the conductor integrate merge of run fa1a9c89b26b4f588dde806ed872ec07
+(repository-maintenance cycle:2 terminal-salvage, candidate c095989, base
+f157cb8b) into advanced main (76005aa). Integrate re-census, superseding the
+8f25cf43 record above per the guard's last-match-wins rule (this merge seats
+the run's six mints rm-1506..rm-1511 — all absent at main, zero id collisions
+— plus extension #47 and its dated evidence riders):
+
+**(331 defs / 0 dups / max rm-2032)**
+
+Resolution summary: the run's six-mint block is seated at its authored anchor
+(immediately after rm-606, id-ordered ahead of main's rm-1512+ stack) and
+extension #47 at its authored tail anchor; rm-1507's junction-delta byte
+accounting supersedes main's rm-1484/rm-1485 mechanism in both SSE twins while
+the rm-1484 exported name survives as an alias (test/d.ts-pinned) and
+rm-1485's releaseBody discipline is retained; rm-1508's no-prompt sweep,
+parseVapidKeyResponse adoption, and enable/disable catch parity auto-merged
+clean; main's rm-1446 push-health def is implemented by this landing
+(web/src/push/health.ts + badge + three-way parity test); the rm-600
+view-wiring describe is restored to web/src/views/Notifications.test.tsx
+(main's adoption lineage silently dropped it while the component wiring
+survived — it passes green against the merged tree); package.json gains the
+`preflight` alias closing rm-1509's script bullet. Deliverables all present:
+scripts/preflight.ts, docs/runbooks/local-preflight.md,
+test/clonedeps-lockstep.test.ts, test/operator-push-health-parity.test.ts,
+test/operator-stream-sse-parity.test.ts, web/src/push/health.ts(+test),
+.slim/clonedeps.json, src/listener/store.ts read-path validation. Targeted
+verification green: roadmap guards (after this re-census), web Notifications +
+push health (68), SSE parity + push-health parity + clonedeps lockstep +
+listener store (24), `node scripts/preflight.ts --list`. Full validation
+rides the landing gate.

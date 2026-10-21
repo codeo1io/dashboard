@@ -494,6 +494,41 @@ describe('Notifications Component', () => {
     expect(screen.queryByTestId('notifications-settings')).toBeNull()
   })
 
+  it('pays no /operator/session request when the card is already dismissed (rm-1446 review-fix)', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      addMetaTag()
+      localStorage.setItem('fro-bot-notifications-dismissed', '1')
+      await act(async () => {
+        render(<Notifications />)
+      })
+      expect(screen.queryByTestId('notifications-settings')).toBeNull()
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+      removeMetaTag()
+      localStorage.removeItem('fro-bot-notifications-dismissed')
+    }
+  })
+
+  it('pays no /operator/session request when push is disabled via absent meta tag (rm-1446 review-fix)', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      removeMetaTag()
+      localStorage.removeItem('fro-bot-notifications-dismissed')
+      await act(async () => {
+        render(<Notifications />)
+      })
+      expect(screen.queryByTestId('notifications-settings')).toBeNull()
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+      localStorage.removeItem('fro-bot-notifications-dismissed')
+    }
+  })
+
   it('runs reconcile actions: register', async () => {
     addMetaTag()
     vi.mocked(runReconcileSweep).mockResolvedValue({
@@ -509,7 +544,30 @@ describe('Notifications Component', () => {
     })
 
     expect(subscribeOptIn).toHaveBeenCalledTimes(1)
+    // rm-1508: the sweep may never surface a permission prompt — the view
+    // must pass {prompt: false}; the unit suite pins the guard itself.
+    expect(subscribeOptIn).toHaveBeenCalledWith(expect.anything(), {prompt: false})
     expect(screen.getByTestId('notifications-headline')).toHaveTextContent('Alerts Active')
+  })
+
+  it('runs reconcile actions: register with permission-required outcome -> falls back to the enable affordance', async () => {
+    addMetaTag()
+    vi.mocked(runReconcileSweep).mockResolvedValue({
+      skipped: false,
+      action: 'register',
+      uiState: 'not-requested',
+      nextCache: {} as any,
+    })
+    vi.mocked(subscribeOptIn).mockResolvedValue({kind: 'permission-required'})
+
+    await act(async () => {
+      render(<Notifications />)
+    })
+
+    expect(subscribeOptIn).toHaveBeenCalledWith(expect.anything(), {prompt: false})
+    // 'not-requested' is the default enable affordance — the user decides via
+    // the button, never via an unprompted sweep prompt.
+    expect(screen.getByTestId('notifications-headline')).toHaveTextContent('Push Alerts')
   })
 
   it('runs reconcile actions: resubscribe', async () => {
@@ -795,6 +853,147 @@ describe('Notifications Component', () => {
         body: 'operator.approval_needed.body',
         data: {type: 'approval', route: '/'},
       },
+    })
+  })
+
+  describe('rm-600 — VAPID key-version cache wiring (getCurrentKeyVersion supplier)', () => {
+    const flush = () => act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    /** Trigger a second sweep through the same path production uses (focus). */
+    const triggerFocusSweep = () => act(async () => {
+      window.dispatchEvent(new Event('focus'))
+      // Sweep is debounced 250ms on focus/visibility coalescing.
+      await new Promise((resolve) => setTimeout(resolve, 320))
+    })
+
+    it('passes a getCurrentKeyVersion function into runReconcileSweep (production dep wiring)', async () => {
+      addMetaTag()
+      await act(async () => {
+        render(<Notifications />)
+      })
+
+      expect(runReconcileSweep).toHaveBeenCalledTimes(1)
+      const deps = vi.mocked(runReconcileSweep).mock.calls[0]?.[0]
+      expect(typeof deps?.getCurrentKeyVersion).toBe('function')
+      // Fail-open BEFORE the vapid-key fetch resolves: undefined, never a guess.
+      expect(deps?.getCurrentKeyVersion?.()).toBeUndefined()
+    })
+
+    it('sources the version from pushClient.getVapidKey() and serves it to the next sweep', async () => {
+      addMetaTag()
+      const getVapidKey = vi.fn().mockResolvedValue({
+        success: true,
+        data: {pushDisabled: false, vapidKey: {publicKey: 'BNc3xVwB', keyVersion: 'v2'}},
+      })
+      vi.mocked(buildPushClient).mockReturnValueOnce({getVapidKey} as never)
+
+      await act(async () => {
+        render(<Notifications />)
+      })
+      await flush()
+
+      // Second sweep through the production focus path.
+      await triggerFocusSweep()
+
+      expect(runReconcileSweep).toHaveBeenCalledTimes(2)
+      const secondDeps = vi.mocked(runReconcileSweep).mock.calls[1]?.[0]
+      expect(secondDeps?.getCurrentKeyVersion?.()).toBe('v2')
+
+      // Rate limit: two sweeps within one refresh window issue ONE vapid-key
+      // GET, not one per sweep.
+      expect(getVapidKey).toHaveBeenCalledTimes(1)
+    })
+
+    it('fail-open: a failed getVapidKey result leaves the supplier at undefined', async () => {
+      addMetaTag()
+      const getVapidKey = vi.fn().mockResolvedValue({
+        success: false,
+        error: {kind: 'network'},
+      })
+      vi.mocked(buildPushClient).mockReturnValueOnce({getVapidKey} as never)
+
+      await act(async () => {
+        render(<Notifications />)
+      })
+      await flush()
+      await triggerFocusSweep()
+
+      const secondDeps = vi.mocked(runReconcileSweep).mock.calls[1]?.[0]
+      expect(secondDeps?.getCurrentKeyVersion?.()).toBeUndefined()
+    })
+  })
+
+  // rm-1446: gateway session push-health rendering — fail-open by contract:
+  // ready/degraded/unknown render (degraded visually distinct), anything
+  // else (absent field, non-OK, network failure) renders nothing and must
+  // never break the view.
+  describe('session push health (rm-1446)', () => {
+    const sessionJson = (push: unknown) =>
+      new Response(JSON.stringify({expiresAt: 1, login: 'ops', push}), {
+        status: 200,
+        headers: {'content-type': 'application/json'},
+      })
+
+    const healthBody = (status: string) =>
+      new Response(JSON.stringify({push: {status}}), {
+        status: 200,
+        headers: {'content-type': 'application/json'},
+      })
+
+    const renderView = async () => {
+      let view!: ReturnType<typeof render>
+      await act(async () => {
+        view = render(<Notifications />)
+      })
+      return view
+    }
+
+    it('renders the health badge for each status with degraded distinct', async () => {
+      addMetaTag()
+      for (const [status, distinct] of [
+        ['ready', false],
+        ['degraded', true],
+        ['unknown', false],
+      ] as const) {
+        vi.stubGlobal(
+          'fetch',
+          vi.fn().mockResolvedValue(healthBody(status)),
+        )
+        const {unmount} = await renderView()
+        const badge = await screen.findByTestId('push-health-badge')
+        expect(badge.getAttribute('data-health')).toBe(status)
+        expect(badge.className).toContain(distinct ? 'text-warning' : 'text-text-muted')
+        unmount()
+        vi.unstubAllGlobals()
+      }
+      removeMetaTag()
+    })
+
+    it('fail-open: session body without a push field renders no badge', async () => {
+      addMetaTag()
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sessionJson(undefined)))
+      await renderView()
+      // One paint + microtask drain — absence must be stable, not just late.
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(screen.queryByTestId('push-health-badge')).toBeNull()
+      removeMetaTag()
+      vi.unstubAllGlobals()
+    })
+
+    it('fail-open: a rejected session fetch renders no badge', async () => {
+      addMetaTag()
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')))
+      await renderView()
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(screen.queryByTestId('push-health-badge')).toBeNull()
+      removeMetaTag()
+      vi.unstubAllGlobals()
     })
   })
 })

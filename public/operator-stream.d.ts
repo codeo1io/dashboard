@@ -24,11 +24,19 @@ export declare const RETRY_MAX_COUNT: number
 export declare const MAX_SSE_BUFFER_BYTES: number
 
 /**
+/**
  * rm-1484: UTF-8 byte length of the stream buffer. The cap constant is
  * BYTES-named; callers must never compare it against a UTF-16 `.length`
- * (undercounts astral 2x and CJK 3x).
+ * (undercounts astral 2x and CJK 3x). Kept for the rm-1484 test surface
+ * after rm-1507 renamed the canonical export.
  */
 export declare function sseBufferByteLength(text: string): number
+
+/**
+ * rm-1507: byte-true UTF-8 length of an SSE buffer snapshot — the cap is
+ * enforced in bytes (not UTF-16 code units), mirroring the server twin.
+ */
+export declare function sseBufferUtf8Bytes(text: string): number
 
 /**
  * rm-477: append one decoded read() chunk to the stream buffer, holding a
@@ -36,6 +44,18 @@ export declare function sseBufferByteLength(text: string): number
  * record boundary. The server reader carries the same pending-CR logic inline.
  */
 export declare function appendStreamChunk(buffer: string, decoded: string): string
+
+/**
+ * rm-1507: incremental UTF-8 byte delta of one appendStreamChunk fold — encodes
+ * only the newly appended junction (previously-held CR / trailing lone high
+ * surrogate + the chunk text that passes through normalizeCrlf), never the
+ * retained buffer, so steady-state per-chunk cost is linear in chunk size.
+ *
+ * @param buffer - The stream buffer BEFORE the fold.
+ * @param decoded - The decoded read() chunk about to be folded in.
+ * @returns The signed byte delta to apply to the maintained byte counter.
+ */
+export declare function appendStreamChunkByteDelta(buffer: string, decoded: string): number
 export declare const MAX_OUTPUT_TEXT_CHARS: number
 export declare const MAX_APPROVAL_TOMBSTONES: number
 export declare const MAX_OPEN_APPROVALS: number

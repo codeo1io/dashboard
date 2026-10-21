@@ -577,33 +577,48 @@ export function createOperatorSseReader(options: OperatorSseReaderOptions = {}):
           // opens the NEXT chunk forges a phantom record boundary and the frame
           // is dropped without even a parse error. Hold a trailing CR back and
           // let it normalize together with the following chunk.
-          const heldBefore = buffer.endsWith('\r')
-          const resident = heldBefore ? buffer.slice(0, -1) : buffer
-          const pending = (heldBefore ? '\r' : '') + decoder.decode(value, {stream: true})
-          let fragment = pending
+          const prevBuffer = buffer
+          const decodedChunk = decoder.decode(value, {stream: true})
+          let text = prevBuffer + decodedChunk
           let held = ''
-          if (fragment.endsWith('\r')) {
+          if (text.endsWith('\r')) {
             held = '\r'
-            fragment = fragment.slice(0, -1)
+            text = text.slice(0, -1)
           }
           // normalizeCrlf is idempotent on already-normalized text, so
           // re-normalizing the concatenation is safe; only the junction
-          // between a held CR and a following LF changes. The resident buffer
-          // holds no CR (any earlier one was normalized or held back), so
-          // normalizeCrlf(resident + fragment) === resident + normalizeCrlf(fragment).
-          const normalizedFragment = normalizeCrlf(fragment)
-          buffer = resident + normalizedFragment + held
-          // rm-1485: maintain the byte count per fragment instead of re-encoding
-          // the whole buffer on every chunk (O(buffer × chunks) — ~62 MB of
-          // encoder work for a 1 MB frame read in 8 KB chunks). Only the
-          // previously-held CR (1 byte) plus the decoded chunk can change the
-          // length, and UTF-8 byte length is additive across a concatenation
-          // of complete code points, so the fragment encode is exact.
-          bufferBytes =
-            bufferBytes -
-            (heldBefore ? 1 : 0) +
-            encoder.encode(normalizedFragment).length +
-            (held ? 1 : 0)
+          // between a held CR and a following LF changes.
+          //
+          // rm-1507: the byte counter advances by the fold's INCREMENTAL delta —
+          // encode only the junction (the previously-held CR / a trailing lone
+          // high surrogate plus the chunk text that passes through normalizeCrlf),
+          // never the retained buffer, so steady-state per-chunk cost is linear
+          // in chunk size, not buffer size. Mirrors appendStreamChunkByteDelta
+          // in public/operator-stream.js (parity pinned by
+          // test/operator-stream-sse-parity.test.ts); record extraction below
+          // subtracts the removed record's bytes. This supersedes rm-1485's
+          // per-fragment encode, which stayed linear but drifted from the
+          // whole-buffer re-encode when a surrogate pair split across chunks
+          // (a lone high surrogate counts as one U+FFFD / 3 bytes until its
+          // low half arrives); the junction encode subtracts that provisional
+          // count via prevTailBytes so the maintained counter is byte-true at
+          // every step, not only across complete code points.
+          const prevHeldBytes = prevBuffer.endsWith('\r') ? 1 : 0
+          let junctionStart = prevBuffer.length - prevHeldBytes
+          let prevTailBytes = 0
+          if (junctionStart > 0) {
+            const lastUnit = prevBuffer.charCodeAt(junctionStart - 1)
+            if (lastUnit >= 0xD800 && lastUnit <= 0xDBFF) {
+              junctionStart -= 1
+              prevTailBytes = 3 // previously counted as one U+FFFD
+            }
+          }
+          bufferBytes +=
+            encoder.encode(normalizeCrlf(text.slice(junctionStart))).length +
+            (held === '\r' ? 1 : 0) -
+            prevHeldBytes -
+            prevTailBytes
+          buffer = normalizeCrlf(text) + held
         }
 
         // Hard buffer cap (UTF-8 bytes, rm-114) — fail closed if exceeded without a boundary
