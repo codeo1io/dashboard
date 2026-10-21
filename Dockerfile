@@ -42,7 +42,9 @@ COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 
 WORKDIR /app
 
-# Copy manifests first for layer caching
+# Copy manifests first for layer caching. (No workspace members: the excluded
+# upstream capability is never absorbed — rm-252/259 — so only the root
+# manifest is copied.)
 COPY package.json bun.lock bunfig.toml ./
 
 # Install ALL deps (including devDependencies) for the build step
@@ -70,12 +72,13 @@ COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 
 WORKDIR /app
 
-# Copy manifests for prod-only install
+# Copy manifests for prod-only install. (No workspace members per rm-252/259;
+# the root manifest alone satisfies the frozen lockfile.)
 COPY package.json bun.lock bunfig.toml ./
 
-# Install production deps only (frozen lockfile) — NO dev deps, NO build tools,
-# NO lifecycle scripts
-RUN bun install --frozen-lockfile --production --ignore-scripts
+# Install the root package's production deps only (frozen lockfile) — NO dev deps,
+# NO build tools, NO lifecycle scripts.
+RUN bun install --filter './' --production --frozen-lockfile --ignore-scripts
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 # 2026-09-20: in-image libpcre2-8-0 patch retired — the then-pinned base digest

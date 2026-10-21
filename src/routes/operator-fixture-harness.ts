@@ -17,11 +17,13 @@ import type {RunSummary} from '../gateway/operator-contract/run-summary.ts'
 import type {FixtureQuestionDecisionOutcome} from '../gateway/operator-fixture-sse.ts'
 import {createHash} from 'node:crypto'
 import {Hono} from 'hono'
+import {OPERATOR_LAUNCH_PROMPT_MAX_LENGTH, OPERATOR_LAUNCH_PROMPT_TOO_LONG} from '../gateway/operator-contract/launch-prompt.ts'
 import {FIXTURE_OPERATOR_PREFIX} from '../gateway/operator-fixture-routes.ts'
 import {
   FIXTURE_APPROVAL_SCENARIO_ROWS,
   FIXTURE_CHECKOUT_SCENARIO_ROWS,
   FIXTURE_MARKDOWN_SCENARIO_ROWS,
+  FIXTURE_PROVIDER_FAILURE_SCENARIO_ROWS,
   FIXTURE_QUESTION_SCENARIO_ROWS,
   FIXTURE_SCENARIO_NAMES,
   fixtureQuestionScript,
@@ -33,6 +35,9 @@ import {
 import {
   FIXTURE_CSRF,
   FIXTURE_KNOWN_FAILURE_REASON,
+  FIXTURE_PROMPT_AT_LIMIT,
+  FIXTURE_PROMPT_HTML,
+  FIXTURE_PROMPT_MARKDOWN,
   FIXTURE_SESSION,
   FIXTURE_UNKNOWN_FAILURE_REASON,
   FIXTURE_VAPID_KEY_VERSION,
@@ -129,6 +134,15 @@ interface FixtureScenarioRow {
   readonly scenario: string
   readonly summaryStatus: RunSummary['status']
   readonly failureKind?: OperatorFailureKind
+  /** Emitted verbatim on the summary row; a known reason, or a synthetic out-of-set value. */
+  readonly providerFailureReason?: string
+}
+
+// Row `slot` counts down from the newest scenario row: 30 seconds apart, each updated 15 seconds after creation.
+function fixtureRowTimes(slot: number): {readonly createdAt: string; readonly updatedAt: string} {
+  const iso = (offsetSeconds: number): string =>
+    new Date(Date.UTC(2026, 5, 28, 9, 59, 59 - slot * 30 + offsetSeconds)).toISOString().replace('.000Z', 'Z')
+  return {createdAt: iso(0), updatedAt: iso(15)}
 }
 
 const FIXTURE_SCENARIO_ROWS: readonly FixtureScenarioRow[] = [
@@ -136,20 +150,37 @@ const FIXTURE_SCENARIO_ROWS: readonly FixtureScenarioRow[] = [
   ...FIXTURE_QUESTION_SCENARIO_ROWS,
   ...FIXTURE_APPROVAL_SCENARIO_ROWS,
   ...FIXTURE_MARKDOWN_SCENARIO_ROWS,
+  ...FIXTURE_PROVIDER_FAILURE_SCENARIO_ROWS,
 ]
 
-const FIXTURE_SCENARIO_RUN_SUMMARIES: readonly RunSummary[] = FIXTURE_SCENARIO_ROWS.map((row, index) => {
-  const createdAt = new Date(Date.UTC(2026, 5, 28, 9, 59, 59 - index * 30)).toISOString().replace('.000Z', 'Z')
-  const updatedAt = new Date(Date.UTC(2026, 5, 28, 9, 59, 59 - index * 30 + 15)).toISOString().replace('.000Z', 'Z')
-  return {
-    runId: `run-fixture-index-${row.scenario.replaceAll('_', '-')}`,
-    repo: index % 2 === 0 ? 'fixture-org/fixture-repo' : 'fixture-org/fixture-repo-2',
-    status: row.summaryStatus,
-    createdAt,
-    updatedAt,
-    ...(row.failureKind === undefined ? {} : {failureKind: row.failureKind}),
-  }
-})
+const FIXTURE_SCENARIO_RUN_SUMMARIES: readonly RunSummary[] = FIXTURE_SCENARIO_ROWS.map((row, index) => ({
+  runId: `run-fixture-index-${row.scenario.replaceAll('_', '-')}`,
+  repo: index % 2 === 0 ? 'fixture-org/fixture-repo' : 'fixture-org/fixture-repo-2',
+  status: row.summaryStatus,
+  ...fixtureRowTimes(index),
+  ...(row.failureKind === undefined ? {} : {failureKind: row.failureKind}),
+  ...(row.providerFailureReason === undefined
+    ? {}
+    : {providerFailureReason: row.providerFailureReason as RunSummary['providerFailureReason']}),
+}))
+
+// Static rows for the launch prompt on a collapsed and an expanded card: a Markdown prompt, a prompt at the
+// 8,000-unit limit, a prompt of raw HTML and an unsafe link, and a run with no prompt. Each is a succeeded run
+// on the default success stream. They follow the scenario rows in the list.
+const FIXTURE_PROMPT_ROWS: readonly {readonly runId: string; readonly prompt?: string}[] = [
+  {runId: 'run-fixture-index-prompt-markdown', prompt: FIXTURE_PROMPT_MARKDOWN},
+  {runId: 'run-fixture-index-prompt-limit', prompt: FIXTURE_PROMPT_AT_LIMIT},
+  {runId: 'run-fixture-index-prompt-html', prompt: FIXTURE_PROMPT_HTML},
+  {runId: 'run-fixture-index-prompt-none'},
+]
+
+const FIXTURE_PROMPT_RUN_SUMMARIES: readonly RunSummary[] = FIXTURE_PROMPT_ROWS.map((row, index) => ({
+  runId: row.runId,
+  repo: 'fixture-org/fixture-repo',
+  status: 'succeeded',
+  ...fixtureRowTimes(FIXTURE_SCENARIO_ROWS.length + index),
+  ...(row.prompt === undefined ? {} : {prompt: row.prompt}),
+}))
 
 // One row whose status moves as the fixture session ages, so a collapsed card's badge can be watched changing
 // across the dashboard's 30-second list refresh. The phase is read from the session's age on each `GET /runs`
@@ -179,9 +210,8 @@ const FIXTURE_TRANSITION_RUN_SUMMARY: RunSummary = {
   runId: FIXTURE_TRANSITION_RUN_ID,
   repo: 'fixture-org/fixture-repo-2',
   status: 'running',
-  // Older than every scenario row, so it sits last in the list.
-  createdAt: new Date(Date.UTC(2026, 5, 28, 9, 59, 59 - FIXTURE_SCENARIO_ROWS.length * 30)).toISOString().replace('.000Z', 'Z'),
-  updatedAt: new Date(Date.UTC(2026, 5, 28, 9, 59, 59 - FIXTURE_SCENARIO_ROWS.length * 30 + 15)).toISOString().replace('.000Z', 'Z'),
+  // Older than every scenario and prompt row, so it sits last in the list.
+  ...fixtureRowTimes(FIXTURE_SCENARIO_ROWS.length + FIXTURE_PROMPT_ROWS.length),
 }
 
 // For the "That run isn't in your recent runs." notice by hand: `run-fixture-missing-001` is a well-formed
@@ -191,6 +221,7 @@ const FIXTURE_TRANSITION_RUN_SUMMARY: RunSummary = {
 const FIXTURE_RUN_SUMMARIES: readonly RunSummary[] = [
   ...FIXTURE_BASE_RUN_SUMMARIES,
   ...FIXTURE_SCENARIO_RUN_SUMMARIES,
+  ...FIXTURE_PROMPT_RUN_SUMMARIES,
   FIXTURE_TRANSITION_RUN_SUMMARY,
 ]
 
@@ -506,6 +537,28 @@ export function buildFixtureHarnessRouter(): Hono {
     }
 
     const req = body as Record<string, unknown>
+
+    // Prompt checks run in the gateway's order and before the scenario and idempotency checks:
+    // a non-string prompt, then the untrimmed length cap, then a whitespace-only prompt.
+    const prompt = req.prompt
+    if (typeof prompt !== 'string') {
+      logger.debug('fixture-harness: POST /runs', {status: 400, errorClass: 'missing-prompt'})
+      const res = c.json({error: 'bad request'}, 400)
+      setNoStore(res.headers)
+      return res
+    }
+    if (prompt.length > OPERATOR_LAUNCH_PROMPT_MAX_LENGTH) {
+      logger.debug('fixture-harness: POST /runs', {status: 400, errorClass: OPERATOR_LAUNCH_PROMPT_TOO_LONG})
+      const res = c.json({error: 'bad request', reason: OPERATOR_LAUNCH_PROMPT_TOO_LONG}, 400)
+      setNoStore(res.headers)
+      return res
+    }
+    if (prompt.trim().length === 0) {
+      logger.debug('fixture-harness: POST /runs', {status: 400, errorClass: 'empty-prompt'})
+      const res = c.json({error: 'prompt is required'}, 400)
+      setNoStore(res.headers)
+      return res
+    }
 
     if (!isValidScenario(req.scenario)) {
       logger.debug('fixture-harness: POST /runs', {status: 400, errorClass: 'invalid-scenario'})

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   bareToolName,
+  buildChildEnv,
   buildHookPayload,
   createHook,
   extractFeedbackText,
@@ -94,7 +95,7 @@ describe('bareToolName', () => {
 })
 
 describe('buildHookPayload', () => {
-  it('produces the exact field names hook.mjs reads for a representative edit event', () => {
+  it('produces the exact field names the hook reads for a representative edit event', () => {
     const payload = buildHookPayload({
       tool: 'edit',
       args: { filePath: '/repo/web/src/App.tsx' },
@@ -819,5 +820,342 @@ describe('fail-loud', () => {
     const later = makeOutput()
     await hook(makeInput(), later)
     expect(later.output).toContain('timed out')
+  })
+})
+
+describe('engine warm-up (createHook)', () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void
+    const promise = new Promise<T>(res => {
+      resolve = res
+    })
+    return { promise, resolve }
+  }
+
+  it('skips the scan and warns engine-pending once while the warm-up is pending, then scans once it resolves', async () => {
+    const warm = deferred<boolean>()
+    let warmCalls = 0
+    const calls: unknown[][] = []
+    const hook = createHook({
+      runDetector: fakeRunner(ok(envelope('found: gradient-text')), calls),
+      worktree: '/repo',
+      warmEngine: () => {
+        warmCalls += 1
+        return warm.promise
+      },
+      engineReadyWaitMs: 10,
+    })
+
+    const first = makeOutput()
+    await expect(hook(makeInput(), first)).resolves.toBeUndefined()
+    expect(first.output).toContain('[impeccable] design engine is still downloading')
+    expect(calls).toHaveLength(0)
+
+    const second = makeOutput()
+    await hook(makeInput(), second)
+    expect(second.output).toBe('ok')
+    expect(calls).toHaveLength(0)
+
+    warm.resolve(true)
+    const third = makeOutput()
+    await hook(makeInput(), third)
+    expect(calls).toHaveLength(1)
+    expect(third.output).toContain('found: gradient-text')
+    expect(warmCalls).toBe(1)
+  })
+
+  it('does not stop the warm-up when a hook call stops waiting for it', async () => {
+    const warm = deferred<boolean>()
+    const calls: unknown[][] = []
+    const hook = createHook({
+      runDetector: fakeRunner(ok(), calls),
+      worktree: '/repo',
+      warmEngine: () => warm.promise,
+      engineReadyWaitMs: 5,
+    })
+    await hook(makeInput(), makeOutput())
+    await hook(makeInput(), makeOutput())
+    warm.resolve(true)
+    await hook(makeInput(), makeOutput())
+    expect(calls).toHaveLength(1)
+  })
+
+  it('warns engine-unavailable once and skips when the warm-up fails, then retries after the retry interval', async () => {
+    let clock = 1_000
+    let attempts = 0
+    const calls: unknown[][] = []
+    const hook = createHook({
+      runDetector: fakeRunner(ok(envelope('found')), calls),
+      worktree: '/repo',
+      warmEngine: () => {
+        attempts += 1
+        return Promise.resolve(attempts >= 2)
+      },
+      now: () => clock,
+      engineRetryMs: 60_000,
+    })
+
+    const first = makeOutput()
+    await hook(makeInput(), first)
+    expect(first.output).toContain('[impeccable] design engine could not be fetched or started')
+    expect(calls).toHaveLength(0)
+    expect(attempts).toBe(1)
+
+    clock += 30_000
+    const early = makeOutput()
+    await hook(makeInput(), early)
+    expect(early.output).toBe('ok')
+    expect(attempts).toBe(1)
+    expect(calls).toHaveLength(0)
+
+    clock += 31_000
+    const retried = makeOutput()
+    await hook(makeInput(), retried)
+    expect(attempts).toBe(2)
+    expect(calls).toHaveLength(1)
+    expect(retried.output).toContain('found')
+  })
+
+  it('treats a warm-up that throws or rejects as a failed warm-up and never throws', async () => {
+    for (const warmEngine of [
+      () => Promise.reject(new Error('boom')),
+      () => {
+        throw new Error('boom')
+      },
+    ]) {
+      const calls: unknown[][] = []
+      const hook = createHook({ runDetector: fakeRunner(ok(), calls), worktree: '/repo', warmEngine })
+      const output = makeOutput()
+      await expect(hook(makeInput(), output)).resolves.toBeUndefined()
+      expect(output.output).toContain('could not be fetched or started')
+      expect(calls).toHaveLength(0)
+    }
+  })
+
+  it('adds no warning and scans on the first call when the warm-up resolves at once', async () => {
+    let warmCalls = 0
+    const calls: unknown[][] = []
+    const hook = createHook({
+      runDetector: fakeRunner(ok(), calls),
+      worktree: '/repo',
+      warmEngine: () => {
+        warmCalls += 1
+        return Promise.resolve(true)
+      },
+    })
+    const first = makeOutput()
+    await hook(makeInput(), first)
+    await hook(makeInput(), makeOutput())
+
+    expect(first.output).toBe('ok')
+    expect(calls).toHaveLength(2)
+    expect(warmCalls).toBe(1)
+  })
+
+  it('runs one warm-up across concurrent calls', async () => {
+    const warm = deferred<boolean>()
+    let warmCalls = 0
+    const calls: unknown[][] = []
+    const hook = createHook({
+      runDetector: fakeRunner(ok(), calls),
+      worktree: '/repo',
+      warmEngine: () => {
+        warmCalls += 1
+        return warm.promise
+      },
+    })
+
+    const pending = Array.from({ length: 5 }, () => hook(makeInput(), makeOutput()))
+    setTimeout(() => {
+      warm.resolve(true)
+    }, 20)
+    await Promise.all(pending)
+
+    expect(warmCalls).toBe(1)
+    expect(calls).toHaveLength(5)
+  })
+
+  it('does not wait for the warm-up on a call that needs no scan', async () => {
+    let warmCalls = 0
+    const hook = createHook({
+      runDetector: fakeRunner(ok()),
+      worktree: '/repo',
+      warmEngine: () => {
+        warmCalls += 1
+        return new Promise<boolean>(() => {})
+      },
+    })
+    await hook(makeInput({ tool: 'read' }), makeOutput())
+    await hook(makeInput({ args: {} }), makeOutput())
+    expect(warmCalls).toBe(0)
+  })
+})
+
+describe('fast skip while the warm-up is pending (createHook)', () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void
+    const promise = new Promise<T>(res => {
+      resolve = res
+    })
+    return { promise, resolve }
+  }
+
+  async function timed(run: () => Promise<void>): Promise<number> {
+    const start = performance.now()
+    await run()
+    return performance.now() - start
+  }
+
+  it('skips at once, without waiting or spawning, on every call after one has seen the warm-up pending', async () => {
+    const warm = deferred<boolean>()
+    const calls: unknown[][] = []
+    const hook = createHook({
+      runDetector: fakeRunner(ok(envelope('found')), calls),
+      worktree: '/repo',
+      warmEngine: () => warm.promise,
+      engineReadyWaitMs: 300,
+    })
+
+    const first = makeOutput()
+    const firstMs = await timed(() => hook(makeInput(), first))
+    expect(firstMs).toBeGreaterThanOrEqual(250)
+    expect(first.output).toContain('still downloading')
+
+    for (let i = 0; i < 2; i += 1) {
+      const output = makeOutput()
+      const elapsedMs = await timed(() => hook(makeInput(), output))
+      expect(elapsedMs).toBeLessThan(50)
+      expect(output.output).toBe('ok')
+    }
+    expect(calls).toHaveLength(0)
+
+    warm.resolve(true)
+    const after = makeOutput()
+    await hook(makeInput(), after)
+    expect(calls).toHaveLength(1)
+    expect(after.output).toContain('found')
+  })
+
+  it('applies the engine-unavailable and retry logic when a warm-up that was seen pending then fails', async () => {
+    let clock = 1_000
+    let attempts = 0
+    const first = deferred<boolean>()
+    const calls: unknown[][] = []
+    const hook = createHook({
+      runDetector: fakeRunner(ok(envelope('found')), calls),
+      worktree: '/repo',
+      warmEngine: () => {
+        attempts += 1
+        return attempts === 1 ? first.promise : Promise.resolve(true)
+      },
+      engineReadyWaitMs: 10,
+      engineRetryMs: 60_000,
+      now: () => clock,
+    })
+
+    await hook(makeInput(), makeOutput())
+    first.resolve(false)
+
+    const failed = makeOutput()
+    await hook(makeInput(), failed)
+    expect(failed.output).toContain('could not be fetched or started')
+    expect(calls).toHaveLength(0)
+
+    clock += 61_000
+    const retried = makeOutput()
+    await hook(makeInput(), retried)
+    expect(attempts).toBe(2)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('waits for a retried warm-up again before it is seen pending', async () => {
+    let clock = 1_000
+    let attempts = 0
+    const second = deferred<boolean>()
+    const hook = createHook({
+      runDetector: fakeRunner(ok()),
+      worktree: '/repo',
+      warmEngine: () => {
+        attempts += 1
+        return attempts === 1 ? Promise.resolve(false) : second.promise
+      },
+      engineReadyWaitMs: 150,
+      engineRetryMs: 60_000,
+      now: () => clock,
+    })
+
+    await hook(makeInput(), makeOutput())
+    clock += 61_000
+    const elapsedMs = await timed(() => hook(makeInput(), makeOutput()))
+    expect(attempts).toBe(2)
+    expect(elapsedMs).toBeGreaterThanOrEqual(100)
+  })
+})
+
+describe('buildChildEnv', () => {
+  it('keeps only the allow-listed names, every IMPECCABLE_ variable but the depth one, and the bridge signals', () => {
+    const env = buildChildEnv({
+      PATH: '/usr/bin',
+      HOME: '/home/u',
+      TMPDIR: '/tmp',
+      USER: 'u',
+      LOGNAME: 'u',
+      LANG: 'en_US.UTF-8',
+      LC_ALL: 'C',
+      IMPECCABLE_HOME: '/cache',
+      IMPECCABLE_DOWNLOAD_BASE: 'http://x',
+      IMPECCABLE_HOOK_DEPTH: '1',
+      CLAUDE_HOOK_DEPTH: '1',
+      IMPECCABLE_HOOK_HARNESS: 'cursor',
+      IMPECCABLE_HOOK_QUIET: '0',
+      GITHUB_TOKEN: 'ghp_secret',
+      FAKE_SECRET: 'secret',
+      NODE_OPTIONS: '--inspect',
+    })
+
+    expect(env).toEqual({
+      PATH: '/usr/bin',
+      HOME: '/home/u',
+      TMPDIR: '/tmp',
+      USER: 'u',
+      LOGNAME: 'u',
+      LANG: 'en_US.UTF-8',
+      LC_ALL: 'C',
+      IMPECCABLE_HOME: '/cache',
+      IMPECCABLE_DOWNLOAD_BASE: 'http://x',
+      IMPECCABLE_HOOK_HARNESS: 'claude',
+      IMPECCABLE_HOOK_QUIET: '1',
+    })
+  })
+
+  it('forwards the proxy and CA variables by exact name, in upper and lower case, and nothing that merely resembles them', () => {
+    const forwarded = {
+      HTTP_PROXY: 'http://user:pass@proxy:3128',
+      HTTPS_PROXY: 'http://user:pass@proxy:3128',
+      NO_PROXY: 'localhost',
+      ALL_PROXY: 'socks5://proxy:1080',
+      http_proxy: 'http://proxy:3128',
+      https_proxy: 'http://proxy:3128',
+      no_proxy: 'localhost',
+      all_proxy: 'socks5://proxy:1080',
+      SSL_CERT_FILE: '/etc/ssl/ca.pem',
+      SSL_CERT_DIR: '/etc/ssl/certs',
+      CURL_CA_BUNDLE: '/etc/ssl/ca.pem',
+    }
+    const env = buildChildEnv({
+      ...forwarded,
+      HTTPS_PROXY_USER: 'u',
+      Https_Proxy: 'http://mixed-case',
+      SSL_CERT_FILE_BACKUP: '/x',
+      CURL_HOME: '/home/u',
+      PROXY: 'http://proxy',
+      GITHUB_TOKEN: 'ghp_secret',
+    })
+
+    expect(env).toEqual({ ...forwarded, IMPECCABLE_HOOK_HARNESS: 'claude', IMPECCABLE_HOOK_QUIET: '1' })
+  })
+
+  it('omits allow-listed names the source does not set', () => {
+    expect(buildChildEnv({})).toEqual({ IMPECCABLE_HOOK_HARNESS: 'claude', IMPECCABLE_HOOK_QUIET: '1' })
   })
 })

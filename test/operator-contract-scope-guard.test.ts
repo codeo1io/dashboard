@@ -9,8 +9,9 @@ import {describe, expect, it} from 'vitest'
  * guard was minted pinning 1.9.0 while rm-252's estate verdict still gated
  * absorbing the newer contract. Main then landed the upstream 2026.10.43
  * adoption (c51597ad + 64cd2f6a, contract 1.11.0) first, so the pin is
- * re-derived at the absorbed version: the fork's contract twins now speak
- * 1.11.0 and this guard keeps the two declarations in lockstep. Any change
+ * re-derived at the absorbed version. Re-derived again at the 2026.10.59
+ * adoption (upstream #685, contract 1.13.0): the fork's contract twins now
+ * speak 1.13.0 and this guard keeps the two declarations in lockstep. Any change
  * that bumps one declaration without the other — or diverges the twins —
  * fails here and must either be part of a deliberate absorb/verdict landing
  * (rm-252 lineage) or back the bump out.
@@ -29,12 +30,12 @@ function read(path: string): string {
 describe('operator contract scope guard (rm-1483 / rm-252)', () => {
   it('keeps the server contract version pinned at 1.11.0', () => {
     const versionTs = read('src/gateway/operator-contract/version.ts')
-    expect(versionTs).toContain("export const OPERATOR_CONTRACT_VERSION = '1.11.0'")
+    expect(versionTs).toContain("export const OPERATOR_CONTRACT_VERSION = '1.13.0'")
   })
 
   it('keeps the stream twin pinned to the same version', () => {
     const streamJs = read('public/operator-stream.js')
-    expect(streamJs).toContain("export const PINNED_CONTRACT_VERSION = '1.11.0'")
+    expect(streamJs).toContain("export const PINNED_CONTRACT_VERSION = '1.13.0'")
   })
 
   it('declares the pin in neither place with any other value', () => {
@@ -43,6 +44,6 @@ describe('operator contract scope guard (rm-1483 / rm-252)', () => {
     const declared = [...versionTs.matchAll(/OPERATOR_CONTRACT_VERSION = '([^']+)'/g)]
       .concat([...streamJs.matchAll(/PINNED_CONTRACT_VERSION = '([^']+)'/g)])
       .map(m => m[1])
-    expect(new Set(declared)).toEqual(new Set(['1.11.0']))
+    expect(new Set(declared)).toEqual(new Set(['1.13.0']))
   })
 })

@@ -33,7 +33,7 @@ import {formatRelativeTime, normalizeIsoTimestamp} from './operator-time.js'
 // ---------------------------------------------------------------------------
 
 /** Contract version this client expects on the ready frame. */
-export const PINNED_CONTRACT_VERSION = '1.11.0'
+export const PINNED_CONTRACT_VERSION = '1.13.0'
 
 /** Base delay in milliseconds for exponential backoff. */
 export const RETRY_BASE_MS = 1000
@@ -239,6 +239,18 @@ const VALID_FAILURE_KINDS = new Set([
 ])
 
 /**
+ * Allowlisted OperatorProviderFailureReason values — out-of-set values normalize to absent.
+ * Mirrors src/gateway/operator-contract/provider-failure-reason.ts OPERATOR_PROVIDER_FAILURE_REASONS.
+ */
+const VALID_PROVIDER_FAILURE_REASONS = new Set([
+  'provider-auth-unavailable',
+  'model-not-available',
+  'provider-quota-exceeded',
+  'provider-rejected-request',
+  'unclassified',
+])
+
+/**
  * Dashboard-owned display labels for known failure reasons — render labels from
  * this map, never the raw failureKind wire string. A missing or unmapped reason
  * has no entry here and falls back to generic 'Failed' at the render boundary.
@@ -254,6 +266,21 @@ export const FAILURE_REASON_LABELS = {
   'workspace-unavailable': 'Workspace unavailable',
   unknown: 'Unknown failure',
 }
+
+/**
+ * Dashboard-owned display labels for known provider failure reasons — render labels from this map,
+ * never the raw wire string. Applies only to a failed `session-error` run; `unclassified`, an unknown
+ * value and an absent reason have no entry and keep the session-error label. Must stay identical to the
+ * map in public/operator-run-index.js (parity is enforced by tests).
+ */
+export const PROVIDER_FAILURE_REASON_LABELS = new Map([
+  ['provider-auth-unavailable', 'Model provider unavailable'],
+  ['model-not-available', 'Model not available'],
+  ['provider-quota-exceeded', 'Provider quota exceeded'],
+  ['provider-rejected-request', 'Model provider rejected the request'],
+])
+
+const PROVIDER_FAILURE_LABELS = new Set(PROVIDER_FAILURE_REASON_LABELS.values())
 
 // ---------------------------------------------------------------------------
 // Checkout provenance / checkout preparation — labels
@@ -843,6 +870,14 @@ export function parseSseFrame(record) {
     // failureKind is optional and allowlist-gated; an unrecognized or absent
     // value normalizes to omitted — it never fails validity of the status frame.
     const failureKind = VALID_FAILURE_KINDS.has(parsed.failureKind) ? parsed.failureKind : undefined
+    // providerFailureReason follows the same rule and refines only a FAILED session-error frame; on any
+    // other phase or kind it is omitted. A status frame never carries a prompt.
+    const providerFailureReason =
+      parsed.phase === 'FAILED' &&
+      failureKind === 'session-error' &&
+      VALID_PROVIDER_FAILURE_REASONS.has(parsed.providerFailureReason)
+        ? parsed.providerFailureReason
+        : undefined
     // checkoutProvenance / checkoutPreparation follow the same soft rule: validated
     // field by field, capped and sanitized, closed into a DTO. Invalid or absent →
     // omitted. They never fail the status frame.
@@ -861,6 +896,7 @@ export function parseSseFrame(record) {
           startedAt: parsed.startedAt,
           stale: parsed.stale,
           ...(failureKind === undefined ? {} : {failureKind}),
+          ...(providerFailureReason === undefined ? {} : {providerFailureReason}),
           ...(checkoutProvenance === undefined ? {} : {checkoutProvenance}),
           ...(checkoutPreparation === undefined ? {} : {checkoutPreparation}),
         },
@@ -1255,7 +1291,8 @@ export function nextStreamState(current, event) {
       if (current.connection !== 'live') {
         return current
       }
-      const {runId, status, phase, startedAt, stale, failureKind, checkoutProvenance, checkoutPreparation} = event.data
+      const {runId, status, phase, startedAt, stale, failureKind, providerFailureReason, checkoutProvenance, checkoutPreparation} =
+        event.data
       const isTerminal = TERMINAL_STATUSES.has(status)
       // Use a null-prototype object to guard against __proto__ key pollution.
       // Spread the prior entry so accumulated output fields (outputText/outputSeq/
@@ -1266,9 +1303,16 @@ export function nextStreamState(current, event) {
       // A non-failed status ignores any failureKind entirely. Once set, the label
       // is sticky — a later non-terminal frame for the same run (e.g. a stale/duplicate
       // frame) must not clear a previously stored terminal-failure label.
+      // A known provider reason refines a failed session-error run's label. The label is monotonic per
+      // run: a generic session-error label never replaces a held provider-specific one.
+      const providerLabel = failureKind === 'session-error' ? PROVIDER_FAILURE_REASON_LABELS.get(providerFailureReason) : undefined
       const derivedReasonLabel =
-        status === 'failed' && failureKind !== undefined ? FAILURE_REASON_LABELS[failureKind] : undefined
-      const reasonLabel = derivedReasonLabel ?? prevStatusEntry?.reasonLabel
+        status === 'failed' && failureKind !== undefined ? (providerLabel ?? FAILURE_REASON_LABELS[failureKind]) : undefined
+      const heldReasonLabel = prevStatusEntry?.reasonLabel
+      const reasonLabel =
+        derivedReasonLabel === FAILURE_REASON_LABELS['session-error'] && PROVIDER_FAILURE_LABELS.has(heldReasonLabel)
+          ? heldReasonLabel
+          : (derivedReasonLabel ?? heldReasonLabel)
       // On terminal status, clear all open approval prompts for this run.
       // Terminal is absorbing for approvals: once terminal, no open prompt can reappear.
       // Tombstones are preserved so that any late open frames are still ignored.

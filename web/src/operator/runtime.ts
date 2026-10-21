@@ -548,6 +548,9 @@ async function defaultRuntimeLoader(opts?: {
   // RENDERER_LOAD_CAP_MS. A renderer that is missing, fails to load or is too slow is no renderer, and
   // that stream paints plain text.
   let renderer: OutputRenderer | undefined
+  // Hands a loaded renderer to the run index for prompt bodies. Set once the run index module has loaded;
+  // a renderer that loaded earlier is handed over at that point.
+  let applyPromptRenderer: ((loaded: OutputRenderer | undefined) => void) | undefined
   let rendererSettled = false
   let rendererCapTimer: ReturnType<typeof setTimeout> | undefined
   const rendererReady = new Promise<void>(resolve => {
@@ -568,6 +571,7 @@ async function defaultRuntimeLoader(opts?: {
     loading.then(
       loaded => {
         renderer = loaded
+        applyPromptRenderer?.(loaded)
         settle()
       },
       settle,
@@ -585,8 +589,21 @@ async function defaultRuntimeLoader(opts?: {
 
   const runIndexMod = await import(/* @vite-ignore */ _runIndexSpecifier) as Pick<
     typeof RunIndexModule,
-    'initOperatorRunIndex' | 'refreshOperatorRunIndex' | 'resetRunIndexState' | 'markRunStreamAttached' | 'markCardExpandedForLaunch'
+    'initOperatorRunIndex' | 'refreshOperatorRunIndex' | 'resetRunIndexState' | 'markRunStreamAttached' | 'markCardExpandedForLaunch' | 'setPromptRenderer'
   >
+  // The prompt renderer is the same one the streams get, handed over when the load promise resolves — not
+  // when the cap settles it. A renderer that loaded before the run index module did is handed over now.
+  // A loader that a newer one superseded, or whose runtime was cleaned up, hands over nothing: the same
+  // guards the other post-await work uses.
+  applyPromptRenderer = loaded => {
+    if (_loaderEpoch !== epoch || opts?.isMounted?.() === false) return
+    runIndexMod.setPromptRenderer(loaded)
+  }
+  // Read through a function: the load promise assigns `renderer` from a callback TypeScript does not follow,
+  // so a direct read here is narrowed to `undefined`.
+  const loadedRenderer = () => renderer
+  const earlyRenderer = loadedRenderer()
+  if (earlyRenderer !== undefined) applyPromptRenderer(earlyRenderer)
 
   const launchMod = await import(/* @vite-ignore */ _launchSpecifier) as Pick<
     typeof LaunchModule,
@@ -953,6 +970,9 @@ async function defaultRuntimeLoader(opts?: {
     streamMod.resetOutputView()
     streamMod.clearFinishedRuns()
     stopRefreshTimer()
+    // A launch still in flight is stale now: it inserts no card and attaches no stream. Its idempotency
+    // key stays held, so a repeat of the same launch after the next sign-in reuses it.
+    launchMod.resetLaunchState()
     // No session: a pending or arriving jump has nothing to open.
     _setJumpSlot(epoch, {mode: 'refuse'})
     opts?.onStateChange?.('auth-required')
@@ -970,6 +990,8 @@ async function defaultRuntimeLoader(opts?: {
   }
 
   const onRunLaunched = (runId: string, card: HTMLElement) => {
+    // A launch can resolve after cleanup or sign-out; this runtime no longer owns a stream or the hash.
+    if (disposed || authRequired) return
     const statusEl = card.querySelector('[data-role="run-status"]') ?? null
     const noticeEl = typeof document !== 'undefined'
       ? document.querySelector('[data-role="stream-status"]')
@@ -1124,6 +1146,9 @@ async function defaultRuntimeLoader(opts?: {
     streamOwner.close()
     launchMod.resetLaunchState()
     runIndexMod.resetRunIndexState()
+    // Only the newest loader clears it: an older one cleaning up late must not take the renderer from its successor.
+    applyPromptRenderer = undefined
+    if (_loaderEpoch === epoch) runIndexMod.setPromptRenderer(undefined)
   }
 }
 

@@ -21,6 +21,7 @@ import type {
   QuestionReconcileEvent,
   RunEntry,
   RunSummaryStatus,
+  StatusFrameData,
   StreamHandle,
   StreamState,
 } from '../public/operator-stream.js'
@@ -65,6 +66,7 @@ import {
   parseSseFrame,
   PHASE_TO_WEB_STATUS,
   PINNED_CONTRACT_VERSION,
+  PROVIDER_FAILURE_REASON_LABELS,
   pruneFinishedRuns,
   QUESTION_CLAIM_RECHECK_DELAYS_MS,
   QUESTION_DECISION_STATES,
@@ -91,6 +93,7 @@ import {
   MAX_QUESTIONS_PER_REQUEST,
   OBSTRUCTION_KINDS,
   OPERATOR_CONTRACT_VERSION,
+  OPERATOR_PROVIDER_FAILURE_REASONS,
   QUESTION_HEADER_MAX_LENGTH,
   QUESTION_OPTION_DESCRIPTION_MAX_LENGTH,
   QUESTION_OPTION_LABEL_MAX_LENGTH,
@@ -144,6 +147,12 @@ function stubLifecycleDom(): void {
     addEventListener: () => {},
   })
   vi.stubGlobal('addEventListener', () => {})
+}
+function parseStatusData(payload: Record<string, unknown>) {
+  const result = parseSseFrame(`event: status\ndata: ${JSON.stringify(payload)}\n\n`)
+  expect(result?.success).toBe(true)
+  if (result?.success !== true || result.frame.type !== 'status') throw new Error('expected a status frame')
+  return result.frame.data
 }
 
 describe('parseSseFrame — pure parser', () => {
@@ -273,6 +282,74 @@ describe('parseSseFrame — pure parser', () => {
     }
   })
 
+  describe('providerFailureReason', () => {
+    const FAILED_SESSION_ERROR = {...ACTIVE_STATUS, status: 'failed', phase: 'FAILED', failureKind: 'session-error'}
+
+    it.each(OPERATOR_PROVIDER_FAILURE_REASONS)(
+      'keeps %s on a FAILED session-error frame',
+      providerFailureReason => {
+        const data = parseStatusData({...FAILED_SESSION_ERROR, providerFailureReason})
+        expect(data.providerFailureReason).toBe(providerFailureReason)
+      },
+    )
+
+    it.each([['an unknown string', 'some-future-reason'], ['a prototype name', 'constructor'], ['a number', 1], ['null', null]])(
+      'omits providerFailureReason that is %s and keeps the frame',
+      (_label, providerFailureReason) => {
+        const data = parseStatusData({...FAILED_SESSION_ERROR, providerFailureReason})
+        expect('providerFailureReason' in data).toBe(false)
+        expect(data.failureKind).toBe('session-error')
+      },
+    )
+
+    it('omits a known reason on a non-session-error failureKind', () => {
+      const data = parseStatusData({...FAILED_SESSION_ERROR, failureKind: 'stream-ended', providerFailureReason: 'model-not-available'})
+      expect('providerFailureReason' in data).toBe(false)
+    })
+
+    it('omits a known reason when failureKind is absent or unrecognized', () => {
+      for (const failureKind of [undefined, 'some-future-kind']) {
+        const data = parseStatusData({...FAILED_SESSION_ERROR, failureKind, providerFailureReason: 'model-not-available'})
+        expect('providerFailureReason' in data).toBe(false)
+      }
+    })
+
+    it.each(['PENDING', 'ACKNOWLEDGED', 'EXECUTING', 'COMPLETED', 'CANCELLED'])(
+      'omits a known reason on a %s frame',
+      phase => {
+        const data = parseStatusData({...ACTIVE_STATUS, phase, failureKind: 'session-error', providerFailureReason: 'model-not-available'})
+        expect('providerFailureReason' in data).toBe(false)
+      },
+    )
+
+    it('omits the field when the frame has none', () => {
+      expect('providerFailureReason' in parseStatusData(FAILED_SESSION_ERROR)).toBe(false)
+    })
+
+    it('never carries a prompt on a status frame', () => {
+      const data = parseStatusData({...FAILED_SESSION_ERROR, prompt: 'do the thing'})
+      expect('prompt' in data).toBe(false)
+    })
+
+    it('keeps the same reason results as the server reader', () => {
+      const payloads = [
+        {...FAILED_SESSION_ERROR, providerFailureReason: 'unclassified'},
+        {...FAILED_SESSION_ERROR, providerFailureReason: 'nope'},
+        {...FAILED_SESSION_ERROR, failureKind: 'unknown', providerFailureReason: 'unclassified'},
+        {...ACTIVE_STATUS, failureKind: 'session-error', providerFailureReason: 'unclassified'},
+      ]
+      for (const payload of payloads) {
+        const text = `event: status\ndata: ${JSON.stringify(payload)}\n\n`
+        const browser = parseSseFrame(text)
+        const server = parseSseChunk(text)[0]
+        if (browser?.success !== true || browser.frame.type !== 'status') throw new Error('expected a browser status frame')
+        if (server === undefined || !server.success || server.frame.type !== 'status') {
+          throw new Error('expected a server status frame')
+        }
+        expect(browser.frame.data.providerFailureReason).toBe(server.frame.data.providerFailureReason)
+      }
+    })
+  })
   it('returns a failure for an unknown event name', () => {
     const text = 'event: unknown-event\ndata: {"foo":"bar"}\n\n'
     const result = parseSseFrame(text)
@@ -869,6 +946,129 @@ describe('nextStreamState — failure reason label', () => {
       data: ACTIVE_STATUS,
     })
     expect(withLateFrame.runs['run-abc']?.reasonLabel).toBe('Session error')
+  })
+
+  describe('provider failure label', () => {
+    const providerCopy: readonly (readonly [string, string])[] = [
+      ['provider-auth-unavailable', 'Model provider unavailable'],
+      ['model-not-available', 'Model not available'],
+      ['provider-quota-exceeded', 'Provider quota exceeded'],
+      ['provider-rejected-request', 'Model provider rejected the request'],
+    ]
+    const failed = (extra: Record<string, unknown>) => ({
+      type: 'status' as const,
+      data: {...ACTIVE_STATUS, status: 'failed', phase: 'FAILED', ...extra} as StatusFrameData,
+    })
+
+    // A terminal frame closes the stream once every observed run is terminal, so a second frame for the
+    // same run reaches the reducer only while another run is still active.
+    const liveWithPeer = (): StreamState =>
+      nextStreamState(live(), {type: 'status', data: {...ACTIVE_STATUS, runId: 'run-peer'}})
+
+    it('labels every reason the contract defines, and only unclassified is unlabeled', () => {
+      for (const reason of OPERATOR_PROVIDER_FAILURE_REASONS) {
+        expect(PROVIDER_FAILURE_REASON_LABELS.has(reason)).toBe(reason !== 'unclassified')
+      }
+      expect([...PROVIDER_FAILURE_REASON_LABELS]).toEqual(providerCopy)
+    })
+
+    it.each(providerCopy)('a failed session-error frame with %s stores "%s"', (providerFailureReason, label) => {
+      const state = nextStreamState(live(), failed({failureKind: 'session-error', providerFailureReason}))
+      expect(state.runs['run-abc']?.reasonLabel).toBe(label)
+    })
+
+    it.each([['unclassified', 'unclassified'], ['an unknown value', 'some-future-reason'], ['no reason', undefined]])(
+      'a failed session-error frame with %s stores the session-error label',
+      (_name, providerFailureReason) => {
+        const state = nextStreamState(live(), failed({failureKind: 'session-error', providerFailureReason}))
+        expect(state.runs['run-abc']?.reasonLabel).toBe('Session error')
+      },
+    )
+
+    it('a prototype member name is not a reason', () => {
+      const state = nextStreamState(live(), failed({failureKind: 'session-error', providerFailureReason: 'constructor'}))
+      expect(state.runs['run-abc']?.reasonLabel).toBe('Session error')
+    })
+
+    it('a held provider label survives a later failed session-error frame with no reason', () => {
+      const first = nextStreamState(liveWithPeer(), failed({failureKind: 'session-error', providerFailureReason: 'model-not-available'}))
+      const second = nextStreamState(first, failed({failureKind: 'session-error'}))
+      expect(second.runs['run-abc']?.reasonLabel).toBe('Model not available')
+    })
+
+    it('a held provider label survives a later failed session-error frame with unclassified', () => {
+      const first = nextStreamState(liveWithPeer(), failed({failureKind: 'session-error', providerFailureReason: 'provider-auth-unavailable'}))
+      const second = nextStreamState(first, failed({failureKind: 'session-error', providerFailureReason: 'unclassified'}))
+      expect(second.runs['run-abc']?.reasonLabel).toBe('Model provider unavailable')
+    })
+
+    it('a generic session-error label is replaced when a provider reason arrives later', () => {
+      const first = nextStreamState(liveWithPeer(), failed({failureKind: 'session-error'}))
+      const second = nextStreamState(first, failed({failureKind: 'session-error', providerFailureReason: 'provider-rejected-request'}))
+      expect(second.runs['run-abc']?.reasonLabel).toBe('Model provider rejected the request')
+    })
+
+    it('a held quota label survives a later failed session-error frame with no reason or unclassified', () => {
+      const first = nextStreamState(liveWithPeer(), failed({failureKind: 'session-error', providerFailureReason: 'provider-quota-exceeded'}))
+      const noReason = nextStreamState(first, failed({failureKind: 'session-error'}))
+      expect(noReason.runs['run-abc']?.reasonLabel).toBe('Provider quota exceeded')
+      const unclassified = nextStreamState(first, failed({failureKind: 'session-error', providerFailureReason: 'unclassified'}))
+      expect(unclassified.runs['run-abc']?.reasonLabel).toBe('Provider quota exceeded')
+    })
+
+    it('a generic session-error label is replaced when a quota reason arrives later', () => {
+      const first = nextStreamState(liveWithPeer(), failed({failureKind: 'session-error'}))
+      const second = nextStreamState(first, failed({failureKind: 'session-error', providerFailureReason: 'provider-quota-exceeded'}))
+      expect(second.runs['run-abc']?.reasonLabel).toBe('Provider quota exceeded')
+    })
+
+    it('a quota reason on a non-session-error failure shows that kind\'s label', () => {
+      const state = nextStreamState(live(), failed({failureKind: 'stream-ended', providerFailureReason: 'provider-quota-exceeded'}))
+      expect(state.runs['run-abc']?.reasonLabel).toBe('Stream ended early')
+    })
+
+    it('a later provider reason replaces an earlier provider reason', () => {
+      const first = nextStreamState(liveWithPeer(), failed({failureKind: 'session-error', providerFailureReason: 'model-not-available'}))
+      const second = nextStreamState(first, failed({failureKind: 'session-error', providerFailureReason: 'provider-auth-unavailable'}))
+      expect(second.runs['run-abc']?.reasonLabel).toBe('Model provider unavailable')
+    })
+
+    it('a held provider label survives a late non-terminal frame', () => {
+      const first = nextStreamState(liveWithPeer(), failed({failureKind: 'session-error', providerFailureReason: 'model-not-available'}))
+      const second = nextStreamState(first, {type: 'status', data: ACTIVE_STATUS})
+      expect(second.runs['run-abc']?.reasonLabel).toBe('Model not available')
+    })
+
+    it('a held provider label does not replace a different failure kind\'s label', () => {
+      const first = nextStreamState(liveWithPeer(), failed({failureKind: 'session-error', providerFailureReason: 'model-not-available'}))
+      const second = nextStreamState(first, failed({failureKind: 'stream-ended'}))
+      expect(second.runs['run-abc']?.reasonLabel).toBe('Stream ended early')
+    })
+
+    it('a reason on a different failure kind shows that kind\'s label', () => {
+      const state = nextStreamState(live(), failed({failureKind: 'stream-ended', providerFailureReason: 'model-not-available'}))
+      expect(state.runs['run-abc']?.reasonLabel).toBe('Stream ended early')
+    })
+
+    it('a reason on a failed frame with no failureKind stores no label', () => {
+      const state = nextStreamState(live(), failed({providerFailureReason: 'model-not-available'}))
+      expect(state.runs['run-abc']?.reasonLabel).toBeUndefined()
+    })
+
+    it('a reason on a non-failed frame stores no label', () => {
+      const state = nextStreamState(live(), {
+        type: 'status',
+        data: {...ACTIVE_STATUS, failureKind: 'session-error', providerFailureReason: 'model-not-available'},
+      })
+      expect(state.runs['run-abc']?.reasonLabel).toBeUndefined()
+    })
+
+    it('the raw reason code never reaches the stored state or the safe view', () => {
+      const state = nextStreamState(live(), failed({failureKind: 'session-error', providerFailureReason: 'model-not-available'}))
+      const entry = state.runs['run-abc']
+      expect(JSON.stringify(state)).not.toContain('model-not-available')
+      expect(JSON.stringify(entry === undefined ? {} : toSafeRunView(entry))).not.toContain('model-not-available')
+    })
   })
 
   it('terminal failed status with a reason preserves already-rendered output text', () => {
@@ -10015,6 +10215,13 @@ async function paintedStatus(records: string[]) {
 describe('question status — label, wire acceptance and styling', () => {
   afterEach(() => vi.unstubAllGlobals())
 
+  const gridRow = (css: string, selector: RegExp) => {
+    const rule = css.match(selector)
+    const row = rule?.[1]?.match(/grid-row:\s*(\d+);/)
+    expect(row, `expected a grid-row declaration matching ${selector}`).not.toBeNull()
+    return Number(row?.[1])
+  }
+
   it('accepts waiting_for_question on a status frame', () => {
     const result = parseSseFrame(`event: status\ndata: ${JSON.stringify(ckStatusPayload({status: 'waiting_for_question'}))}\n\n`)
     expect(result?.success).toBe(true)
@@ -10109,6 +10316,19 @@ describe('question status — label, wire acceptance and styling', () => {
     expect(status.textContent).not.toBe(wire)
   })
 
+  it('styles primary actions as disabled and excludes them from hover changes', async () => {
+    const fs = await import('node:fs/promises')
+    const css = await fs.readFile(new URL('../web/src/index.css', import.meta.url).pathname, 'utf8')
+    // The light-theme selector keeps the muted text winning over the light theme's color rule by
+    // specificity, not by source order.
+    const disabledRule = css.match(
+      /\.operator-primary-action:disabled,\s*\[data-theme="light"\] \.operator-primary-action:disabled\s*\{([^}]*)\}/,
+    )
+    expect(disabledRule?.[1]).toMatch(/color:\s*var\(--color-text-muted\);/)
+    expect(disabledRule?.[1]).toMatch(/opacity:\s*1;/)
+    expect(css).toMatch(/\.operator-primary-action:hover:not\(:disabled\)/)
+  })
+
   it('keeps run-status badges on one line at narrow widths', async () => {
     const fs = await import('node:fs/promises')
     const css = await fs.readFile(new URL('../web/src/index.css', import.meta.url).pathname, 'utf8')
@@ -10125,30 +10345,76 @@ describe('question status — label, wire acceptance and styling', () => {
     // full-width row list; the union keeps the fork's run-output-gap element,
     // so the pinned list carries both.
     expect(css).toMatch(/\[data-role="run-output"\],\s*\[data-role="run-output-tools"\],\s*\[data-role="run-output-coalesced"\],\s*\[data-role="run-output-gap"\],\s*\[data-role="run-approvals"\],\s*\[data-role="run-waiting"\],\s*\[data-role="approval-badge"\]\s*\{\s*grid-column:\s*1\s*\/\s*-1;/)
-    expect(css).toMatch(/\[data-role="run-waiting"\]\s*\{[^}]*grid-row:\s*5;/)
-    expect(css).toMatch(/\.run-card:has\(\[data-role="run-waiting"\]:not\(\[hidden\]\)\)\s+\[data-role="run-output"\]\s*\{[^}]*grid-row:\s*6;/)
+    const waitingRow = gridRow(css, /\[data-role="run-waiting"\]\s*\{([^}]*)\}/)
+    const outputAfterWaitingRow = gridRow(css, /\.run-card:has\(\[data-role="run-waiting"\]:not\(\[hidden\]\)\)\s+\[data-role="run-output"\]\s*\{([^}]*)\}/)
+    expect(waitingRow).toBe(6)
+    expect(outputAfterWaitingRow).toBeGreaterThan(waitingRow)
   })
 
   it('pins the output toolbar to the row right after the output on desktop and on every mobile row', async () => {
     const fs = await import('node:fs/promises')
     const css = await fs.readFile(new URL('../web/src/index.css', import.meta.url).pathname, 'utf8')
-    expect(css).toMatch(/\[data-role="run-output"\]\s*\{\s*grid-row:\s*4;\s*\}/)
-    expect(css).toMatch(/\[data-role="run-output-tools"\]\s*\{\s*grid-row:\s*5;\s*\}/)
-    expect(css).toMatch(/\.run-card:has\(\[data-role="run-checkout-detail"\]:not\(\[hidden\]\)\)\s+\[data-role="run-output-tools"\]\s*\{[^}]*grid-row:\s*6;/)
-    expect(css).toMatch(/\.run-card:has\(\[data-role="run-waiting"\]:not\(\[hidden\]\)\)\s+\[data-role="run-output-tools"\]\s*\{[^}]*grid-row:\s*7;/)
+    const desktopOutputRow = gridRow(css, /\[data-role="run-output"\]\s*\{([^}]*)\}/)
+    const desktopToolbarRow = gridRow(css, /\[data-role="run-output-tools"\]\s*\{([^}]*)\}/)
+    expect(desktopToolbarRow).toBe(desktopOutputRow + 1)
+
+    const mobileOutputRow = gridRow(css, /\.run-card\s+\[data-role="run-output"\]\s*\{([^}]*)\}/)
+    const mobileToolbarRow = gridRow(css, /\.run-card\s+\[data-role="run-output-tools"\]\s*\{([^}]*)\}/)
+    const checkoutOutputRow = gridRow(css, /\.run-card:has\(\[data-role="run-checkout-detail"\]:not\(\[hidden\]\)\)\s+\[data-role="run-output"\]\s*\{([^}]*)\}/)
+    const checkoutToolbarRow = gridRow(css, /\.run-card:has\(\[data-role="run-checkout-detail"\]:not\(\[hidden\]\)\)\s+\[data-role="run-output-tools"\]\s*\{([^}]*)\}/)
+    const waitingOutputRow = gridRow(css, /\.run-card:has\(\[data-role="run-waiting"\]:not\(\[hidden\]\)\)\s+\[data-role="run-output"\]\s*\{([^}]*)\}/)
+    const waitingToolbarRow = gridRow(css, /\.run-card:has\(\[data-role="run-waiting"\]:not\(\[hidden\]\)\)\s+\[data-role="run-output-tools"\]\s*\{([^}]*)\}/)
+    expect(mobileToolbarRow).toBe(mobileOutputRow + 1)
+    expect(checkoutToolbarRow).toBe(checkoutOutputRow + 1)
+    expect(waitingToolbarRow).toBe(waitingOutputRow + 1)
   })
 
   it('keeps cancel controls out of the status track and after the mobile waiting line', async () => {
     const fs = await import('node:fs/promises')
     const css = await fs.readFile(new URL('../web/src/index.css', import.meta.url).pathname, 'utf8')
     expect(css).toMatch(/\.run-card\s+\[data-role="run-cancel"\]\s*\{[^}]*grid-column:\s*1\s*\/\s*-1;/)
-    expect(css).toMatch(/\.run-card:has\(\[data-role="run-waiting"\]:not\(\[hidden\]\)\)\s+\[data-role="run-cancel"\]\s*\{[^}]*grid-row:\s*6;/)
+    const waitingRow = gridRow(css, /\[data-role="run-waiting"\]\s*\{([^}]*)\}/)
+    const cancelRow = gridRow(css, /\.run-card:has\(\[data-role="run-waiting"\]:not\(\[hidden\]\)\)\s+\[data-role="run-cancel"\]\s*\{([^}]*)\}/)
+    expect(cancelRow).toBeGreaterThan(waitingRow)
   })
 
   it('keeps the expanded run time legible on the raised card surface', async () => {
     const fs = await import('node:fs/promises')
     const css = await fs.readFile(new URL('../web/src/index.css', import.meta.url).pathname, 'utf8')
     expect(css).toMatch(/\.run-card\[data-expanded="true"\]\s+\.run-updated-at\s*\{\s*color:\s*var\(--color-text-muted\);/)
+  })
+
+  it('shows the prompt preview only on a collapsed card and the prompt body only on an expanded one', async () => {
+    const fs = await import('node:fs/promises')
+    const css = await fs.readFile(new URL('../web/src/index.css', import.meta.url).pathname, 'utf8')
+    const hideRule = css.match(/\.run-card\s+\.run-prompt-preview:empty,\s*\.run-card\s+\.run-prompt:empty,\s*\.run-card:not\(\[data-expanded="true"\]\)\s+\.run-prompt,\s*\.run-card\[data-expanded="true"\]\s+\.run-prompt-preview\s*\{([^}]*)\}/)
+    expect(hideRule, 'expected one rule hiding empty, collapsed-body and expanded-preview prompt slots').not.toBeNull()
+    expect(hideRule?.[1]).toMatch(/display:\s*none;/)
+  })
+
+  it('keeps the prompt preview to one line', async () => {
+    const fs = await import('node:fs/promises')
+    const css = await fs.readFile(new URL('../web/src/index.css', import.meta.url).pathname, 'utf8')
+    const previewStyles = css.match(/\.run-card\s+\.run-prompt-preview\s*\{([^}]*)\}/)?.[1] ?? ''
+    expect(previewStyles).toMatch(/white-space:\s*nowrap;/)
+    expect(previewStyles).toMatch(/overflow:\s*hidden;/)
+    expect(previewStyles).toMatch(/text-overflow:\s*ellipsis;/)
+  })
+
+  it('places the prompt slots on one grid row on desktop and on a lower one at 480px and below', async () => {
+    const fs = await import('node:fs/promises')
+    const css = await fs.readFile(new URL('../web/src/index.css', import.meta.url).pathname, 'utf8')
+    const slotRule = /\.run-card\s+\.run-prompt-preview,\s*\.run-card\s+\.run-prompt\s*\{([^}]*)\}/g
+    const rules = [...css.matchAll(slotRule)]
+    expect(rules, 'expected a desktop and a narrow-screen placement rule for the prompt slots').toHaveLength(2)
+    const [desktop, narrow] = rules
+    const row = (rule: RegExpMatchArray | undefined) => Number(rule?.[1]?.match(/grid-row:\s*(\d+);/)?.[1])
+    expect(desktop?.[1]).toMatch(/grid-column:\s*1\s*\/\s*-1;/)
+    expect(row(desktop)).toBe(4)
+    // The second rule sits inside the last 480px media block.
+    const narrowBlockStart = css.lastIndexOf('@media (max-width: 480px)', narrow?.index)
+    expect(narrowBlockStart).toBeGreaterThan(-1)
+    expect(row(narrow)).toBe(5)
   })
 
   it('keeps jump notices visible while the run list is scrolled', async () => {
@@ -12614,6 +12880,20 @@ describe('finished-run store — recording', () => {
     expect(Object.keys(record ?? {}).toSorted()).toEqual(
       ['outputCoalesced', 'outputText', 'outputTruncated', 'phase', 'reasonLabel', 'runId', 'stale', 'startedAt', 'status', 'terminal'],
     )
+  })
+
+  it('records the provider label a failed run displayed, and a recorded init paints that same label', async () => {
+    await fcFinish('run-fc-prov', {status: 'failed', extra: {failureKind: 'session-error', providerFailureReason: 'model-not-available'}})
+
+    const record = fcRecord('run-fc-prov')
+    expect(record?.reasonLabel).toBe('Model not available')
+    expect(JSON.stringify(record)).not.toContain('model-not-available')
+
+    fcStubDocument()
+    const regions = fcRegions()
+    fcInitRecorded('run-fc-prov', regions)
+    expect(regions.reasonEl.textContent).toBe('Model not available')
+    expect(JSON.stringify([regions.reasonEl.textContent, regions.reasonEl.className, regions.reasonEl.dataset, regions.statusEl.textContent, regions.statusEl.className, regions.statusEl.attributes])).not.toContain('model-not-available')
   })
 
   it('records a failed run without a reason when the frame carried none', async () => {

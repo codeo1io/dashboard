@@ -15,10 +15,12 @@
  *   runId (except in the data-run-id attribute), or repo names.
  * - Render only safe fields; no data-* / error-copy / analytics that echoes
  *   prompt/csrf/idempotency/runId in logs.
- * - All 400s collapse to one generic failure; 404 → one uniform unavailable state.
+ * - A 400 is one generic failure, except the two prompt rejections, which map to fixed copy;
+ *   404 → one uniform unavailable state. A response body is never rendered.
  * - No cause inference from body or timing.
  * - credentials:'include', redirect:'error' on all fetch calls.
- * - The prompt is user-typed and goes only in the POST body — never in logs or DOM.
+ * - The prompt is user-typed. It goes in the POST body and, as plain text only (`textContent`), into the
+ *   launched card's prompt slots — never in logs, attributes or markup.
  * - runId appears only in the data-run-id attribute and the stream URL.
  */
 
@@ -31,6 +33,51 @@ import {formatRelativeTime, LAUNCH_TIME_SOURCE} from './operator-time.js'
 // so a static import here would create a second, uncoordinated module instance with
 // its own singleton state rather than sharing the runtime seam's instance.
 const LAUNCH_RUN_INDEX_CAP = 100
+
+// Mirrors OPERATOR_LAUNCH_PROMPT_MAX_LENGTH in src/gateway/operator-contract/launch-prompt.ts, for the
+// same reason as the cap above: browser code cannot import server modules. Counted in UTF-16 units
+// (`.length`) over the untrimmed prompt, which is what the gateway counts. Exported so a node-side test
+// holds it equal to the server constant.
+export const LAUNCH_PROMPT_MAX_LENGTH = 8000
+// The `reason` of the gateway's 400 for a prompt over the limit.
+const PROMPT_TOO_LONG_REASON = 'prompt-too-long'
+// The `error` of the gateway's 400 for a whitespace-only prompt.
+const PROMPT_REQUIRED_ERROR = 'prompt is required'
+
+// Deadline for each launch-client request, covering the headers and the body read. Mirrors
+// FETCH_TIMEOUT_MS in operator-run-index.js, not imported for the same reason as the cap above.
+// Exported so a node-side test holds it equal to the run-index value.
+export const LAUNCH_FETCH_TIMEOUT_MS = 10_000
+
+// HTTP statuses that leave a launch's outcome unknown: the rate limit (answered before the gateway
+// checks the idempotency key) and the proxy's gateway errors (which can follow an accepted launch).
+const INDETERMINATE_HTTP_STATUSES = new Set([429, 502, 503, 504])
+
+const PROMPT_TOO_LONG_COPY = 'Prompt is too long. Keep it to 8,000 characters or fewer; emoji can count as more than one.'
+const PROMPT_REQUIRED_COPY = 'Please enter a prompt before launching.'
+
+/**
+ * The launch outcome for a 400 that names a prompt rejection, or undefined for any other error.
+ *
+ * @param {{kind: string, status?: number, reason?: string, code?: string}} error - A launchRun error.
+ * @returns {{kind: 'prompt-too-long'} | {kind: 'prompt-required'} | undefined} The fixed-copy outcome.
+ */
+function promptRejectionOutcome(error) {
+  if (error.kind !== 'http' || error.status !== 400) return undefined
+  if (error.reason === PROMPT_TOO_LONG_REASON) return {kind: 'prompt-too-long'}
+  if (error.code === PROMPT_REQUIRED_ERROR) return {kind: 'prompt-required'}
+  return undefined
+}
+
+/**
+ * True when the untrimmed prompt is over the gateway's length limit.
+ *
+ * @param {string} prompt - The prompt exactly as typed.
+ * @returns {boolean} Whether the prompt is too long to send.
+ */
+export function isPromptTooLong(prompt) {
+  return prompt.length > LAUNCH_PROMPT_MAX_LENGTH
+}
 
 // ---------------------------------------------------------------------------
 // Pure: repo item validation
@@ -85,6 +132,22 @@ export function mintIdempotencyKey() {
 // ---------------------------------------------------------------------------
 
 /**
+ * The generic failure outcome for a client error. A network error (which includes a timeout) leaves
+ * it unknown whether the gateway accepted the request. So does a 429, which the gateway answers
+ * before it looks at the idempotency key, and so does a 502, 503 or 504, which the reverse proxy in
+ * front of the gateway can return after the gateway accepted the launch. Those failures are marked
+ * indeterminate and the caller keeps the idempotency key for a repeat of the same launch. Every
+ * other error (500 included) is an answer, or a request that never went out, and ends the submission.
+ *
+ * @param {{kind: string, status?: number}} error - A client error.
+ * @returns {{kind: 'failure', indeterminate?: true}} The failure outcome.
+ */
+function failureOutcome(error) {
+  const isIndeterminate = error.kind === 'network' || (error.kind === 'http' && INDETERMINATE_HTTP_STATUSES.has(error.status))
+  return isIndeterminate ? {kind: 'failure', indeterminate: true} : {kind: 'failure'}
+}
+
+/**
  * Submit a launch request through the injected client.
  *
  * State machine:
@@ -94,9 +157,12 @@ export function mintIdempotencyKey() {
  *      - 400 (post-selection) → refreshCsrf ONCE + retry ONCE reusing the SAME key
  *        - retry 202 → {kind:'launched', runId}
  *        - retry 400 → {kind:'failure'} (no third attempt)
+ *      - 400 naming a prompt rejection (reason 'prompt-too-long' → {kind:'prompt-too-long'};
+ *        error 'prompt is required' → {kind:'prompt-required'}) → no CSRF refresh and no retry
  *      - 404 → {kind:'not-found'} (uniform, no cause)
  *      - 429 → {kind:'rate-limited'}
- *      - any other error → {kind:'failure'}
+ *   - any other error → {kind:'failure'}, marked `indeterminate` when it is a network error, a 502,
+ *     503 or 504, or a 429 on the CSRF retry (a 429 on the first launch is {kind:'rate-limited'})
  *
  * The idempotency key is passed in (not minted here) so the caller can reuse it
  * across retries and the function remains pure/testable.
@@ -112,7 +178,7 @@ export async function submitLaunch(client, params, idempotencyKey) {
   // Step 1: Get initial CSRF token
   const csrfResult = await client.refreshCsrf()
   if (!csrfResult.success) {
-    return {kind: 'failure'}
+    return failureOutcome(csrfResult.error)
   }
   const csrfToken = csrfResult.data.csrfToken
 
@@ -135,11 +201,15 @@ export async function submitLaunch(client, params, idempotencyKey) {
     return {kind: 'rate-limited'}
   }
 
-  // 400 → refresh CSRF once and retry ONCE reusing the SAME idempotency key
+  // 400 naming a prompt rejection → fixed copy; a fresh CSRF token cannot change the answer.
+  const promptRejection = promptRejectionOutcome(error)
+  if (promptRejection !== undefined) return promptRejection
+
+  // Any other 400 → refresh CSRF once and retry ONCE reusing the SAME idempotency key
   if (error.kind === 'http' && error.status === 400) {
     const retrycsrfResult = await client.refreshCsrf()
     if (!retrycsrfResult.success) {
-      return {kind: 'failure'}
+      return failureOutcome(retrycsrfResult.error)
     }
     const retryCsrfToken = retrycsrfResult.data.csrfToken
 
@@ -154,12 +224,13 @@ export async function submitLaunch(client, params, idempotencyKey) {
       return {kind: 'launched', runId: retryResult.data.runId}
     }
 
-    // Second failure (any status) → generic failure, no further retry
-    return {kind: 'failure'}
+    // A prompt rejection on the retry maps to the same fixed copy; any other second failure is the
+    // generic failure, with no further retry.
+    return promptRejectionOutcome(retryResult.error) ?? failureOutcome(retryResult.error)
   }
 
   // Any other error (network, protocol, non-400/404/429 http) → failure
-  return {kind: 'failure'}
+  return failureOutcome(error)
 }
 
 // ---------------------------------------------------------------------------
@@ -240,18 +311,41 @@ export function buildLaunchClient(opts) {
       redirect: 'error',
     })
 
+  // Run one request under a single deadline that covers the headers AND the body read. The timer
+  // rejects first and then aborts the fetch, so a body that never settles (stalled, or ignoring the
+  // abort) still rejects and cannot wedge the caller. The timer is cleared when the request ends.
+  // A rejection lands in the caller's catch, which reports the existing network failure.
+  const withDeadline = async request => {
+    const controller = new AbortController()
+    let timeoutId
+    const timedOut = new Promise((_resolve, reject) => {
+      timeoutId = setTimeout(() => {
+        reject(new Error('request timed out'))
+        controller.abort()
+      }, LAUNCH_FETCH_TIMEOUT_MS)
+    })
+    try {
+      return await Promise.race([request(controller.signal), timedOut])
+    } finally {
+      clearTimeout(timeoutId)
+    }
+  }
+
   return {
     async refreshCsrf() {
       try {
-        const res = await browserFetch(`${endpointBase}/session/csrf`, {
-          headers: {'content-type': 'application/json'},
+        return await withDeadline(async signal => {
+          const res = await browserFetch(`${endpointBase}/session/csrf`, {
+            headers: {'content-type': 'application/json'},
+            signal,
+          })
+          if (!res.ok) return {success: false, error: {kind: 'http', status: res.status}}
+          const data = await res.json()
+          if (data === null || typeof data !== 'object' || typeof data.csrfToken !== 'string') {
+            return {success: false, error: {kind: 'protocol', message: 'invalid csrf response'}}
+          }
+          return {success: true, data: {csrfToken: data.csrfToken}}
         })
-        if (!res.ok) return {success: false, error: {kind: 'http', status: res.status}}
-        const data = await res.json()
-        if (data === null || typeof data !== 'object' || typeof data.csrfToken !== 'string') {
-          return {success: false, error: {kind: 'protocol', message: 'invalid csrf response'}}
-        }
-        return {success: true, data: {csrfToken: data.csrfToken}}
       } catch {
         return {success: false, error: {kind: 'network', message: 'network error'}}
       }
@@ -259,20 +353,23 @@ export function buildLaunchClient(opts) {
 
     async listRepos() {
       try {
-        const res = await browserFetch(`${endpointBase}/repos`, {
-          headers: {'content-type': 'application/json'},
-        })
-        if (!res.ok) return {success: false, error: {kind: 'http', status: res.status}}
-        const data = await res.json()
-        if (!Array.isArray(data)) {
-          return {success: false, error: {kind: 'protocol', message: 'invalid repos response'}}
-        }
-        for (const item of data) {
-          if (!validateRepoItem(item)) {
+        return await withDeadline(async signal => {
+          const res = await browserFetch(`${endpointBase}/repos`, {
+            headers: {'content-type': 'application/json'},
+            signal,
+          })
+          if (!res.ok) return {success: false, error: {kind: 'http', status: res.status}}
+          const data = await res.json()
+          if (!Array.isArray(data)) {
             return {success: false, error: {kind: 'protocol', message: 'invalid repos response'}}
           }
-        }
-        return {success: true, data}
+          for (const item of data) {
+            if (!validateRepoItem(item)) {
+              return {success: false, error: {kind: 'protocol', message: 'invalid repos response'}}
+            }
+          }
+          return {success: true, data}
+        })
       } catch {
         return {success: false, error: {kind: 'network', message: 'network error'}}
       }
@@ -292,35 +389,61 @@ export function buildLaunchClient(opts) {
         const currentScenario = typeof getScenario === 'function' ? getScenario() : undefined
         if (currentScenario !== undefined) bodyObj.scenario = currentScenario
         if (fixtureSessionId !== undefined) bodyObj.fixtureSessionId = fixtureSessionId
-        // idempotencyKey goes in the header for all requests (see below).
-        // It is also included in the body only for fixture mode so the fixture
-        // harness can correlate requests without reading headers.
-        const isFixtureMode = currentScenario !== undefined || fixtureSessionId !== undefined
-        if (isFixtureMode && req.idempotencyKey !== undefined) bodyObj.idempotencyKey = req.idempotencyKey
+        // The gateway reads the idempotency key from the JSON body, and the fixture harness does too,
+        // so the body always carries it. The header repeats it.
+        bodyObj.idempotencyKey = req.idempotencyKey
 
-        const res = await browserFetch(`${endpointBase}/runs`, {
-          method: 'POST',
-          redirect: 'error',
-          headers: {
-            'content-type': 'application/json',
-            'x-csrf-token': req.csrfToken,
-            'idempotency-key': req.idempotencyKey,
-          },
-          body: JSON.stringify(bodyObj),
-        })
-        if (res.status === 200 || res.status === 202) {
-          const data = await res.json()
-          if (typeof data.runId !== 'string' || data.runId === '') {
-            return {success: false, error: {kind: 'protocol', message: 'invalid runId in launch response'}}
+        return await withDeadline(async signal => {
+          const res = await browserFetch(`${endpointBase}/runs`, {
+            method: 'POST',
+            redirect: 'error',
+            headers: {
+              'content-type': 'application/json',
+              'x-csrf-token': req.csrfToken,
+              'idempotency-key': req.idempotencyKey,
+            },
+            body: JSON.stringify(bodyObj),
+            signal,
+          })
+          if (res.status === 200 || res.status === 202) {
+            const data = await res.json()
+            if (typeof data.runId !== 'string' || data.runId === '') {
+              return {success: false, error: {kind: 'protocol', message: 'invalid runId in launch response'}}
+            }
+            return {success: true, data: {runId: data.runId}}
           }
-          return {success: true, data: {runId: data.runId}}
-        }
-        return {success: false, error: {kind: 'http', status: res.status}}
+          if (res.status === 400) {
+            return {success: false, error: await readRejection(res)}
+          }
+          return {success: false, error: {kind: 'http', status: res.status}}
+        })
       } catch {
         return {success: false, error: {kind: 'network', message: 'network error'}}
       }
     },
   }
+}
+
+/**
+ * Read a 400 launch response into an http error. The body is parsed inside a try/catch and only two
+ * string fields are lifted from it, for submitLaunch to compare against fixed values. A missing,
+ * non-JSON or differently shaped body yields a bare 400. The body is never rendered.
+ *
+ * @param {Response} res - The 400 response.
+ * @returns {Promise<{kind: 'http', status: 400, reason?: string, code?: string}>} The http error.
+ */
+async function readRejection(res) {
+  const error = {kind: 'http', status: 400}
+  try {
+    const body = await res.json()
+    if (body !== null && typeof body === 'object' && !Array.isArray(body)) {
+      if (typeof body.reason === 'string') error.reason = body.reason
+      if (typeof body.error === 'string') error.code = body.error
+    }
+  } catch {
+    // No usable body: a bare 400.
+  }
+  return error
 }
 
 // ---------------------------------------------------------------------------
@@ -357,6 +480,14 @@ let _launching = false
 // torn-down mount's abandoned in-flight submit. A live submit within the SAME
 // mount still blocks a double-fire, because its generation still matches.
 let _launchingGeneration = null
+// The idempotency key of a submission that has no definitive answer yet, with the repo and the exact
+// prompt it was minted for; null when none is held. A re-click with the same repo and prompt reuses the
+// key, so the gateway can dedupe a request it already accepted, for as long as the gateway's idempotency
+// window lasts. A timeout, a network failure and a 429 keep the key, because none of them says whether an
+// earlier attempt with this key was accepted. It lives outside any init generation, so it outlives a
+// teardown, a remount and a sign-out, and resetLaunchState() leaves it alone. It is released on any
+// definitive answer (compared by key, so a stale submit releases only its own) and on a form reset.
+let _heldLaunch = null
 
 /**
  * Returns true if the given init is no longer the active init.
@@ -552,6 +683,45 @@ export async function initOperatorLaunch(opts) {
     _launchListenerController = listenerController
     _launchListenerGeneration = myGeneration
 
+    const promptEl = launchForm.querySelector('textarea[name="prompt"]')
+    const promptStatusEl = launchForm.querySelector('#launch-prompt-status')
+    const submitBtn = launchForm.querySelector('[type="submit"]')
+
+    // The one reader of the prompt: the untrimmed textarea value. It is what is counted, sent and
+    // seeded; emptiness is the only check that trims.
+    const readPrompt = () => {
+      if (promptEl !== null) return promptEl.value
+      return (new FormData(launchForm).get('prompt') ?? '').toString()
+    }
+
+    // True while this mount's submit is in flight (a lock from a torn-down mount does not count).
+    const isInFlight = () => _launching && _launchingGeneration === myGeneration
+
+    // The announced state: the status node is filled only when the prompt crosses the limit, in
+    // either direction, so typing further over the limit does not announce again.
+    let announcedTooLong = false
+
+    // The one place the Launch button's disabled state is computed.
+    const syncPromptState = () => {
+      const tooLong = isPromptTooLong(readPrompt())
+      if (submitBtn !== null) submitBtn.disabled = isInFlight() || tooLong
+      if (tooLong === announcedTooLong) return tooLong
+      announcedTooLong = tooLong
+      if (promptEl !== null) {
+        if (tooLong) promptEl.setAttribute('aria-invalid', 'true')
+        else promptEl.removeAttribute('aria-invalid')
+      }
+      if (promptStatusEl !== null) promptStatusEl.textContent = tooLong ? PROMPT_TOO_LONG_COPY : ''
+      return tooLong
+    }
+
+    launchForm.addEventListener('input', syncPromptState, {signal: listenerController.signal})
+    // A form reset (after a launch, or by the operator) starts a new submission.
+    launchForm.addEventListener('reset', () => {
+      _heldLaunch = null
+    }, {signal: listenerController.signal})
+    syncPromptState()
+
     launchForm.addEventListener('submit', async event => {
       event.preventDefault()
 
@@ -560,16 +730,21 @@ export async function initOperatorLaunch(opts) {
       // longer current (its mount was torn down mid-submit, e.g. by resetLaunchState)
       // is stale and must not block a fresh mount's submits.
       if (_launching && _launchingGeneration === myGeneration) return
+
+      // Pre-fetch validation: over the limit. requestSubmit() bypasses a disabled button,
+      // so the handler checks the length itself and sends nothing.
+      const prompt = readPrompt()
+      if (syncPromptState()) return
+
       _launching = true
       _launchingGeneration = myGeneration
 
       // Pre-fetch validation: empty prompt
       const formData = new FormData(launchForm)
-      const prompt = (formData.get('prompt') ?? '').toString().trim()
-      if (prompt === '') {
+      if (prompt.trim() === '') {
         _launching = false
         if (launchError !== null) {
-          launchError.textContent = 'Please enter a prompt before launching.'
+          launchError.textContent = PROMPT_REQUIRED_COPY
           launchError.hidden = false
         }
         return
@@ -601,12 +776,14 @@ export async function initOperatorLaunch(opts) {
         launchError.hidden = true
       }
 
-      // Disable submit during in-flight request
-      const submitBtn = launchForm.querySelector('[type="submit"]')
-      if (submitBtn !== null) submitBtn.disabled = true
+      // Disable submit during the in-flight request
+      syncPromptState()
 
-      // Mint a fresh idempotency key for this submission
-      const idempotencyKey = mintIdempotencyKey()
+      // Reuse the held key when this is a repeat of the same repo and prompt; otherwise mint one.
+      const held = _heldLaunch
+      const isRepeat = held !== null && held.repo === repo && held.prompt === prompt
+      const idempotencyKey = isRepeat ? held.idempotencyKey : mintIdempotencyKey()
+      _heldLaunch = {repo, prompt, idempotencyKey}
 
       let outcome
       try {
@@ -624,12 +801,29 @@ export async function initOperatorLaunch(opts) {
         // if this generation still owns the lock. If a stale generation somehow
         // reached this finally (it shouldn't, since isInitStale-guarded code paths
         // return earlier), it must not clear a newer generation's active lock.
-        if (submitBtn !== null) submitBtn.disabled = false
         if (_launchingGeneration === myGeneration) {
           _launching = false
           _launchingGeneration = null
         }
+        // The prompt may have grown past the limit while in flight, so the button is recomputed, not enabled.
+        syncPromptState()
       }
+
+      // A definitive answer ends the submission, so its key is released. An indeterminate failure and a
+      // 429 keep it. So does a launch that succeeded on a stale init: no card, stream or hash attaches
+      // for it, so the operator may click again, and the same repo and prompt then dedupes to the run
+      // that exists. The key is compared so a stale submit cannot release a newer submit's key.
+      const isStale = isInitStale(abortController, myGeneration)
+      const keepsKey =
+        outcome.kind === 'rate-limited' ||
+        (outcome.kind === 'failure' && outcome.indeterminate === true) ||
+        (outcome.kind === 'launched' && isStale)
+      if (!keepsKey && _heldLaunch?.idempotencyKey === idempotencyKey) _heldLaunch = null
+
+      // Guard: the lock is released above either way. If a reset or newer init superseded this one
+      // while the launch was in flight, this page no longer owns the card, the stream, the hash or
+      // the form, so none of the outcome handling below runs.
+      if (isStale) return
 
       if (outcome.kind === 'launched') {
         const {runId} = outcome
@@ -690,6 +884,21 @@ export async function initOperatorLaunch(opts) {
           timeEl.setAttribute('datetime', launchedAt)
           timeEl.textContent = formatRelativeTime(launchedAt)
           card.append(timeEl)
+
+          // Launch prompt slots — same slot as a fetched card: right after the header row, ahead of every
+          // hidden region. Seeded with the exact text that was sent, as plain text. The run index owns
+          // the slots from adoption on and renders the body as Markdown when the card expands.
+          const promptPreviewEl = document.createElement('div')
+          promptPreviewEl.className = 'run-prompt-preview'
+          promptPreviewEl.dataset.role = 'run-prompt-preview'
+          promptPreviewEl.textContent = prompt
+          card.append(promptPreviewEl)
+
+          const promptBodyEl = document.createElement('div')
+          promptBodyEl.className = 'run-prompt'
+          promptBodyEl.dataset.role = 'run-prompt'
+          promptBodyEl.textContent = prompt
+          card.append(promptBodyEl)
 
           // Hidden per-card substructure for the stream renderer.
 
@@ -796,12 +1005,23 @@ export async function initOperatorLaunch(opts) {
 
         // Reset the form
         launchForm.reset()
+        syncPromptState()
 
         // Dispatch success event to the form so React components/drawers can react (e.g. close drawer and focus card)
         launchForm.dispatchEvent(new CustomEvent('launch-success', {
           bubbles: true,
           detail: {runId},
         }))
+      } else if (outcome.kind === 'prompt-too-long') {
+        if (launchError !== null) {
+          launchError.textContent = PROMPT_TOO_LONG_COPY
+          launchError.hidden = false
+        }
+      } else if (outcome.kind === 'prompt-required') {
+        if (launchError !== null) {
+          launchError.textContent = PROMPT_REQUIRED_COPY
+          launchError.hidden = false
+        }
       } else if (outcome.kind === 'not-found') {
         if (launchError !== null) {
           launchError.textContent = 'The selected repository is not available for launch.'
@@ -828,6 +1048,7 @@ export async function initOperatorLaunch(opts) {
  * the active submit listener controller (removing the listener from the form).
  * Called by the React runtime seam cleanup so that a remount can re-initialize
  * the launch UI without double-registering submit handlers. Also used in tests.
+ * A held idempotency key is not part of this state and survives the reset.
  *
  * Incrementing (not nulling) the generation means a fresh init that starts after
  * this reset will capture a new generation and pass its own staleness guards,

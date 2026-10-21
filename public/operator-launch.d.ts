@@ -13,7 +13,9 @@ export type LaunchOutcome =
   | {readonly kind: 'launched'; readonly runId: string}
   | {readonly kind: 'not-found'}
   | {readonly kind: 'rate-limited'}
-  | {readonly kind: 'failure'}
+  | {readonly kind: 'prompt-too-long'}
+  | {readonly kind: 'prompt-required'}
+  | {readonly kind: 'failure'; readonly indeterminate?: true}
 
 // ---------------------------------------------------------------------------
 // Pending card hook descriptor
@@ -34,7 +36,7 @@ export interface PendingCardHooks {
 export interface LaunchClient {
   readonly refreshCsrf: () => Promise<
     | {readonly success: true; readonly data: {readonly csrfToken: string}}
-    | {readonly success: false; readonly error: {readonly kind: string; readonly status?: number; readonly message?: string}}
+    | {readonly success: false; readonly error: {readonly kind: string; readonly status?: number; readonly message?: string; readonly reason?: string; readonly code?: string}}
   >
   readonly launchRun: (req: {
     readonly repo: string
@@ -43,7 +45,7 @@ export interface LaunchClient {
     readonly idempotencyKey: string
   }) => Promise<
     | {readonly success: true; readonly data: {readonly runId: string}}
-    | {readonly success: false; readonly error: {readonly kind: string; readonly status?: number; readonly message?: string}}
+    | {readonly success: false; readonly error: {readonly kind: string; readonly status?: number; readonly message?: string; readonly reason?: string; readonly code?: string}}
   >
 }
 
@@ -60,6 +62,15 @@ export interface LaunchClient {
  * Returns true if the item is valid, false otherwise.
  */
 export declare function validateRepoItem(item: unknown): boolean
+
+/** Longest launch prompt the form sends, in UTF-16 units. Equals the vendored contract's limit. */
+export declare const LAUNCH_PROMPT_MAX_LENGTH: number
+
+/** Deadline in ms for each launch-client request, including its body read. */
+export declare const LAUNCH_FETCH_TIMEOUT_MS: number
+
+/** True when the untrimmed prompt is over the gateway's length limit. */
+export declare function isPromptTooLong(prompt: string): boolean
 
 /**
  * Mint a fresh unique idempotency key for a launch submission.
@@ -112,11 +123,11 @@ export declare function buildLaunchClient(opts?: {
 }): {
   readonly refreshCsrf: () => Promise<
     | {readonly success: true; readonly data: {readonly csrfToken: string}}
-    | {readonly success: false; readonly error: {readonly kind: string; readonly status?: number; readonly message?: string}}
+    | {readonly success: false; readonly error: {readonly kind: string; readonly status?: number; readonly message?: string; readonly reason?: string; readonly code?: string}}
   >
   readonly listRepos: () => Promise<
     | {readonly success: true; readonly data: readonly {readonly owner: string; readonly repo: string; readonly channelName?: string}[]}
-    | {readonly success: false; readonly error: {readonly kind: string; readonly status?: number; readonly message?: string}}
+    | {readonly success: false; readonly error: {readonly kind: string; readonly status?: number; readonly message?: string; readonly reason?: string; readonly code?: string}}
   >
   readonly launchRun: (req: {
     readonly repo: string
@@ -125,7 +136,7 @@ export declare function buildLaunchClient(opts?: {
     readonly idempotencyKey: string
   }) => Promise<
     | {readonly success: true; readonly data: {readonly runId: string}}
-    | {readonly success: false; readonly error: {readonly kind: string; readonly status?: number; readonly message?: string}}
+    | {readonly success: false; readonly error: {readonly kind: string; readonly status?: number; readonly message?: string; readonly reason?: string; readonly code?: string}}
   >
 }
 

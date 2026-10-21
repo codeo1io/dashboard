@@ -753,6 +753,7 @@ describe('defaultRuntimeLoader — production stream wiring', () => {
       resetRunIndexState: vi.fn(),
       markRunStreamAttached: vi.fn(),
       markCardExpandedForLaunch: vi.fn(),
+      setPromptRenderer: vi.fn(),
     }))
     vi.doMock('/static/operator-launch.js?manual=1', () => ({
       initOperatorLaunch: vi.fn(async () => {}),
@@ -833,6 +834,7 @@ describe('defaultRuntimeLoader — question region and summary status wiring', (
       resetRunIndexState: vi.fn(),
       markRunStreamAttached: vi.fn(),
       markCardExpandedForLaunch: vi.fn(),
+      setPromptRenderer: vi.fn(),
     }))
     vi.doMock('/static/operator-launch.js?manual=1', () => ({
       initOperatorLaunch: vi.fn(async (opts: {onRunLaunched: (runId: string, card: HTMLElement) => void}) => {
@@ -1209,6 +1211,7 @@ describe('defaultRuntimeLoader — run-list refresh triggers', () => {
       resetRunIndexState: vi.fn(),
       markRunStreamAttached: vi.fn(),
       markCardExpandedForLaunch: vi.fn(),
+      setPromptRenderer: vi.fn(),
     }))
     vi.doMock('/static/operator-launch.js?manual=1', () => ({
       initOperatorLaunch: vi.fn(async (opts: {onRunLaunched: (runId: string, card: HTMLElement) => void}) => {
@@ -2407,6 +2410,7 @@ describe('defaultRuntimeLoader — in-page run jump (requestRunJump)', () => {
       resetRunIndexState: vi.fn(),
       markRunStreamAttached: vi.fn(),
       markCardExpandedForLaunch,
+      setPromptRenderer: vi.fn(),
     }))
     vi.doMock('/static/operator-launch.js?manual=1', () => ({
       initOperatorLaunch,
@@ -3717,6 +3721,7 @@ describe('defaultRuntimeLoader — finished-run cache', () => {
       resetRunIndexState: vi.fn(),
       markRunStreamAttached,
       markCardExpandedForLaunch,
+      setPromptRenderer: vi.fn(),
     }))
     vi.doMock('/static/operator-launch.js?manual=1', () => ({
       initOperatorLaunch,
@@ -4435,11 +4440,12 @@ describe('defaultRuntimeLoader — output renderer wiring', () => {
   })
 
   /** Mount the real default loader over mocked public modules; a run index that loads, so jumps apply. */
-  async function mountRenderer(options: {finishedRecord?: unknown; streamGate?: Promise<void>} = {}) {
+  async function mountRenderer(options: {finishedRecord?: unknown; streamGate?: Promise<void>; runIndexGate?: Promise<void>} = {}) {
     const handle = {close: vi.fn(), getConnectionStatus: vi.fn(() => 'active')}
     const initOperatorStream = vi.fn((_opts: AttachOpts) => handle)
     const resetOutputView = vi.fn()
     const clearFinishedRuns = vi.fn()
+    const setPromptRenderer = vi.fn()
     let captured: {
       onSelectRun: (runId: string) => void | Promise<void>
       onRestoreRun: (runId: string, card: Element, status: string) => void
@@ -4459,16 +4465,21 @@ describe('defaultRuntimeLoader — output renderer wiring', () => {
         resetOutputView,
       }
     })
-    vi.doMock('/static/operator-run-index.js?manual=1', () => ({
-      initOperatorRunIndex: async (opts: NonNullable<typeof captured>) => {
-        captured = opts
-        return 'loaded'
-      },
-      refreshOperatorRunIndex: vi.fn(async () => true),
-      resetRunIndexState: vi.fn(),
-      markRunStreamAttached: vi.fn(),
-      markCardExpandedForLaunch: vi.fn(),
-    }))
+    vi.doMock('/static/operator-run-index.js?manual=1', async () => {
+      // A gate holds the run index module's import, as a slow network would.
+      await options.runIndexGate
+      return {
+        initOperatorRunIndex: async (opts: NonNullable<typeof captured>) => {
+          captured = opts
+          return 'loaded'
+        },
+        refreshOperatorRunIndex: vi.fn(async () => true),
+        resetRunIndexState: vi.fn(),
+        markRunStreamAttached: vi.fn(),
+        markCardExpandedForLaunch: vi.fn(),
+        setPromptRenderer,
+      }
+    })
     vi.doMock('/static/operator-launch.js?manual=1', () => ({
       initOperatorLaunch: vi.fn(async (opts: {onRunLaunched: (runId: string, card: HTMLElement) => void}) => {
         onRunLaunched = opts.onRunLaunched
@@ -4486,7 +4497,7 @@ describe('defaultRuntimeLoader — output renderer wiring', () => {
       // The loader arms jumps a few microtasks after the launch module's init.
       await new Promise(resolve => realSetTimeout(resolve, 5))
     }
-    if (options.streamGate === undefined) await awaitInit()
+    if (options.streamGate === undefined && options.runIndexGate === undefined) await awaitInit()
     const card = () => document.querySelector(`[data-run-id="${RUN_ID}"]`) as HTMLElement
     return {
       awaitInit,
@@ -4496,6 +4507,7 @@ describe('defaultRuntimeLoader — output renderer wiring', () => {
       initOperatorStream,
       resetOutputView,
       clearFinishedRuns,
+      setPromptRenderer,
       click: async () => { await captured?.onSelectRun(RUN_ID) },
       restore: () => captured?.onRestoreRun(RUN_ID, card(), 'running'),
       launch: () => onRunLaunched?.(RUN_ID, card()),
@@ -4531,6 +4543,127 @@ describe('defaultRuntimeLoader — output renderer wiring', () => {
     expect(mounted.initOperatorStream).toHaveBeenCalledTimes(1)
     expect(mounted.lastAttach()?.runId).toBe(RUN_ID)
     expectRealRenderer(mounted.lastAttach()?.renderOutput)
+  })
+
+  describe('a launch that arrives after the runtime stopped owning the page', () => {
+    it.each([
+      ['cleanup', (m: Awaited<ReturnType<typeof mountRenderer>>) => m.runtime.cleanup()],
+      ['a signed-out session', (m: Awaited<ReturnType<typeof mountRenderer>>) => m.authRequired()],
+    ])('attaches no stream and writes no hash after %s', async (_name, stop) => {
+      renderPage()
+      const mounted = await mountRenderer()
+      stop(mounted)
+
+      mounted.launch()
+      await new Promise(resolve => realSetTimeout(resolve, 5))
+
+      expect(mounted.initOperatorStream).not.toHaveBeenCalled()
+      expect(location.hash).toBe('')
+    })
+  })
+
+  describe('the prompt renderer handed to the run index', () => {
+    const functionCalls = (setPromptRenderer: ReturnType<typeof vi.fn>) =>
+      setPromptRenderer.mock.calls.filter(([passed]) => typeof passed === 'function')
+
+    function pendingRenderer(): (loaded: OutputRenderer) => void {
+      let load: ((loaded: OutputRenderer) => void) | undefined
+      setOutputRendererLoader(() => new Promise<OutputRenderer>(resolve => {
+        load = resolve
+      }))
+      return loaded => load?.(loaded)
+    }
+
+    it('is the loaded output renderer, handed over once the run index has loaded', async () => {
+      renderPage()
+      const mounted = await mountRenderer()
+
+      await vi.waitFor(() => expect(functionCalls(mounted.setPromptRenderer)).toHaveLength(1), { timeout: 5_000 })
+      expectRealRenderer(functionCalls(mounted.setPromptRenderer)[0]?.[0])
+    })
+
+    it('is handed over when the load promise resolves, after the run index has loaded', async () => {
+      const load = pendingRenderer()
+      renderPage()
+      const mounted = await mountRenderer()
+      expect(functionCalls(mounted.setPromptRenderer)).toHaveLength(0)
+
+      load(renderOutput)
+
+      await vi.waitFor(() => expect(functionCalls(mounted.setPromptRenderer)).toHaveLength(1), { timeout: 5_000 })
+      expectRealRenderer(functionCalls(mounted.setPromptRenderer)[0]?.[0])
+    })
+
+    it('is the same renderer the streams get', async () => {
+      renderPage()
+      const mounted = await mountRenderer()
+      await mounted.click()
+      await vi.waitFor(() => expect(functionCalls(mounted.setPromptRenderer)).toHaveLength(1), { timeout: 5_000 })
+
+      expect(functionCalls(mounted.setPromptRenderer)[0]?.[0]).toBe(mounted.lastAttach()?.renderOutput)
+    })
+
+    it('is handed over by the load promise, not by the cap that stops waiting for it', async () => {
+      vi.useFakeTimers({toFake: ['setTimeout', 'clearTimeout']})
+      try {
+        const load = pendingRenderer()
+        renderPage()
+        const mounted = await mountRenderer()
+
+        await vi.advanceTimersByTimeAsync(5000)
+        expect(functionCalls(mounted.setPromptRenderer)).toHaveLength(0)
+
+        load(renderOutput)
+        await vi.advanceTimersByTimeAsync(0)
+        expect(functionCalls(mounted.setPromptRenderer)).toHaveLength(1)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it.each([
+      ['rejects', () => Promise.reject(new Error('chunk missing'))],
+      ['throws', () => {
+        throw new Error('chunk missing')
+      }],
+      ['resolves to nothing', async () => undefined],
+    ])('is never a function when the renderer source %s', async (_name, source) => {
+      setOutputRendererLoader(source)
+      renderPage()
+      const mounted = await mountRenderer()
+      await new Promise(resolve => realSetTimeout(resolve, 10))
+
+      expect(functionCalls(mounted.setPromptRenderer)).toHaveLength(0)
+    })
+
+    it('is not handed over when the runtime is cleaned up while the run index import is pending', async () => {
+      let release: (() => void) | undefined
+      const runIndexGate = new Promise<void>(resolve => {
+        release = resolve
+      })
+      renderPage()
+      const mounted = await mountRenderer({runIndexGate})
+
+      mounted.runtime.cleanup()
+      release?.()
+      // A cleaned-up loader still runs to its end, so wait for that before the next test mounts.
+      await mounted.awaitInit()
+
+      expect(functionCalls(mounted.setPromptRenderer)).toHaveLength(0)
+    })
+
+    it('is cleared on teardown, and a renderer that loads after teardown is not handed over', async () => {
+      const load = pendingRenderer()
+      renderPage()
+      const mounted = await mountRenderer()
+
+      mounted.runtime.cleanup()
+      expect(mounted.setPromptRenderer).toHaveBeenLastCalledWith(undefined)
+
+      load(renderOutput)
+      await new Promise(resolve => realSetTimeout(resolve, 10))
+      expect(functionCalls(mounted.setPromptRenderer)).toHaveLength(0)
+    })
   })
 
   it('a recorded repaint receives the renderer at init, alongside its record', async () => {

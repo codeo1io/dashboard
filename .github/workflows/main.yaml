@@ -78,12 +78,44 @@ jobs:
 
       - name: 🎨 Detect UI anti-patterns
         run: |
-          # Pinned exact for reproducibility. 4.x honors .impeccable/config.json
-          # ignoreValues (verified against the --ease-spring bounce-easing token
-          # in web/src/styles/tokens.css); web/privacy.html declares its role
-          # sizes explicitly because Tailwind utilities are opaque to the detector.
-          findings=$(npx --yes impeccable@4.6.0 detect --json web/src web/privacy.html)
-          if [ "$findings" != "[]" ]; then
+          # Pinned: an older major ignores .impeccable/config.json ignoreValues and would fail the gate on intentional brand tokens.
+          # Exit 2 means findings; 1 means a target could not be scanned. Some versions exit 0 on a missing path, hence the path check.
+          # stdout is a JSON array. Primary entries have no `advisory: true`; advisories are printed and never block.
+          for target in web/src web/privacy.html; do
+            if [ ! -e "$target" ]; then
+              echo "::error::Design Check target '$target' does not exist. Update the scanned paths in this step."
+              exit 1
+            fi
+          done
+
+          work=$(mktemp -d)
+          rc=0
+          findings=$(npx impeccable@4.6.0 detect --json web/src web/privacy.html 2>"$work/stderr") || rc=$?
+
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+            echo "::error::Impeccable could not scan (exit $rc)."
+            cat "$work/stderr"
+            exit 1
+          fi
+
+          # Split the array into primary and advisory entries; print "<primary> <advisory>" counts.
+          if ! counts=$(printf '%s' "$findings" | node -e '
+            const fs = require("node:fs");
+            let data;
+            try {
+              data = JSON.parse(fs.readFileSync(0, "utf8"));
+            } catch {
+              process.exit(3);
+            }
+            if (!Array.isArray(data)) process.exit(3);
+            const primary = data.filter((entry) => entry?.advisory !== true);
+            const advisory = data.filter((entry) => entry?.advisory === true);
+            const dir = process.argv[1];
+            fs.writeFileSync(dir + "/primary.json", JSON.stringify(primary, null, 2));
+            fs.writeFileSync(dir + "/advisory.json", JSON.stringify(advisory, null, 2));
+            process.stdout.write(primary.length + " " + advisory.length);
+          ' "$work"); then
+            echo "::error::Impeccable could not scan: stdout is not a JSON array (exit $rc)."
             echo "$findings"
             echo "Impeccable detected UI anti-patterns. Address them or, for an intentional brand choice, add a scoped ignore via 'impeccable ignores add-value'."
             exit 1
@@ -127,8 +159,15 @@ jobs:
       - name: 📦 Setup
         uses: ./.github/actions/setup
 
-      # No explicit "Build web" step: the pretest hook (package.json) builds the
-      # client before vitest runs, so a separate step would build it twice.
+      - name: 🏗 Build web
+        run: bun run build:web
+
+      - name: 💾 Restore Impeccable engine cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.impeccable/bin
+          key: impeccable-engine-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.agents/skills/impeccable/scripts/VERSION') }}
+
       - name: 🧪 Run Tests
         run: bun run test
 

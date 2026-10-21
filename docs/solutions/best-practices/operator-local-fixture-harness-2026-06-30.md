@@ -247,23 +247,32 @@ function markRunStreamAttached(runId) {
 Avoid a set like `attachedRunIds.add(runId)` for this state. After selecting A then
 B, A must be selectable again. The fixture browser check should cover A → B → A.
 
-### Keep production idempotency in headers
+### Send the idempotency key in the body and the header
 
-Fixture harnesses may need synthetic body fields for local routing, but production
-launch requests must keep the idempotency key in the `idempotency-key` header, not
-the JSON body:
+The gateway reads the launch idempotency key from the JSON body (`idempotencyKey`)
+and ignores the `idempotency-key` header. The launch client therefore sends the key
+in the body on every launch, production and fixture alike, and repeats it in the
+header:
 
 ```js
 await fetch('/operator/runs', {
   method: 'POST',
   headers: {'content-type': 'application/json', 'idempotency-key': idempotencyKey},
-  body: JSON.stringify({repo, prompt}),
+  body: JSON.stringify({repo, prompt, idempotencyKey}),
 })
 ```
 
-Tests should assert the production body contains only production contract fields
-while the header still carries the key. Do not make production payloads leakier to
-support fixture routing.
+Fixture-only routing fields (`scenario`, `fixtureSessionId`) stay out of production
+bodies. Tests should assert the production body holds exactly `repo`, `prompt` and
+`idempotencyKey`, and that the header carries the same key.
+
+The client holds one key per pending submission (same repo, same exact prompt) and
+reuses it after a timeout, a network failure, a 429, a 502, 503 or 504, or a launch
+that succeeded after a teardown or sign-out, across a teardown, a remount and a
+sign-out. A definitive answer, a launch that succeeded on a live page, or a form reset
+releases it. A reused key dedupes
+only within the gateway's idempotency window, not indefinitely. The fixture harness
+scopes its own dedupe by `(fixtureSessionId, idempotencyKey)` and has no such window.
 
 ### Verify the assembled browser surface
 

@@ -163,11 +163,18 @@ function loadPkg(path: string, label: string): LoadResult {
 // File pattern matching
 // ---------------------------------------------------------------------------
 
+/** Vitest test-file names under web/, which are never imported into the bundle. */
+const WEB_TEST_FILE_PATTERN = /\.test\.(?:ts|tsx|js|mjs)$/
+
 /**
  * Returns true if the file path matches a "hard release" pattern — see
  * scripts/release-paths.ts (single source of truth, locked against the
  * release workflow's on.push.paths filter by test/should-release.test.ts):
- *   - src/** / web/** / public/**  (built or copied into the image)
+ *   - src/**
+ *   - web/**  (SPA source — built into the image by the builder stage), except
+ *     Vitest test files (`*.test.ts`, `*.test.tsx`, `*.test.js`, `*.test.mjs`),
+ *     which are never imported into the bundle (upstream #683)
+ *   - public/**  (static assets copied into the image)
  *   - Dockerfile
  *   - bunfig.toml
  *   - .github/workflows/release.yaml
@@ -177,6 +184,11 @@ function loadPkg(path: string, label: string): LoadResult {
  *   - tsconfig*.json (root-level only, not nested paths)
  */
 function isHardReleasePath(filePath: string): boolean {
+  // web/** Vitest test files are the exception (upstream #683): they are never
+  // imported into the image bundle, so a test-only web/ change does not release.
+  // Test setup and config files (e.g. vitest.config.ts) do not match and still
+  // release.
+  if (filePath.startsWith('web/') && WEB_TEST_FILE_PATTERN.test(filePath)) return false
   if (
     HARD_RELEASE_DIR_PREFIXES.some(
       prefix => filePath === prefix || filePath.startsWith(`${prefix}/`),
