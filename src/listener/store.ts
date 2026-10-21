@@ -8,7 +8,7 @@ import {DatabaseSync} from 'node:sqlite'
  * See docs/contracts/operator-listener-channel.md — retention policy (500 rows
  * / 30 days) and idempotency (dedupeKey upsert) are enforced here.
  */
-import {logger} from '../logger.ts'
+import {logger, sanitizeErrorMessage} from '../logger.ts'
 import {isListenerSeverity, isListenerSource, parseLinks, type IngestMessage, type ListenerLink, type ListenerMessage, type MessagesResponse} from './contract.ts'
 
 export interface ListenerStore {
@@ -66,13 +66,20 @@ function parseLinksCell(raw: string, id: string): readonly ListenerLink[] {
     if (!validated.success) throw new Error(validated.error.message)
     return validated.data
   } catch (error) {
-    // rm-1459 (assess-F5 fold): degradation logs ride the structured logger
-    // (redaction seam + level routing), not a bare console.warn — with this
-    // migration the listener store carries no console.* of its own
+    // rm-187 / rm-229 rider discipline (2026-10-17), folded into rm-1459's
+    // assess-F5 migration (2026-10-18): degradation logs ride the structured
+    // logger (redaction seam + level routing), not a bare console.warn — with
+    // this migration the listener store carries no console.* of its own
     // (src/shutdown.ts's injected default remains the only one under src/).
+    // The logger's emit() redacts CONTEXT fields only, so the message text is
+    // pre-sanitized here via sanitizeErrorMessage (house pattern,
+    // aggregator.ts:576) — a V8 SyntaxError message can embed a raw snippet of
+    // the corrupt cell (2026-10-18 independent-review fix). Warning-level
+    // still lands on stderr via the console-backed sink, so log-channel
+    // assertions keep observing it.
     logger.warning(
       `[listener-store] degraded links cell on message ${id}: ${
-        error instanceof Error ? error.message : String(error)
+        sanitizeErrorMessage(error instanceof Error ? error.message : String(error))
       } — serving empty links, other fields intact`,
     )
     return []

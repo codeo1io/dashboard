@@ -111,9 +111,12 @@ view of Fro Bot's cross-repo footprint.
 Read-only dependency source repositories are available under
 `.slim/clonedeps/repos/` for inspection. Do not edit these clones.
 
-- `.slim/clonedeps/repos/fro-bot__agent/` — `fro-bot/agent` at the version
-  pinned by the workflows (`.github/workflows/fro-bot.yaml` digest pin —
-  kept version-agnostic here since a hardcoded version drifts stale); the
+- `.slim/clonedeps/repos/fro-bot__agent/` — `fro-bot/agent` at the CI-pinned
+  tag — the `fro-bot/agent@<sha> # vX.Y.Z` comment in
+  `.github/workflows/fro-bot.yaml` is the source of truth; do NOT hardcode the
+  version here (it silently drifted v0.122.1 → v0.122.3, so the entry is kept
+  version-agnostic by construction). Mirror re-provisioned 2026-10-15 —
+  provision with `git clone --depth 1 --branch <pin>` if absent; the
   gateway's operator OAuth return path contract, GitHub App client, secret
   readers, Hono build/serve split, and runtime logger/Result primitives that
   this app mirrors.
