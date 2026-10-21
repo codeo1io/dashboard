@@ -1,4 +1,5 @@
 ---
+title: "full_tests under a repo-scoped Actions disable: probe first, then the supervisor-authorized local six-job mirror"
 module: workflow-issues
 tags: ['validation', 'ci', 'actions', 'conductor', 'outage']
 problem_type: blocked-verification

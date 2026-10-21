@@ -17,7 +17,6 @@ import {type ReactNode, useCallback, useEffect, useRef, useState} from 'react'
 import {triggerLogoutAbort} from '../push/logout-abort.ts'
 import {buildPushClient, unsubscribeOptOut} from '../push/subscribe.ts'
 import {DISMISS_KEY as INSTALL_DISMISS_KEY, InstallPrompt} from '../pwa/InstallPrompt.tsx'
-import {ReloadPrompt} from '../pwa/ReloadPrompt.tsx'
 import {purgeOperatorCache} from '../pwa/logout-purge.ts'
 import {DISMISS_SETTINGS_KEY as NOTIFICATIONS_DISMISS_KEY, Notifications} from '../views/Notifications.tsx'
 
@@ -210,8 +209,9 @@ export function AppShell({
     logoutInFlight.current = true
     setLoggingOut(true)
 
-    // Purge operator runtime caches before navigating away so a
-    // logged-out user cannot see cached operator data offline.
+    // Sweep operator-side caches before navigating away so a logged-out user
+    // cannot see stale cached data offline (rm-274 truthing: legacy sweep only
+    // — operator responses are network-only/no-store, nothing else is cached).
     purgeOperatorCache()
 
     // Abort any in-flight push subscribe (e.g. started from the Notifications
@@ -604,8 +604,6 @@ export function AppShell({
           )}
         </div>
       </footer>
-
-      <ReloadPrompt />
     </div>
   )
 }

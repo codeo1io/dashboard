@@ -15,11 +15,5 @@ export default defineConfig({
     // then-shared self-hosted runner), which produced full-suite timeout
     // flakes while isolated runs passed.
     testTimeout: 30_000,
-    // vite-plugin-pwa virtual modules are not resolvable in the test environment.
-    // Alias them to stub files so tests that import components using useRegisterSW
-    // don't fail with "Cannot find module 'virtual:pwa-register/react'".
-    alias: {
-      'virtual:pwa-register/react': new URL('./src/pwa/__mocks__/virtual-pwa-register-react.ts', import.meta.url).pathname,
-    },
   },
 })
