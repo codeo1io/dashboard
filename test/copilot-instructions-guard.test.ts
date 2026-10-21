@@ -6,7 +6,8 @@ import {describe, expect, it} from 'vitest'
 /**
  * rm-612: .github/copilot-instructions.md must describe the real two-part
  * architecture — a strip-only Hono server under `src/` PLUS the Vite +
- * React 19 + Tailwind v4 PWA client under `web/`, built via `pnpm build:web`.
+ * React 19 + Tailwind v4 PWA client under `web/`, built via `bun run
+ * build:web`.
  *
  * The file carried the pre-PWA "a single Hono + JSX SSR Node 24 process, no
  * build step" claim for months after the PWA rebuild (db74679, 2026-06-24),
@@ -24,8 +25,8 @@ describe('copilot instructions architecture truth (rm-612)', () => {
     expect(text).toMatch(/`web\/`/)
   })
 
-  it('names the client build entrypoint pnpm build:web', () => {
-    expect(text).toContain('pnpm build:web')
+  it('names the client build entrypoint bun run build:web', () => {
+    expect(text).toContain('bun run build:web')
   })
 
   it('no longer claims a single SSR process with no build step', () => {
