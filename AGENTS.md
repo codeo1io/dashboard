@@ -67,7 +67,7 @@ view of Fro Bot's cross-repo footprint.
   — the container form assumes nothing from the host (no pipx/python
   dependency on the runner image).
 - New `.yaml`/`.yml` files must single-quote string values — eslint's `yml` plugin
-  enforces `yml/quotes` repo-wide (`pnpm lint`), e.g. `patterns: ['*']` in dependabot groups.
+  enforces `yml/quotes` repo-wide (`bun run lint`), e.g. `patterns: ['*']` in dependabot groups.
 - `.agents/skills/` is the canonical home for cross-harness agent skills (read by
   both OpenCode and GitHub Copilot). Install shared skills there, not per-harness:
   e.g. `npx impeccable skills install --providers=agents --scope=project`. The CI

@@ -1,4 +1,5 @@
-# Weekly read-only drift check for the Dockerfile's node:24-slim base pins,
+# Weekly read-only drift check for the Dockerfile's digest-pinned image
+# refs — every inspected tag is DERIVED from the Dockerfile itself (rm-856) —
 # plus a report-only pin-drift job (rm-204) covering packageManager, npm
 # ranges, and GitHub Action pins — drift the digest job cannot see.
 #
@@ -53,60 +54,96 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Compare Dockerfile pins to live node:24-slim digest
+      - name: Compare each Dockerfile image pin to its own live tag digest
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          # Digest readback (rm-166/rm-178 — cycle-11/12 landed this buildx
-          # primary; rm-182 — the third same-day convergence — adds the
-          # anonymous-token + registry-HEAD fallback below). `|| true` INSIDE
-          # each substitution so a CLI failure (e.g. anonymous manifest-auth
-          # rate limiting) reaches the empty-digest guard instead of tripping
-          # set -e first.
-          LIVE_DIGEST="$(docker buildx imagetools inspect node:24-slim | awk '/^Digest:/{print $2; exit}' || true)"
-          if [ -z "$LIVE_DIGEST" ]; then
-            echo '::warning::buildx imagetools inspect yielded no Digest: line — trying the Docker Hub token + registry HEAD fallback (rm-182)'
-            # Fallback (proven 2026-09-24, research b27ad37b): anonymous token
-            # from auth.docker.io, then a registry HEAD whose
-            # docker-content-digest header is the live digest.
-            TOKEN="$(curl -fsSL --max-time 20 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/node:pull' \
-              | jq -r '.token // empty' 2>/dev/null || true)"
-            if [ -n "$TOKEN" ]; then
-              LIVE_DIGEST="$(curl -fsSI --max-time 20 \
-                -H "Authorization: Bearer $TOKEN" \
-                -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
-                'https://registry-1.docker.io/v2/library/node/manifests/24-slim' \
-                | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:"{print $2; exit}' || true)"
-            fi
-          fi
-          if [ -z "$LIVE_DIGEST" ]; then
-            echo '::error::live digest EXTRACTION FAILED (empty) — this is a readback/extraction failure (rm-166/rm-178/rm-182), NOT drift: buildx imagetools inspect produced no Digest: line and the auth.docker.io/registry-1.docker.io HEAD fallback failed too. Re-run this workflow before drawing any drift conclusion.'
+          # rm-856 (run 091c9117 cycle:2): every inspected tag is DERIVED from
+          # the Dockerfile — the same ARG NODE_IMAGE sed shape cve-tripwire
+          # landed for its resolve step (rm-779). This job was born comparing
+          # every Dockerfile pin against the hardcoded moving alias
+          # `node:24-slim` (6b417e2); the ad8f21e move to node:24-trixie-slim
+          # left it querying a tag the Dockerfile no longer pins, and the
+          # Debian forky-era alias divergence then made the sentinel
+          # permanently red on FALSE drift (run 39233283793: pin 7f486cab…
+          # != live a5f4366e… while 24-trixie-slim itself was current).
+          # Deriving the ref removes the whole desync class: a base-image
+          # family move now only touches the Dockerfile, never this workflow.
+          BASE_REF="$(sed -nE 's/^ARG NODE_IMAGE=(node:[^@[:space:]]+@sha256:[0-9a-f]{64})$/\1/p' Dockerfile | head -1 || true)"
+          if [ -z "$BASE_REF" ]; then
+            echo '::error::no ARG NODE_IMAGE=<image>@sha256:<64-hex> pin found in Dockerfile — this workflow and cve-tripwire both derive the base tag from that line (rm-779/rm-856)'
             exit 1
           fi
-          echo "live node:24-slim digest: $LIVE_DIGEST"
 
-          PINNED="$(grep -oE 'sha256:[0-9a-f]{64}' Dockerfile | sort -u)"
-          if [ -z "$PINNED" ]; then
-            echo '::error::no pinned digests found in Dockerfile'
+          # Every literal image:tag@sha256 ref in the Dockerfile — the ARG
+          # base plus any digest-pinned FROM stage (e.g. the oven/bun builder)
+          # — is compared against ITS OWN tag, never a shared alias.
+          REFS="$(grep -oE '[a-z0-9._/-]+:[a-z0-9._-]+@sha256:[0-9a-f]{64}' Dockerfile | sort -u)"
+          if [ -z "$REFS" ]; then
+            echo '::error::no image:tag@sha256 pins found in Dockerfile'
             exit 1
           fi
-          echo "pinned digests:"
-          echo "$PINNED"
+          case "$REFS" in
+            *"$BASE_REF"*) ;;
+            *) echo '::error::ARG NODE_IMAGE ref not matched by the Dockerfile ref scan — the two extraction shapes disagree (rm-856)'; exit 1 ;;
+          esac
+          echo 'pinned refs (each ref derives its own live query — rm-856):'
+          echo "$REFS"
 
           DRIFT=0
-          for pin in $PINNED; do
-            if [ "$pin" != "$LIVE_DIGEST" ]; then
-              echo "drift: pin $pin != live $LIVE_DIGEST"
-              DRIFT=1
-            else
-              echo "current: $pin"
+          DRIFTED=''
+          while IFS= read -r ref; do
+            [ -n "$ref" ] || continue
+            TAG="${ref%@sha256:*}"
+            PIN="${ref##*@sha256:}"
+            REPO_PATH="${TAG%:*}"
+            TAG_NAME="${TAG##*:}"
+            case "$REPO_PATH" in
+              */*) ;;
+              *) REPO_PATH="library/$REPO_PATH" ;;
+            esac
+
+            # Digest readback (rm-166/rm-178 — cycle-11/12 landed this buildx
+            # primary; rm-182 — the third same-day convergence — adds the
+            # anonymous-token + registry-HEAD fallback below). `|| true` INSIDE
+            # each substitution so a CLI failure (e.g. anonymous manifest-auth
+            # rate limiting) reaches the empty-digest guard instead of tripping
+            # set -e first.
+            LIVE_DIGEST="$(docker buildx imagetools inspect "$TAG" | awk '/^Digest:/{print $2; exit}' || true)"
+            if [ -z "$LIVE_DIGEST" ]; then
+              echo "::warning::buildx imagetools inspect yielded no Digest: line for $TAG — trying the Docker Hub token + registry HEAD fallback (rm-182)"
+              # Fallback (proven 2026-09-24, research b27ad37b): anonymous token
+              # from auth.docker.io, then a registry HEAD whose
+              # docker-content-digest header is the live digest.
+              TOKEN="$(curl -fsSL --max-time 20 "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${REPO_PATH}:pull" \
+                | jq -r '.token // empty' 2>/dev/null || true)"
+              if [ -n "$TOKEN" ]; then
+                LIVE_DIGEST="$(curl -fsSI --max-time 20 \
+                  -H "Authorization: Bearer $TOKEN" \
+                  -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+                  "https://registry-1.docker.io/v2/${REPO_PATH}/manifests/${TAG_NAME}" \
+                  | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:"{print $2; exit}' || true)"
+              fi
             fi
-          done
+            if [ -z "$LIVE_DIGEST" ]; then
+              echo "::error::live digest EXTRACTION FAILED (empty) for $TAG — this is a readback/extraction failure (rm-166/rm-178/rm-182), NOT drift: buildx imagetools inspect produced no Digest: line and the auth.docker.io/registry-1.docker.io HEAD fallback failed too. Re-run this workflow before drawing any drift conclusion."
+              exit 1
+            fi
+            echo "live $TAG digest: $LIVE_DIGEST"
+
+            if [ "sha256:$PIN" != "$LIVE_DIGEST" ]; then
+              echo "drift: $TAG pin sha256:$PIN != live $LIVE_DIGEST"
+              DRIFT=1
+              DRIFTED="${DRIFTED}${ref}"$'\n'
+            else
+              echo "current: $TAG $LIVE_DIGEST"
+            fi
+          done <<< "$REFS"
 
           if [ "$DRIFT" = '0' ]; then
-            echo 'no drift — Dockerfile is current'
+            echo 'no drift — every Dockerfile image pin is current for its own tag'
             exit 0
           fi
 
@@ -125,13 +162,12 @@ jobs:
               gh issue create \
                 --repo "$GITHUB_REPOSITORY" \
                 --label base-image-drift \
-                --title 'Base image drift: Dockerfile pins behind node:24-slim' \
-                --body "The weekly drift check found pinned digests that no longer match the live \`node:24-slim\` tag.
+                --title 'Base image drift: Dockerfile pins behind their own tags' \
+                --body "The weekly drift check found Dockerfile image pins that no longer match their own live tag digests (rm-856: every inspected tag is derived from the Dockerfile).
 
-            Live digest: \`$LIVE_DIGEST\`
-            Pinned digests (from \`Dockerfile\`):
+            Drifted refs (from \`Dockerfile\`):
             \`\`\`
-            $PINNED
+            $DRIFTED
             \`\`\`
 
             Action: re-pin in a PR that goes through the normal Release scan gate. Do not auto-bump." >/dev/null
