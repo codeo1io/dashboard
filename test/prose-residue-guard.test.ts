@@ -86,7 +86,7 @@ const ALLOWED_MENTIONS: Record<string, string[]> = {
   ],
   '.github/actions/setup/action.yaml': [
     '# off the single self-hosted runner by PR #11/#12), so nothing persists on',
-    '# self-hosted era got for free. It keys on the pnpm-lockfile hash + node',
+    '# install cache below restores the warm-store economics the self-hosted era',
   ],
 }
 

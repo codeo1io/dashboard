@@ -61,9 +61,9 @@ describe('fork exclusion invariants (rm-131)', () => {
     expect(read('Dockerfile').match(/pnpm@11\.28\.5/g)?.length).toBe(2)
   })
 
-  it('package.json packageManager pins pnpm 11.28.5', () => {
+  it('package.json packageManager pins bun@1.4.3 (upstream #648 migration)', () => {
     const pkg = JSON.parse(read('package.json')) as {packageManager?: string}
-    expect(pkg.packageManager).toBe('pnpm@11.28.5')
+    expect(pkg.packageManager).toBe('bun@1.4.3')
   })
 
   it('.gitignore keeps the run-state entries guarded against upstream merges (rm-159 residue)', () => {
