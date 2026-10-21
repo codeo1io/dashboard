@@ -30,7 +30,31 @@ export interface ListenerMessagesResponse {
 
 export type FetchListenerResult =
   | { ok: true; data: ListenerMessagesResponse }
-  | { ok: false; reason: 'timeout' | 'network' | 'unauthenticated' | 'contract-drift' }
+  | { ok: false; reason: 'timeout' | 'network' | 'unauthenticated' | 'rate-limited' | 'contract-drift' }
+
+/**
+ * rm-1487: hard budget for every listener API call that is not already
+ * bounded by a caller-supplied abort signal. The App.tsx unread poll and the
+ * view loads are bounded at the view layer (useBoundedPoll's timeoutMs race
+ * + per-call abort, LISTENER_FETCH_TIMEOUT_MS 15s), but the ack CSRF GET and
+ * both ack POSTs passed NO signal at all — unbounded fetches an abandoned
+ * tab could hold open forever. 10s keeps this a backstop strictly below the
+ * view-layer 15s budget and the web testTimeout (30s), so jsdom suites never
+ * inherit a hang and the view's own tighter race still fires first.
+ */
+export const LISTENER_CALL_TIMEOUT_MS = 10_000
+
+/**
+ * rm-1487: caller aborts reject as AbortError while AbortSignal.timeout()
+ * rejects as TimeoutError — both mean "the call did not complete in its
+ * budget" and must classify as `timeout`, never `network`. (The run-9c8505bc
+ * implement phase surfaced this as a latent bug: the old catch matched only
+ * AbortError, so every api-layer budget expiry was misfiled as a transport
+ * fault and the `timeout` reason was unreachable for default-signal calls.)
+ */
+function isAbortClassError(err: unknown): boolean {
+  return err instanceof DOMException && (err.name === 'AbortError' || err.name === 'TimeoutError')
+}
 
 function isPlainObject(val: unknown): val is Record<string, unknown> {
   return typeof val === 'object' && val !== null && !Array.isArray(val)
@@ -93,7 +117,9 @@ export async function fetchListenerMessages(opts: {
     const res = await fetch(url.toString(), {
       method: 'GET',
       credentials: 'same-origin',
-      signal: opts.abortSignal,
+      // rm-1487: api-layer default bound — a caller signal still wins, so
+      // the view-layer 15s budget keeps its meaning.
+      signal: opts.abortSignal ?? AbortSignal.timeout(LISTENER_CALL_TIMEOUT_MS),
     })
 
     if (!res.ok) {
@@ -102,6 +128,13 @@ export async function fetchListenerMessages(opts: {
       // network (the operator's session expired, the dashboard did not break).
       if (res.status === 401) {
         return { ok: false, reason: 'unauthenticated' }
+      }
+      // rm-1487: 429 is the per-path-class rate limiter answering, not a
+      // transport fault — surface it distinctly (named like the operator
+      // runtime's canonical 'rate-limited' state, web/src/operator/state.ts)
+      // so "slow down" never renders as "broken".
+      if (res.status === 429) {
+        return { ok: false, reason: 'rate-limited' }
       }
       return { ok: false, reason: 'network' }
     }
@@ -143,7 +176,7 @@ export async function fetchListenerMessages(opts: {
 
     return { ok: true, data: { messages, unreadCount: data.unreadCount, prunedCount, droppedCount } }
   } catch (err) {
-    if (err instanceof DOMException && err.name === 'AbortError') {
+    if (isAbortClassError(err)) {
       return { ok: false, reason: 'timeout' }
     }
     return { ok: false, reason: 'network' }
@@ -162,6 +195,8 @@ async function fetchAckCsrfToken(): Promise<string | null> {
     const res = await fetch('/api/listener/csrf', {
       method: 'GET',
       credentials: 'same-origin',
+      // rm-1487: this leg had no bound at all before the ack POST could run.
+      signal: AbortSignal.timeout(LISTENER_CALL_TIMEOUT_MS),
     })
     if (!res.ok) return null
     const data: unknown = await res.json()
@@ -182,6 +217,8 @@ export async function ackListenerMessage(id: string): Promise<boolean> {
       method: 'POST',
       credentials: 'same-origin',
       headers: { [ACK_CSRF_HEADER]: csrfToken },
+      // rm-1487: every listener fetch bounded at the api layer, acks included.
+      signal: AbortSignal.timeout(LISTENER_CALL_TIMEOUT_MS),
     })
     return res.status === 202
   } catch {
@@ -197,6 +234,8 @@ export async function ackAllListenerMessages(): Promise<boolean> {
       method: 'POST',
       credentials: 'same-origin',
       headers: { [ACK_CSRF_HEADER]: csrfToken },
+      // rm-1487: every listener fetch bounded at the api layer, acks included.
+      signal: AbortSignal.timeout(LISTENER_CALL_TIMEOUT_MS),
     })
     return res.status === 202
   } catch {

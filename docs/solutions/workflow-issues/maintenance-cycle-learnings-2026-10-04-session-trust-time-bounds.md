@@ -1,4 +1,5 @@
 ---
+title: Maintenance-cycle learnings — session trust and time bounds (2026-10-04, run d1850b2ea56e)
 module: dashboard
 tags: ['maintenance-cycle', 'dead-wire-optional-deps', 'red-first-stash', 'workflow-timeouts', 'decision-of-record', 'ephemeral-ci', 'node26-local-web']
 problem_type: workflow-issue

@@ -63,6 +63,7 @@ const EXCLUDED_PREFIXES = [
 const ALLOWED_MENTIONS: Record<string, string[]> = {
   'vitest.config.ts': [
     '// (sized 2026-09 on the then-shared self-hosted runner) while still',
+    '// The upstream wiki test surface is deliberately NOT included: the fork',
   ],
   'web/vitest.config.ts': [
     '// then-shared self-hosted runner), which produced full-suite timeout',
@@ -86,7 +87,18 @@ const ALLOWED_MENTIONS: Record<string, string[]> = {
   ],
   '.github/actions/setup/action.yaml': [
     '# off the single self-hosted runner by PR #11/#12), so nothing persists on',
-    '# self-hosted era got for free. It keys on the pnpm-lockfile hash + node',
+    '# install cache below restores the warm-store economics the self-hosted era',
+  ],
+  '.github/workflows/fro-bot.yaml': [
+    'read-only-by-default monitoring dashboard with one isolated wiki-write capability',
+    'read-only-by-default monitoring dashboard with one isolated wiki-write capability',
+  ],
+  'AGENTS.md': [
+    'package description and carried in `wiki-writer/` — while this fork keeps',
+    '#498). The upstream wiki-writer tree is EXCLUDED at every adoption (dropped',
+  ],
+  'eslint.config.ts': [
+    '// wiki-writer is excluded from this fork entirely (never-absorb doctrine,',
   ],
 }
 

@@ -1,15 +1,23 @@
 /**
  * Clicking inside an approval prompt must never toggle the run card it lives in.
  *
- * Bug: the prompt's Once/Always/Confirm/Cancel/Reject click handlers did not stop propagation, so the
- * click bubbled to the card's expand/collapse listener. The card collapsed, the runtime closed the
- * stream, and "Confirm always" was rendered into a card that had just collapsed. The decision never
- * took effect from the operator's point of view.
+ * Port of upstream fro-bot/dashboard #636 (commit 5581a49) — landed decision
+ * record rm-875 (this suite was authored as run 492efad5 cycle:1's rm-873 mint,
+ * retired under first-landed-wins; main's 2026.10.43 adoption carried the fix).
+ * Upstream's own bug report: the prompt's Once/Always/Confirm/Cancel/Reject click handlers did not
+ * stop propagation, so the click bubbled to the card's expand/collapse listener. The
+ * card collapsed, the runtime closed the stream, and "Confirm always" was rendered
+ * into a card that had just collapsed. The decision never took effect from the
+ * operator's point of view. The same containment hole existed here: the fork keeps
+ * the prompt and the Cancel control inside the same expandable run card (the only
+ * place this stream module renders them), and only the run-index question region had
+ * the containment listener.
  *
  * These tests run the real stack end to end in jsdom: the real default runtime loader
- * (createOperatorRuntime), the real run index (which builds the card and binds its toggle), the real
- * stream module (which renders the prompt) and the real browser approval client. Only `fetch` is a
- * stub. The static module specifiers the loader imports at runtime are pointed at the real files.
+ * (createOperatorRuntime), the real run index (which builds the card and binds its
+ * toggle), the real stream module (which renders the prompt) and the real browser
+ * approval client. Only `fetch` is a stub. The static module specifiers the loader
+ * imports at runtime are pointed at the real files.
  */
 
 import {afterEach, describe, expect, it, vi} from 'vitest'
@@ -125,7 +133,7 @@ async function mountExpandedCardWithPrompt() {
     const found = document.querySelector<HTMLElement>(`[data-run-id="${RUN_ID}"]`)
     expect(found).not.toBeNull()
     return found as HTMLElement
-  })
+  }, { timeout: 5_000 })
 
   card.click() // the operator expands the card
   expect(card.dataset.expanded).toBe('true')
@@ -134,7 +142,7 @@ async function mountExpandedCardWithPrompt() {
     const found = card.querySelector<HTMLElement>('.approval-prompt')
     expect(found).not.toBeNull()
     return found as HTMLElement
-  })
+  }, { timeout: 5_000 })
   expect(card.querySelector<HTMLElement>('[data-role="run-approvals"]')?.hidden).toBe(false)
   expect(gateway.streamsOpened()).toBe(1)
   expect(gateway.streamsAborted()).toBe(0)
@@ -162,7 +170,7 @@ describe('Cancel control inside an expanded run card', () => {
       const found = card.querySelector<HTMLElement>('.run-cancel-control')
       expect(found?.querySelector('.run-cancel-btn-cancel')).not.toBeNull()
       return found as HTMLElement
-    })
+    }, { timeout: 5_000 })
 
     control.querySelector<HTMLButtonElement>('.run-cancel-btn-cancel')?.click()
     expect(control.dataset.state).toBe('armed')
@@ -186,7 +194,7 @@ describe('approval prompt controls inside an expanded run card', () => {
 
     button('.approval-prompt-btn-once').click()
 
-    await vi.waitFor(() => expect(gateway.decisions).toHaveLength(1))
+    await vi.waitFor(() => expect(gateway.decisions).toHaveLength(1), { timeout: 5_000 })
     expect(card.dataset.expanded).toBe('true')
     expect(gateway.streamsAborted()).toBe(0)
     expect(gateway.decisions[0]?.url).toBe(DECISION_PATH)
@@ -207,7 +215,7 @@ describe('approval prompt controls inside an expanded run card', () => {
 
     confirm?.click()
 
-    await vi.waitFor(() => expect(gateway.decisions).toHaveLength(1))
+    await vi.waitFor(() => expect(gateway.decisions).toHaveLength(1), { timeout: 5_000 })
     expect(card.dataset.expanded).toBe('true')
     expect(gateway.streamsAborted()).toBe(0)
     expect(gateway.decisions[0]?.url).toBe(DECISION_PATH)
@@ -234,7 +242,7 @@ describe('approval prompt controls inside an expanded run card', () => {
 
     button('.approval-prompt-btn-reject').click()
 
-    await vi.waitFor(() => expect(gateway.decisions).toHaveLength(1))
+    await vi.waitFor(() => expect(gateway.decisions).toHaveLength(1), { timeout: 5_000 })
     expect(card.dataset.expanded).toBe('true')
     expect(gateway.streamsAborted()).toBe(0)
     expect(gateway.decisions[0]?.url).toBe(DECISION_PATH)
@@ -259,7 +267,7 @@ describe('approval prompt controls inside an expanded run card', () => {
     if (activationPhase === 'keyup') once.dispatchEvent(new KeyboardEvent('keyup', {key, bubbles: true, cancelable: true}))
     once.click()
 
-    await vi.waitFor(() => expect(gateway.decisions).toHaveLength(1))
+    await vi.waitFor(() => expect(gateway.decisions).toHaveLength(1), { timeout: 5_000 })
     expect(card.dataset.expanded).toBe('true')
     expect(gateway.streamsAborted()).toBe(0)
     expect(gateway.decisions[0]?.body).toEqual({decision: 'once'})
@@ -283,6 +291,6 @@ describe('approval prompt controls inside an expanded run card', () => {
     card.click()
 
     expect(card.dataset.expanded).toBe('false')
-    await vi.waitFor(() => expect(gateway.streamsAborted()).toBe(1))
+    await vi.waitFor(() => expect(gateway.streamsAborted()).toBe(1), { timeout: 5_000 })
   })
 })

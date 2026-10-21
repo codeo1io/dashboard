@@ -119,6 +119,43 @@ describe('Dockerfile build-context validity (rm-132)', () => {
   })
 })
 
+// rm-233 (rm-228 in the cycle-1 snapshot; renumbered above main's landed
+// rm-227/228/229 band at the 2026-10-19 integrate): node:24-slim ships no
+// curl or wget, so the
+// container HEALTHCHECK probes the public /api/healthz route with node itself
+// (global fetch, Node ≥18). The guard pins the directive's presence, its
+// probe target, and the node-native probe form — a HEALTHCHECK silently
+// regressing to a missing binary (curl: not found) would report every
+// container unhealthy the moment Release ships it.
+
+describe('Container HEALTHCHECK (rm-233)', () => {
+  const dockerfileText = readFileSync(resolve(repoRoot, 'Dockerfile'), 'utf8')
+
+  it('declares a HEALTHCHECK bound to the public /api/healthz route', () => {
+    // Join line continuations first so the directive's CMD arm (on the next
+    // line) is judged together with its options.
+    const directives = dockerfileText
+      .replaceAll('\\\n', ' ')
+      .split('\n')
+      .filter(line => /^HEALTHCHECK\b/.test(line.trim()))
+    expect(directives).toHaveLength(1)
+    expect(directives[0] ?? '').toContain('/api/healthz')
+  })
+
+  it('probes with node itself (node:24-slim has no curl/wget)', () => {
+    const lines = dockerfileText.split('\n')
+    const start = lines.findIndex(line => /^HEALTHCHECK\b/.test(line.trim()))
+    expect(start).toBeGreaterThanOrEqual(0)
+    // Follow the line continuation into the CMD.
+    const block = lines
+      .slice(start, start + 4)
+      .join('\n')
+      .replaceAll('\\\n', ' ')
+    expect(block).not.toMatch(/\b(curl|wget)\b/)
+    expect(block).toMatch(/CMD \["node", "-e"/)
+  })
+})
+
 describe('Docker build-context seal (rm-186)', () => {
   const dockerignorePath = resolve(repoRoot, '.dockerignore')
   const requiredSecurityEntries = ['.git', 'node_modules', '.env*', '*.pem', '*.key']
