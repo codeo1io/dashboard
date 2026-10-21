@@ -2494,4 +2494,34 @@ rider plus the landed 2026.10.48 adoption, rm-1450's 2026-10-18 gate-
 restoration rider, the tripwire's post-restoration run evidence). Render
 census after this graft: 325 defs / 0 dups / max rm-2032 / next free rm-2033
 (riders and one status flip only; ZERO mints). -->
+<!-- merge rider (2026-10-21, integrate conflict case a0b958a4b45d482c90e0dfe3f172e085, second
+presentation of integration item 128e5bb61d1f for run ba5f6d7ddd6741b58817ac63b8a5fb1b cycle:2 batch
+'oauth-pkce-and-pnpm-pin', candidate commit 8f42afb authored at base 364272b, now against advanced
+main 6d31d7e — advanced past the first presentation's ours 62778fb8 by the rm-2029 zero-scopes
+refinement (2c9812a, composing ON the adopted PKCE surfaces), the 2026.10.59 adoption merge 709809c
+(whose only batch-surface touches are the pin-half sites Dockerfile/package.json, both already
+superseded by the Bun migration), and the 6d31d7e Design Check restoration): the standing 74a1f8f3
+graft disposition (2026-10-20, first presentation
+against ours 62778fb8) is KEPT verbatim and re-verified at the advanced base; this presentation changed
+no executable surface. Dispositions re-proven first-hand: (1) rm-149 PKCE — src/routes/auth.ts and
+src/auth/oauth.ts resolve to HEAD, which already carries the adopted PKCE (byte-identical to the
+candidate at the first presentation) composed with the later rm-2029 zero-scopes refinement (run
+570a7242, cases 90e2e3df/0385e04f/a5dde536); test/auth-pkce.test.ts and test/auth.test.ts auto-merged
+byte-identical to HEAD — no flip owed. (2) rm-281 stays the render's in_progress (the recipe half lives
+inside the adopted test file; the CodeQL-green clause stays open — the batch's own 2026-10-10 record
+deferred it on the then-live Actions disable, the platform came back 2026-10-17T08:42Z, and the first
+green CodeQL run on a carrying PR, with alert #75's dismissal riding the PR #295 review response,
+remains owed). (3) the pnpm 11.28.5 pin half stays SUPERSEDED by the landed
+2026-10-17 pnpm-to-Bun migration — package.json keeps packageManager bun@1.4.3 + trustedDependencies,
+the Dockerfile keeps its oven/bun toolchain-stage copy at both stages, and test/fork-exclusion-guard.
+test.ts keeps the Bun pins with its never-reinstate assertions (dockerfile must NOT match pnpm@ nor
+corepack enable|prepare), so the pin cannot re-land as-authored at any site. (4) the batch's own ledger
+artifacts (its fog platform-disable watch def, its rm-252/rm-157/rm-760 dated riders, extension #41 /
+compound #42 tail comments, its 246/0/831 census and 831 guard-pin notes) stay NOT grafted — the render
+owns their content by adoption or newer supersession, and test/roadmap-integrity-guard.test.ts keeps
+main's rm-877 floor shape (no census equality pin to drift). (5) the batch's durable docs landed verbatim
+at the first presentation and are untouched here (docs/prioritization/2026-10-09-repository-
+maintenance-cycle-2-batch-run-ba5f6d7ddd67.md + docs/solutions/workflow-issues/actions-platform-disable-
+full-validation-local-dual-mirror-2026-10-09.md). Comments add no defs: render census unchanged 325
+defs / 0 dups / max rm-2032 / next free rm-2033. -->
 <!-- managed by hermes-roadmap render; do not edit by hand -->
