@@ -97,8 +97,7 @@ view of Fro Bot's cross-repo footprint.
   workflow now sets `branch-pr` for those triggers; verify delivery by confirming a
   fro-bot-authored PR exists, not by reading run status. See
   `docs/solutions/workflow-issues/workflow-output-mode-auto-discarded-agent-fixes-2026-08-31.md`.
-- The `Fro Bot` workflow on this fork is ACTIVE but schedule-gated (re-verified
-  2026-10-15 and restored 2026-10-18, run 5723bb0a): the cron `0 0 * * *` stays
+- The `Fro Bot` workflow on this fork is ACTIVE but schedule-gated (re-enabled 2026-10-23, run 4301a6b67c1f, after a `disabled_manually` period; re-verified and restored 2026-10-18, run 5723bb0a): the cron `0 0 * * *` stays
   armed while codeo1io/dashboard has no `FRO_BOT_PAT` secret, so the
   `HAS_FRO_BOT_PAT` job-env gate skips every scheduled fire with a warning
   instead of failing it (manual dispatch still runs). The 2026.10.43 upstream
@@ -133,18 +132,20 @@ Read-only dependency source repositories are available under
   post-merge emptiness check stands, because a candidate lineage's landing
   commit can still carry already-tracked breadcrumbs. Root mechanism + cure:
   `docs/solutions/workflow-issues/validation-clone-exclude-pathspec-drops-staged-breadcrumb-deletion-2026-09-24.md`.
-- Branch protection on `main` is a shell today: the protection object exists
-  but carries no required checks and does not enforce for admins (re-probed
-  2026-09-25; rm-116 tracks filling it with the Main job conclusions + CodeQL,
-  strict, admin-enforced). Nothing structurally blocks red-check merges until
-  rm-116 lands — verify the live object before relying on any protection
-  claim. Once checks are in force, if a hotfix must land while a required
-  check cannot run, the override path is: temporarily
+- Branch protection on `main` enforces the PR gate as of 2026-10-23 (rm-878):
+  the protection object was filled IN PLACE — required checks Check Types /
+  Check Workflows / Design Check / Lint / Test / Test Scripts Load / CodeQL,
+  strict contexts, admin-enforced (`visual` and `Fro Bot` intentionally
+  excluded: `visual` is path-gated on web/ surfaces and would hang non-web PRs;
+  `Fro Bot` is secret-gated and reports `skipped` without `FRO_BOT_PAT`).
+  Still verify the live object before relying on any protection claim.
+  If a hotfix must land while a required check cannot run,
+  the override path is: temporarily
   `enforce_admins.enabled=false` via `gh api -X PUT
   /repos/codeo1io/dashboard/branches/main/protection` with the full protection
   body preserved, land, then re-enable enforcement in the same session — never
   delete the protection object (recreating it drops the check list; a
-  body-less recreate produces exactly the current all-empty shell state).
+  body-less recreate produces exactly the old all-empty shell state).
 - Landing merges can silently drop a batch's deliverables: the 2026-10-09
   landing (3e3664c) resolved modify-vs-delete as DELETE for its own batch's
   `test/roadmap-integrity-guard.test.ts` while the batch doc still claimed it
