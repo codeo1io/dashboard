@@ -70,7 +70,7 @@ view of Fro Bot's cross-repo footprint.
   — the container form assumes nothing from the host (no pipx/python
   dependency on the runner image).
 - New `.yaml`/`.yml` files must single-quote string values — eslint's `yml` plugin
-  enforces `yml/quotes` repo-wide (`pnpm lint`), e.g. `patterns: ['*']` in dependabot groups.
+  enforces `yml/quotes` repo-wide (`bun run lint`), e.g. `patterns: ['*']` in dependabot groups.
 - `.agents/skills/` is the canonical home for cross-harness agent skills (read by
   both OpenCode and GitHub Copilot). Install shared skills there, not per-harness:
   e.g. `npx impeccable skills install --providers=agents --scope=project`. The CI
@@ -108,11 +108,11 @@ Read-only dependency source repositories are available under
 `.slim/clonedeps/repos/` for inspection. Do not edit these clones.
 
 - `.slim/clonedeps/repos/fro-bot__agent/` — `fro-bot/agent` at the CI-pinned
-  tag `v0.122.1` (pin source: `.github/workflows/fro-bot.yaml`; mirror
-  re-provisioned 2026-10-15 — provision with `git clone --depth 1 --branch
-  <pin>` if absent); the gateway's operator OAuth return path contract, GitHub
-  App client, secret readers, Hono build/serve split, and runtime
-  logger/Result primitives that this app mirrors.
+  tag `v0.123.1` (pin source: `.github/workflows/fro-bot.yaml` — re-derive the
+  live tag from the pin at consult time; the mirror lags pin bumps); the
+  gateway's operator OAuth return path contract, GitHub App client, secret
+  readers, Hono build/serve split, and runtime logger/Result primitives that
+  this app mirrors.
 
 ## Landing-pipeline traps
 
@@ -126,11 +126,13 @@ Read-only dependency source repositories are available under
   post-merge emptiness check stands, because a candidate lineage's landing
   commit can still carry already-tracked breadcrumbs. Root mechanism + cure:
   `docs/solutions/workflow-issues/validation-clone-exclude-pathspec-drops-staged-breadcrumb-deletion-2026-09-24.md`.
-- Branch protection on `main` is a shell today: the protection object exists
-  but carries no required checks and does not enforce for admins (re-probed
-  2026-09-25; rm-116 tracks filling it with the Main job conclusions + CodeQL,
-  strict, admin-enforced). Nothing structurally blocks red-check merges until
-  rm-116 lands — verify the live object before relying on any protection
+- Branch protection on `main` is FILLED (re-probed 2026-10-19): the object carries
+  7 required contexts (Check Types, Lint, Test, Design Check, Test Scripts Load,
+  Check Workflows, Analyze), strict contexts, and admin enforcement — red-check
+  merges are structurally blocked, admins included. The fill's provenance is
+  out-of-band (no landing claims it; ROADMAP rm-878 tracks the ledger re-truth,
+  rm-1522 tracks adding visual to the required set) — still verify the live
+  object before relying on any protection
   claim. Once checks are in force, if a hotfix must land while a required
   check cannot run, the override path is: temporarily
   `enforce_admins.enabled=false` via `gh api -X PUT

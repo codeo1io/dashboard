@@ -15,9 +15,11 @@
 #   the fork's single self-hosted runner — became historical when PR #11/#12
 #   moved CI to GitHub-hosted runners on 2026-09-22.)
 # - cooldown.default-days: 1 holds every PR one day after upstream publication
-#   (rm-135's dependabot half; mirrors pnpm-workspace.yaml's minimumReleaseAge:
-#   1440 at :13, which carries the matching minimumReleaseAgeExclude list).
-#   Units differ: dependabot cooldown is DAYS, pnpm minimumReleaseAge is MINUTES.
+#   (rm-135's dependabot half; mirrors bunfig.toml's `minimumReleaseAge =
+#   259200` at :4 — a 3-day release-age gate on every install; the pnpm-workspace
+#   era carried 1440 + the matching minimumReleaseAgeExclude list, retired with
+#   pnpm at cda317e).
+#   Units differ: dependabot cooldown is DAYS, bun minimumReleaseAge is SECONDS.
 #   GitHub does not apply cooldown to security updates — they land without
 #   delay. But do not expect a security update to cure a TRANSITIVE override
 #   floor — observed behavior 2026-09-30 (rm-276 review-fix softened the

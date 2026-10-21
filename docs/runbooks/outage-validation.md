@@ -28,11 +28,11 @@ degrades the snapshot — the server fails open in both directions.
 Run the same job set CI would run, from the worktree root:
 
 ```sh
-pnpm install --frozen-lockfile   # worktree node_modules can be swept between phases (~10-60s from the shared store)
-pnpm check-types                 # server + web/ + .opencode
-pnpm lint
-pnpm audit --recursive
-pnpm test                        # pretest rebuilds web/dist, then Vitest (root + web legs)
+bun install --frozen-lockfile   # worktree node_modules can be swept between phases (~10-60s from the shared store)
+bun run check-types             # server + web/ + .opencode
+bun run lint
+bun audit
+bun run test                    # pretest rebuilds web/dist, then Vitest (root + web legs)
 ```
 
 Reference baseline at `a385ca5` (2026-10-15, during the outage): 58 + 34 test files,
@@ -41,7 +41,7 @@ Reference baseline at `a385ca5` (2026-10-15, during the outage): 58 + 34 test fi
 - `test/prose-residue-guard.test.ts` can time out on a COLD first full run (walks
   `node_modules` before filtering); a warm rerun is green.
 - Direct `npx vitest run` bypasses `pretest` — suites that hit `/` will 404 on a stale or
-  missing `web/dist`. Build first (`pnpm build:web`) or use `pnpm test`.
+  missing `web/dist`. Build first (`bun run build:web`) or use `bun run test`.
 
 ## Focused-test discipline when full is out of budget
 
