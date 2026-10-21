@@ -92,4 +92,47 @@ describe('base-drift digest readback — workflow statics (rm-166)', () => {
       'base-drift.yaml must fail loudly when the live digest readback comes back empty',
     ).toBe(true)
   })
+
+  // rm-2311 / rm-1961: the 2026-10-21 incident (run 39756796415) had BOTH
+  // faults at once — the compare hardcodes a single node:24-slim live digest
+  // for EVERY pin (the oven/bun pin can never match: permanent false drift),
+  // and the recency dedupe counts run-list `--status success` entries, which
+  // include this workflow's own skip-path runs (conclusion success, drift job
+  // skipped) — 15 phantom "greens" masked the standing red.
+  it('base-drift.yaml compares every Dockerfile pin against its OWN live tag digest (per-pin method)', () => {
+    const file = readWorkflowFiles().find(f => f.name === 'base-drift.yaml')
+    const text = file?.text ?? ''
+    // Pins must be DERIVED from the Dockerfile's ARG/FROM lines, so a new
+    // pinned base image is covered without touching this workflow.
+    expect(
+      text.includes('ARG NODE_IMAGE=') && /\bFROM\b/.test(text),
+      'base-drift.yaml must derive the pinned refs from the Dockerfile ARG/FROM lines',
+    ).toBe(true)
+    expect(
+      text.includes('FROM_IMAGE="node:24-slim"'),
+      'base-drift.yaml must not hardcode a single compare tag: every pin must face its own live digest (the oven/bun pin can never match a node digest)',
+    ).toBe(false)
+    // Official images live under library/; namespaced repos (oven/bun) do not.
+    expect(
+      text.includes('library/'),
+      'base-drift.yaml must derive the registry path per ref (library/<name> vs <org>/<repo>)',
+    ).toBe(true)
+  })
+
+  it('base-drift.yaml recency dedupe counts real drift-job verdicts only (skips are neutral)', () => {
+    const file = readWorkflowFiles().find(f => f.name === 'base-drift.yaml')
+    const text = file?.text ?? ''
+    expect(
+      text.includes('--status success'),
+      'run-list --status success counts skipped-drift runs as greens and masks a live red (rm-1961, run 39756796415)',
+    ).toBe(false)
+    expect(
+      text.includes('/actions/runs/'),
+      'the dedupe must inspect per-run drift-job conclusions via the Actions jobs API',
+    ).toBe(true)
+    expect(
+      text.includes('.name == "drift"'),
+      'the dedupe must select the drift job by name and read its conclusion',
+    ).toBe(true)
+  })
 })

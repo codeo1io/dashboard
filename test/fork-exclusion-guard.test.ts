@@ -50,12 +50,49 @@ describe('fork exclusion invariants (rm-131)', () => {
     expect(existsSync(resolve(repoRoot, 'wiki-writer'))).toBe(false)
   })
 
-  it('AGENTS.md read-only invariant documents the exclusion but never relaxes it (2026.10.48 wording)', () => {
+  it('AGENTS.md read-only invariant documents the exclusion but never relaxes it (2026.10.48 wording, re-derived 2026.10.68 for rm-259)', () => {
     const text = read('AGENTS.md')
     // The policy statement must stay absolute.
     expect(text).toMatch(/Never add a write code path/)
     // And the doc must keep declaring the upstream surface EXCLUDED, not absorbed.
     expect(text).toMatch(/wiki-writer.{0,200}EXCLUDED/s)
+    // rm-2311 re-derivation: upstream #705 moved the write core into the
+    // server (src/wiki, @fro.bot/wiki-write-core) and #708 mirrored it into
+    // the web client. The invariant text must name BOTH trees — a doc that
+    // still describes only the retired wiki-writer/ workspace under-describes
+    // the surface the next absorb must exclude.
+    expect(text).toMatch(/src\/wiki\//)
+    expect(text).toMatch(/web\/src\/wiki\//)
+    expect(text).toMatch(/wiki-write-core/)
+  })
+
+  it('the upstream wiki-write surface stays absent post-#705/#708: no server tree, no client surface, no workspace (rm-259 re-derivation)', () => {
+    // wiki-writer/ is the pre-#705 workspace (historical guard, kept);
+    // src/wiki/** + the #708 web client surface are where the write
+    // capability lives NOW. None of them may exist in this fork's tree.
+    const absent = [
+      'wiki-writer',
+      'src/wiki',
+      'src/routes/wiki.ts',
+      'web/src/wiki',
+      'web/src/api/wiki.ts',
+      'web/src/views/WikiEditSession.tsx',
+      'web/src/views/WikiEditor.tsx',
+      'web/src/views/WikiList.tsx',
+    ]
+    for (const path of absent) {
+      expect(existsSync(resolve(repoRoot, path)), `${path} must not exist in this fork`).toBe(false)
+    }
+  })
+
+  it('no write-capability package rides the manifests (@fro.bot/wiki-write-core absent from package.json and lockfile, rm-259)', () => {
+    for (const manifest of ['package.json', 'web/package.json', 'bun.lock']) {
+      const path = resolve(repoRoot, manifest)
+      if (!existsSync(path)) continue
+      expect(read(manifest), `${manifest} must not depend on @fro.bot/wiki-write-core`).not.toContain(
+        '@fro.bot/wiki-write-core',
+      )
+    }
   })
 
   it('renovate workflow stays removed (retired self-hosted-era policy, PR #1)', () => {
