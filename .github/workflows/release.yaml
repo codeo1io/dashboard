@@ -381,7 +381,7 @@ jobs:
           severity: HIGH,CRITICAL
           limit-severities-for-sarif: true
           exit-code: '0'
-          version: v0.72.0
+          version: v0.76.0
 
       - name: 📦 Upload Trivy SARIF artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -420,7 +420,7 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: '1'
-          version: v0.72.0
+          version: v0.76.0
 
       # rm-882: setup-node moved to the build job (tag precompute); the promote
       # job no longer needs a Node runtime of its own.
