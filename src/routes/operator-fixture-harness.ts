@@ -37,6 +37,7 @@ import {
   FIXTURE_VAPID_PUBLIC_KEY,
 } from '../gateway/operator-fixtures.ts'
 import {logger} from '../logger.ts'
+import {MAX_REQUEST_BODY_BYTES, readBodyCapped} from '../read-body.ts'
 
 // Fixture-prefixed repo list — never real repos.
 const FIXTURE_REPOS = [
@@ -451,9 +452,22 @@ export function buildFixtureHarnessRouter(): Hono {
 
   // POST /runs — synthetic launch. Binds runId to fixtureSessionId for ownership checks.
   router.post('/runs', async c => {
+    // rm-268 close-out: the read is bounded BEFORE parsing — readBodyCapped
+    // counts wire bytes incrementally and cancels the stream at the cap, so
+    // no request can buy unbounded buffering here either (one shared bound
+    // and code path with the listener ingest and /auth/logout routes,
+    // src/read-body.ts).
+    const rawBody = await readBodyCapped(c.req.raw, MAX_REQUEST_BODY_BYTES)
+    if (rawBody === null) {
+      logger.debug('fixture-harness: POST /runs', {status: 413, errorClass: 'cap'})
+      const res = c.json({error: 'payload too large'}, 413)
+      setNoStore(res.headers)
+      return res
+    }
+
     let body: unknown
     try {
-      body = await c.req.json()
+      body = JSON.parse(rawBody)
     } catch {
       logger.debug('fixture-harness: POST /runs', {status: 400, errorClass: 'parse'})
       const res = c.json({error: 'invalid-request'}, 400)
@@ -809,9 +823,19 @@ export function buildFixtureHarnessRouter(): Hono {
       return res
     }
 
+    // rm-268 close-out: bounded read before parse, same shared cap/code path
+    // (src/read-body.ts) as /runs above and the listener ingest route.
+    const rawBody = await readBodyCapped(c.req.raw, MAX_REQUEST_BODY_BYTES)
+    if (rawBody === null) {
+      logger.debug('fixture-harness: POST /push/subscriptions', {status: 413, errorClass: 'cap'})
+      const res = c.json({error: 'payload too large'}, 413)
+      setNoStore(res.headers)
+      return res
+    }
+
     let body: unknown
     try {
-      body = await c.req.json()
+      body = JSON.parse(rawBody)
     } catch {
       logger.debug('fixture-harness: POST /push/subscriptions', {status: 400, errorClass: 'parse'})
       const res = c.json({error: 'invalid-request'}, 400)
@@ -871,9 +895,19 @@ export function buildFixtureHarnessRouter(): Hono {
       return res
     }
 
+    // rm-268 close-out: bounded read before parse, same shared cap/code path
+    // (src/read-body.ts) as /runs and /push/subscriptions above.
+    const rawBody = await readBodyCapped(c.req.raw, MAX_REQUEST_BODY_BYTES)
+    if (rawBody === null) {
+      logger.debug('fixture-harness: POST /push/subscriptions/unsubscribe', {status: 413, errorClass: 'cap'})
+      const res = c.json({error: 'payload too large'}, 413)
+      setNoStore(res.headers)
+      return res
+    }
+
     let body: unknown
     try {
-      body = await c.req.json()
+      body = JSON.parse(rawBody)
     } catch {
       logger.debug('fixture-harness: POST /push/subscriptions/unsubscribe', {status: 400, errorClass: 'parse'})
       const res = c.json({error: 'invalid-request'}, 400)

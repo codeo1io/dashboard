@@ -263,8 +263,8 @@ export function buildAuthRouter(config: AuthRouteConfig): Hono {
   // length-less, and lying-header requests can never buffer unbounded bytes
   // on this public pre-auth path. One shared bound and code path with the
   // listener ingest route (src/read-body.ts, MAX_REQUEST_BODY_BYTES). Escalates
-  // rm-268, whose cap fired only after `await c.req.text()` had buffered the
-  // whole stream, and whose `.length` check counted UTF-16 code units, not
+  // rm-268, whose cap fired only after the old unbounded text read had buffered
+  // the whole stream, and whose `.length` check counted UTF-16 code units, not
   // bytes. The real client (web/src/shell/AppShell.tsx) posts urlencoded
   // `csrf_token`; other encodings are 415, never parsed.
   router.post('/logout', async c => {

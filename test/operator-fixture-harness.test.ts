@@ -1808,6 +1808,91 @@ describe('fixture launch — malformed and non-object JSON body', () => {
 })
 
 // ---------------------------------------------------------------------------
+// rm-268 close-out: every harness body parse is bounded BEFORE parsing
+// (readBodyCapped / MAX_REQUEST_BODY_BYTES — src/read-body.ts), so the
+// dev-only fixture surface enforces the same wire-byte cap as /auth/logout
+// and the listener ingest route. Oversized bodies are 413 before any parse.
+// ---------------------------------------------------------------------------
+
+describe('fixture harness — body-cap 413 before parse (rm-268 close-out)', () => {
+  it('POST /runs with an oversized declared body → 413 payload too large', async () => {
+    const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
+    const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/runs`, {
+      method: 'POST',
+      headers: {'content-type': 'application/json'},
+      body: 'x'.repeat(17_000), // cap is 16_384 wire bytes (MAX_REQUEST_BODY_BYTES)
+    })
+    expect(res.status).toBe(413)
+    const body = await res.json() as {error: string}
+    expect(body.error).toBe('payload too large')
+  })
+
+  it('POST /runs endless chunked body over the cap → 413 with the stream cancelled, not drained (rm-497 shape)', async () => {
+    const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
+
+    let pulledChunks = 0
+    const chunk = new Uint8Array(8192) // endless: 8 KiB × N available, cap is 16 KiB
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulledChunks += 1
+        controller.enqueue(chunk)
+      },
+      cancel() {
+        /* reader.cancel() after crossing the cap lands here */
+      },
+    })
+
+    const req = new Request(`http://localhost${FIXTURE_OPERATOR_PREFIX}/runs`, {
+      method: 'POST',
+      headers: {'content-type': 'application/json'},
+      body: endless,
+      duplex: 'half',
+    })
+
+    const res = await app.request(req)
+    expect(res.status).toBe(413)
+    // 8 KiB × 3 = 24 KiB crosses the 16 KiB cap, then cancel — the flood
+    // never gets to push the rest of the stream.
+    expect(pulledChunks).toBe(3)
+  })
+
+  it('POST /push/subscriptions with an oversized body → 413 (past the session/CSRF/idempotency header gates)', async () => {
+    const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
+    const fixtureSessionId = await mintFixtureSessionId(app)
+    const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/push/subscriptions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-fixture-session-id': fixtureSessionId,
+        'x-csrf-token': 'fixture-csrf',
+        'idempotency-key': 'key-cap-413-001',
+      },
+      body: 'x'.repeat(17_000),
+    })
+    expect(res.status).toBe(413)
+    const body = await res.json() as {error: string}
+    expect(body.error).toBe('payload too large')
+  })
+
+  it('POST /push/subscriptions/unsubscribe with an oversized body → 413', async () => {
+    const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
+    const fixtureSessionId = await mintFixtureSessionId(app)
+    const res = await app.request(`${FIXTURE_OPERATOR_PREFIX}/push/subscriptions/unsubscribe`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-fixture-session-id': fixtureSessionId,
+        'x-csrf-token': 'fixture-csrf',
+      },
+      body: JSON.stringify({endpoint: `fixture-endpoint-${'x'.repeat(17_000)}`}),
+    })
+    expect(res.status).toBe(413)
+    const body = await res.json() as {error: string}
+    expect(body.error).toBe('payload too large')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Cheap hardening: root GET / manifest
 // ---------------------------------------------------------------------------
 
