@@ -34,7 +34,7 @@
 //       trustedDependencies, scripts, type, exports, imports) between base and head.
 //      If any runtime field changed => release.
 //      If only proven non-artifact devDependencies changed, and the lockfile
-//      is unchanged => skip. With pnpm-lock.yaml also in the changed set the
+//      is unchanged => skip. With bun.lock also in the changed set the
 //      guard fails open and releases (rm-167): a lockfile regen can move an
 //      in-range runtime resolution even when only devDependencies were edited.
 //      Unknown devDependency changes fail open and trigger a release because
@@ -173,7 +173,8 @@ function loadPkg(path: string, label: string): LoadResult {
  *   - .github/workflows/release.yaml
  *   - scripts/should-release.ts
  *   - scripts/compute-release-tag.ts
- *   - pnpm-workspace.yaml
+ *   - scripts/gzip-static-sidecars.ts (rm-602: reshapes the shipped web/dist
+ *     sidecar set with zero src/ or web/ diff)
  *   - tsconfig*.json (root-level only, not nested paths)
  */
 function isHardReleasePath(filePath: string): boolean {

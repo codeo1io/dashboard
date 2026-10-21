@@ -3,7 +3,7 @@
 Read-only Fro Bot monitoring dashboard. Two parts in one repo: a Node 24 native-TS
 Hono server (`src/`, strip-only, no backend build step) that serves the API + GitHub
 OAuth, and a Vite + React 19 + Tailwind v4 PWA client (`web/`, built via
-`pnpm build:web` → `web/dist`, served at `/`). It is an authenticated single-operator
+`bun run build:web` → `web/dist`, served at `/`). It is an authenticated single-operator
 view of Fro Bot's cross-repo footprint. `AGENTS.md` is the canonical context; this
 file mirrors the load-bearing rules for code suggestions.
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // rm-602 (repository-maintenance cycle 3, run f2821fb57c34) — post-build gzip
 // sidecar generator for the precompressed static-serving scheme. Run by
-// `pnpm build:web` (and `build:web:fixture`) right after the Vite build, so
+// `bun run build:web` (and `build:web:fixture`) right after the Vite build, so
 // every compressible file in the output tree carries a `<name>.gz` sibling
 // that @hono/node-server's `serveStatic({precompressed: true})` selects by
 // Accept-Encoding (Content-Encoding: gzip + Vary: Accept-Encoding, with
