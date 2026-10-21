@@ -92,4 +92,34 @@ describe('base-drift digest readback — workflow statics (rm-166)', () => {
       'base-drift.yaml must fail loudly when the live digest readback comes back empty',
     ).toBe(true)
   })
+
+  it('base-drift.yaml derives the checked tag AND the compared pin set from the ARG NODE_IMAGE line (rm-2008)', () => {
+    const file = readWorkflowFiles().find(f => f.name === 'base-drift.yaml')
+    expect(file, '.github/workflows/base-drift.yaml must exist').toBeDefined()
+    const text = file?.text ?? ''
+    // rm-2008: the checked tag stream is DERIVED from the Dockerfile's ARG
+    // NODE_IMAGE pin — never a hardcoded sibling stream (the pre-fix shape
+    // hardcoded node:24-slim while the pin tracked 24-trixie-slim).
+    expect(
+      text.includes("grep -E '^ARG NODE_IMAGE=' Dockerfile"),
+      'base-drift.yaml must derive the checked tag from the Dockerfile ARG NODE_IMAGE line',
+    ).toBe(true)
+    expect(
+      text.includes('imagetools inspect "$TAG"'),
+      'base-drift.yaml must inspect the DERIVED tag, not a hardcoded stream',
+    ).toBe(true)
+    // rm-2008 review fix (2026-10-21): the compared pin set must ALSO come
+    // from that line only. A whole-Dockerfile digest grep picks up the
+    // oven/bun toolchain pin (a different image stream) and cross-compares
+    // it against the node tag's live digest — a guaranteed weekly false red
+    // on the two-pin post-Bun Dockerfile even with the node pin current.
+    expect(
+      text.includes("grep -E '^ARG NODE_IMAGE=' Dockerfile | grep -oE 'sha256:[0-9a-f]{64}'"),
+      'base-drift.yaml must restrict the compared pin set to the ARG NODE_IMAGE line digest',
+    ).toBe(true)
+    expect(
+      text.includes("grep -oE 'sha256:[0-9a-f]{64}' Dockerfile"),
+      'base-drift.yaml must not whole-file grep the Dockerfile for digests (the oven/bun toolchain pin would be compared against the node tag live digest)',
+    ).toBe(false)
+  })
 })

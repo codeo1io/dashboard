@@ -69,7 +69,8 @@ export const PLATFORM_STATUS_TIMEOUT_MS = 3_000
 export const PLATFORM_STATUS_DESCRIPTION_MAX_CHARS = 200
 
 const PLATFORM_INDICATORS: readonly string[] = ['none', 'minor', 'major', 'critical', 'maintenance']
-const PLATFORM_COMPONENT_STATUSES: readonly string[] = [
+/** Component-status vocabulary — exported so the snapshot-store shape guard (rm-1500) asserts the same set. */
+export const PLATFORM_COMPONENT_STATUSES: readonly string[] = [
   'operational',
   'degraded_performance',
   'partial_outage',

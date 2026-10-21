@@ -1,4 +1,5 @@
 ---
+title: Maintenance-cycle learnings — calver string-sort, ephemeral-CI scope, result-envelope variant (2026-10-08/09, run `405e9004`, repository-maintenance cycle 2)
 module: dashboard
 tags: ['maintenance-cycle', 'conductor', 'calver', 'validation', 'ephemeral-ci', 'result-envelope']
 problem_type: workflow-issue

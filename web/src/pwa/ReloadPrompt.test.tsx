@@ -1,11 +1,12 @@
 /**
- * ReloadPrompt tests — component is a no-op under the SW kill-switch.
+ * ReloadPrompt tests — component is a deliberate no-op stub.
  *
- * SW registration is disabled for this deployment (see sw.ts: the service
- * worker exists only to remove the old PWA shell from clients). ReloadPrompt
+ * rm-274 truthing: the old kill-switch premise was false — SW registration is
+ * live (vite-plugin-pwa auto-injects /registerSW.js; see sw.ts). With
+ * registerType 'prompt' and no update-banner surface wired yet, ReloadPrompt
  * intentionally renders nothing and wires nothing, so these tests pin that
  * contract: no DOM output in any hook state, and no update-path callbacks
- * are ever invoked through it.
+ * are ever invoked through it. The solved upstream banner is the rm-1935 absorb.
  */
 
 import {render, screen} from '@testing-library/react'
@@ -13,7 +14,7 @@ import {beforeEach, describe, expect, it, vi} from 'vitest'
 import * as pwaRegister from 'virtual:pwa-register/react'
 import {ReloadPrompt} from './ReloadPrompt.tsx'
 
-describe('ReloadPrompt (no-op under SW kill-switch)', () => {
+describe('ReloadPrompt (deliberate no-op update-banner stub)', () => {
   const mockUpdateServiceWorker = vi.fn()
   const mockSetNeedRefresh = vi.fn()
 
