@@ -1,13 +1,14 @@
 /**
- * Service worker tests — build-output assertions (require a prior `pnpm build:web`):
+ * Service worker tests — build-output assertions (require a prior `bun run build:web`):
  * - Pins the deny-by-default fetch router structure.
  * - Pins that /api/monitoring NetworkFirst route is ABSENT (monitoring removed).
  * - Pins the /operator navigation redirect handler is present BEFORE generic nav fallback.
- * - Pins the PURGE_RUNTIME message handler targets operator runtime caches only.
+ * - Pins the PURGE_RUNTIME message handler sweeps only the legacy monitoring-v1
+ *   cache (rm-274 truthing: no runtime caches exist at head).
  *
  * Build-output tests read the built artifact, not the source sw.ts, because the
  * injectManifest step substitutes self.__WB_MANIFEST and produces the final sw.js.
- * The root `pretest` script runs `pnpm build:web` automatically.
+ * `bun run test` runs the root `pretest` script, which runs `bun run build:web` automatically.
  */
 
 import {readFileSync} from 'node:fs'
@@ -36,7 +37,7 @@ function readSW(): string {
     return readFileSync(SW_PATH, 'utf-8')
   } catch {
     throw new Error(
-      `web/dist/sw.js not found. Run 'pnpm build:web' before running tests.\n` +
+      `web/dist/sw.js not found. Run 'bun run build:web' before running tests.\n` +
         `Expected path: ${SW_PATH}`,
     )
   }
@@ -161,9 +162,9 @@ describe('sw.js build output', () => {
     expect(content).toContain('PURGE_RUNTIME')
   })
 
-  it('GUARD: purge handler targets operator-runtime-v1 (positive assertion)', () => {
+  it('GUARD: rm-274 truthing — purge handler no longer references the unwritten operator-runtime cache', () => {
     const content = readSW()
-    expect(content).toContain('operator-runtime-v1')
+    expect(content).not.toContain('operator-runtime')
   })
 
   it('GUARD: purge handler also deletes legacy monitoring-v1 cache (migration cleanup)', () => {
@@ -371,5 +372,24 @@ describe('sw.ts message handler (behavioral)', () => {
   ])('does NOT call skipWaiting() for %s', (_label, data) => {
     dispatchMessage(data)
     expect(skipWaiting).not.toHaveBeenCalled()
+  })
+
+  it('does not ship the dev-only push mock receiver (rm-2003)', () => {
+    // web/src/sw.ts gates the MOCK_SYNTHETIC_PUSH receiver behind
+    // import.meta.env.DEV (same flag as the sender in Notifications.tsx);
+    // Vite statically replaces the flag in a production build, so the whole
+    // block — literal included — must be dead-branch-eliminated from the
+    // emitted sw.js. test/static-assets.test.ts sweeps the same literal
+    // class; this pin lives here next to the other build-output assertions.
+    expect(readSW()).not.toContain('MOCK_SYNTHETIC_PUSH')
+  })
+
+  it('still ships the real push wiring rm-249 tracks', () => {
+    // Positive counterweight to the absence pin above: a stubbed or broken
+    // SW build must not be able to pass that absence test vacuously. The
+    // deny-by-default router registers the genuine push surface at module
+    // scope, so the handler registrations stay present in production output.
+    expect(readSW()).toContain('notificationclick')
+    expect(readSW()).toContain('push')
   })
 })
