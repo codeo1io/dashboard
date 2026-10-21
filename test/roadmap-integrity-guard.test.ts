@@ -270,4 +270,14 @@ describe('batch-doc deliverable marker (rm-857)', () => {
     expect(Number(claim?.[2]), `${newest.name} claims stale dups`).toBe(live.dups)
     expect(Number(claim?.[3]), `${newest.name} claims stale max id`).toBe(live.max)
   })
+
+  it('every newest-cohort doc declares deliverables (absence-side, rm-857)', () => {
+    for (const doc of newestCohortDocs()) {
+      const content = readFileSync(doc, 'utf8')
+      expect(
+        DELIVERABLES_HEADING.test(content),
+        `${doc} must carry '## Deliverables' (marker-less carriers ship unguarded)`,
+      ).toBe(true)
+    }
+  })
 })
