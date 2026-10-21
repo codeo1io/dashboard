@@ -71,9 +71,10 @@ export default defineConfig({
     },
   ],
   webServer: {
-    // Same build + boot as `pnpm dev:fixture`, with the self-contained auth
-    // env documented in the file header.
-    command: 'pnpm build:web:fixture && node src/server.ts',
+    // Same build + boot as `bun run dev:fixture`, with the self-contained auth
+    // env documented in the file header. (pnpm → bun with the 2026.10.48
+    // adoption of upstream #648.)
+    command: 'bun run build:web:fixture && node src/server.ts',
     url: `${baseURL}/api/healthz`,
     timeout: 120_000,
     reuseExistingServer: process.env.CI === undefined,

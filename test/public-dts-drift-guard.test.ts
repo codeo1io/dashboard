@@ -61,7 +61,7 @@ const ALLOWED_UNDECLARED: Readonly<Record<string, readonly string[]>> = {
 const TYPE_ONLY_COUNTS: Readonly<
   Record<string, {readonly type: number; readonly interface: number}>
 > = {
-  'operator-stream': {type: 32, interface: 35},
+  'operator-stream': {type: 34, interface: 35},
   'operator-launch': {type: 1, interface: 2},
   'operator-run-index': {type: 4, interface: 2},
 }

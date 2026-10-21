@@ -1,4 +1,5 @@
 ---
+title: Additive AggregatorSnapshot fields must be optional — verbatim snapshot stubs pin the whole shape
 module: 'github-aggregator'
 tags: ['aggregator', 'snapshot-type', 'test-fixtures', 'additive-fields']
 problem_type: 'wide-test-blast-radius'
