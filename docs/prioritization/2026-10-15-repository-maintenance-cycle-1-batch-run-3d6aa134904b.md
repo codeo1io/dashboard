@@ -133,3 +133,19 @@ union. Cured by adding the entry to the workflow-issues section (count 90→91);
 no other orphan, dead link, or frontmatter gap exists. Root-leg re-verified
 green on the doc guards (index/frontmatter/roadmap-integrity), the web vitest
 project (41 files), and the SW/static-asset guards after a fresh `build:web`.
+
+## Landing record (2026-10-21, integrate conflict case 9ddebcb3)
+
+Re-census for the served-truth trio graft (run 4c0ec7a58ade, candidate aa54388
+at base cb4da55 onto ours 6d31d7e): the batch's three defs — CSP style-src
+truth, operator-copy fold, OAuth boot fast-fail — minted as candidate
+rm-874/rm-875/rm-876, landed renumbered rm-2033/rm-2034/rm-2035 per
+first-landed-wins (main's rm-874/875/876 own the landed operator-contract
+waiting-overlay, #636 containment, and absorb-window-matrix meanings). Census
+after the graft: 328 defs / 0 dups / max rm-2035. This claim supersedes the
+at-mint 325/0/2032 claim above per the guard's last-match-wins rule. The
+candidate's own batch doc
+(`2026-10-10-repository-maintenance-cycle-1-batch-run-4c0ec7a5.md`) predates
+the marker convention and carries none — its rm-2034 deletions of
+`src/gateway/operator-copy.ts` and `test/operator-copy.test.ts` are
+self-authored deletions, not dropped deliverables.

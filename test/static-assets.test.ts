@@ -14,6 +14,7 @@
  */
 import type {GitHubOAuthClient} from '../src/auth/oauth.ts'
 import {Buffer} from 'node:buffer'
+import {createHash} from 'node:crypto'
 import {existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join, resolve} from 'node:path'
@@ -194,12 +195,65 @@ describe('security headers — CSP', () => {
     expect(scriptSrc).not.toContain("'unsafe-inline'")
   })
 
-  it("CSP allows inline styles (style-src has 'unsafe-inline' for SSR style attributes)", async () => {
+  it("CSP keeps style-src strict — no 'unsafe-inline', plus the one hash-pinned residual (rm-2033)", async () => {
     const app = await buildTestApp(true)
     const res = await app.request('/api/healthz')
     const csp = res.headers.get('content-security-policy') ?? ''
     const styleSrc = csp.split(';').map(d => d.trim()).find(d => d.startsWith('style-src')) ?? ''
-    expect(styleSrc).toContain("'unsafe-inline'")
+    // 'self' first, then exactly ONE sha256 token (the privacy.html residual),
+    // never 'unsafe-inline'.
+    expect(styleSrc.startsWith("style-src 'self' '")).toBe(true)
+    expect(styleSrc).not.toContain("'unsafe-inline'")
+    const tokens = styleSrc.slice('style-src '.length).split(' ')
+    expect(tokens.filter(t => t.startsWith("'sha256-"))).toHaveLength(1)
+  })
+
+  // rm-2033 residual binding: the single hash-allowlisted inline style is
+  // web/privacy.html's detector-only <style> block (b48ae13 #658, landed
+  // after the batch's base — the impeccable Design Check needs its explicit
+  // role sizes because it cannot read Tailwind utilities). This recomputes
+  // the sha256 from the page source and asserts the served CSP carries that
+  // exact token: if the style block drifts, the served policy silently
+  // stops covering it and this guard fails loud instead.
+  it("style-src sha256 token matches web/privacy.html's inline style block (rm-2033)", async () => {
+    const app = await buildTestApp(true)
+    const res = await app.request('/api/healthz')
+    const csp = res.headers.get('content-security-policy') ?? ''
+    const styleSrc = csp.split(';').map(d => d.trim()).find(d => d.startsWith('style-src')) ?? ''
+    const page = readFileSync(resolve(import.meta.dirname, '../web/privacy.html'), 'utf8')
+    const block = /<style>([\s\S]*?)<\/style>/.exec(page)?.[1]
+    if (block === undefined)
+      throw new Error(
+        'web/privacy.html must keep its <style> block (or update this guard + the CSP token)',
+      )
+    const hash = createHash('sha256').update(block, 'utf8').digest('base64')
+    expect(styleSrc).toContain(`'sha256-${hash}'`)
+    expect(styleSrc).toBe(`style-src 'self' 'sha256-${hash}'`)
+  })
+
+  // rm-2033 served-truth pin: the EXACT literal served header (no value
+  // synthesis) on every operator-facing surface — the SPA shell, the public
+  // policy page, the operator runtime bundle, and the API probe. The old
+  // fallback synthesized a tolerant substring check, so a future widening
+  // would have shipped silently; any directive change must now update this
+  // literal consciously.
+  it('serves the pinned literal CSP on every operator-facing surface (rm-2033)', async () => {
+    const app = await buildTestApp(true)
+    const pinned =
+      "default-src 'self'; script-src 'self'; style-src 'self' " +
+      "'sha256-z2sJfnvUQp7OUFA99wou7QOoUM2s+j8Ey2+F4NTJtts='; worker-src 'self'; " +
+      "manifest-src 'self'; connect-src 'self'; img-src 'self' data:; font-src 'self'; " +
+      "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    const surfaces = [
+      await authedGet(app, '/'),
+      await app.request('/privacy'),
+      await app.request('/static/operator-stream.js'),
+      await app.request('/api/healthz'),
+    ]
+    for (const res of surfaces) {
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-security-policy')).toBe(pinned)
+    }
   })
 
   it("CSP contains default-src 'self'", async () => {
