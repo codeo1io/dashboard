@@ -50,12 +50,19 @@ describe('fork exclusion invariants (rm-131)', () => {
     expect(existsSync(resolve(repoRoot, 'wiki-writer'))).toBe(false)
   })
 
-  it('AGENTS.md read-only invariant documents the exclusion but never relaxes it (2026.10.48 wording)', () => {
+  it('AGENTS.md read-only invariant documents the exclusion but never relaxes it (re-derived rm-2310 after upstream #705 relocated the write surface)', () => {
     const text = read('AGENTS.md')
     // The policy statement must stay absolute.
     expect(text).toMatch(/Never add a write code path/)
-    // And the doc must keep declaring the upstream surface EXCLUDED, not absorbed.
-    expect(text).toMatch(/wiki-writer.{0,200}EXCLUDED/s)
+    // And the doc must keep declaring the upstream write surface EXCLUDED,
+    // not absorbed — wherever upstream relocates it. rm-2310 re-derived this
+    // from the wiki-writer/-era form (/wiki-writer.{0,200}EXCLUDED/s) after
+    // upstream #705 deleted wiki-writer/ and moved the capability into the
+    // main server; the disposition must name that relocated surface.
+    expect(text).toMatch(/wiki[- _]?writ.{0,400}EXCLUDED/s)
+    expect(text).toMatch(/src\/wiki\//)
+    expect(text).toMatch(/src\/routes\/wiki\.ts/)
+    expect(text).toMatch(/wiki-write-core/)
   })
 
   it('renovate workflow stays removed (retired self-hosted-era policy, PR #1)', () => {
@@ -116,4 +123,60 @@ describe('fork exclusion invariants (rm-131)', () => {
       expect(tracked).toBe('')
     },
   )
+})
+
+// rm-2310 (2026-10-22, cycle:3 run 56ce64e9): upstream release 2026.10.66
+// (merge #705) DELETED wiki-writer/ and relocated the wiki-write capability
+// into the main server — a src/wiki/ tree, src/routes/wiki.ts routes, an
+// app-client write client under src/github/, and an @fro.bot/wiki-write-core
+// dependency (run research; the absorb window is rm-252). The wiki-writer/-era
+// assertions above stay — upstream tags across the rm-252 window still carry
+// that shape, and a merge can land anywhere in the window — but they are no
+// longer the whole guard: a straight merge from the current upstream tip
+// passes them while tracking the relocated write surface. Proven red-first
+// at implementation: a staged src/wiki path, a staged @fro.bot/wiki-write-core
+// manifest entry, a wiki-write lockfile line, and a wiki-write reference
+// inside src/github each turned this suite red before the clean tree came
+// back green.
+
+const WIKI_WRITE_TERM = /wiki[- _]?writ/i
+
+function trackedFiles(): string[] {
+  return execSync('git ls-files', {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  })
+    .split('\n')
+    .filter(Boolean)
+}
+
+describe('relocated write-surface exclusion (rm-2310)', () => {
+  it('no wiki-named path is tracked anywhere in the repo', () => {
+    const wikiPaths = trackedFiles().filter(path =>
+      path.split('/').some(segment => /^wiki/i.test(segment)),
+    )
+    expect(
+      wikiPaths,
+      'wiki-named tracked paths — a write-capability surface re-entered the tree',
+    ).toEqual([])
+  })
+
+  it('src/github (app-client surface) carries no wiki-write machinery references', () => {
+    const offenders = trackedFiles()
+      .filter(path => path.startsWith('src/github/'))
+      .flatMap(path =>
+        read(path)
+          .split('\n')
+          .map((line, i) => (WIKI_WRITE_TERM.test(line) ? `${path}:${i + 1}` : ''))
+          .filter(Boolean),
+      )
+    expect(offenders, 'wiki-write references inside src/github').toEqual([])
+  })
+
+  it('no wiki-write package rides the manifest or the lockfile', () => {
+    for (const file of ['package.json', 'bun.lock']) {
+      expect(read(file), `${file} references a wiki-write package`).not.toMatch(WIKI_WRITE_TERM)
+    }
+  })
 })

@@ -58,12 +58,11 @@ updates:
           - '*'
     ignore:
       # Major updates are deferred until a migration is planned (2026-09-21,
-      # cycle-5 batch B6 / rm-133). Vitest 5 removes reporters/flags the suite
-      # relies on; TypeScript 7 must be re-verified against the strip-only
-      # erasableSyntaxOnly pipeline. Minor/patch updates stay open.
-      # Re-evaluate: 2026-10-21.
-      - dependency-name: vitest
-        update-types: ['version-update:semver-major']
+      # cycle-5 batch B6 / rm-133). TypeScript 7 must still be re-verified
+      # against the strip-only erasableSyntaxOnly pipeline (rm-271);
+      # minor/patch updates stay open. Vitest 5 was adopted 2026-10-21
+      # (5.0.5 in-tree, full suite green) and its ignore arm is retired
+      # (rm-1524, rm-133 rider). Re-evaluate: 2026-10-21 passed.
       - dependency-name: typescript
         update-types: ['version-update:semver-major']
 

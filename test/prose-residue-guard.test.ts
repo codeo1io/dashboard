@@ -94,8 +94,11 @@ const ALLOWED_MENTIONS: Record<string, string[]> = {
     'read-only-by-default monitoring dashboard with one isolated wiki-write capability',
   ],
   'AGENTS.md': [
-    'package description and carried in `wiki-writer/` — while this fork keeps',
-    '#498). The upstream wiki-writer tree is EXCLUDED at every adoption (dropped',
+    'description, first carried in `wiki-writer/`, and since upstream release',
+    '2026.10.66 (merge #705, which deleted `wiki-writer/`) relocated INTO the',
+    'client under `src/github/`, and an `@fro.bot/wiki-write-core` dependency.',
+    'item, upstream PR #498): every upstream wiki-write surface is EXCLUDED at',
+    'routes, the app-client write client, and the `@fro.bot/wiki-write-core`',
   ],
   'eslint.config.ts': [
     '// wiki-writer is excluded from this fork entirely (never-absorb doctrine,',
