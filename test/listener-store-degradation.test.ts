@@ -162,6 +162,10 @@ describe('listener store rm-187 (degraded links cell never 500s the messages rea
     // Observable by design: every degraded read logs once.
     expect(warn).toHaveBeenCalledTimes(1)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('degraded links cell on message'))
+    // rm-187/rm-229 discipline (2026-10-17): the degrade now routes through the
+    // structured logger — pin its warning prefix so a regression back to a bare
+    // console.warn cannot pass silently.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[warning]'))
     warn.mockRestore()
   })
 
@@ -287,6 +291,9 @@ describe('links cell wrong-shaped elements degrade to empty (rm-187 follow-up)',
     }
     expect(warn).toHaveBeenCalledTimes(6)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('degraded links cell on message'))
+    // rm-187 discipline pin: the degrade must route through the structured
+    // logger (warning-level sink prefixes '[warning] '), not a bare console call.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[warning] '))
     warn.mockRestore()
   })
 

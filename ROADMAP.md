@@ -807,6 +807,7 @@
 - selection rider (2026-10-10, run 633717c23b19 cycle:3 prioritize e451d38164414bf08145dc4edfc6906a): rider-scope member (no def flip) of batch 'fail-closed input truth (server half)' — this batch carries the follow-up above: parseLinksCell element-shape validation (non-empty title/url strings, degrade-to-empty otherwise, tests for wrong-shaped arrays) plus retiring the 10 no-non-null-assertion lint warnings in test/listener-store-degradation.test.ts:67-117 so pnpm lint reads 0 warnings. DISCIPLINE: src/listener/store.ts is also the live file set of sibling implement f21b7a97 (store.stats() region, rm-107 + fog rm-844 batch) — edits are ADDITIVE-ONLY and confined to the parseLinksCell region (file head), never the class body; if that lane lands first this reverts cleanly.
 - implement rider (2026-10-10, run 633717c23b19 cycle:3 implement 98d9cc184a084d2bad50cd6de2c232dd): follow-up DELIVERED (pending landing) — parseLinksCell now routes array contents through the exported contract parseLinks validator (canonical {success,data} Result shape; a wrong-shaped element degrades the whole cell to empty links with the existing degradation warn), 2 new wrong-shape tests + valid-array round-trip in test/listener-store-degradation.test.ts, all 6 non-null assertions retired via guard clauses, pnpm lint now 0 errors / 0 warnings repo-wide.
 - compound rider (2026-10-10, run 633717c23b19 cycle:3 compound a2fe8d1ba3a84bf5835c08da899da861 — validation outcomes, pre-review): element-shape follow-up validated — targeted dad6d5bc 182/182 incl. listener-store-degradation 10 (wrong-shape cases + valid-array round-trip through the exported contract parseLinks); full df99449a dual-mirror GREEN both legs (leg B root 65f/2483 + web 33f/1212) with pnpm lint 0 errors / 0 warnings repo-wide in BOTH legs — the 10 warnings this def's 2026-10-10 roadmap rider named are retired, and leg A over pristine 88e423a confirms they were the repo's only warnings; verbatim CI leg owed post-recovery.
+- rider (2026-10-21, integrate conflict case 8bc4ca1c, run 0aeba94683ee cycle:3): post-migration hardening landed on top of rm-1459's completed logger routing at this integrate — parseLinksCell pre-sanitizes the degrade message text via sanitizeErrorMessage (the logger's emit() redacts CONTEXT fields only, so the message string itself needed the seam; house pattern aggregator.ts), and test/listener-store-degradation.test.ts pins the `[warning]` prefix at both spy sites so a regression back to a bare console call cannot pass silently. The run's own roadmap/compound riders for this fold rode spool patches that never landed (its commit attempt died pre-envelope; the landing commit carried the validated tree with ROADMAP pristine) — this rider re-records their durable content against the landed render.
 
 ### pnpm-store caching for hosted CI
 - id: `rm-145` | track: reliability | priority: 46.0 | status: in_progress
@@ -1518,9 +1519,10 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Security.txt refresh-freshness guard — automate the quarterly obligation
-- id: `rm-673` | track: security | priority: 26.0 | status: in_progress
+- id: `rm-673` | track: security | priority: 26.0 | status: implemented 2026-10-21 at this integrate (conflict case 8bc4ca1c; run 0aeba94683ee cycle:3)
 - acceptance: the existing security.txt test block gains a runway assertion — Expires must be at least 60 days in the future — with the bound chosen so one missed quarterly cycle fails CI well before the field can approach expiry; assertion red-first proven by temporarily pinning a soon-to-expire value (test red, restore, test green); no change to the served security.txt itself
 - evidence: campaign-recorded in dashboard ROADMAP.md
+- rider (2026-10-21, integrate conflict case 8bc4ca1c, run 0aeba94683ee cycle:3 implement 1df5dd58 + review-fix 8be8e0af, candidate commit bfc9f6c at base 64cd2f6): IMPLEMENTED — the runway guard lands as test/security-txt-expiry-guard.test.ts (the focused-file shape the batch contract allowed; test/server.test.ts's existing block keeps the future + <= 366d ceiling, so exactly one shape owns the floor, not both); red-first proven 2026-10-18 against a temporarily pinned stale 2026-09-01 Expires, then byte-exact restore; src/server.ts untouched per acceptance. The served constant is Expires 2026-12-24, so the guard's first red is ~2026-10-25 — the quarterly refresh is deadline-enforced now, not convention; the next refresh batch must move the SECURITY_TXT constant before that date.
 
 ### Bound the two while (true) GitHub pagination walks in installations.ts
 - id: `rm-1455` | track: reliability | priority: 26.0 | status: implemented
@@ -2459,4 +2461,37 @@ shapes (Bun pins; rm-877 floors). Comments add no defs: render census unchanged 
 toolbar + privacy renders (the rm-1960 delta has no visual footprint; the
  run's 346452 B 7742e11-era baseline described the older tree). Render census
  after this graft: 325 defs / 0 dups / max rm-2032 / next free rm-2033. -->
+<!-- conductor integrate bfc9f6c merge-resolution graft (2026-10-21, integrate
+conflict case 8bc4ca1ceb924f7ba02a9fb96e3c8c85, integration f97f300f096d, run
+0aeba94683ee cycle:3 "record-correctness sweep", candidate commit bfc9f6c
+authored 2026-10-19 at base 64cd2f6, ours 76005aa): same regime as the
+0790740e/74a1f8f3 grafts — the landed managed render stays authoritative for
+census and ordering, and this batch's ledger content is preserved on top of it.
+The candidate's validated ship is a 6-file delta; 4 files ride this merge
+verbatim (AGENTS.md clonedeps de-hardcode truth-flip, src/listener/store.ts
+sanitizeErrorMessage seam + comment lineage, the two degradation-test
+`[warning]` prefix pins, and the NEW test/security-txt-expiry-guard.test.ts
+guard), and the 2 fold-neutral cure files (.github/workflows/release.yaml,
+scripts/release-paths.ts) are SUPERSEDED — they were byte-copies of then-main
+checked out only to arm the should-release parity guard, and main's 2026.10.48
+Bun migration already carries their content evolved (pnpm-lock.yaml/
+pnpm-workspace.yaml entries became bun.lock/bunfig.toml), so dropping them at
+this merge loses nothing. FIRST-LANDED-WINS DISPOSITIONS the clean textual
+union could not see: AGENTS.md keeps HEAD's Fro Bot paragraph verbatim (the
+candidate's pre-restoration "next scheduled fire runs the agent path on an
+empty token and fails" text is superseded by run 5723bb0a's landed gate
+restoration, pinned by test/workflow-hardening-guard.test.ts) and takes the
+candidate's richer clonedeps paragraph over bfdd2a4's 2026-10-16 variant
+(the candidate text is the newer, reviewed ship of the same de-hardcode
+intent). LEDGER: the run's spool riders never rode the landing commit (commit
+attempt 342224b0 died pre-envelope; bfc9f6c carries the validated 6-file tree
+with ROADMAP pristine at 245bc0c0), so this graft re-records their durable
+truth at the live defs — rm-673 flipped implemented (guard lands at this
+merge; first red ~2026-10-25) and rm-187 carries the sanitize/prefix-pin
+rider; the rm-252/rm-648/rm-1450 window-truth riders are NOT grafted — the
+render already owns newer truth for each (rm-252's 2026-10-16 absorb OUTCOME
+rider plus the landed 2026.10.48 adoption, rm-1450's 2026-10-18 gate-
+restoration rider, the tripwire's post-restoration run evidence). Render
+census after this graft: 325 defs / 0 dups / max rm-2032 / next free rm-2033
+(riders and one status flip only; ZERO mints). -->
 <!-- managed by hermes-roadmap render; do not edit by hand -->
