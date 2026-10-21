@@ -74,10 +74,16 @@ export function makeGitHubOAuthClient(
         client_id: clientId,
         redirect_uri: redirectURI,
         state,
-        scope: scopes.join(' '),
         response_type: 'code',
         code_challenge: pkce.codeChallenge,
         code_challenge_method: pkce.codeChallengeMethod,
+      }
+      // rm-2029: an empty scopes list omits the param entirely — a missing
+      // scope is GitHub's zero-scopes wire shape (an empty `scope=` would
+      // read the same server-side, but the absent param is the explicit
+      // shape the rm-2029 URL-shape test pins).
+      if (scopes.length > 0) {
+        params.scope = scopes.join(' ')
       }
       const url = new URL('https://github.com/login/oauth/authorize')
       url.search = new URLSearchParams(params).toString()

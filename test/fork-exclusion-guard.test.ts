@@ -22,13 +22,14 @@ const repoRoot = process.cwd()
 // Files whose fork wording must never carry wiki-write machinery references.
 // Historical docs under docs/solutions/ may legitimately mention the term when
 // describing past exclusion work; they are out of scope here by design.
+// AGENTS.md's read-only invariant block is the sanctioned exception: it
+// documents the exclusion policy itself (guarded by its own dedicated test).
 const EXCLUSION_FILES = [
   'Dockerfile',
   'README.md',
-  'AGENTS.md',
   '.github/copilot-instructions.md',
   'vitest.config.ts',
-  'pnpm-workspace.yaml',
+  'bunfig.toml',
 ] as const
 
 // Binding docs must describe THIS fork's metadata source. Upstream's docs say
@@ -49,6 +50,14 @@ describe('fork exclusion invariants (rm-131)', () => {
     expect(existsSync(resolve(repoRoot, 'wiki-writer'))).toBe(false)
   })
 
+  it('AGENTS.md read-only invariant documents the exclusion but never relaxes it (2026.10.48 wording)', () => {
+    const text = read('AGENTS.md')
+    // The policy statement must stay absolute.
+    expect(text).toMatch(/Never add a write code path/)
+    // And the doc must keep declaring the upstream surface EXCLUDED, not absorbed.
+    expect(text).toMatch(/wiki-writer.{0,200}EXCLUDED/s)
+  })
+
   it('renovate workflow stays removed (retired self-hosted-era policy, PR #1)', () => {
     expect(existsSync(resolve(repoRoot, '.github/workflows/renovate.yaml'))).toBe(false)
   })
@@ -57,13 +66,18 @@ describe('fork exclusion invariants (rm-131)', () => {
     expect(existsSync(resolve(repoRoot, '.github/renovate.json5'))).toBe(false)
   })
 
-  it('Dockerfile pins pnpm 11.28.5 in both stages', () => {
-    expect(read('Dockerfile').match(/pnpm@11\.28\.5/g)?.length).toBe(2)
+  it('Dockerfile pins Bun 1.4.3 (toolchain stage) and never reinstates pnpm (2026.10.48 adoption)', () => {
+    const dockerfile = read('Dockerfile')
+    expect(dockerfile).toMatch(/oven\/bun:1\.4\.3@sha256:/)
+    // pnpm must never come back as an install tool. (The runtime-stage prune
+    // may still DELETE pnpm/corepack paths inherited from the Node base image.)
+    expect(dockerfile).not.toMatch(/pnpm@/)
+    expect(dockerfile).not.toMatch(/corepack (enable|prepare)/)
   })
 
-  it('package.json packageManager pins pnpm 11.28.5', () => {
+  it('package.json packageManager pins bun@1.4.3 (upstream #648 migration)', () => {
     const pkg = JSON.parse(read('package.json')) as {packageManager?: string}
-    expect(pkg.packageManager).toBe('pnpm@11.28.5')
+    expect(pkg.packageManager).toBe('bun@1.4.3')
   })
 
   it('.gitignore keeps the run-state entries guarded against upstream merges (rm-159 residue)', () => {

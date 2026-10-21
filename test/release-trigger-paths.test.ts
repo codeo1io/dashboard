@@ -159,7 +159,7 @@ function isCovered(source: string, entries: readonly string[], prefixes: readonl
 }
 
 /** should-release rules 2/3 cover these by field-diff/lockfile logic, not literals. */
-const RULE_2_3_COVERED = new Set(['package.json', 'pnpm-lock.yaml'])
+const RULE_2_3_COVERED = new Set(['package.json', 'bun.lock'])
 
 // ---------------------------------------------------------------------------
 // Guard
@@ -206,13 +206,13 @@ describe('Release-trigger completeness (rm-154)', () => {
     // Sanity anchors: a zero-hit parse means the parser broke, not a clean repo.
     expect(contextSources.length).toBeGreaterThan(0)
     expect(contextSources.some(s => s.source === 'package.json')).toBe(true)
-    expect(contextSources.some(s => s.source === 'pnpm-workspace.yaml')).toBe(true)
+    expect(contextSources.some(s => s.source === 'bunfig.toml')).toBe(true)
     expect(yamlPaths.length).toBeGreaterThan(0)
     expect(yamlPaths).toContain('Dockerfile')
     expect(yamlPaths).toContain('src/**')
     expect(hardLiterals.length).toBeGreaterThan(0)
     expect(hardLiterals).toContain('Dockerfile')
-    expect(hardLiterals).toContain('pnpm-workspace.yaml')
+    expect(hardLiterals).toContain('bunfig.toml')
     expect(hardPrefixes).toContain('src/')
   })
 
@@ -238,20 +238,20 @@ describe('Release-trigger completeness (rm-154)', () => {
     expect(unreachable).toEqual([])
   })
 
-  it('pnpm-workspace.yaml is pinned in BOTH gates (the rm-154 regression)', () => {
-    expect(yamlPaths).toContain('pnpm-workspace.yaml')
-    expect(hardLiterals).toContain('pnpm-workspace.yaml')
+  it('bunfig.toml is pinned in BOTH gates (the rm-154 regression, Bun form)', () => {
+    expect(yamlPaths).toContain('bunfig.toml')
+    expect(hardLiterals).toContain('bunfig.toml')
   })
 
   it('negative proof: the coverage check actually fails on a regression', () => {
-    // Simulate removing pnpm-workspace.yaml from release.yaml paths —
+    // Simulate removing bunfig.toml from release.yaml paths —
     // the exact pre-cycle-9 state. The check must flag it.
-    const regressedPaths = yamlPaths.filter(p => p !== 'pnpm-workspace.yaml')
-    expect(isCovered('pnpm-workspace.yaml', regressedPaths, [])).toBe(false)
+    const regressedPaths = yamlPaths.filter(p => p !== 'bunfig.toml')
+    expect(isCovered('bunfig.toml', regressedPaths, [])).toBe(false)
     // And an arbitrary new COPY source with no trigger entry is flagged too.
     expect(isCovered('rogue-manifest.yaml', yamlPaths, hardPrefixes)).toBe(false)
     // The current (fixed) state covers it in both gates.
-    expect(isCovered('pnpm-workspace.yaml', yamlPaths, [])).toBe(true)
+    expect(isCovered('bunfig.toml', yamlPaths, [])).toBe(true)
   })
 })
 
@@ -264,7 +264,7 @@ describe('Release-trigger completeness (rm-154)', () => {
 // pin the exit code and message of both branches.
 // ---------------------------------------------------------------------------
 
-describe('rm-154 behavior: should-release.ts actually fires on pnpm-workspace.yaml', () => {
+describe('rm-154 behavior: should-release.ts actually fires on bunfig.toml', () => {
   const script = resolve(repoRoot, 'scripts/should-release.ts')
 
   function runShouldRelease(...changedFiles: string[]) {
@@ -278,10 +278,10 @@ describe('rm-154 behavior: should-release.ts actually fires on pnpm-workspace.ya
     )
   }
 
-  it('exits 0 announcing the hard-release path when pnpm-workspace.yaml changes', () => {
-    const result = runShouldRelease('pnpm-workspace.yaml')
+  it('exits 0 announcing the hard-release path when bunfig.toml changes', () => {
+    const result = runShouldRelease('bunfig.toml')
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain('release: hard-release path changed: pnpm-workspace.yaml')
+    expect(result.stdout).toContain('release: hard-release path changed: bunfig.toml')
   })
 
   it('exits 1 with the skip message for a non-triggering control file', () => {
