@@ -63,6 +63,28 @@ export type FetchMonitoringResult =
   | { ok: true; data: MonitoringData }
   | { ok: false; reason: 'timeout' | 'network' | 'unauthenticated' | 'contract-drift' }
 
+/**
+ * rm-501: hard budget for every monitoring API call that is not already
+ * bounded by a caller-supplied abort signal, mirroring the listener twin's
+ * rm-1487 default (LISTENER_CALL_TIMEOUT_MS in web/src/api/listener.ts).
+ * Every current caller rides useBoundedPoll's view-layer timeout race
+ * (15s), but a caller passing no signal held an unbounded fetch — 10s keeps
+ * this api-layer backstop strictly below that view budget and the web
+ * testTimeout (30s), so jsdom suites never inherit a hang and a caller's
+ * own tighter race still fires first.
+ */
+export const MONITORING_CALL_TIMEOUT_MS = 10_000
+
+/**
+ * rm-501: caller aborts reject as AbortError while AbortSignal.timeout()
+ * rejects as TimeoutError — both mean "the call did not complete in its
+ * budget" and must classify as `timeout`, never `network` (the listener twin
+ * hit this exact seam under rm-1487).
+ */
+function isAbortClassError(err: unknown): boolean {
+  return err instanceof DOMException && (err.name === 'AbortError' || err.name === 'TimeoutError')
+}
+
 function isPlainObject(val: unknown): val is Record<string, unknown> {
   return typeof val === 'object' && val !== null && !Array.isArray(val)
 }
@@ -157,7 +179,9 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
     const res = await fetch('/api/monitoring', {
       method: 'GET',
       credentials: 'same-origin',
-      signal: opts.abortSignal,
+      // rm-501: api-layer default bound — a caller signal still wins, so a
+      // view-layer budget keeps its meaning.
+      signal: opts.abortSignal ?? AbortSignal.timeout(MONITORING_CALL_TIMEOUT_MS),
     })
 
     if (!res.ok) {
@@ -216,7 +240,7 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
       },
     }
   } catch (err) {
-    if (err instanceof DOMException && err.name === 'AbortError') {
+    if (isAbortClassError(err)) {
       return {ok: false, reason: 'timeout'}
     }
     return {ok: false, reason: 'network'}

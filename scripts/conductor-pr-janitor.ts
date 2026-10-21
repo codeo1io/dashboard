@@ -3,7 +3,8 @@ import {spawnSync} from 'node:child_process'
 /**
  * rm-1463: fork-own conductor PR-residue janitor.
  *
- * Conductor CI validation PRs (head refs matching conductor/ci-*) accumulate
+ * Conductor CI validation PRs (head refs matching conductor/ci-* or
+ * conductor/run-*, rm-2128) accumulate
  * on codeo1io/dashboard when their runs land or abort: as of 2026-10-16 eight
  * PRs sat open, including four leaked drafts (#729/#732/#734/#735). This tool
  * triages them without mutating anything by default.
@@ -62,7 +63,8 @@ export interface TriageRow {
   readonly reason: string
 }
 
-const CONDUCTOR_HEAD_PATTERN = /^conductor\/ci-/i
+/** rm-2128: conductor heads in EITHER ephemeral namespace, ci- or run-. */
+const CONDUCTOR_HEAD_PATTERN = /^conductor\/(?:ci|run)-/i
 
 /** gh pr list caps at 30 results by default; the residue fleet is past that. */
 export const OPEN_PR_LIMIT = 200
@@ -73,10 +75,11 @@ export function isConductorPr(headRefName: string): boolean {
 
 /**
  * Extract the run id from a conductor head ref, e.g. conductor/ci-7a0e2163-foo
- * -> '7a0e2163'. Returns null for non-conductor heads.
+ * or conductor/run-3a969e4c6623 (rm-2128) -> '7a0e2163' / '3a969e4c6623'.
+ * Returns null for non-conductor heads.
  */
 export function runIdFromHead(headRefName: string): string | null {
-  const match = /^conductor\/ci-([0-9a-f]+)/i.exec(headRefName)
+  const match = /^conductor\/(?:ci|run)-([0-9a-f]+)/i.exec(headRefName)
   const runId = match?.[1]
   return runId === undefined ? null : runId
 }

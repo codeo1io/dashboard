@@ -25,6 +25,7 @@ import {existsSync} from 'node:fs'
 import {readFile} from 'node:fs/promises'
 import {join} from 'node:path'
 import process from 'node:process'
+import {pathToFileURL} from 'node:url'
 import {serve} from '@hono/node-server'
 import {getConnInfo} from '@hono/node-server/conninfo'
 import {serveStatic} from '@hono/node-server/serve-static'
@@ -1789,8 +1790,26 @@ async function createDashboardServer(): Promise<ServerType> {
   return server
 }
 
-// Only start the server when this module is the entry point
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Only start the server when this module is the entry point. rm-702: the
+// argv side is normalized through pathToFileURL — the previous raw
+// `file://${process.argv[1]}` template compare was false whenever argv[1]
+// contains characters a file URL must percent-encode (a space-containing
+// checkout path imports the module but silently never boots; proven by the
+// 2026-10-20 assess probe 'node /tmp/sp ace/x.mjs' → argv1 '/tmp/sp
+// ace/x.mjs' vs meta 'file:///tmp/sp%20ace/x.mjs' → match: false). Plain
+// paths behave exactly as before, and importing this module from a test
+// (vitest's argv) stays non-entry. Exported for the regression test
+// (test/server-entry-guard.test.ts).
+export function isMainEntryPoint(metaUrl: string, argv1: string | undefined): boolean {
+  if (argv1 === undefined || argv1 === '') return false
+  try {
+    return pathToFileURL(argv1).href === metaUrl
+  } catch {
+    return false
+  }
+}
+
+if (isMainEntryPoint(import.meta.url, process.argv[1])) {
   createDashboardServer().catch((error: unknown) => {
     logger.error('Failed to start dashboard server', {
       error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),

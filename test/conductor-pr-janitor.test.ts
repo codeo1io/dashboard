@@ -125,3 +125,71 @@ describe('conductor-pr-janitor policy (rm-1463)', () => {
     expect(cmd).toContain('aborted')
   })
 })
+
+describe('conductor-pr-janitor run- namespace (rm-2128)', () => {
+  const runPr = (overrides: Partial<PrRecord> = {}): PrRecord =>
+    pr({
+      number: 860,
+      title: 'maintenance: cycle-1 ledger truth (run 528f458d)',
+      headRefName: 'conductor/run-528f458d245a',
+      isDraft: false,
+      ...overrides,
+    })
+
+  it('run- heads are conductor PRs and yield their run id (live fleet shape)', () => {
+    expect(isConductorPr('conductor/run-528f458d245a')).toBe(true)
+    expect(isConductorPr('conductor/run-3a969e4c6623')).toBe(true)
+    expect(runIdFromHead('conductor/run-528f458d245a')).toBe('528f458d245a')
+    expect(runIdFromHead('conductor/run-3a969e4c6623')).toBe('3a969e4c6623')
+    // The lone visual namespace is excluded by the recorded rm-2128 decision.
+    expect(isConductorPr('conductor/visual-capture-9698b395')).toBe(false)
+    expect(runIdFromHead('conductor/visual-capture-9698b395')).toBe(null)
+    // ci- keeps working unchanged.
+    expect(isConductorPr('conductor/ci-7a0e2163-validation')).toBe(true)
+    expect(runIdFromHead('conductor/ci-7a0e2163-validation')).toBe('7a0e2163')
+  })
+
+  it('landed-run PR: close, with the superseding commit named in the close command', () => {
+    const row = classifyConductorPr(runPr(), 'landed')
+    expect(row.action).toBe('close')
+    expect(row.reason).toContain('landed')
+    const cmd = closeCommand(row, 'codeo1io/dashboard', 'debde800e1f')
+    expect(cmd).toContain('gh pr close 860')
+    expect(cmd).toContain('superseded by debde800e1f')
+  })
+
+  it('live-run PR: keep (still needed)', () => {
+    const row = classifyConductorPr(runPr(), 'live')
+    expect(row.action).toBe('keep')
+    expect(row.reason).toContain('live')
+  })
+
+  it('run-head PR with unknown run state: report-only', () => {
+    const row = classifyConductorPr(runPr(), 'unknown')
+    expect(row.action).toBe('report')
+    expect(row.reason).toContain('report-only')
+  })
+
+  it('triage covers a mixed live-fleet shape: run residue, fresh ci draft, non-conductor', () => {
+    const rows = triage(
+      [
+        runPr({number: 860}),
+        runPr({number: 798, headRefName: 'conductor/run-1108172d68c2'}),
+        pr({number: 983, headRefName: 'conductor/ci-c5c35adecc09', isDraft: true}),
+        pr({number: 521, headRefName: 'feature/unrelated'}),
+      ],
+      record => {
+        if (record.number === 860) return 'landed'
+        if (record.number === 798) return 'aborted'
+        if (record.number === 983) return 'live'
+        return 'unknown'
+      },
+    )
+    expect(rows.map(row => [row.number, row.action])).toEqual([
+      [860, 'close'],
+      [798, 'close'],
+      [983, 'keep'],
+      [521, 'keep'],
+    ])
+  })
+})

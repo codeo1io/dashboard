@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { fetchMonitoring } from './monitoring.ts'
+import { fetchMonitoring, MONITORING_CALL_TIMEOUT_MS } from './monitoring.ts'
 
 // rm-273: this suite pins the fetcher-level classification the views rely on
 // (401 => 'unauthenticated' so the UI offers a sign-in affordance, not a
@@ -131,6 +131,48 @@ describe('monitoring API', () => {
       vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ bad: 'shape' }), { status: 200 }))
       const res = await fetchMonitoring()
       expect(res).toEqual({ ok: false, reason: 'contract-drift' })
+    })
+
+    it('rm-501: bounds the GET with the api-layer default signal when the caller passes none', async () => {
+      // Backstop under the view-layer 15s budget: a caller signal still
+      // wins, but an un-signaled call must never hang past its budget
+      // (mirrors listener.test.ts's rm-1487 twin).
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ bad: 'shape' }), { status: 200 }))
+      await fetchMonitoring()
+      expect(fetch).toHaveBeenCalledWith('/api/monitoring', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    })
+
+    it('rm-501: the default is AbortSignal.timeout(MONITORING_CALL_TIMEOUT_MS 10s), strictly below the view-layer 15s budget', async () => {
+      const fakeSignal = new AbortController().signal
+      const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(fakeSignal)
+      vi.mocked(fetch).mockResolvedValueOnce(new Response('error', { status: 500 }))
+      await fetchMonitoring()
+      expect(timeoutSpy).toHaveBeenCalledWith(MONITORING_CALL_TIMEOUT_MS)
+      expect(vi.mocked(fetch).mock.calls[0]?.[1]?.signal).toBe(fakeSignal)
+      expect(MONITORING_CALL_TIMEOUT_MS).toBe(10_000)
+    })
+
+    it('rm-501: honors a caller-provided signal over the api-layer default', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(new Response('error', { status: 500 }))
+      const controller = new AbortController()
+      const res = await fetchMonitoring({ abortSignal: controller.signal })
+      expect(res).toEqual({ ok: false, reason: 'network' })
+      expect(vi.mocked(fetch).mock.calls[0]?.[1]?.signal).toBe(controller.signal)
+    })
+
+    it("rm-501: AbortSignal.timeout rejections (TimeoutError) classify 'timeout', not 'network'", async () => {
+      // Latent-bug pin (twin of listener.test.ts's rm-1487 case): the
+      // pre-rm-501 catch matched only AbortError, so the new default
+      // budget's expiry would have been misfiled as a transport fault.
+      vi.mocked(fetch).mockRejectedValueOnce(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))
+      const res = await fetchMonitoring()
+      expect(res).toEqual({ ok: false, reason: 'timeout' })
+    })
+
+    it('rm-501: a caller AbortError still classifies as timeout', async () => {
+      vi.mocked(fetch).mockRejectedValueOnce(new DOMException('Aborted', 'AbortError'))
+      const res = await fetchMonitoring()
+      expect(res).toEqual({ ok: false, reason: 'timeout' })
     })
   })
 })
