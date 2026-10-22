@@ -2,15 +2,12 @@
   "name": "@fro-bot/dashboard",
   "version": "0.0.0",
   "private": true,
-  "description": "Fro Bot monitoring dashboard with an isolated wiki-write capability",
+  "description": "Fro Bot monitoring dashboard with a read-only-by-default GitHub data path and a scoped wiki-write capability",
   "type": "module",
-  "workspaces": [
-    "wiki-writer"
-  ],
   "scripts": {
     "bootstrap": "bun install",
     "dev": "node --env-file-if-exists=.env --watch src/server.ts",
-    "dev:fixture": "bun run build:web:fixture && NODE_ENV=development DASHBOARD_HOST=127.0.0.1 DASHBOARD_WEB_DIST=./web/dist-fixture DASHBOARD_FIXTURE_HARNESS_ENABLED=true DASHBOARD_DEV_AUTOLOGIN=true node --env-file-if-exists=.env src/server.ts",
+    "dev:fixture": "bun run build:web:fixture && NODE_ENV=development DASHBOARD_HOST=127.0.0.1 DASHBOARD_WEB_DIST=./web/dist-fixture DASHBOARD_FIXTURE_HARNESS_ENABLED=true DASHBOARD_DEV_AUTOLOGIN=true DASHBOARD_OPERATOR_LOGIN=fixture-operator DASHBOARD_COOKIE_KEY=$(node -e \"process.stdout.write(require('node:crypto').randomBytes(32).toString('base64'))\") node --env-file-if-exists=.env src/server.ts",
     "start": "node src/server.ts",
     "build:web": "vite build web",
     "build:web:fixture": "VITE_FIXTURE_MODE=true vite build web",
@@ -30,6 +27,7 @@
   },
   "dependencies": {
     "@bfra.me/es": "0.1.0",
+    "@fro.bot/wiki-write-core": "0.1.2",
     "@hono/node-server": "^2.0.0",
     "@octokit/auth-app": "8.3.1",
     "@octokit/core": "7.0.8",
