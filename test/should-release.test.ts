@@ -22,6 +22,9 @@
  * - bare `src` path changed => release
  * - web/** changes => release (SPA source built into image)
  * - bare `web` path changed => release
+ * - web test file change (e.g. web/src/foo.test.tsx) => no release (rm-2034,
+ *   upstream #683: test files are never imported into the bundle)
+ * - web test setup/config change (e.g. web/vitest.config.ts) => release
  * - Dockerfile change => release
  * - release workflow change => release
  * - tsconfig change => release
@@ -229,6 +232,60 @@ describe('should-release — web/** changes trigger release', () => {
     const base = writePkg(tmpDir, 'base.json', BASE_PKG)
     const head = writePkg(tmpDir, 'head.json', BASE_PKG)
     const {exitCode, stdout} = runGuard('web', base, head)
+    expect(exitCode).toBe(0)
+    expect(stdout).toMatch(/^release:/)
+  })
+
+  // Ported from upstream PR #683 (rm-2034): test files under web/ never
+  // reshape the built image, so they skip release. Test setup and config
+  // files do not match the pattern and still release. Legs mirror the
+  // upstream test set — skip legs, the mixed-path release leg, the config
+  // release leg, and the ends-in-'test'-without-'.test.' boundary — plus
+  // this repo's real web/src/test-setup.ts setup file.
+  it('skips when only a web/ Vitest test file changes (never bundled into the image)', () => {
+    const base = writePkg(tmpDir, 'base.json', BASE_PKG)
+    const head = writePkg(tmpDir, 'head.json', BASE_PKG)
+    const {exitCode, stdout} = runGuard('web/src/operator/runtime.test.ts', base, head)
+    expect(exitCode).toBe(1)
+    expect(stdout).toMatch(/^skip:/)
+  })
+
+  it('skips when only a web/ .test.tsx file changes', () => {
+    const base = writePkg(tmpDir, 'base.json', BASE_PKG)
+    const head = writePkg(tmpDir, 'head.json', BASE_PKG)
+    const {exitCode, stdout} = runGuard('web/src/views/Listener.test.tsx', base, head)
+    expect(exitCode).toBe(1)
+    expect(stdout).toMatch(/^skip:/)
+  })
+
+  it('releases when a web/ test file changes alongside a non-test web/ source file', () => {
+    const base = writePkg(tmpDir, 'base.json', BASE_PKG)
+    const head = writePkg(tmpDir, 'head.json', BASE_PKG)
+    const {exitCode, stdout} = runGuard('web/src/operator/runtime.test.ts\nweb/src/App.tsx', base, head)
+    expect(exitCode).toBe(0)
+    expect(stdout).toMatch(/^release:/)
+  })
+
+  it('releases when only web/vitest.config.ts changes (test config is not a test file)', () => {
+    const base = writePkg(tmpDir, 'base.json', BASE_PKG)
+    const head = writePkg(tmpDir, 'head.json', BASE_PKG)
+    const {exitCode, stdout} = runGuard('web/vitest.config.ts', base, head)
+    expect(exitCode).toBe(0)
+    expect(stdout).toMatch(/^release:/)
+  })
+
+  it('releases when a web/ file merely ends in "test" without a .test. segment', () => {
+    const base = writePkg(tmpDir, 'base.json', BASE_PKG)
+    const head = writePkg(tmpDir, 'head.json', BASE_PKG)
+    const {exitCode, stdout} = runGuard('web/src/latest.ts', base, head)
+    expect(exitCode).toBe(0)
+    expect(stdout).toMatch(/^release:/)
+  })
+
+  it('releases when the web/ test setup file changes (setup is not a test file)', () => {
+    const base = writePkg(tmpDir, 'base.json', BASE_PKG)
+    const head = writePkg(tmpDir, 'head.json', BASE_PKG)
+    const {exitCode, stdout} = runGuard('web/src/test-setup.ts', base, head)
     expect(exitCode).toBe(0)
     expect(stdout).toMatch(/^release:/)
   })

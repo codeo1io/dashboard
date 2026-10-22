@@ -74,7 +74,7 @@ view of Fro Bot's cross-repo footprint.
 - `.agents/skills/` is the canonical home for cross-harness agent skills (read by
   both OpenCode and GitHub Copilot). Install shared skills there, not per-harness:
   e.g. `npx impeccable skills install --providers=agents --scope=project`. The CI
-  Design Check pins `impeccable@4.6.0` in `.github/workflows/main.yaml` (exact pin
+  Design Check pins `impeccable@4.7.0` in `.github/workflows/main.yaml` (exact pin
   for reproducibility); 4.x honors `.impeccable/config.json` `ignoreValues` (verified
   against the `--ease-spring` bounce-easing token), but the detector cannot read Tailwind
   utilities — static pages like `web/privacy.html` must declare role sizes explicitly

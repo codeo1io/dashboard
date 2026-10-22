@@ -34,6 +34,15 @@ export const HARD_RELEASE_FILE_PATHS: readonly string[] = [
 /**
  * Directory prefixes whose whole trees are hard-release (SPA source built
  * into the image by the builder stage, static assets copied into the image).
+ *
+ * web/** exception (rm-2034, upstream PR #683): Vitest test files under web/
+ * are exempted at MATCH time in scripts/should-release.ts
+ * (WEB_TEST_FILE_PATTERN) — they run in the test runner only and never reach
+ * the client bundle, so a test-only web change skips release. The prefix
+ * itself (bare `web`) and every non-test file under web/ still hard-release.
+ * The corpus lock against release.yaml's on.push.paths filter is unaffected:
+ * the workflow filter stays path-prefix-wide (release-side over-trigger is
+ * the safe direction); only the guard's decision narrows.
  */
 export const HARD_RELEASE_DIR_PREFIXES: readonly string[] = ['src', 'web', 'public']
 

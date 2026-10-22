@@ -199,12 +199,34 @@ describe('batch-doc gate-record existence (rm-877)', () => {
 
 const DELIVERABLES_HEADING = /^## Deliverables$/m
 const CENSUS_CLAIM = /(\d+) defs \/ (\d+) dups \/ max rm-(\d+)/g
+// rm-2036: the explicit empty-section record — a marker-bearing doc that
+// deliberately declares ZERO deliverable paths (e.g. a docs-only batch)
+// writes this bullet instead of going silent, so carrierhood never depends
+// on declared-path count alone.
+const EMPTY_DELIVERABLES_MARKER = /^- (?:none|no deliverables)\b/im
+
+function deliverablesSection(docText: string): string {
+  const after = docText.split(DELIVERABLES_HEADING)[1] ?? ''
+  return after.split(/^## /m)[0] ?? ''
+}
 
 function deliverablesFrom(docText: string): string[] {
   if (!DELIVERABLES_HEADING.test(docText)) return []
-  const after = docText.split(DELIVERABLES_HEADING)[1] ?? ''
-  const section = after.split(/^## /m)[0] ?? ''
-  return [...section.matchAll(/^- `([^`\n]+)`(?: —|:|$)/gm)].map(m => m[1] ?? '')
+  return [...deliverablesSection(docText).matchAll(/^- `([^`\n]+)`(?: —|:|$)/gm)].map(m => m[1] ?? '')
+}
+
+// rm-2036: the heading alone is not a carrier — the section must DECLARE
+// something: at least one deliverable bullet, or the explicit
+// EMPTY_DELIVERABLES_MARKER record for a deliberately-empty section. A
+// heading followed only by prose used to count as a carrier AND feed the
+// census-claim leg while declaring nothing (the exact shape a silent
+// deliverable-set drop would leave behind); a mid-line prose mention of
+// the marker was already excluded by the line anchor and stays excluded
+// (the 2026-10-16 compound doc is the live negative).
+function isDeliverablesCarrier(docText: string): boolean {
+  if (!DELIVERABLES_HEADING.test(docText)) return false
+  if (deliverablesFrom(docText).length > 0) return true
+  return EMPTY_DELIVERABLES_MARKER.test(deliverablesSection(docText))
 }
 
 function missingDeliverables(docText: string): string[] {
@@ -234,6 +256,55 @@ describe('batch-doc deliverable marker (rm-857)', () => {
     expect(missingDeliverables(fixture)).toEqual(['no/such/file-anywhere.ts'])
   })
 
+  it('a Deliverables heading with a prose-only section is not a carrier (rm-2036)', () => {
+    // The 3e3664c drop-survival class: a heading followed by no deliverable
+    // bullets used to count as a carrier AND feed the census-claim leg while
+    // declaring nothing — a dropped declared-path set would survive exactly
+    // this way. The section must declare something (bullets) or explicitly
+    // record its emptiness (EMPTY_DELIVERABLES_MARKER).
+    const proseOnly = [
+      '# batch doc',
+      '',
+      '## Deliverables',
+      '',
+      'This batch deliberately declares nothing here; its output is ledger',
+      'prose only — a bare heading must not satisfy the carriers leg.',
+      '',
+      '## Notes',
+      '',
+      '- `not-a-deliverable.ts` — outside the section, must not parse',
+    ].join('\n')
+    expect(isDeliverablesCarrier(proseOnly)).toBe(false)
+    expect(deliverablesFrom(proseOnly)).toEqual([])
+  })
+
+  it('an explicit empty-marker section is a carrier that declares zero deliverables (rm-2036)', () => {
+    const emptyMarker = [
+      '# batch doc',
+      '',
+      '## Deliverables',
+      '',
+      '- none — docs-only batch; its changes ride files other docs declare.',
+      '',
+      '## Notes',
+    ].join('\n')
+    expect(isDeliverablesCarrier(emptyMarker)).toBe(true)
+    expect(deliverablesFrom(emptyMarker)).toEqual([])
+  })
+
+  it('a mid-line prose mention of the marker is not a carrier (rm-2036)', () => {
+    // Live negative: the 2026-10-16 compound doc mentions `## Deliverables`
+    // mid-line and must stay a non-carrier (line anchor already excluded it;
+    // this pins that exclusion against future regex loosening).
+    const mention = [
+      '# batch doc',
+      '',
+      'The convention requires a `## Deliverables` section in every batch doc.',
+    ].join('\n')
+    expect(isDeliverablesCarrier(mention)).toBe(false)
+    expect(deliverablesFrom(mention)).toEqual([])
+  })
+
   it('every declared deliverable in every marker-bearing batch doc exists', () => {
     const docs = readdirSync(PRIORITIZATION_DIR)
       .filter(name => name.endsWith('.md'))
@@ -241,7 +312,7 @@ describe('batch-doc deliverable marker (rm-857)', () => {
     const missing: string[] = []
     let carriers = 0
     for (const doc of docs) {
-      if (!DELIVERABLES_HEADING.test(doc.text)) continue
+      if (!isDeliverablesCarrier(doc.text)) continue
       carriers += 1
       for (const path of missingDeliverables(doc.text)) missing.push(`${doc.name}: ${path}`)
     }
@@ -257,7 +328,7 @@ describe('batch-doc deliverable marker (rm-857)', () => {
     const carriers = readdirSync(PRIORITIZATION_DIR)
       .filter(name => name.endsWith('.md'))
       .map(name => ({name, text: readFileSync(join(PRIORITIZATION_DIR, name), 'utf8')}))
-      .filter(doc => DELIVERABLES_HEADING.test(doc.text))
+      .filter(doc => isDeliverablesCarrier(doc.text))
     expect(carriers.length).toBeGreaterThan(0)
     const newest = carriers.reduce((a, b) => (b.name >= a.name ? b : a))
     // Last match wins: an integrate Landing-record re-census supersedes the

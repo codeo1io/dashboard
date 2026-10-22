@@ -164,10 +164,23 @@ function loadPkg(path: string, label: string): LoadResult {
 // ---------------------------------------------------------------------------
 
 /**
+ * Vitest test files under web/ are never imported into the client bundle
+ * (they run in the test runner only), so a change to one does not reshape
+ * the built image. Test setup and config files — e.g. web/vitest.config.ts
+ * or web/src/test-setup.ts — do NOT match this pattern and still release.
+ * Ported verbatim from upstream PR #683 (rm-2034, WEB_TEST_FILE_PATTERN):
+ * upstream chose `\.test\.` only (not `.spec.`) even though its vitest
+ * include glob admits `{test,spec}` — keep the pattern byte-identical so
+ * future absorbs of this block stay conflict-free.
+ */
+const WEB_TEST_FILE_PATTERN = /\.test\.(?:ts|tsx|js|mjs)$/
+
+/**
  * Returns true if the file path matches a "hard release" pattern — see
  * scripts/release-paths.ts (single source of truth, locked against the
  * release workflow's on.push.paths filter by test/should-release.test.ts):
- *   - src/** / web/** / public/**  (built or copied into the image)
+ *   - src/** / web/** / public/**  (built or copied into the image; web/**
+ *     excludes Vitest test files per WEB_TEST_FILE_PATTERN above)
  *   - Dockerfile
  *   - bunfig.toml
  *   - .github/workflows/release.yaml
@@ -177,12 +190,18 @@ function loadPkg(path: string, label: string): LoadResult {
  *   - tsconfig*.json (root-level only, not nested paths)
  */
 function isHardReleasePath(filePath: string): boolean {
+  // web/ exception (rm-2034, upstream #683): test files never reach the
+  // bundle, so a test-only change skips release. The bare `web` path and
+  // non-test files under web/ still hard-release below.
   if (
     HARD_RELEASE_DIR_PREFIXES.some(
       prefix => filePath === prefix || filePath.startsWith(`${prefix}/`),
     )
-  )
+  ) {
+    if (filePath.startsWith('web/') && WEB_TEST_FILE_PATTERN.test(filePath))
+      return false
     return true
+  }
   if (HARD_RELEASE_FILE_PATHS.includes(filePath)) return true
   // tsconfig*.json: root-level only (no path separator in the name)
   if (
