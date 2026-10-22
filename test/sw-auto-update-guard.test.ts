@@ -44,6 +44,41 @@ describe('rm-1960: service worker auto-update contract (source)', () => {
   })
 })
 
+// rm-2142 precache-cleanup placement (2026-10-21, repository-maintenance
+// cycle:4 run 18ef6d162e3f439991a7b3c1a729cec0). cleanupOutdatedCaches()
+// used to run at module eval time — before the new install completed and
+// while the previous worker could still depend on previous-format precaches
+// (the Workbox-major-migration window). Workbox's documented placement is
+// the activate handler, the only placement that can never race an install
+// failure. These pins are red while the call sat at module scope and green
+// only from the activate handler.
+
+describe('rm-2142: precache cleanup placement (source)', () => {
+  it('invokes cleanupOutdatedCaches() exactly once, inside the activate handler', () => {
+    const calls = swSource.match(/cleanupOutdatedCaches\(\)/g) ?? []
+    expect(calls, 'expected exactly one cleanupOutdatedCaches() call in sw.ts').toHaveLength(1)
+    const activateBlock = swSource.slice(swSource.indexOf("addEventListener('activate'"))
+    expect(
+      activateBlock,
+      'the cleanup call must live inside the activate listener, never at module scope',
+    ).toContain('cleanupOutdatedCaches()')
+  })
+
+  it('never runs cleanup in the module-eval precache block (section 4)', () => {
+    const section4 = swSource.slice(swSource.indexOf('// 4. Precache'), swSource.indexOf('// 5. /operator navigation'))
+    expect(
+      section4,
+      'cleanup must not run in the module-eval precache block',
+    ).not.toContain('cleanupOutdatedCaches')
+  })
+
+  it('ties the cleanup into the activation lifetime via waitUntil', () => {
+    const activateBlock = swSource.slice(swSource.indexOf("addEventListener('activate'"))
+    expect(activateBlock).toMatch(/waitUntil\(/)
+    expect(activateBlock).toMatch(/clients\.claim\(\)/)
+  })
+})
+
 describe('rm-1960: built artifacts (when web/dist exists)', () => {
   const distPresent = existsSync('web/dist/sw.js') && existsSync('web/dist/registerSW.js')
 

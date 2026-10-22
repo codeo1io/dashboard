@@ -5,7 +5,8 @@
  *   1. /auth/*            → NetworkOnly  (OAuth must reach the server)
  *   2. /operator/auth/*   → NetworkOnly  (operator auth must reach the server)
  *   3. /api/*             → NetworkOnly  (default-deny; all API routes)
- *   4. precache           → precacheAndRoute(self.__WB_MANIFEST) + cleanupOutdatedCaches()
+ *   4. precache           → precacheAndRoute(self.__WB_MANIFEST); outdated
+ *                           cleanup runs at ACTIVATION (rm-2142), not eval time
  *   5. /operator nav      → local redirect to / (canonicalize old links offline)
  *   6. navigate           → NavigationRoute(/) denylist [/auth/, /operator/auth/, /api/, /privacy/]
  *
@@ -41,6 +42,16 @@
  * SKIP_WAITING message listener stays for workbox-window messageSkipWaiting
  * compatibility — an explicit post from a page still works alongside the
  * self-activation.
+ *
+ * ACTIVATION, cleanup (rm-2142). The activate handler runs Workbox's
+ * `cleanupOutdatedCaches` (added rm-184) — Workbox's documented placement.
+ * rm-1960's ordering record above had the cleanup at eval time; rm-2142
+ * answers that record: an eval-time call races the install phase (a failed
+ * install leaves the previous format's precaches dangling while the new
+ * worker may already have torn other state down) and straddles the
+ * Workbox-major-migration window, whereas activation is the only point
+ * where the new worker owns the caches it cleans. Ordering inside
+ * activation: cleanup first, then clients.claim.
  */
 
 import {cleanupOutdatedCaches, createHandlerBoundToURL, precacheAndRoute} from 'workbox-precaching'
@@ -80,7 +91,8 @@ registerRoute(
 // createHandlerBoundToURL('/') resolves against the precache at call time —
 // if the manifest isn't precached yet, Workbox throws non-precached-url and aborts.
 precacheAndRoute(self.__WB_MANIFEST)
-cleanupOutdatedCaches()
+// Outdated-precaches cleanup moved to the activate handler in rm-2142 — see
+// section 8 and the ACTIVATION note in the header.
 
 // 5. /operator navigation — redirect to / before the generic NavigationRoute fires.
 // Ensures offline old links canonicalize to the cached operator shell.
@@ -263,12 +275,22 @@ addEventListener('pushsubscriptionchange', (event: Event) => {
   )
 })
 
-// 8. Auto-update activation (rm-1960). The worker skips waiting itself at
-// startup (install phase) instead of waiting for every tab to close, then
-// claims open clients on activation; claimed pages pick up the new shell on
-// their next navigation (the emitted registerSW.js is the bare register —
-// no silent reload). See the ACTIVATION note in the header.
+// 8. Auto-update activation (rm-1960) + outdated-precaches cleanup (rm-2142).
+// The worker skips waiting itself at startup (install phase) instead of
+// waiting for every tab to close, then claims open clients on activation;
+// claimed pages pick up the new shell on their next navigation (the emitted
+// registerSW.js is the bare register — no silent reload). The cleanup of
+// previous-format precaches runs HERE, at activation — never at eval time
+// (rm-2142): an eval-time call races the install phase, and a failed
+// install must not leave a torn-down cache state behind. Order: cleanup
+// first, then claim.
 self.skipWaiting()
-addEventListener('activate', () => {
-  clients.claim()
+
+interface SWActivateEvent extends Event {
+  waitUntil(f: Promise<unknown>): void
+}
+
+addEventListener('activate', (event: Event) => {
+  const e = event as SWActivateEvent
+  e.waitUntil(cleanupOutdatedCaches().then(() => clients.claim()))
 })

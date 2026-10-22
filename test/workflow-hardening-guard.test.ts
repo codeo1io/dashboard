@@ -1,7 +1,8 @@
-import {existsSync, readFileSync} from 'node:fs'
+import {existsSync, readFileSync, readdirSync} from 'node:fs'
 import {join} from 'node:path'
 import process from 'node:process'
 import {describe, expect, it} from 'vitest'
+import {parse} from 'yaml'
 
 /**
  * rm-1450 / rm-1437 restoration guard (2026-10-18, repository-maintenance
@@ -129,4 +130,46 @@ describeWorkflowGuard('workflow hardening guard — codeql.yaml (rm-1437 restora
     expect(text).toContain(`uses: ${CHECKOUT_V7_0_1}`)
     expect(text).not.toContain('actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803')
   })
+})
+
+// rm-2144 (2026-10-21, repository-maintenance cycle:4 run 18ef6d162e3f):
+// scorecard.yaml carried the fleet's only unbounded jobs — the one workflow
+// with zero `timeout-minutes` of all 13 — so a hang ate the runner until a
+// human noticed. This pin reads every workflow file and fails if ANY job of
+// ANY workflow lacks an execution budget (job-level `timeout-minutes`, or a
+// workflow-level one covering all its jobs). New workflows land covered or
+// this guard goes red; a regression to an unbounded fleet is impossible to
+// land silently.
+describeWorkflowGuard('workflow hardening guard — every workflow job bounded (rm-2144)', () => {
+  const workflows = readdirSync(workflowsDir)
+    .filter(f => f.endsWith('.yaml') || f.endsWith('.yml'))
+    .sort()
+
+  it('covers the whole on-disk workflow fleet (new workflows must stay covered)', () => {
+    expect(workflows.length, 'expected at least the 13-workflow fleet of 2026-10-21').toBeGreaterThanOrEqual(13)
+  })
+
+  for (const name of workflows) {
+    it(`${name}: every job declares a timeout-minutes budget`, () => {
+      const doc = parse(readWorkflow(name)) as Record<string, unknown>
+      const jobs = (doc.jobs ?? {}) as Record<string, Record<string, unknown>>
+      const jobNames = Object.keys(jobs)
+      expect(jobNames.length, `${name}: no jobs found to bound`).toBeGreaterThan(0)
+      const workflowTimeout = doc['timeout-minutes']
+      const unbounded = jobNames.filter(job => {
+        const jobTimeout = jobs[job]?.['timeout-minutes']
+        return jobTimeout === undefined && workflowTimeout === undefined
+      })
+      expect(
+        unbounded,
+        `${name}: jobs without timeout-minutes — an unbounded job eats the runner until a human notices (rm-2144)`,
+      ).toEqual([])
+      for (const job of jobNames) {
+        const timeout = jobs[job]?.['timeout-minutes'] ?? workflowTimeout
+        if (timeout === undefined) continue
+        expect(typeof timeout, `${name}.${job}: timeout-minutes must be a number`).toBe('number')
+        expect(timeout, `${name}.${job}: timeout-minutes must be positive`).toBeGreaterThan(0)
+      }
+    })
+  }
 })

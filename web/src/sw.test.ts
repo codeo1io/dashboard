@@ -14,12 +14,15 @@
 import {readFileSync} from 'node:fs'
 import {resolve} from 'node:path'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
+import {cleanupOutdatedCaches} from 'workbox-precaching'
 
 // Behavioral tests below evaluate the real sw.ts entry in jsdom. Workbox's
 // routing/precache/strategies need a real ServiceWorkerGlobalScope, so they are
 // stubbed; everything else (the message handler under test) is the real source.
 vi.mock('workbox-precaching', () => ({
-  cleanupOutdatedCaches: vi.fn(),
+  // rm-2142: the activate handler chains cleanupOutdatedCaches() into
+  // waitUntil, so the mock must return a promise like the real export.
+  cleanupOutdatedCaches: vi.fn(() => Promise.resolve()),
   createHandlerBoundToURL: vi.fn(() => vi.fn()),
   precacheAndRoute: vi.fn(),
 }))
@@ -381,7 +384,41 @@ describe('sw.ts message handler (behavioral)', () => {
     await import('./sw.ts')
     expect(calls).toHaveBeenCalledTimes(1)
     expect(activateEvents).toEqual(['activate'])
-    captured.activate?.(new Event('activate'))
+    // rm-2142 moved cleanup into activate, so the handler now hands its work
+    // to the event's waitUntil instead of claiming synchronously.
+    const waitUntil = vi.fn()
+    captured.activate?.(Object.assign(new Event('activate'), {waitUntil}))
+    const activation = waitUntil.mock.calls[0]?.[0] as Promise<unknown> | undefined
+    await activation
+    expect(claim).toHaveBeenCalledTimes(1)
+  })
+
+  it('cleans up outdated precaches at ACTIVATION, never at eval time (rm-2142)', async () => {
+    // Module-eval cleanup races the install phase — an install failure can
+    // leave the previous format's precaches in place while the new worker
+    // already deleted nothing/anything, and a Workbox major migration widens
+    // that window. The rm-2142 placement runs cleanup from the activate
+    // handler only. This test is RED while the call sits at module scope.
+    vi.resetModules()
+    vi.mocked(cleanupOutdatedCaches).mockClear()
+    const claim = vi.fn()
+    const captured: Record<string, MessageListener> = {}
+    vi.spyOn(globalThis, 'addEventListener').mockImplementation(((type: string, listener: MessageListener) => {
+      captured[type] = listener
+    }) as typeof globalThis.addEventListener)
+    vi.stubGlobal('skipWaiting', vi.fn(() => Promise.resolve()))
+    vi.stubGlobal('clients', {claim})
+    await import('./sw.ts')
+    // Eval time: the freshly imported worker must not have cleaned anything.
+    expect(cleanupOutdatedCaches).not.toHaveBeenCalled()
+    // Activation: cleanup runs inside the event's lifetime, then clients are
+    // claimed as the chain's second step.
+    const waitUntil = vi.fn()
+    captured.activate?.(Object.assign(new Event('activate'), {waitUntil}))
+    const activation = waitUntil.mock.calls[0]?.[0] as Promise<unknown> | undefined
+    expect(activation, 'activate must pass its cleanup → claim chain to waitUntil').toBeInstanceOf(Promise)
+    await activation
+    expect(cleanupOutdatedCaches).toHaveBeenCalledTimes(1)
     expect(claim).toHaveBeenCalledTimes(1)
   })
 

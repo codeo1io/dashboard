@@ -13,6 +13,12 @@ jobs:
   analysis:
     name: Scorecard analysis
     runs-on: ubuntu-latest
+    # rm-2144 (2026-10-21): every workflow job must declare an execution
+    # budget — this was the repo's only unbounded job of 13 (pinned by
+    # test/workflow-hardening-guard.test.ts). 20 matches the slowest analysis
+    # neighbors (CodeQL/fro-bot) — generous by design: a hang must die by
+    # timeout, not eat the runner until a human notices.
+    timeout-minutes: 20
     permissions:
       contents: read
       security-events: write

@@ -1,0 +1,77 @@
+# Workflow-fleet expected-state manifest (rm-2141, 2026-10-21,
+# repository-maintenance cycle:4 run 18ef6d162e3f439991a7b3c1a729cec0).
+#
+# scripts/workflow-fleet-assert.ts — run weekly by the audit.yaml fleet-state
+# job, or locally (node scripts/workflow-fleet-assert.ts with a
+# GITHUB_TOKEN/FLEET_ASSERT_TOKEN) — compares this manifest against the LIVE
+# workflow fleet and exits 1 with an actionable diff on any divergence:
+# state mismatch, active-without-file, file-without-workflow, or scheduled
+# run-list staleness beyond the stated horizon. A red run IS the signal
+# (same convention as the audit job and base-drift.yaml; issues are disabled
+# on this fork).
+#
+# Conventions:
+# - expected_state: active | retired (retired = any disabled_* state, or the
+#   live workflow being absent entirely).
+# - run_recency_hours: the stated staleness horizon for cron-scheduled
+#   workflows — one scheduled interval plus slack (192h = weekly + one missed
+#   fire; 48h = daily). null = not scheduled: push/PR-triggered workflows
+#   track repo activity, and owed-run detection is
+#   scripts/actions-darkness-watch.ts's lane, not this one.
+# - test/workflow-fleet-state-guard.test.ts pins every entry against the
+#   workflow files present in the tree: a new workflow file MUST be
+#   manifested here in the same change, and an expected-active entry must
+#   keep its file.
+# - GitHub-managed dynamic workflows (paths outside .github/workflows/, e.g.
+#   dynamic/dependabot/dependabot-updates) are out of scope: not
+#   file-backed, toggled by config rather than workflow files, no manifest
+#   surface of their own.
+
+workflows:
+  - path: .github/workflows/audit.yaml
+    expected_state: active
+    run_recency_hours: 192 # weekly Mon 03:37 UTC + workflow_run re-arm on Main
+  - path: .github/workflows/base-drift.yaml
+    expected_state: active
+    run_recency_hours: 192 # weekly Mon 04:13 UTC + workflow_run re-arm
+  - path: .github/workflows/canary.yaml
+    expected_state: active
+    run_recency_hours: 192 # weekly Mon 05:23 UTC + workflow_run re-arm
+  - path: .github/workflows/codeql.yaml
+    expected_state: active
+    run_recency_hours: 192 # weekly Wed 07:31 UTC (also push/pull_request)
+  - path: .github/workflows/cve-tripwire.yaml
+    expected_state: active
+    run_recency_hours: 192 # weekly Mon 06:53 UTC, schedule-only
+  - path: .github/workflows/dependency-review.yaml
+    expected_state: active
+    run_recency_hours: null # pull_request-only — never scheduled
+  - path: .github/workflows/fro-bot.yaml
+    expected_state: active # active + HAS_FRO_BOT_PAT step-gate (AGENTS.md Conventions); the enable/disable DECISION is rm-1450's, not this manifest's
+    run_recency_hours: 48 # daily 00:00 UTC cron
+  - path: .github/workflows/main.yaml
+    expected_state: active
+    run_recency_hours: null # push/pull_request — tracks repo activity
+  - path: .github/workflows/release.yaml
+    expected_state: active
+    run_recency_hours: null # push-triggered
+  - path: .github/workflows/release-channel.yaml
+    expected_state: active
+    run_recency_hours: 192 # weekly Mon 07:23 UTC, schedule-only
+  - path: .github/workflows/scorecard.yaml
+    expected_state: active
+    run_recency_hours: 192 # weekly Mon 06:27 UTC (also push main)
+  - path: .github/workflows/upstream-drift.yaml
+    expected_state: active
+    run_recency_hours: 192 # weekly Mon 05:17 UTC, schedule-only
+  - path: .github/workflows/visual.yaml
+    expected_state: active
+    run_recency_hours: null # push-triggered
+  # The ghost: live workflow id 375606447 remains active on GitHub with NO
+  # file in this tree (retired here long ago; last live run 2026-10-18).
+  # Expected RETIRED — the live active state is the birth divergence rm-2141
+  # records in the cycle:4 batch doc until the estate disables/deletes it.
+  - path: .github/workflows/lockfile-guard.yaml
+    id: 375606447
+    expected_state: retired
+    run_recency_hours: null
