@@ -103,7 +103,8 @@ view of Fro Bot's cross-repo footprint.
   `HAS_FRO_BOT_PAT` job-env gate skips every scheduled fire with a warning
   instead of failing it (manual dispatch still runs). The 2026.10.43 upstream
   absorb deleted that gate and every scheduled run failed until it was restored
-  — `test/workflow-hardening-guard.test.ts` now pins it. Check `gh workflow list`
+  — `test/workflow-hardening-guard.test.ts` now pins it. Provision the secret
+  before expecting scheduled runs to do work, and check `gh workflow list`
   state and secret presence before changing the gate or the cron.
 
 ## Cloned Dependency Source
