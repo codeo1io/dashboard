@@ -51,7 +51,7 @@ const REQUIRED_PATHS = [
   'tests/visual/**',
   'playwright.config.ts',
   'package.json',
-  'pnpm-lock.yaml',
+  'bun.lock',
   '.github/workflows/visual.yaml',
 ] as const
 
@@ -84,10 +84,10 @@ describe('Visual-trigger completeness (rm-420)', () => {
   it('negative proof: the completeness check actually fails on a regression', () => {
     // Simulate the pre-rm-420 state (the four render-input entries removed).
     const regressed = paths.filter(
-      p => !['web/index.html', 'web/vite.config.ts', 'package.json', 'pnpm-lock.yaml'].includes(p),
+      p => !['web/index.html', 'web/vite.config.ts', 'package.json', 'bun.lock'].includes(p),
     )
     const missing = REQUIRED_PATHS.filter(required => !regressed.includes(required))
-    expect(missing.sort()).toEqual(['package.json', 'pnpm-lock.yaml', 'web/index.html', 'web/vite.config.ts'])
+    expect(missing.sort()).toEqual(['bun.lock', 'package.json', 'web/index.html', 'web/vite.config.ts'])
   })
 })
 

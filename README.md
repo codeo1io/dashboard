@@ -33,20 +33,24 @@ and names every by-design deviation in [docs/runbooks/security-posture.md](docs/
   (`src/read-body.ts` — 16 KiB wire-byte cap, ingest + logout; rm-497).
 - **Client** — [Vite](https://vite.dev) + [React 19](https://react.dev) +
   [Tailwind CSS v4](https://tailwindcss.com), shipped as an installable PWA via
-  [vite-plugin-pwa](https://vite-pwa-org.netlify.app). The service worker is a
-  kill-switch (`web/src/sw.ts`): it purges caches and unregisters itself — the
-  app does no offline caching.
-- pnpm, [Vitest](https://vitest.dev).
+  [vite-plugin-pwa](https://vite-pwa-org.netlify.app). The service worker
+  (`web/src/sw.ts`) is a deny-by-default fetch router — auth/API traffic stays
+  network-only while the hashed app shell is precached, push notifications are
+  handled, and updates apply automatically (registerType `autoUpdate` +
+  skipWaiting/client claim).
+- [Bun](https://bun.sh) for package management and scripts, [Vitest](https://vitest.dev).
 
 ## Quick Start
 
 ```sh
-pnpm bootstrap   # install deps
-pnpm build:web   # build the client bundle into web/dist
-pnpm dev         # start the server with --watch
+bun install            # install deps
+bun run build:web      # build the client bundle into web/dist
+bun run dev            # start the server with --watch
 ```
 
-`pnpm dev` serves the prebuilt client from `web/dist`, so run `pnpm build:web` first (or after
+Remove any existing `node_modules` before the first `bun install`.
+
+`bun run dev` serves the prebuilt client from `web/dist`, so run `bun run build:web` first (or after
 client changes). The test suite rebuilds the client automatically via `pretest`.
 
 ## Usage
@@ -172,9 +176,9 @@ the denied key) answers the minimal 1 second.
 ## Development
 
 ```sh
-pnpm check-types # type check server + client
-pnpm lint        # lint
-pnpm test        # build client, then run tests
+bun run check-types # type check server + client
+bun run lint        # lint
+bun run test        # build client, then run tests (not a bare `bun test`)
 ```
 
 `Dockerfile` builds the client in a builder stage and runs `node src/server.ts` against a

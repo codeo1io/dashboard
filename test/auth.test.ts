@@ -274,6 +274,38 @@ describe('OAuth flow', () => {
       expect(location).toContain('github.com')
     })
 
+    it('requests zero OAuth scopes — no scope param on the authorize URL (rm-2029)', async () => {
+      let capturedScopes: string[] | undefined
+      const realClient = makeGitHubOAuthClient(
+        'client-id',
+        'client-secret',
+        'https://dashboard.example.com/auth/callback',
+      )
+      const spyClient: GitHubOAuthClient = {
+        createAuthorizationURL: (state, scopes, pkce) => {
+          capturedScopes = scopes
+          return realClient.createAuthorizationURL(state, scopes, pkce)
+        },
+        validateAuthorizationCode: async () => ({accessToken: () => 'fake-access-token'}),
+      }
+      const app = await buildDashboardApp({
+        operatorLogin: 'octocat',
+        cookieKey: TEST_KEY,
+        oauthClient: spyClient,
+        fetchUserLogin: async () => 'octocat',
+      })
+      const res = await app.request('/auth/login')
+      expect([302, 303]).toContain(res.status)
+      expect(capturedScopes).toEqual([]) // the route requests ZERO scopes
+      const url = new URL(res.headers.get('location') ?? '')
+      expect(url.hostname).toBe('github.com')
+      expect(url.searchParams.has('scope')).toBe(false)
+      expect(url.searchParams.get('state')).toBeTruthy()
+      expect(url.searchParams.get('code_challenge')).toBeTruthy()
+      expect(url.searchParams.get('code_challenge_method')).toBe('S256')
+      expect(url.searchParams.get('response_type')).toBe('code')
+    })
+
     it('sets oauth_state cookie (HttpOnly)', async () => {
       const app = await buildTestApp({operatorLogin: 'octocat'})
       const res = await app.request('/auth/login')
@@ -757,6 +789,19 @@ describe('OAuth flow', () => {
 })
 
 describe('makeGitHubOAuthClient', () => {
+  it('omits the scope search param entirely for an empty scopes list (rm-2029)', () => {
+    const client = makeGitHubOAuthClient(
+      'client-id',
+      'client-secret',
+      'https://dashboard.example.com/auth/callback',
+    )
+    const url = client.createAuthorizationURL('state value', [], {
+      codeChallenge: 'challenge-value',
+      codeChallengeMethod: 'S256',
+    })
+    expect(url.searchParams.has('scope')).toBe(false)
+  })
+
   it('createAuthorizationURL produces the GitHub authorization URL', () => {
     const client = makeGitHubOAuthClient(
       'client-id',

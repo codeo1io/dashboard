@@ -115,10 +115,14 @@ function hashedBundle(): string {
 // ---------------------------------------------------------------------------
 // PWA SW asset serving — /registerSW.js
 // ---------------------------------------------------------------------------
-// NOTE: vite-plugin-pwa only emits registerSW.js when using auto-register mode.
-// Since the app uses useRegisterSW() in a component (ReloadPrompt), the
-// registration code is bundled into the main JS chunk and registerSW.js is NOT
-// emitted. The route remains in isPublicPath for forward-compatibility.
+// NOTE (rm-274 truing, rm-1960 update): registerSW.js IS emitted. With no virtual-module
+// import in the client (auto-update needs no useRegisterSW wiring — the
+// ReloadPrompt surface was retired with the autoUpdate switch),
+// vite-plugin-pwa's default injectRegister 'auto' emits the loader asset and
+// injects the script tag into index.html — the old 'NOT emitted because
+// ReloadPrompt uses useRegisterSW' note described a wiring that never existed.
+// The production-artifact describe below asserts both facts against the real
+// build output.
 
 // ---------------------------------------------------------------------------
 // PWA manifest serving — /manifest.webmanifest
@@ -863,6 +867,14 @@ describe('production static JS assets — no fixture strings', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// Production build artifact assertions — web/dist must be fixture-free
+//
+// These tests scan the compiled browser bundle and service-worker output after
+// `bun run build:web`. Fixture imports are dev-gated so Vite removes the module
+// request strings from production output. The pretest hook runs build:web before
+// vitest, so web/dist is always fresh when these tests run.
+// ---------------------------------------------------------------------------
 describe('production build artifacts — no fixture strings in web/dist JS', () => {
   it('web/dist/sw.js does not contain /__fixture route string', async () => {
     const fs = await import('node:fs/promises')
@@ -880,6 +892,16 @@ describe('production build artifacts — no fixture strings in web/dist JS', () 
     const fs = await import('node:fs/promises')
     const src = await fs.readFile('web/dist/index.html', 'utf8')
     expect(src).not.toContain('/__fixture')
+  })
+
+  it('emits registerSW.js and index.html injects the loader (rm-274)', async () => {
+    // Auto-update registration is real: the loader asset exists in the build
+    // and the built page pulls it in. The retired 'registerSW.js is NOT
+    // emitted' claim was fiction.
+    const fs = await import('node:fs')
+    expect(fs.existsSync('web/dist/registerSW.js'), 'web/dist/registerSW.js should be emitted').toBe(true)
+    const html = fs.readFileSync('web/dist/index.html', 'utf8')
+    expect(html).toMatch(/registerSW\.js/)
   })
 
   it('web/dist JS bundle does not contain /__fixture route string', async () => {
@@ -918,6 +940,18 @@ describe('production build artifacts — no fixture strings in web/dist JS', () 
       for (const literal of forbidden) {
         expect(src, `${file} must not contain ${literal}`).not.toContain(literal)
       }
+    }
+  })
+
+  it('web/dist sw.js does not contain push fixture literals (rm-2003)', async () => {
+    // The mock receiver in web/src/sw.ts is import.meta.env.DEV-gated (same
+    // flag as the sender in Notifications.tsx), so a production build must
+    // dead-branch-eliminate it. The assets sweep above cannot see sw.js.
+    const fs = await import('node:fs/promises')
+    const src = await fs.readFile('web/dist/sw.js', 'utf8')
+    const forbidden = ['endpoint-fixture-', '/__fixture/operator/push', 'FIXTURE_VAPID_PUBLIC_KEY', 'MOCK_SYNTHETIC_PUSH']
+    for (const literal of forbidden) {
+      expect(src, `web/dist/sw.js must not contain ${literal}`).not.toContain(literal)
     }
   })
 
@@ -1037,7 +1071,7 @@ describe('DASHBOARD_WEB_DIST — static root override', () => {
   })
 
   it('injected webDistRoot=./web/dist-fixture serves assets from dist-fixture', async () => {
-    // web/dist-fixture is built by pnpm build:web:fixture; skip if not present
+    // web/dist-fixture is built by bun run build:web:fixture; skip if not present
     const fs = await import('node:fs')
     if (!fs.existsSync('./web/dist-fixture')) {
       return
@@ -1218,7 +1252,7 @@ describe('security — operator-stream.js contract pin and checkout-field bounda
     const fs = await import('node:fs/promises')
     const src = await fs.readFile('public/operator-stream.js', 'utf8')
     // Strip comments so prose that names a version cannot hide a second pin.
-    const code = src.replaceAll(/\/\*[\s\S]*?\*\//g, '').replaceAll(/(^|[^:])\/\/.*$/gm, '$1')
+    const code = stripComments(src)
     const literals = code.match(/['"`]\d+\.\d+\.\d+['"`]/g) ?? []
     expect(literals).toHaveLength(1)
     expect(code).toMatch(/export const PINNED_CONTRACT_VERSION = ['"]\d+\.\d+\.\d+['"]/)
@@ -1230,11 +1264,10 @@ describe('security — operator-stream.js contract pin and checkout-field bounda
     expect(PINNED_CONTRACT_VERSION).toBe(OPERATOR_CONTRACT_VERSION)
   })
 
-  it('renders checkout provenance and preparation through no HTML sink and puts no raw field in a class or CSS variable', async () => {
+  it('puts no raw checkout provenance or preparation field in a class or CSS variable', async () => {
     const fs = await import('node:fs/promises')
     for (const filePath of ['public/operator-stream.js', 'public/operator-run-index.js']) {
       const src = await fs.readFile(filePath, 'utf8')
-      expect(src).not.toMatch(/(?:innerHTML|outerHTML|insertAdjacentHTML)\s*=/)
       expect(src).not.toMatch(/classList\.add\([^)]*checkout(?:Provenance|Preparation)/)
       expect(src).not.toMatch(/className[^;\n]*checkout(?:Provenance|Preparation)/)
       expect(src).not.toMatch(/setProperty\([^)]*checkout(?:Provenance|Preparation)/)
@@ -1246,6 +1279,136 @@ describe('security — operator-stream.js contract pin and checkout-field bounda
     const fs = await import('node:fs/promises')
     const src = await fs.readFile('public/operator-run-index.js', 'utf8')
     expect(src).not.toMatch(/checkout(?:Provenance|Preparation)/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// HTML-sink ban — one scan over every module that builds output DOM
+//
+// Write and call forms only, after comments are stripped, so prose that names a
+// sink cannot trip it and a sink cannot hide behind a bracket or quote.
+// ---------------------------------------------------------------------------
+
+const HTML_SINK_PATTERN = /(?:innerHTML|outerHTML|insertAdjacentHTML|setHTMLUnsafe|createContextualFragment|parseFromString|srcdoc|document\.write(?:ln)?)['"\]\s]*(?:\+?=|\()/
+const HREF_SINK_PATTERN = /setAttribute\(\s*['"]href|\.href\s*=(?!=)/
+const MARKDOWN_RENDERER_PATH = 'web/src/operator/markdown-output.ts'
+const SINK_SCAN_DIRS = ['public', 'web/src/operator'] as const
+const SINK_SCAN_EXTENSIONS = /\.(?:js|mjs|ts|tsx)$/
+
+// A `//` comment starts at the beginning of a line or after whitespace, so `//` inside a string or a
+// URL (`'a//'`, `'https://x'`) is code and cannot hide a sink after it.
+function stripComments(src: string): string {
+  return src.replaceAll(/\/\*[\s\S]*?\*\//g, '').replaceAll(/(^|\s)\/\/.*$/gm, '$1')
+}
+
+function isSinkScanned(file: string): boolean {
+  return SINK_SCAN_EXTENSIONS.test(file) && !file.includes('.test.')
+}
+
+async function listSinkScanFiles(): Promise<string[]> {
+  const fs = await import('node:fs/promises')
+  const files: string[] = []
+  for (const dir of SINK_SCAN_DIRS) {
+    for (const entry of await fs.readdir(dir, {withFileTypes: true})) {
+      if (entry.isFile() && isSinkScanned(entry.name)) files.push(`${dir}/${entry.name}`)
+    }
+  }
+  return files.toSorted()
+}
+
+describe('security — HTML and href sinks across operator output modules', () => {
+  it.each([
+    ["el['innerHTML'] = x"],
+    ['el.innerHTML = x'],
+    ['el.innerHTML += x'],
+    ['el.outerHTML = x'],
+    ['el.insertAdjacentHTML("beforeend", x)'],
+    ['el.setHTMLUnsafe(x)'],
+    ['setHTMLUnsafe(x)'],
+    ['range.createContextualFragment(x)'],
+    ['new DOMParser().parseFromString(x, "text/html")'],
+    ['frame.srcdoc = x'],
+    ['document.write(x)'],
+    ['document.writeln(x)'],
+    ['el["innerHTML"] += x'],
+    ["x = 'a//'; el.innerHTML = y"],
+    ["x = 'https://x'; el.innerHTML = y"],
+  ])('the HTML sink pattern matches %s', fixture => {
+    expect(stripComments(fixture)).toMatch(HTML_SINK_PATTERN)
+  })
+
+  it.each([
+    ["el.setAttribute('href', url)"],
+    ['el.setAttribute("href", url)'],
+    ['a.href = x'],
+    ['a.href=x'],
+  ])('the href pattern matches %s', fixture => {
+    expect(stripComments(fixture)).toMatch(HREF_SINK_PATTERN)
+  })
+
+  it.each([
+    ['// never innerHTML'],
+    ['  // never innerHTML'],
+    ['const note = 1 // never innerHTML ='],
+    ['/* never el.innerHTML = x */'],
+    ['/**\n * textContent only, never innerHTML =\n */'],
+    ['const note = el.textContent'],
+    ['if (a.href === b.href) return'],
+    ['el.setAttribute("data-run-id", id)'],
+  ])('neither pattern matches %s once comments are stripped', fixture => {
+    const code = stripComments(fixture)
+    expect(code).not.toMatch(HTML_SINK_PATTERN)
+    expect(code).not.toMatch(HREF_SINK_PATTERN)
+  })
+
+  it('strips a // comment only at the start of a line or after whitespace', () => {
+    expect(stripComments("const u = 'https://x'")).toBe("const u = 'https://x'")
+    expect(stripComments("x = 'a//b'")).toBe("x = 'a//b'")
+    expect(stripComments('// note')).toBe('')
+    expect(stripComments('  // note').trim()).toBe('')
+    expect(stripComments('f() // note')).toBe('f() ')
+  })
+
+  it('excludes test files and non-source files from the scan', () => {
+    expect(isSinkScanned('markdown-output.test.ts')).toBe(false)
+    expect(isSinkScanned('runtime-auth-recovery.test.tsx')).toBe(false)
+    expect(isSinkScanned('operator.css')).toBe(false)
+    expect(isSinkScanned('operator-stream.js')).toBe(true)
+    expect(isSinkScanned('markdown-output.ts')).toBe(true)
+  })
+
+  it('the scan covers the renderer module and the shipped browser modules', async () => {
+    const files = await listSinkScanFiles()
+    expect(files).toContain(MARKDOWN_RENDERER_PATH)
+    for (const file of ['public/operator-stream.js', 'public/operator-launch.js', 'public/operator-run-index.js', 'public/operator-time.js']) {
+      expect(files).toContain(file)
+    }
+    expect(files.filter(file => file.includes('.test.'))).toEqual([])
+  })
+
+  it('no scanned module writes an HTML sink', async () => {
+    const fs = await import('node:fs/promises')
+    for (const file of await listSinkScanFiles()) {
+      const code = stripComments(await fs.readFile(file, 'utf8'))
+      expect(code, `${file} must not write or call an HTML sink`).not.toMatch(HTML_SINK_PATTERN)
+    }
+  })
+
+  it('no scanned module sets an href except the renderer, which applies its URL policy first', async () => {
+    const fs = await import('node:fs/promises')
+    for (const file of await listSinkScanFiles()) {
+      if (file === MARKDOWN_RENDERER_PATH) continue
+      const code = stripComments(await fs.readFile(file, 'utf8'))
+      expect(code, `${file} must not set an href`).not.toMatch(HREF_SINK_PATTERN)
+    }
+  })
+
+  it('the renderer module never calls the parser render methods or overrides renderer rules', async () => {
+    const fs = await import('node:fs/promises')
+    const code = stripComments(await fs.readFile(MARKDOWN_RENDERER_PATH, 'utf8'))
+    expect(code).not.toContain('.render(')
+    expect(code).not.toContain('.renderInline(')
+    expect(code).not.toContain('renderer.rules')
   })
 })
 

@@ -19,31 +19,33 @@
  *
  * OPERATOR DATA POLICY: operator session, run, stream, approval, launch, and
  * run-index responses are network-only/no-store. Only the static shell and
- * hashed assets are precached. Runtime caches are purged on logout, auth change,
- * and app-version change via the PURGE_RUNTIME message handler.
+ * hashed assets are precached — no runtime caches exist (rm-274 truthing). On
+ * logout/auth change the page posts PURGE_RUNTIME; the handler's only owned
+ * sweep is the legacy monitoring-v1 orphan from pre-migration clients.
  *
- * INSTALLED-CLIENT MIGRATION: old installed clients running the previous SW may
- * briefly serve the old monitoring shell for /operator until they open the app,
- * see the update prompt, and activate the new SW. This is an accepted version-
- * gated cutover caveat — do not add forced activation outside the prompt-mode
- * discipline. The /operator redirect handler below ensures that once the new SW
- * is active, offline /operator navigations canonicalize to the cached / shell.
+ * INSTALLED-CLIENT MIGRATION: old installed clients running a previous SW
+ * pick up this worker on their next navigation — the browser checks for SW
+ * updates on navigation, and this worker skips waiting itself (see
+ * ACTIVATION), so no "close every tab" window remains. The /operator redirect
+ * handler below ensures that once the new SW is active, offline /operator
+ * navigations canonicalize to the cached / shell.
  *
- * PROMPT-GATED ACTIVATION: a new worker installs and then WAITS. It never calls
- * skipWaiting() on install. The only activation path is the page's Refresh click:
- * updateServiceWorker(true) posts {type:'SKIP_WAITING'} (workbox-window's
- * messageSkipWaiting), the message handler below calls self.skipWaiting(), and the
- * page reloads on the resulting `controlling` event. With injectManifest the
- * worker must handle that message itself — nothing does it for us. No client-claim
- * call is made on purpose: pages already controlled by the old worker switch to
- * the new one when it activates (that fires controllerchange); claiming only matters
- * for first-install pages that have no controller yet.
+ * ACTIVATION — auto-update (rm-1960). A new worker skips the waiting phase
+ * itself: self.skipWaiting() runs at worker startup (top-level, during
+ * install) and the activate handler claims open clients. The build registers
+ * the SW with registerType: 'autoUpdate' (web/vite.config.ts). No silent
+ * reload fires: the emitted registerSW.js is the bare register, and the
+ * controllerchange-reload path lives in the register module this app never
+ * imports — claimed open tabs pick up the new shell on their NEXT
+ * NAVIGATION, with no operator action and no close-every-tab window. The
+ * SKIP_WAITING message listener stays for workbox-window messageSkipWaiting
+ * compatibility — an explicit post from a page still works alongside the
+ * self-activation.
  */
 
 import {cleanupOutdatedCaches, createHandlerBoundToURL, precacheAndRoute} from 'workbox-precaching'
 import {NavigationRoute, registerRoute} from 'workbox-routing'
 import {NetworkOnly} from 'workbox-strategies'
-import {OPERATOR_RUNTIME_CACHE} from './pwa/cache-names.ts'
 // The only non-Workbox imports in this file: pure modules for the
 // payload→safe-notification mapping and the notification-click resolver. Any
 // future non-Workbox import here should be a conscious decision (the
@@ -102,10 +104,13 @@ registerRoute(
   }),
 )
 
-// Logout purge handler — page posts {type:'PURGE_RUNTIME'} on logout, auth
-// change, or app-version change. Only runtime caches are deleted — NOT the
-// precache (app shell must survive logout for instant next-user load).
-//
+// Logout purge handler — page posts {type:'PURGE_RUNTIME'} on logout or auth
+// change. Nothing writes runtime caches at head (rm-274 truthing: the old
+// OPERATOR_RUNTIME_CACHE sweep had no writer and no forward-wiring owner —
+// rm-249's push-only SW direction was superseded by the push handlers landing
+// in this main SW), so the handler's sole owned sweep is the legacy cache.
+// The precache is NOT deleted — the app shell must survive logout for instant
+// next-user load.
 // Legacy purge: monitoring-v1 is the orphaned cache from the pre-migration SW.
 // Clients that installed the old SW may still have it on disk; delete it here
 // so stale monitoring data does not linger after migration.
@@ -128,11 +133,7 @@ addEventListener('message', (event: Event) => {
     e.waitUntil(self.skipWaiting())
   }
   if (messageType === 'PURGE_RUNTIME') {
-    e.waitUntil(
-      Promise.all([caches.delete(OPERATOR_RUNTIME_CACHE), caches.delete(LEGACY_MONITORING_CACHE)]).then(
-        () => undefined,
-      ),
-    )
+    e.waitUntil(caches.delete(LEGACY_MONITORING_CACHE).then(() => undefined))
   }
   // Dev-only synthetic push: the notifications consent surface posts
   // {type:'MOCK_SYNTHETIC_PUSH', payload} to the SW for visual verification
@@ -140,7 +141,13 @@ addEventListener('message', (event: Event) => {
   // shape {title, body, data: {type, route, failureLabel?}} and is routed
   // through the same safe-copy mapping as a real push — never renders raw
   // payload text.
-  if (messageType === 'MOCK_SYNTHETIC_PUSH') {
+  //
+  // The receiver is gated by the SAME import.meta.env.DEV flag as the only
+  // sender (web/src/views/Notifications.tsx): Vite replaces the flag at build
+  // time, so production builds dead-branch-eliminate this block and the
+  // fixture literal never reaches web/dist/sw.js (pinned by
+  // test/static-assets.test.ts and web/src/sw.test.ts; rm-2003).
+  if (import.meta.env.DEV && messageType === 'MOCK_SYNTHETIC_PUSH') {
     const {title, body, data} = buildNotification((e.data as {payload?: unknown} | null)?.payload)
     e.waitUntil(registration.showNotification(title, {body, data}))
   }
@@ -174,6 +181,7 @@ interface SWWindowClient {
 interface SWClients {
   matchAll(options: {type: 'window'; includeUncontrolled?: boolean}): Promise<SWWindowClient[]>
   openWindow(url: string): Promise<unknown>
+  claim(): Promise<unknown>
 }
 
 interface SWNotification {
@@ -253,4 +261,14 @@ addEventListener('pushsubscriptionchange', (event: Event) => {
       }
     })(),
   )
+})
+
+// 8. Auto-update activation (rm-1960). The worker skips waiting itself at
+// startup (install phase) instead of waiting for every tab to close, then
+// claims open clients on activation; claimed pages pick up the new shell on
+// their next navigation (the emitted registerSW.js is the bare register —
+// no silent reload). See the ACTIVATION note in the header.
+self.skipWaiting()
+addEventListener('activate', () => {
+  clients.claim()
 })
