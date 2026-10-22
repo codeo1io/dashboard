@@ -13172,7 +13172,10 @@ describe('finished-run store — recorded init', () => {
     const regions = fcRegions()
 
     const handle = fcInitRecorded('run-fc-r1', regions)
-    await vi.advanceTimersByTimeAsync(0)
+    // rm-2146: settle on the observable the flake raced — the hasUsableFinishedRun
+    // evaluation reaching terminal — instead of a bare fake-clock advance, so the
+    // suite can no longer assert before the status evaluation lands under load.
+    await vi.waitFor(() => expect(handle.getConnectionStatus()).toBe('terminal'))
 
     expect(fetchSpy).not.toHaveBeenCalled()
     expect(regions.statusEl.textContent).toBe('Succeeded')
@@ -14299,6 +14302,9 @@ describe('initOperatorStream — output painting', () => {
       const out = opOutputEl()
       const h = await opOpen(out, renderer)
       await h.push(fcOutput(OP_RUN, 'abc', {final: false, seq: 1}))
+      // rm-2146: settle the coalesced first-frame paint before the sync flip asserts
+      // below — the renderer-count sites raced the first frame under load.
+      await vi.waitFor(() => expect(renderer).toHaveBeenCalledTimes(1))
       expect(out.textContent).toBe('R:abc')
 
       h.handle.setOutputView('raw')
@@ -14318,6 +14324,9 @@ describe('initOperatorStream — output painting', () => {
       const out = opOutputEl()
       const h = await opOpen(out, renderer)
       await h.push(fcOutput(OP_RUN, 'abc', {final: false, seq: 1}))
+      // rm-2146: settle the first-frame paint before the invalid-view probe — this
+      // test flaked in the 2026-10-21 battery asserting before the frame landed.
+      await vi.waitFor(() => expect(renderer).toHaveBeenCalledTimes(1))
 
       h.handle.setOutputView('sideways' as never)
 
