@@ -1,6 +1,7 @@
 import {describe, expect, it} from 'vitest'
 import {
   createMark,
+  isPlaced,
   keepMark,
   locateMark,
   MARK_CONTEXT_LENGTH,
@@ -13,6 +14,7 @@ import {
   removeMark,
   saveMarksOf,
   snapToCodePoints,
+  unplaceMark,
   type Mark,
 } from './marks.ts'
 import {checkUnmarkedChanges} from './unmarked.ts'
@@ -230,6 +232,52 @@ describe('markState', () => {
     const mark = markOn('one two', 'two')
     expect(markState('one three', mark)).toBe('detached')
   })
+
+  it('is detached for a flagged mark whose text stands elsewhere than its own offsets', () => {
+    const text = 'one two, two again'
+    const stale = {...markOn(text, 'two'), start: 10, end: 13, needsReview: true}
+    expect(locateMark(text, stale)).not.toBeNull()
+    expect(markState(text, stale)).toBe('detached')
+  })
+
+  it('is detached for an unplaced mark, even when its text is in the draft', () => {
+    const text = 'one two, two again'
+    const unplaced = unplaceMark(markOn(text, 'two'))
+    expect(locateMark(text, unplaced)).not.toBeNull()
+    expect(markState(text, unplaced)).toBe('detached')
+  })
+})
+
+describe('an unplaced mark', () => {
+  it('keeps its text and is flagged, with offsets no text can have', () => {
+    const mark = markOn('one two', 'two')
+    const unplaced = unplaceMark(mark)
+    expect(unplaced).toMatchObject({id: mark.id, text: 'two', needsReview: true})
+    expect(isPlaced(mark)).toBe(true)
+    expect(isPlaced(unplaced)).toBe(false)
+    expect(unplaced.end - unplaced.start).toBe('two'.length)
+  })
+
+  it('is stored and read back as an unplaced mark', () => {
+    const unplaced = unplaceMark(markOn('one two', 'two'))
+    const [read] = parseMarks(JSON.parse(JSON.stringify([unplaced])) as unknown) ?? []
+    expect(read).toEqual(unplaced)
+    expect(isPlaced(read as Mark)).toBe(false)
+  })
+
+  it('is never sent with a save', () => {
+    const text = 'one two, two again'
+    expect(saveMarksOf(text, [unplaceMark(markOn(text, 'two'))])).toEqual([])
+  })
+
+  it('stays unplaced through an edit that leaves its text in the draft', () => {
+    const text = 'one two, two again'
+    const unplaced = unplaceMark(markOn(text, 'two'))
+    const next = `Intro. ${text}`
+    expect(rebaseMarks([unplaced], text, next)).toEqual([unplaced])
+    const typed = `${text} two`
+    expect(rebaseMarks([unplaced], text, typed)).toEqual([unplaced])
+  })
 })
 
 describe('keepMark and removeMark', () => {
@@ -237,9 +285,43 @@ describe('keepMark and removeMark', () => {
     const text = 'one two'
     const flagged = {...markOn(text, 'one'), needsReview: true}
     const other = markOn(text, 'two', [flagged])
-    const kept = keepMark([flagged, other], flagged.id)
+    const kept = keepMark([flagged, other], flagged.id, text)
     expect(kept[0]).toEqual({...flagged, needsReview: false})
     expect(kept[1]).toBe(other)
+  })
+
+  it('refuses to keep a flagged mark whose text does not stand at its own offsets', () => {
+    const text = 'one two, two again'
+    const stale = {...markOn(text, 'two'), start: 10, end: 13, needsReview: true}
+    const marks = [stale]
+    expect(keepMark(marks, stale.id, text)).toEqual(marks)
+    expect(keepMark(marks, stale.id, text)[0]?.needsReview).toBe(true)
+  })
+
+  it('refuses to keep an unplaced mark', () => {
+    const text = 'one two, two again'
+    const unplaced = unplaceMark(markOn(text, 'two'))
+    expect(keepMark([unplaced], unplaced.id, text)).toEqual([unplaced])
+  })
+
+  it('refuses when the quote around the mark no longer matches and the text stands elsewhere', () => {
+    const text = 'aaa two bbb. ccc two ddd.'
+    const flagged = {...markOn(text, 'two'), needsReview: true}
+    // The words around the mark changed, and the other occurrence now has the mark's context.
+    const changed = 'xxx two yyy. aaa two bbb.'
+    expect(markState(changed, flagged)).toBe('detached')
+    expect(keepMark([flagged], flagged.id, changed)[0]?.needsReview).toBe(true)
+  })
+
+  it('keeps a flagged mark that the edit clipped, at the offsets it has', () => {
+    const page = 'The cat sat on the mat.'
+    const mark = markOn(page, 'cat sat')
+    const next = page.replace('sat on the mat', 'ran')
+    const [clipped] = rebaseMarks([mark], page, next)
+    expect(markState(next, clipped as Mark)).toBe('review')
+    const [kept] = keepMark([clipped as Mark], (clipped as Mark).id, next)
+    expect(kept).toMatchObject({text: 'cat ', needsReview: false})
+    expect(markState(next, kept as Mark)).toBe('ok')
   })
 
   it('removes only the named mark', () => {
@@ -383,6 +465,27 @@ describe('rebaseMarks', () => {
       expect(markState(next, rebased as Mark)).toBe('review')
     })
 
+    it('keeps the clipped offsets through an unrelated edit, and the mark can still be kept', () => {
+      const mark = markOn(page, 'cat sat')
+      const clipped = page.replace('sat on the mat', 'ran')
+      const [flagged] = rebaseMarks([mark], page, clipped)
+      expect(flagged).toMatchObject({text: 'cat ', needsReview: true})
+
+      const before = `Intro. ${clipped}`
+      const [shifted] = rebaseMarks([flagged as Mark], clipped, before)
+      expect(shifted).toMatchObject({text: 'cat ', needsReview: true, start: (flagged?.start ?? 0) + 7})
+      expect(before.slice(shifted?.start, shifted?.end)).toBe('cat ')
+      expect(markState(before, shifted as Mark)).toBe('review')
+
+      const after = `${before} Outro.`
+      const [still] = rebaseMarks([shifted as Mark], before, after)
+      expect(still).toMatchObject({start: shifted?.start, end: shifted?.end, needsReview: true})
+      expect(markState(after, still as Mark)).toBe('review')
+      const [kept] = keepMark([still as Mark], (still as Mark).id, after)
+      expect(kept).toMatchObject({needsReview: false})
+      expect(markState(after, kept as Mark)).toBe('ok')
+    })
+
     it('keeps the part of the mark after the change, flagged for review', () => {
       const mark = markOn(page, 'cat sat')
       // "The cat" is replaced: the change starts before the mark and ends inside it.
@@ -405,7 +508,9 @@ describe('rebaseMarks', () => {
       const next = 'beta gamma delta!'
       const [rebased] = rebaseMarks([mark], base, next)
       expect(rebased?.needsReview).toBe(true)
-      expect(markState(next, rebased as Mark)).toBe('review')
+      // The one edit region is the whole text, so the mark keeps its old offsets, which the text no
+      // longer has. The same word stands at the start, but the mark is not at its own offsets there.
+      expect(markState(next, rebased as Mark)).toBe('detached')
       const range = locateMark(next, rebased as Mark)
       expect(range).toEqual({start: 0, end: 4})
       expect(next.slice(range?.start, range?.end)).toBe('beta')
@@ -422,8 +527,8 @@ describe('rebaseMarks', () => {
         const [rebased] = rebaseMarks([mark], twice, next)
 
         expect(rebased).toMatchObject({text: 'widgets', needsReview: true})
-        expect(markState(next, rebased as Mark)).toBe('review')
-        expect(markState(next, rebased as Mark)).not.toBe('ok')
+        // Its text stands at the other occurrence, but the mark is not at its own offsets there.
+        expect(markState(next, rebased as Mark)).toBe('detached')
       })
 
       it('flags the mark when one edit replaces a range wider than it on both sides', () => {
@@ -434,17 +539,33 @@ describe('rebaseMarks', () => {
 
         expect(next.startsWith('Alpha buildsXX Beta builds widgets.')).toBe(true)
         expect(rebased).toMatchObject({text: 'widgets', needsReview: true})
-        expect(markState(next, rebased as Mark)).toBe('review')
+        expect(markState(next, rebased as Mark)).toBe('detached')
       })
 
-      it('stays flagged through a later edit that moves the text it now finds', () => {
+      it('is unplaced by a later unrelated edit, and never moves to the other occurrence', () => {
         const mark = markOn(twice, 'widgets')
         const deleted = twice.replace('widgets', '')
         const [flagged] = rebaseMarks([mark], twice, deleted)
+        const other = deleted.indexOf('widgets')
+        expect(other).toBeGreaterThan(0)
+
         const later = `Intro. ${deleted}`
-        const [moved] = rebaseMarks([flagged as Mark], deleted, later)
-        expect(moved?.needsReview).toBe(true)
-        expect(markState(later, moved as Mark)).toBe('review')
+        const [after] = rebaseMarks([flagged as Mark], deleted, later)
+
+        expect(after).toMatchObject({text: 'widgets', needsReview: true})
+        expect(isPlaced(after as Mark)).toBe(false)
+        expect(markState(later, after as Mark)).toBe('detached')
+        expect(keepMark([after as Mark], (after as Mark).id, later)[0]?.needsReview).toBe(true)
+        expect(saveMarksOf(later, [after as Mark])).toEqual([])
+      })
+
+      it('is unplaced by an unrelated edit after it, too', () => {
+        const mark = markOn(twice, 'widgets')
+        const deleted = twice.replace('widgets', '')
+        const [flagged] = rebaseMarks([mark], twice, deleted)
+        const [after] = rebaseMarks([flagged as Mark], deleted, `${deleted} More.`)
+        expect(isPlaced(after as Mark)).toBe(false)
+        expect(markState(`${deleted} More.`, after as Mark)).toBe('detached')
       })
 
       it('is detached, and flagged, when the text stands nowhere else', () => {

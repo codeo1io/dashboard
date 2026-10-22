@@ -153,11 +153,17 @@ survive regeneration.
   including typing strictly inside it or replacing exactly its text. An edit that crosses the edge of
   a mark clips the mark to what survives of its original span outside the edit and flags it *needs
   review*. An edit that covers the whole mark, such as deleting exactly its text, keeps the mark's
-  text and flags it too. The mark is missing where that text no longer stands. Where the same text
-  stands elsewhere the mark is found there, but it stays flagged until the operator keeps or removes
-  it.
-- A mark whose text has left the draft is *missing*. A mark flagged for review (set by a merge) is
-  *needs review*. Save waits until each is removed, or for a flagged mark, kept.
+  text and flags it too.
+- **The Keep rule**, for an edit and for a merge alike. A flagged mark is *needs review* only when its
+  text stands at the offsets the mark records. **Keep** is offered only then, and it clears the flag
+  without moving the mark, so a kept mark is the span the operator marked and never another
+  occurrence of the same words. Any other flagged mark is *missing*, even where its words stand
+  elsewhere: it cannot be kept, and no later edit or merge searches for its text and places it there.
+  An edit leaves it where it is if its text stands at its own offsets now, as when an undo brings the
+  text back, and otherwise it is *unplaced*. A mark whose text has left the draft is *missing* too.
+  Save waits until each *missing* mark is removed and each *needs review* mark is kept or removed.
+  When the same words also stand elsewhere with a closer match to the mark's surrounding text, a
+  flagged mark can show as *missing* even at its own place. Remove it and mark the text again.
 - On Save, a changed draft is compared with the page it started from, line by line and then word by
   word. A draft whose changes all fall inside marked spans saves without a question. A change
   outside every mark asks for confirmation. So does a deletion unless one mark surrounds the gap,
@@ -188,6 +194,68 @@ draft over any budget is not compared:
 The editor then says it could not check which changes are marked, and Save asks for the
 unmarked-changes confirmation. `web/src/wiki/unmarked.measure.test.ts` asserts which shapes land
 there; it does not assert elapsed time.
+
+### Resolving a conflict
+
+A conflict names its kind and keeps the draft.
+
+- **Page changed.** The editor loads the current page and merges three texts line by line: the draft
+  (mine), the page text the draft started from (base) and the current page (theirs). Each line keeps
+  its terminator, so the merged text is exact. A change only one side made is applied. A change both
+  sides made identically is applied once. Where both sides changed the same lines differently, or
+  neighbouring lines, the change is a hunk with a heading, both versions as plain text, and **Accept
+  mine** and **Accept theirs** buttons. They are native buttons in tab order. One polite status
+  region announces each resolution once, and focus does not move. **Use merged text** is enabled
+  when every hunk is resolved, or at once when there are none.
+- **Use merged text** makes the merged text the draft, sets the page base to the current blob and
+  text, and sets the corrections base to the current page's entries. A staged action whose correction
+  has changed or gone is dropped with a notice. A recorded unmarked-change confirmation is cleared, so
+  the next Save asks again. A draft that is identical to its base takes the current page wholesale.
+- **Overwrite with my draft** stays available behind a confirmation. It keeps the draft text and moves
+  the base to the current page.
+- A merged save that hits another page conflict merges again, from the base the first merge set.
+- **Corrections changed.** The view shows the base entries against the current ones. Overwrite moves
+  the page and corrections bases together and drops staged actions the new entries no longer allow.
+- **Page removed.** The page is no longer in the wiki. Save stays disabled, the draft is kept on the
+  device, and **Copy draft** copies it out. The draft stays in the list's "Drafts without a page"
+  section, and opens read-only, until the operator discards it.
+
+#### Marks through a merge
+
+`web/src/wiki/remap-marks.ts` places each mark by the merge's stretches, which record whether each
+range of the merged text came from mine, base or theirs. Offsets are UTF-16 code units.
+
+- A mark entirely inside one unbroken run of text taken from the draft, whether the draft changed it
+  or left it as the base had it, moves with that run. Its text is read back at the new position and its
+  prefix and suffix are read again from the merged text.
+- Every other mark is left *unplaced*: flagged, with the text it was made on and no position. That is
+  a mark that touches text taken from theirs, one whose lines the merge dropped, one in a hunk resolved
+  as theirs, one whose text does not verify at the new position, one that was not in the draft's text
+  to begin with, and a flagged one that was not at its own offsets in the draft. An unplaced mark is
+  stored with its end at the largest safe integer, which no text has, so the draft schema is
+  unchanged. It follows the Keep rule above and is never sent. The panel offers only **Remove**, and
+  the operator marks the text again.
+- A mark that was already flagged and is carried stays flagged, and can be kept.
+
+#### Pages too large to compare
+
+A line diff costs about the number of matching line pairs times the number of lines, and a page with
+many identical lines, such as blank ones, has pairs that grow with the square of its length. The
+merge sizes its work first (`mergeWork` in `web/src/wiki/merge.ts`): matching pairs times lines,
+summed over the three diffs a merge runs. A merge costs roughly 0.4 to 1 ns per unit across shapes, so
+`MAX_MERGE_WORK` (1.5 billion) is about 0.6 to 1.5 s on the measuring machine.
+
+A page over the budget shows one whole-page change: nothing is diffed, and the operator takes the
+draft or the current page. Taking the current page flags every mark and leaves it unplaced, because no line is carried.
+A draft identical to its base takes the current page without a question.
+
+- Paragraph prose with a blank line between paragraphs reaches the budget at about 140 KB.
+- At 512 KB, only a page whose lines average about 23 bytes or more stays under it. Short-line and
+  blank-line-heavy pages are one change at that size.
+- Pages of distinct lines under the budget, with edits on both sides, merge line by line in about
+  0.1 s at 512 KB.
+
+`web/src/wiki/merge.measure.test.ts` asserts which shapes land where; it does not assert elapsed time.
 
 ### Two tabs on one page
 
@@ -314,6 +382,7 @@ after the next save that goes through. Restarting resets everything.
 | `comparisons.fixture-a-vs-b`           | Saves.                                                            |
 | `topics.fixture-no-node-id`            | Saves. No `node_id`, so no marks.                                 |
 | `topics.fixture-conflict`              | Page conflict: another writer changed the page.                   |
+| `repos.fixture--page-conflict`         | Page conflict on a page with a `node_id`, so it takes marks. The other writer inserts a line above the paragraphs and changes the middle line: a mark in an untouched paragraph moves with its text, an edit to the middle line overlaps. |
 | `repos.fixture--corrections-conflict`  | Corrections conflict, for a save that carries a mark or transition. |
 | `topics.fixture-timeout-landed`        | Timeout; the commit landed. Lookup finds it.                      |
 | `topics.fixture-timeout-lost`          | Timeout; the commit did not land. Lookup reports missing.         |

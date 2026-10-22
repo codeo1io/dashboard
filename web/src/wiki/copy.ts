@@ -196,6 +196,7 @@ export const CORRECTIONS_COPY = {
   remove: 'Remove',
   markReview: 'Needs review. Keep it or remove it.',
   markDetached: 'This span is no longer in the text. Remove the mark, or restore the text.',
+  markUnplaced: 'This mark\u2019s text moved or changed in the merge. Remove it, then mark the text again.',
   marksBlocking: 'Keep or remove each mark that needs attention before you can save.',
   stagingFull: 'This draft already has the most changes a save can carry. Undo one, or save first.',
   stagedDroppedOne: 'One staged change was dropped because its correction changed or is no longer on the page.',
@@ -281,6 +282,11 @@ export const EDITOR_COPY = {
   overwriteConfirm: 'Yes, overwrite',
   overwriteCancel: 'Keep comparing',
   rebased: 'Your draft now starts from the current version. Review it, then save.',
+  merged: 'Your draft now holds the merged text and starts from the current version. Review it, then save.',
+  mergedMarksNeedReview: (count: number) =>
+    count === 1
+      ? 'One marked correction could not be carried over with confidence. Resolve it in the corrections list before you save.'
+      : `${String(count)} marked corrections could not be carried over with confidence. Resolve each in the corrections list before you save.`,
   findingShow: 'Show in text',
   findingRetire: 'Retire this correction',
   findingRetireStaged: 'A retire is staged for this correction. Save to apply it.',
@@ -293,6 +299,35 @@ export const EDITOR_COPY = {
   guardStored: 'You have unsaved changes. Your draft is kept on this device. Leave this page?',
   guardNotStored: 'You have unsaved changes that are not stored on this device. Leave this page and lose them?',
   guardUnknown: 'Your last save is unconfirmed. Leave this page anyway?',
+} as const
+
+/**
+ * Merging a draft with a page that changed under it. A change is a stretch of text both sides changed
+ * differently, and each has to be settled before the merged text can be used.
+ */
+export const MERGE_COPY = {
+  heading: 'Merge your draft with the current version',
+  summaryNone: 'Your changes and the page changes do not overlap. There is nothing to resolve.',
+  summaryOne: 'One change overlaps with the current version. Choose which version to keep.',
+  summaryMany: (count: number) =>
+    `${String(count)} changes overlap with the current version. Choose which version to keep for each.`,
+  summaryCoarse:
+    'This page is too large to compare line by line, so it is shown as one change. Choose your draft or the current version.',
+  progress: (resolved: number, total: number) => `${String(resolved)} of ${String(total)} resolved`,
+  changeHeading: (position: number, total: number) => `Change ${String(position)} of ${String(total)}`,
+  mineHeading: 'Your draft',
+  theirsHeading: 'Current version',
+  removed: 'This version removes these lines.',
+  acceptMine: 'Accept mine',
+  acceptTheirs: 'Accept theirs',
+  resolvedMine: 'Kept yours',
+  resolvedTheirs: 'Took theirs',
+  unresolved: 'Not resolved yet',
+  announceMine: (position: number, total: number) => `Change ${String(position)} of ${String(total)}: kept yours`,
+  announceTheirs: (position: number, total: number) => `Change ${String(position)} of ${String(total)}: took theirs`,
+  announceAllResolved: 'All changes are resolved.',
+  useMerged: 'Use merged text',
+  useMergedWaiting: 'Resolve every change to use the merged text.',
 } as const
 
 /**

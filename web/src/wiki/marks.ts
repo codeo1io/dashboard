@@ -31,6 +31,10 @@ const MAX_CANDIDATES = 5000
 export interface Mark {
   /** Local to the draft. Never sent. The server mints the correction ID. */
   readonly id: string
+  /**
+   * UTF-16 offsets into the draft. An unplaced mark carries sentinel offsets (see `unplaceMark`),
+   * so read them only after `isPlaced` holds.
+   */
   readonly start: number
   readonly end: number
   readonly text: string
@@ -116,9 +120,36 @@ export function removeMark(marks: readonly Mark[], id: string): Mark[] {
   return marks.filter(mark => mark.id !== id)
 }
 
-/** Keep a flagged mark: clear its flag. */
-export function keepMark(marks: readonly Mark[], id: string): Mark[] {
-  return marks.map(mark => (mark.id === id ? {...mark, needsReview: false} : mark))
+/**
+ * The end offset of a mark that has no place in the text. It is the largest safe integer, so no text
+ * has a position there and the stored mark still reads back as a valid mark.
+ */
+const UNPLACED_END = Number.MAX_SAFE_INTEGER
+
+/**
+ * The mark with no place in the text: it keeps its text, is flagged, and cannot be kept or sent. A merge
+ * that cannot carry a mark leaves it so, because the draft's offsets mean nothing in the merged text.
+ */
+export function unplaceMark(mark: Mark): Mark {
+  return {...mark, start: UNPLACED_END - mark.text.length, end: UNPLACED_END, needsReview: true}
+}
+
+export function isPlaced(mark: Mark): boolean {
+  return mark.end !== UNPLACED_END
+}
+
+/** Whether the mark's text stands at the offsets the mark records, and a search for it finds that place. */
+function standsAtOwnOffsets(text: string, mark: Mark): boolean {
+  const found = locateMark(text, mark)
+  return found !== null && found.start === mark.start && found.end === mark.end
+}
+
+/**
+ * Keep a flagged mark: clear its flag. A mark is kept only where its text stands at its own offsets,
+ * so a kept mark is the span the operator marked and never another occurrence of the same words.
+ */
+export function keepMark(marks: readonly Mark[], id: string, text: string): Mark[] {
+  return marks.map(mark => (mark.id === id && standsAtOwnOffsets(text, mark) ? {...mark, needsReview: false} : mark))
 }
 
 // ---------------------------------------------------------------------------
@@ -170,15 +201,22 @@ export function locateMark(text: string, mark: Mark): Range | null {
   return best === null ? null : {start: best.start, end: best.start + quoted.length}
 }
 
+/**
+ * `review` is a flagged mark that can be kept, which is one whose text stands at its own offsets. A
+ * flagged mark whose text stands only somewhere else, or that has no place, is `detached`: it can
+ * only be removed, and the text marked again.
+ */
 export function markState(text: string, mark: Mark): MarkState {
   if (locateMark(text, mark) === null) return 'detached'
-  return mark.needsReview ? 'review' : 'ok'
+  if (!mark.needsReview) return 'ok'
+  return standsAtOwnOffsets(text, mark) ? 'review' : 'detached'
 }
 
 /** The marks that go on the wire: each attached mark with its current text and offsets, in text order. */
 export function saveMarksOf(text: string, marks: readonly Mark[]): SaveMark[] {
   const located: SaveMark[] = []
   for (const mark of marks) {
+    if (!isPlaced(mark)) continue
     const range = locateMark(text, mark)
     if (range !== null) located.push({text: text.slice(range.start, range.end), start: range.start, end: range.end})
   }
@@ -266,6 +304,9 @@ function anchored(text: string, mark: Mark, range: Range): Mark {
   return {...mark, ...range, text: text.slice(range.start, range.end), ...contextAround(text, range.start, range.end)}
 }
 
+/** The mark placed on `range` of `text`, with its text and the context around it read from there. */
+export const anchorMark = anchored
+
 /**
  * Whether an insertion is, as far as the text can tell, at `floor`. The same text results from
  * inserting at any offset the inserted run can slide to: typing "c" before "cat" gives "ccat",
@@ -279,8 +320,13 @@ function insertionCouldStartAt(newText: string, start: number, length: number, f
 }
 
 function rebaseOne(mark: Mark, oldText: string, newText: string, change: Change): Mark {
+  // An unplaced mark has no place to carry, and an edit does not give it one.
+  if (!isPlaced(mark)) return mark
   const wasAttached = oldText.startsWith(mark.text, mark.start) && mark.end === mark.start + mark.text.length
   if (!wasAttached) {
+    // A flagged mark is never found again by searching for its text: it stays where it is if its text
+    // stands there now, as when an undo brings the text back, and otherwise it has no place.
+    if (mark.needsReview) return standsAtOwnOffsets(newText, mark) ? mark : unplaceMark(mark)
     // Detached before this edit: the edit may have brought its text back.
     const found = locateMark(newText, mark)
     return found === null ? mark : anchored(newText, mark, found)
@@ -333,8 +379,9 @@ function rebaseOne(mark: Mark, oldText: string, newText: string, change: Change)
  *   that survives outside the region and is flagged for review, so unmarked text is never taken into
  *   a mark.
  * - A mark whose whole span lies in the region keeps its text and is flagged for review. It is
- *   detached where that text no longer stands. Where the same text stands elsewhere, the mark is
- *   found there but stays flagged, so Save waits until the operator keeps or removes it.
+ *   detached where that text no longer stands. Where the same text stands elsewhere, the mark is not
+ *   at its own offsets there, so it is detached too and can only be removed. A later edit does not
+ *   find it there: a flagged mark whose text does not stand at its own offsets is left unplaced.
  */
 export function rebaseMarks(
   marks: readonly Mark[],
