@@ -1,4 +1,6 @@
-import {fireEvent, render, screen} from '@testing-library/react'
+import {readFileSync} from 'node:fs'
+import {resolve} from 'node:path'
+import {fireEvent, render, screen, within} from '@testing-library/react'
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest'
 import {getLogoutAbortSignal} from '../push/logout-abort.ts'
 import * as logoutPurgeModule from '../pwa/logout-purge.ts'
@@ -480,6 +482,76 @@ describe('AppShell', () => {
       fireEvent.click(screen.getByTestId('logout-button'))
 
       expect(signalBefore.aborted).toBe(true)
+    })
+  })
+  describe('navigation', () => {
+    it('renders Runs, Inbox and Wiki entries inside the primary navigation', () => {
+      render(<AppShell>content</AppShell>)
+      const nav = screen.getByRole('navigation', {name: 'Primary navigation'})
+      for (const name of ['Runs', 'Inbox', 'Wiki']) {
+        expect(within(nav).getByRole('button', {name})).toBeInTheDocument()
+      }
+    })
+
+    it('Wiki calls onNavigate with the wiki view', () => {
+      const onNavigate = vi.fn()
+      render(<AppShell onNavigate={onNavigate}>content</AppShell>)
+      fireEvent.click(screen.getByRole('button', {name: 'Wiki'}))
+      expect(onNavigate).toHaveBeenCalledTimes(1)
+      expect(onNavigate).toHaveBeenCalledWith('wiki')
+    })
+
+    it('Runs and Inbox still call onNavigate with their own view', () => {
+      const onNavigate = vi.fn()
+      render(<AppShell onNavigate={onNavigate}>content</AppShell>)
+      fireEvent.click(screen.getByRole('button', {name: 'Runs'}))
+      fireEvent.click(screen.getByRole('button', {name: 'Inbox'}))
+      expect(onNavigate.mock.calls).toEqual([['operator'], ['listener']])
+    })
+
+    it('marks only the current view with aria-current', () => {
+      const {rerender} = render(<AppShell currentView="wiki">content</AppShell>)
+      expect(screen.getByRole('button', {name: 'Wiki'})).toHaveAttribute('aria-current', 'page')
+      expect(screen.getByRole('button', {name: 'Runs'})).not.toHaveAttribute('aria-current')
+      expect(screen.getByRole('button', {name: 'Inbox'})).not.toHaveAttribute('aria-current')
+
+      rerender(<AppShell currentView="operator">content</AppShell>)
+      expect(screen.getByRole('button', {name: 'Runs'})).toHaveAttribute('aria-current', 'page')
+      expect(screen.getByRole('button', {name: 'Wiki'})).not.toHaveAttribute('aria-current')
+    })
+
+    it('styles the Wiki entry from a class, not an inline style (CSP)', () => {
+      render(<AppShell currentView="wiki">content</AppShell>)
+      const wiki = screen.getByRole('button', {name: 'Wiki'})
+      expect(wiki).not.toHaveAttribute('style')
+      expect(wiki).toHaveClass('app-nav-button')
+    })
+
+    it('the app-nav-button rule carries the look the inline style had, selected state included', () => {
+      const css = readFileSync(resolve(import.meta.dirname, '../index.css'), 'utf8')
+      const rule = (selector: string) => {
+        const start = css.indexOf(`${selector} {`)
+        expect(start).toBeGreaterThanOrEqual(0)
+        return css.slice(start, css.indexOf('}', start))
+      }
+      const base = rule('.app-nav-button')
+      for (const declaration of [
+        'min-height: 32px',
+        'padding: var(--space-1) var(--space-3)',
+        'background: transparent',
+        'color: var(--color-text-muted)',
+        'border: none',
+        'border-radius: var(--radius-md)',
+        'cursor: pointer',
+        'font-size: var(--text-body-sm)',
+        'font-weight: 600',
+        'transition: all var(--duration-fast) var(--ease-standard)',
+      ]) {
+        expect(base).toContain(declaration)
+      }
+      const current = rule(".app-nav-button[aria-current='page']")
+      expect(current).toContain('background: var(--color-surface-raised)')
+      expect(current).toContain('color: var(--color-text)')
     })
   })
 })

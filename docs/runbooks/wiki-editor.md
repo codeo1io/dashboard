@@ -116,8 +116,9 @@ Example: `knowledge/wiki/repos/marcusrbrown--infra.md` is `repos.marcusrbrown--i
   It never contains `..`. An ID is at most 200 characters.
 - Pages only. Nested paths, `README.md`, `index.md`, `log.md` and `corrections.yaml` have no ID.
 - The link takes exactly one path segment. A trailing slash, a nested path or an encoded slash is a 404.
-- An unauthenticated visit signs in first, then returns to the page. The return target is kept in a
-  short-lived cookie that holds only a valid `/wiki/<id>` path.
+- `/wiki` serves the page list. It is the only other wiki path the server serves a shell for.
+- An unauthenticated visit signs in first, then returns to the page or the list. The return target is
+  kept in a short-lived cookie that holds only `/wiki` or a valid `/wiki/<id>` path.
 
 The server resolves an ID to a path by finding it in the current tree, never from client input.
 
@@ -135,6 +136,12 @@ retried in the request a few times. Every save then dispatches `promote-data`. I
 fails, the save reports "saved, not promoted" and the editor offers a retry that sends only the
 dispatch.
 
+### Two tabs on one page
+
+Editing the same page in two tabs at the same time is not supported. The tabs share one local draft
+per page, so unsaved text in one tab can be replaced or removed by the other. Commits stay safe:
+the server checks the page's blob SHA, so a stale save becomes a conflict instead of overwriting.
+
 ### Cold and warm reads
 
 A snapshot lists the whole `data` tree in one request and reads only the blobs the gates need:
@@ -147,6 +154,12 @@ refetching unchanged blobs.
 | Warm, head unchanged | 3 | about 0.7 s |
 
 Measured against the real repository. The cold read dominates the first page open after a deploy.
+
+### A save that is not found yet
+
+A save-status check reads GitHub's path history, which can lag behind a commit that just landed. If a
+save that was just made is not found yet, saving again may show a conflict with that save, so check
+the page before overwriting.
 
 ### Rate limits
 
