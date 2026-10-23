@@ -86,6 +86,28 @@ describe('fork exclusion invariants (rm-131)', () => {
     expect(text).toMatch(/^\.conductor\/$/m)
   })
 
+  // Doctrine #19396 (2026-10-23 10.59→10.71 adoption): upstream promoted the
+  // excluded capability into core in this window; these pins keep it out.
+  it('the excluded capability package stays out of dependencies and src/ (#19396)', () => {
+    const pkg = JSON.parse(read('package.json')) as {dependencies?: Record<string, string>}
+    expect(pkg.dependencies).not.toHaveProperty('@fro.bot/wiki-write-core')
+    const srcMentions = execSync("git grep -l '@fro.bot/wiki-write-core' -- src/ || true", {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    expect(srcMentions).toBe('')
+  })
+
+  it('the capability merge library stays out of dependencies entirely (#19396)', () => {
+    const pkg = JSON.parse(read('package.json')) as {
+      dependencies?: Record<string, string>
+      devDependencies?: Record<string, string>
+    }
+    expect(pkg.dependencies).not.toHaveProperty('node-diff3')
+    expect(pkg.devDependencies).not.toHaveProperty('node-diff3')
+  })
+
   it.each([...BINDING_DOCS])('%s names the codeo1io metadata source, not upstream org', file => {
     const text = read(file)
     expect(text).toMatch(/codeo1io\/\.github/)
