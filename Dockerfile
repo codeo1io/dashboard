@@ -13,7 +13,7 @@
 # --platform flag and COPY cannot express deletions, so this is the minimal
 # target-executed step the design allows — see the rm-558 CI-time note in
 # .github/workflows/release.yaml).
-ARG NODE_IMAGE=node:24-trixie-slim@sha256:7f486cabe892bff8fef04c0f7da8dba84a560be3e4e2740b7a86afc57ebec315
+ARG NODE_IMAGE=node:24-trixie-slim@sha256:43b9ba1142b8dcf33fa8f922ca1be85714adc444e0586c7cf7726daaeabc1bea
 
 # rm-1483 (#641 residual, run 9511a1b5): release-channel tag baked into the
 # SPA at build time. release.yaml passes the calver tag as a build-arg; 'dev'
@@ -84,8 +84,10 @@ RUN bun install --filter './' --production --frozen-lockfile --ignore-scripts
 # 2026-09-20: in-image libpcre2-8-0 patch retired — the then-pinned base digest
 # (0e0ff40, upstream #492) shipped libpcre2-8-0 10.42-1+deb12u1, so the fix is
 # absorbed at the base. 2026-10-15 (rm-863): the base digest is re-pinned on
-# the ARG line above (7f486c at the 2026-10-20 integrate; 173f1258 at the
-# rm-863 batch, moved again by later base refreshes — never cite it as fixed);
+# the ARG line above (43b9ba1 at the 2026-10-22 base-truth batch, re-derived
+# live via the buildx imagetools readback with a registry HEAD cross-check;
+# 7f486c at the 2026-10-20 integrate; 173f1258 at the rm-863 batch — never
+# cite it as fixed);
 # the retirement claim was verified against 0e0ff40 only, so re-verify the
 # current base's libpcre2-8-0 version (dpkg-query) before relying on it
 # whenever the digest moves again.
