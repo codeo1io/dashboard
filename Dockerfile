@@ -13,7 +13,7 @@
 # --platform flag and COPY cannot express deletions, so this is the minimal
 # target-executed step the design allows — see the rm-558 CI-time note in
 # .github/workflows/release.yaml).
-ARG NODE_IMAGE=node:24-trixie-slim@sha256:7f486cabe892bff8fef04c0f7da8dba84a560be3e4e2740b7a86afc57ebec315
+ARG NODE_IMAGE=node:24-trixie-slim@sha256:43b9ba1142b8dcf33fa8f922ca1be85714adc444e0586c7cf7726daaeabc1bea
 
 # rm-1483 (#641 residual, run 9511a1b5): release-channel tag baked into the
 # SPA at build time. release.yaml passes the calver tag as a build-arg; 'dev'
@@ -148,7 +148,7 @@ EXPOSE 3000
 # DEFAULT_REFRESH_INTERVAL_MS): interval 30s is half a refresh cycle, retries 3
 # means 90s of CONSECUTIVE dead probes before unhealthy — at least one full
 # refresh cycle of noise tolerance, so a single slow cycle cannot flap the
-# container. node:24-slim ships no curl/wget, so the probe is a node fetch
+# container. node:24-trixie-slim ships no curl/wget, so the probe is a node fetch
 # one-liner using the runtime the CMD already uses (adding curl to the image
 # would grow the Trivy surface for no other need).
 # rm-233 fold (2026-10-19, integrate of run c8b5d2ec cycle-1 batch B2, conflict
