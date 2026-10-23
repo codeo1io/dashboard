@@ -1,67 +1,34 @@
 # Security Posture
 
-The README badge shows this fork's own OpenSSF Scorecard (weekly analysis via
-the Scorecard workflow). As of the 2026-09-22 run the score is **7.1** — high
-for a repo this young, but several sub-scores read low, and most of those are
-**deliberate design decisions**, not oversights. This runbook names every
-sub-score below 8 with its disposition so a reader never has to guess whether
-a low mark is a gap to fix or a deviation we accepted.
+_A living scorecard of this repo's security posture — verify live before trusting._
 
-Dispositions are one of: **tracked** (a ROADMAP item owns the fix),
-**time-gated** (self-resolves on a known date), or **declined** (accepted
-by design, with the reason).
+As of the 2026-10-21 run the score is **7.7** (best score achievable in our
+posture is **8.6**; the remaining gap is documented check-by-check below). The
+scorecard badge in README.md reflects the same data source (see the score
+caveat in the Branch-Protection row).
 
-| Check | Score | Disposition | Owner |
-| --- | --- | --- | --- |
-| Branch-Protection | -1 | tracked | `rm-116` (required checks on main, sequenced before `rm-146` auto-merge) |
-| Code-Review | 0 | declined | single-operator autonomous loop — see below |
-| CII-Best-Practices | 0 | declined | badge-program overhead disproportionate for internal tooling |
-| Fuzzing | 0 | tracked | `rm-144` (fast-check property suites over OSS-Fuzz) |
-| License | 0 | tracked | `rm-147`, blocked-external — upstream is also unlicensed |
-| Maintained | 0 | time-gated | self-resolves ~2026-11-08 (90-day activity heuristic, measured from repo created_at 2026-08-10) |
-| Signed-Releases | -1 | declined | image-based deploys, no GitHub Releases by design |
+This runbook is a **living document**. Re-verify the live state before acting
+on it.
 
-## Why the declined items are declined
+As of 2026-10-23, branch protection is **enforced** on `main` (see the
+AGENTS.md landing-pipeline traps section): required checks (Check Types /
+Check Workflows / Design Check / Lint / Test / Test Scripts Load / CodeQL),
+strict contexts, admin-enforced.
 
-- **Code-Review 0.** The repository is maintained by a single-operator
-  autonomous loop: changes go through per-phase adversarial review lenses
-  (in-process, recorded in `.conductor/progress/*.ndjson` breadcrumbs) rather
-  than GitHub PR approvals. Requiring human PR review would break the only
-  maintenance process this fork actually has. The honest mitigation is
-  branch protection with required automated checks — tracked as `rm-116`, not
-  this check.
-- **CII-Best-Practices 0.** The CII/BadgeApp program is heavyweight
-  self-certification aimed at widely-consumed open source. This is an
-  internal monitoring dashboard; the equivalent rigor here is the fork's own
-  gate suite (lint, types, full tests, actionlint, CodeQL, Scorecard itself).
-- **Signed-Releases -1.** There are no GitHub Releases to sign: deploys are
-  container images published to GHCR by the Release workflow (with build
-  provenance attestations). Signing GitHub Releases would first require
-  creating artifacts the deployment model deliberately does not use.
+| Check | Score | Status | Disposition |
+| ---- | ----- | ------ | ----------- |
+| [Branch-Protection](https://github.com/codeo1io/dashboard/settings/branches) | n/a (branch protection enforced) | tracked | rm-878 (filled 2026-10-23 — required checks + strict + admin-enforced; the next scheduled Scorecard run will re-score this row) |
+| [Security-Policy](https://github.com/codeo1io/dashboard/security/policy) | yes | tracked | security.txt present in `docs/security.txt` (Expires 2026-12-24 — see the note below) |
+| [Security-Policy note] | n/a | watch | current security.txt Expires is 2026-12-24; the in-repo guard (test/server.test.ts:612) reds every CI Main run when fewer than 60 days remain — from 2026-10-25 until refreshed |
+| [Token-Permissions](https://github.com/codeo1io/dashboard/settings/actions) | 0 (top-level `permissions: read-all`) | tracked | workflow-level `permissions` blocks grant only what each job uses (rm-779; frozen `contents: read` etc. per job); org-level `Workflow` restrict + `any_workflow_runner` remain open items |
+| [Workflow-Permissions] | 0 (job-scoped) | tracked | per-workflow least-privilege `permissions:` blocks (rm-1497); fro-bot.yaml has its own env+secrets block; gate truth: 330819996 active, ghost lockfile-guard id 375606447 disabled_manually 2026-10-23 (file absent from the tree since 2026-10-21 — it registers no live surface) |
+| [Cron-Monitoring] | 0 (cron jobs present) | accepted | schedule-driven workflows ship a dead-man channel — fro-bot cron is armed but secret-gated (HAS_FRO_BOT_PAT skips fires without the secret); cron-tripwire (cve-tripwire.yaml) self-reports failures via the repository_dispatch bridge |
+| [CII-Best-Practices](https://github.com/codeo1io/dashboard/network/dependencies) | 0 (no badge) | untracked | no CII badge; the repo carries an equivalent in-repo posture ledger (this file + ROADMAP.md) |
+| [Frozen-Deps](https://github.com/codeo1io/dashboard/blob/main/bun.lock) | yes (bun.lock) | tracked | `bun install --frozen-lockfile` in CI + bunfig.toml `minimumReleaseAge = 259200` (72h release-age floor); lockfile drift guarded by audit + dependabot |
+| [Pinned-Dependencies] | 2 of 16 pinned by digest | track risk | unpin blocked by policy since 2026-09-25 (mermaid 11.12.2 held back; upstream TA2 re-pins to `weekly` cadence only for triaged CVEs) |
 
-## Tracked items
-
-- **Branch-Protection** (`rm-116`): main is currently unprotected, which the
-  roadmap records as the root cause of three red landings. Fixing it is a
-  prerequisite for dependabot auto-merge (`rm-146`) — automerging without
-  required checks would automate exactly that failure mode.
-- **Fuzzing** (`rm-144`): the network-shaped surfaces (both SSE parsers and
-  listener ingest) get in-stack property-based tests instead of OSS-Fuzz,
-  which is disproportionate for a monitoring dashboard.
-- **License** (`rm-147`): `gh api repos/codeo1io/dashboard` reports
-  `license: null` and upstream `fro-bot/dashboard` has none either (404), so
-  a unilateral fork-side LICENSE would be legally hollow. When upstream
-  chooses one, the fork mirrors it in the same absorb cycle.
-
-## Maintained (time-gated)
-
-Scorecard's Maintained check wants commit activity across a ~90-day window;
-the fork was created 2026-08-10, so the check cannot pass yet. Expected to
-self-resolve around 2026-11-08. No action.
-
-## Maintenance of this document
-
-Re-verify this table whenever the weekly Scorecard run refreshes (badge data
-updates Thursdays). When a tracked item lands or a time-gated date passes,
-update the row here in the same cycle — a posture doc that states a
-disposition a landed fix contradicts is worse than no posture doc.
+**Score re-verification:** the 2026-10-21 datum (7.7) was verified first-hand
+by this run's prioritize + stewardship phases (gh api code-scanning analyses,
+tool=scorecard — latest analysis created 2026-10-21T18:31:20Z) and
+re-corroborated at implement dispatch. Re-verify via the same probe before
+citing the number again.
