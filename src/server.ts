@@ -119,7 +119,7 @@ interface RateLimitEntry {
  */
 const SECURITY_TXT = `Contact: https://github.com/codeo1io/dashboard/security/advisories/new
 Contact: https://github.com/fro-bot/dashboard/issues
-Expires: 2026-12-24T00:00:00.000Z
+Expires: 2027-03-24T00:00:00.000Z
 Preferred-Languages: en
 `
 
