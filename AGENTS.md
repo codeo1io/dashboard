@@ -15,15 +15,23 @@ view of Fro Bot's cross-repo footprint.
    App's registered permissions are therefore irrelevant to effective access.
    Never add a write code path.
    Upstream divergence disposition (verified 2026-09-29, run 262f170c research;
-   re-verified at the 2026.10.48 adoption): `fro-bot/dashboard` upstream has
-   adopted an isolated repository-editing (wiki) capability — visible in its
-   package description and carried in `wiki-writer/` — while this fork keeps
-   the read-only invariant absolute (standing never-absorb item, upstream PR
-   #498). The upstream wiki-writer tree is EXCLUDED at every adoption (dropped
-   from the merge; tsconfig/vitest do not reference it; the Dockerfile copies
-   nothing from it). Any future absorb of upstream commits must exclude
-   write-capability surfaces by default; the ledger tracks the absorb window
-   at rm-252 and the disposition at rm-259.
+   re-verified at the 2026.10.48 adoption and the 2026.10.59→68 absorb window,
+   run 0d009c8e8f9a): `fro-bot/dashboard` upstream carries an isolated
+   repository-editing (wiki) capability whose surface MOVED — pre-#705 it was
+   the `wiki-writer/` workspace; #705 (2026.10.66) moved it into the server
+   (`src/wiki/`, `src/routes/wiki.ts`, a write client in
+   `src/github/fro-bot-app-client.ts`, the `@fro.bot/wiki-write-core` npm
+   dependency); #708 (2026.10.67) mirrored it into the web client
+   (`web/src/api/wiki.ts`, `web/src/wiki/`, the `WikiEdit*` views). This fork
+   keeps the read-only invariant absolute (standing never-absorb item, upstream
+   PR #498). The upstream wiki-writer tree — and its post-#705/#708
+   successors `src/wiki/` and `web/src/wiki/` — is EXCLUDED at every adoption
+   (dropped from the merge; tsconfig/vitest do not reference them; the
+   Dockerfile copies nothing from them; test/fork-exclusion-guard.test.ts pins
+   their absence and the manifests' freedom from `@fro.bot/wiki-write-core`).
+   Any future absorb of upstream commits must exclude write-capability
+   surfaces by default; the ledger tracks the absorb window at rm-252 and the
+   disposition at rm-259.
 2. **Redaction preservation.** `src/github/metadata.ts` reads
    `metadata/repos.yaml` from the `codeo1io/.github` `data` branch and exports
    `redactedNodeIds` (node_ids of `[REDACTED]`/`private:true` entries). The

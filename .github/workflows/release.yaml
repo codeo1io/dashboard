@@ -381,7 +381,7 @@ jobs:
           severity: HIGH,CRITICAL
           limit-severities-for-sarif: true
           exit-code: '0'
-          version: v0.76.0
+          version: v0.76.1
 
       - name: 📦 Upload Trivy SARIF artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -391,7 +391,7 @@ jobs:
           retention-days: 5
 
       - name: 🛡️ Upload Trivy results to code scanning
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: trivy-results-${{ steps.digest.outputs.normalized }}.sarif
           category: trivy/release-image
@@ -420,7 +420,7 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: '1'
-          version: v0.76.0
+          version: v0.76.1
 
       # rm-882: setup-node moved to the build job (tag precompute); the promote
       # job no longer needs a Node runtime of its own.

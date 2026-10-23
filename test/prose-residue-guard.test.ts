@@ -94,8 +94,10 @@ const ALLOWED_MENTIONS: Record<string, string[]> = {
     'read-only-by-default monitoring dashboard with one isolated wiki-write capability',
   ],
   'AGENTS.md': [
-    'package description and carried in `wiki-writer/` — while this fork keeps',
-    '#498). The upstream wiki-writer tree is EXCLUDED at every adoption (dropped',
+    'the `wiki-writer/` workspace; #705 (2026.10.66) moved it into the server',
+    '`src/github/fro-bot-app-client.ts`, the `@fro.bot/wiki-write-core` npm',
+    'PR #498). The upstream wiki-writer tree — and its post-#705/#708',
+    "their absence and the manifests' freedom from `@fro.bot/wiki-write-core`).",
   ],
   'eslint.config.ts': [
     '// wiki-writer is excluded from this fork entirely (never-absorb doctrine,',
