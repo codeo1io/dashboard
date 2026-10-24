@@ -3,6 +3,7 @@
  * Loaded only by web/src/operator/runtime.ts via dynamic import with ?manual=1.
  */
 
+<<<<<<< HEAD
 /** The status set a run summary can carry. The stream-only blocked status is excluded. */
 export type RunSummaryStatus =
   | 'queued'
@@ -18,6 +19,17 @@ export type RunSummaryStatus =
  * The card emitter writes through it; web/src/operator/runtime.ts mirrors it to read a card's class back.
  */
 export declare const RUN_STATUS_CLASS_TOKENS: Readonly<Record<RunSummaryStatus, string>>
+=======
+/** Index-only status set. Stream-only statuses (blocked, waiting_for_approval) are excluded. */
+export type RunSummaryStatus =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'waiting_for_approval'
+  | 'waiting_for_question'
+>>>>>>> 0e8f8e0e0edf81fdc6b0050d8d4f46c623ebc651
 
 /** Operator-safe failure-reason code. */
 export type FailureKind =
@@ -30,6 +42,7 @@ export type FailureKind =
   | 'workspace-unavailable'
   | 'unknown'
 
+<<<<<<< HEAD
 /** Why a `session-error` run failed at the provider. Later gateway versions may add values; parsers drop any not listed. */
 export type ProviderFailureReason =
   | 'provider-auth-unavailable'
@@ -39,10 +52,19 @@ export type ProviderFailureReason =
   | 'unclassified'
 
 /** Parsed run summary — closed DTO with only declared fields. */
+=======
+/**
+ * Parsed run summary — closed DTO with only declared fields.
+ * `status` is typed to the recognized statuses; a status string the parser
+ * does not recognize is still KEPT (rm-1408 forward tolerance) — `status`
+ * then carries the raw string and `statusFlagged` is true.
+ */
+>>>>>>> 0e8f8e0e0edf81fdc6b0050d8d4f46c623ebc651
 export interface ParsedRunSummary {
   readonly runId: string
   readonly repo: string
-  readonly status: RunSummaryStatus
+  readonly status: RunSummaryStatus | (string & {})
+  readonly statusFlagged?: boolean
   readonly createdAt: string
   readonly updatedAt?: string
   readonly failureKind?: FailureKind
@@ -59,7 +81,11 @@ export interface ParsedRunSummary {
 export interface RunSafeView {
   readonly runId: string
   readonly repo: string
-  readonly status: RunSummaryStatus
+  readonly status: RunSummaryStatus | (string & {})
+  /** Kebab-case renderer token ('waiting-for-approval', 'unknown' when flagged). */
+  readonly statusClass: string
+  /** True exactly when the raw status string was not recognized. */
+  readonly statusFlagged: boolean
   readonly statusLabel: string
   readonly createdAt: string
   readonly updatedAt?: string

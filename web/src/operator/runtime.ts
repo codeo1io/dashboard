@@ -94,6 +94,7 @@ export function discoverCardStreamTargets(runId: string): {
 }
 
 /**
+<<<<<<< HEAD
  * Run-list summary status → hyphenated class token: a mirror of RUN_STATUS_CLASS_TOKENS in
  * public/operator-run-index.js, which the run index writes onto each card's run-status element.
  * The seven summary statuses are exactly the run index parser's VALID_RUN_SUMMARY_STATUSES; the
@@ -115,6 +116,22 @@ export const STATUS_CLASS_TOKENS = {
   failed: 'status-failed',
   cancelled: 'status-cancelled',
 } as const satisfies Record<RunSummaryStatus, string>
+=======
+ * The run-list summary statuses the run index parser keeps (public/operator-run-index.js
+ * VALID_RUN_SUMMARY_STATUSES). waiting_for_approval/waiting_for_question join at gateway
+ * contract 1.11.0 (agent v0.122.1+); 'blocked' alone remains stream-only. The parser keeps
+ * unrecognized statuses flagged rather than dropping them (rm-1408).
+ */
+const SUMMARY_STATUSES: ReadonlySet<RunSummaryStatus> = new Set<RunSummaryStatus>([
+  'queued',
+  'running',
+  'succeeded',
+  'failed',
+  'cancelled',
+  'waiting_for_approval',
+  'waiting_for_question',
+])
+>>>>>>> 0e8f8e0e0edf81fdc6b0050d8d4f46c623ebc651
 
 const STATUS_BY_CLASS_TOKEN: ReadonlyMap<string, RunSummaryStatus> = new Map(
   (Object.entries(STATUS_CLASS_TOKENS) as [RunSummaryStatus, string][]).map(([status, token]) => [token, status]),

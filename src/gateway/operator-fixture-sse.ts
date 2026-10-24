@@ -1026,7 +1026,11 @@ const QUESTION_SCENARIO_SPECS: Readonly<Record<QuestionScenarioName, QuestionSce
     build: runId => runningWithProgress(runId) + questionOpenFrame(runId, QUESTION_SENTINELS),
   },
   question_no_approval: {
+<<<<<<< HEAD
     summaryStatus: 'waiting_for_question',
+=======
+    summaryStatus: 'running',
+>>>>>>> 0e8f8e0e0edf81fdc6b0050d8d4f46c623ebc651
     holdOpen: true,
     noApproval: true,
     script: {openRequests: [QUESTION_NO_APPROVAL]},
@@ -1118,6 +1122,7 @@ export function isNoApprovalScenario(scenarioName: string): boolean {
   return isQuestionScenarioName(scenarioName) && QUESTION_SCENARIO_SPECS[scenarioName].noApproval === true
 }
 
+<<<<<<< HEAD
 // ---------------------------------------------------------------------------
 // Provider failure scenarios
 //
@@ -1271,6 +1276,8 @@ const MARKDOWN_SCENARIO_BUILDERS = Object.fromEntries(
   ]),
 ) as Readonly<Record<MarkdownScenarioName, (activeRunId: string) => string>>
 
+=======
+>>>>>>> 0e8f8e0e0edf81fdc6b0050d8d4f46c623ebc651
 const QUESTION_SCENARIO_BUILDERS = Object.fromEntries(
   (Object.keys(QUESTION_SCENARIO_SPECS) as QuestionScenarioName[]).map(scenario => [
     scenario,
