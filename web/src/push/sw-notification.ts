@@ -7,6 +7,7 @@
  * payloads are network-delivered) `unknown` payload to a fixed,
  * dashboard-owned notification descriptor.
  *
+<<<<<<< HEAD
  * Wire shape: the gateway sends `{title, body, data: {type, route, runId?, failureLabel?}}`.
  * Top-level `title` and `body` are i18n keys, not display text, and are never
  * rendered. Only `data.type`, `data.failureLabel`, and (for `question` and
@@ -16,6 +17,12 @@
  * `runId` only when the ID matches `RUN_ID_PATTERN` and the wire `route` is
  * exactly `/operator#<runId>`; the click handler turns that ID into a target and
  * nothing else reads it.
+=======
+ * Wire shape: the gateway sends `{title, body, data: {type, route, failureLabel?}}`.
+ * Top-level `title` and `body` are i18n keys, not display text, and are never
+ * rendered. Only `data.type` and `data.failureLabel` are read; `data.route`
+ * and any other field are ignored (the notification always routes to `/`).
+>>>>>>> 0e8f8e0e0edf81fdc6b0050d8d4f46c623ebc651
  *
  * Safe-copy notification rendering: copy is a fixed map keyed by
  * `data.type`, plus an optional `data.failureLabel` that must be a member of
@@ -55,6 +62,7 @@ const FAILURE_REASONS: ReadonlyMap<string, string> = new Map([
  * no reason text, so it renders the generic copy.
  */
 export const KNOWN_FAILURE_LABELS: ReadonlySet<string> = new Set([...FAILURE_REASONS.keys(), 'unknown'])
+<<<<<<< HEAD
 
 /** Notification types that can point at a run: the only ones whose data may carry a `runId`. */
 export const RUN_JUMP_TYPES = ['question', 'approval'] as const
@@ -99,6 +107,8 @@ export interface PlainNotificationData {
  * `runId: string`; `isRunJumpType(data.type)` alone leaves the run and no-run shapes.
  */
 export type SafeNotificationData = RunNotificationData | NoRunNotificationData | PlainNotificationData
+=======
+>>>>>>> 0e8f8e0e0edf81fdc6b0050d8d4f46c623ebc651
 
 export interface SafeNotification {
   readonly title: string

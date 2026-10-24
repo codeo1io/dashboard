@@ -1501,13 +1501,28 @@ describe('parseRunSummary', () => {
     }
   })
 
+<<<<<<< HEAD
   it.each(['waiting_for_approval', 'waiting_for_question'] as const)('accepts the waiting status %s', status => {
     const input = {runId: 'run-1', repo: 'fro-bot/agent', status, createdAt: '2026-06-01T00:00:00.000Z'}
     const result = parseRunSummary(input)
     expect(result.success).toBe(true)
     if (result.success) {
       expect(result.data.status).toBe(status)
+=======
+  it('accepts summary status waiting_for_approval (newer projector output, rm-1408)', () => {
+    const input = {runId: 'run-1', repo: 'fro-bot/agent', status: 'waiting_for_approval', createdAt: '2026-06-01T00:00:00.000Z'}
+    const result = parseRunSummary(input)
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.status).toBe('waiting_for_approval')
+>>>>>>> 0e8f8e0e0edf81fdc6b0050d8d4f46c623ebc651
     }
+  })
+
+  it('accepts summary status waiting_for_question (newer projector output, rm-1408)', () => {
+    const input = {runId: 'run-1', repo: 'fro-bot/agent', status: 'waiting_for_question', createdAt: '2026-06-01T00:00:00.000Z'}
+    const result = parseRunSummary(input)
+    expect(result.success).toBe(true)
   })
 
   it('rejects stream-only status: blocked', () => {
@@ -1928,7 +1943,11 @@ describe('parseRunSummaryList', () => {
   it('returns empty array when all items are invalid', () => {
     const input = [
       {runId: 'run-1', repo: 'fro-bot/agent', status: 'blocked', createdAt: '2026-06-01T00:00:00.000Z'},
+<<<<<<< HEAD
       {runId: 'run-2', repo: 'fro-bot/agent', status: 'waiting-for-approval', createdAt: '2026-06-01T00:00:00.000Z'},
+=======
+      {runId: 'run-2', repo: 'fro-bot/agent', status: 'some-unknown-status', createdAt: '2026-06-01T00:00:00.000Z'},
+>>>>>>> 0e8f8e0e0edf81fdc6b0050d8d4f46c623ebc651
     ]
     const result = parseRunSummaryList(input)
     expect(result.success).toBe(true)
@@ -1937,16 +1956,28 @@ describe('parseRunSummaryList', () => {
     }
   })
 
+<<<<<<< HEAD
   it('keeps waiting summaries in the list next to lifecycle ones', () => {
     const input = [
       {runId: 'run-1', repo: 'fro-bot/agent', status: 'waiting_for_question', createdAt: '2026-06-01T00:00:00.000Z'},
       {runId: 'run-2', repo: 'fro-bot/agent', status: 'blocked', createdAt: '2026-06-01T00:00:00.000Z'},
       {runId: 'run-3', repo: 'fro-bot/agent', status: 'waiting_for_approval', createdAt: '2026-06-01T00:00:00.000Z'},
+=======
+  it('keeps newer-contract waiting statuses in parsed lists (rm-1408)', () => {
+    const input = [
+      {runId: 'run-1', repo: 'fro-bot/agent', status: 'waiting_for_approval', createdAt: '2026-06-01T00:00:00.000Z'},
+      {runId: 'run-2', repo: 'fro-bot/agent', status: 'running', createdAt: '2026-06-01T00:00:00.000Z'},
+>>>>>>> 0e8f8e0e0edf81fdc6b0050d8d4f46c623ebc651
     ]
     const result = parseRunSummaryList(input)
     expect(result.success).toBe(true)
     if (result.success) {
+<<<<<<< HEAD
       expect(result.data.map(summary => summary.runId)).toEqual(['run-1', 'run-3'])
+=======
+      expect(result.data).toHaveLength(2)
+      expect(result.data[0]?.status).toBe('waiting_for_approval')
+>>>>>>> 0e8f8e0e0edf81fdc6b0050d8d4f46c623ebc651
     }
   })
 

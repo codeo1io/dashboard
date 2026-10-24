@@ -2713,7 +2713,11 @@ const EXPECTED_FRAME_TYPES: Readonly<Record<string, readonly string[]>> = {
 const QUESTION_UNSAFE_CHARS = /[\u0000-\u0008\v\f\u000E-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/
 
 describe('question fixture scenarios — registry and manifest', () => {
+<<<<<<< HEAD
   it('lists the fifteen scenarios in the manifest, each with a row', async () => {
+=======
+  it('lists the thirteen scenarios in the manifest, each with a row', async () => {
+>>>>>>> 0e8f8e0e0edf81fdc6b0050d8d4f46c623ebc651
     expect(QUESTION_SCENARIO_KEYS).toEqual(Object.keys(EXPECTED_FRAME_TYPES))
     const app = await buildFixtureTestApp({fixtureHarnessEnabled: true, bindHost: '127.0.0.1'})
     const body = await (await app.request(`${FIXTURE_OPERATOR_PREFIX}`)).json() as {scenarios: string[]}
@@ -3165,7 +3169,11 @@ describe('question_no_approval — a question with no approval prompt', () => {
       return (await res.json() as {approvals: unknown[]}).approvals
     }
     expect(await approvals(key)).toEqual([])
+<<<<<<< HEAD
     for (const other of QUESTION_SCENARIO_KEYS.filter(candidate => candidate !== key && !isNoApprovalScenario(candidate))) {
+=======
+    for (const other of QUESTION_SCENARIO_KEYS.filter(candidate => candidate !== key)) {
+>>>>>>> 0e8f8e0e0edf81fdc6b0050d8d4f46c623ebc651
       expect(await approvals(other), `${other} keeps the harness approval`).toHaveLength(1)
     }
   })

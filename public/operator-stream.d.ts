@@ -68,6 +68,12 @@ export declare const QUESTION_INVALID_REASONS: readonly [
 export declare const QUESTION_CLAIM_RECHECK_DELAYS_MS: readonly number[]
 /** Bound, in milliseconds, on each fetch of the question client (list, CSRF and decision POST). */
 export declare const QUESTION_FETCH_TIMEOUT_MS: number
+/**
+ * Bound, in milliseconds, on each fetch of the approval client (CSRF fetch,
+ * decision POST, list) — fork hardening kept per #16393, mirroring the
+ * question client's QUESTION_FETCH_TIMEOUT_MS.
+ */
+export declare const APPROVAL_FETCH_TIMEOUT_MS: number
 
 /** Operator-safe failure-reason code. */
 export type FailureKind =
@@ -487,6 +493,7 @@ export interface CancelActionEvent {
   readonly data: {readonly runId: string}
 }
 
+<<<<<<< HEAD
 /** Statuses a run-list summary can carry. */
 export type RunSummaryStatus =
   | 'queued'
@@ -496,6 +503,21 @@ export type RunSummaryStatus =
   | 'succeeded'
   | 'failed'
   | 'cancelled'
+=======
+/**
+ * Statuses a run-list summary can carry. waiting_for_approval and waiting_for_question
+ * join the projector output at gateway contract 1.11.0 (fro-bot/agent v0.122.1+);
+ * the parser keeps unrecognized statuses flagged, never dropped (rm-1408).
+ */
+export type RunSummaryStatus =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'waiting_for_approval'
+  | 'waiting_for_question'
+>>>>>>> 0e8f8e0e0edf81fdc6b0050d8d4f46c623ebc651
 
 export interface StreamState {
   readonly connection: ConnectionStatus

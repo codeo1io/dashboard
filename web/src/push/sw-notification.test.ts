@@ -1,5 +1,6 @@
 import {readFileSync} from 'node:fs'
 import {resolve} from 'node:path'
+<<<<<<< HEAD
 import {afterEach, describe, expect, it, vi} from 'vitest'
 import {FAILURE_REASON_LABELS} from '../../../public/operator-stream.js'
 import {buildNotification, KNOWN_FAILURE_LABELS, PUSH_NOTIFICATION_TYPES} from './sw-notification.ts'
@@ -9,6 +10,11 @@ import type {
   RunNotificationData,
   SafeNotificationData,
 } from './sw-notification.ts'
+=======
+import {describe, expect, it} from 'vitest'
+import {FAILURE_REASON_LABELS} from '../../../public/operator-stream.js'
+import {buildNotification, KNOWN_FAILURE_LABELS} from './sw-notification.ts'
+>>>>>>> 0e8f8e0e0edf81fdc6b0050d8d4f46c623ebc651
 
 /**
  * Payloads exactly as the gateway serializes them: top-level `title`/`body`
@@ -247,6 +253,7 @@ describe('buildNotification (wire payload shape)', () => {
   })
 })
 
+<<<<<<< HEAD
 describe('question runId (discriminated data)', () => {
   const RUN_ID = '3f2b9c1e-7a4d-4e8b-9c55-0d1e2f3a4b5c'
   const questionWire = (data: Record<string, unknown>) => ({...WIRE.question, data: {type: 'question', ...data}})
@@ -396,6 +403,8 @@ describe('question runId (discriminated data)', () => {
   })
 })
 
+=======
+>>>>>>> 0e8f8e0e0edf81fdc6b0050d8d4f46c623ebc651
 describe('failure reason parity with run cards', () => {
   const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1)
   const pushKinds = [...KNOWN_FAILURE_LABELS].filter(kind => kind !== 'unknown')
