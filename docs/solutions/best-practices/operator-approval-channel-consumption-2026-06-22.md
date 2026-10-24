@@ -198,6 +198,7 @@ question or drops a draft. A terminal status clears that run's drafts.
 
 ### Waiting statuses: the gateway first, the client fills in only on `running`
 
+<<<<<<< HEAD
 Run summaries now carry `waiting_for_approval` and `waiting_for_question` as ordinary
 statuses. The gateway overlays them on a running run only, with approval winning, so a
 collapsed card shows a waiting run without opening a stream.
@@ -255,6 +256,12 @@ because the run may exist. Neither notice echoes the ID. A tap that arrives befo
 loaded waits for it. One that arrives while the list is unavailable or the session has ended is
 dropped, not held for a later page, and an unavailable list accepts taps again once a refresh
 lands.
+=======
+`getEffectiveStatus` computes `waiting_for_question` from the wire status and the open
+questions. It is never stored: the next `running` frame would overwrite a stored value. A
+terminal status wins, then any open approval prompt (wire `waiting_for_approval` or an open
+prompt on a running run), then questions.
+>>>>>>> 0e8f8e0e0edf81fdc6b0050d8d4f46c623ebc651
 
 ### Parse closed, render inert
 

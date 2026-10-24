@@ -29,12 +29,35 @@ import {isOperatorProviderFailureReason} from './provider-failure-reason.ts'
 import {isOperatorFailureKind} from './run-status.ts'
 
 /**
+<<<<<<< HEAD
  * The status set a run summary can carry: the five lifecycle values plus the two
  * waiting overlays, which the gateway applies only on a running run. 'blocked' is
  * never carried by a summary.
  */
 export type RunSummaryStatus =
   'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'waiting_for_approval' | 'waiting_for_question'
+=======
+ * Index-only status set. waiting_for_approval and waiting_for_question join
+ * the run-summary projector's output at newer gateway contract versions
+ * (newer agent releases onward). Divergence is deliberate (rm-1408): the
+ * forward-tolerant parser is the BROWSER one (public/operator-run-index.js
+ * keeps an unrecognized status in the row, flagged, so a newer gateway never
+ * makes a run vanish from the restored index); THIS vendored mirror is the
+ * closed-set lockstep pin — hasValidRunSummaryShape rejects unknown statuses
+ * and parseRunSummaryList drops them, pinned by
+ * test/operator-contract-conformance.test.ts. Do not 'fix' the tolerant
+ * browser parser to match this file.
+ * 'blocked' alone remains a stream-only overlay.
+ */
+export type RunSummaryStatus =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'waiting_for_approval'
+  | 'waiting_for_question'
+>>>>>>> 0e8f8e0e0edf81fdc6b0050d8d4f46c623ebc651
 
 /**
  * Operator-safe projection of a run's summary.
@@ -68,10 +91,18 @@ const MAX_ID_LENGTH = 512
 const MAX_DATE_LENGTH = 128
 
 /**
+<<<<<<< HEAD
  * The summary statuses as a runtime list, so a compile-time check can hold it to
  * `RunSummaryStatus` in both directions. The parser's allowlist is built from it.
  */
 export const RUN_SUMMARY_STATUSES = [
+=======
+ * The closed set of run-summary statuses this parser recognizes. Kept in
+ * lockstep with the RunSummaryStatus union; exported so the parity test can
+ * pin it against public/operator-run-index.js (rm-1408).
+ */
+export const VALID_RUN_SUMMARY_STATUSES: ReadonlySet<string> = new Set([
+>>>>>>> 0e8f8e0e0edf81fdc6b0050d8d4f46c623ebc651
   'queued',
   'running',
   'succeeded',
@@ -79,6 +110,7 @@ export const RUN_SUMMARY_STATUSES = [
   'cancelled',
   'waiting_for_approval',
   'waiting_for_question',
+<<<<<<< HEAD
 ] as const
 
 const VALID_RUN_SUMMARY_STATUSES: ReadonlySet<string> = new Set(RUN_SUMMARY_STATUSES)
@@ -86,6 +118,9 @@ const VALID_RUN_SUMMARY_STATUSES: ReadonlySet<string> = new Set(RUN_SUMMARY_STAT
 function isKeptLaunchPrompt(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= OPERATOR_LAUNCH_PROMPT_MAX_LENGTH
 }
+=======
+])
+>>>>>>> 0e8f8e0e0edf81fdc6b0050d8d4f46c623ebc651
 
 function hasValidRunSummaryShape(value: unknown): value is RunSummary {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {

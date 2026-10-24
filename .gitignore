@@ -55,6 +55,10 @@ playwright-report/
 # container against this bind-mounted worktree (e.g. the visual-baseline regen
 # procedure in tests/visual/dashboard.spec.ts). Cache only — never commit.
 .pnpm-store/
+# Cloned dependency-source mirrors (.slim/clonedeps.json points here): local
+# inspection clones of upstream repos — machine-local, never tracked. The json
+# manifest IS tracked; the materialized clones are not.
+.slim/clonedeps/
 # Conductor engine state (progress breadcrumbs) — run artifacts only, never
 # tracked (see test/fork-exclusion-guard.test.ts: both entries are guarded).
 .conductor/
