@@ -52,6 +52,11 @@ by design, with the reason).
   `license: null` and upstream `fro-bot/dashboard` has none either (404), so
   a unilateral fork-side LICENSE would be legally hollow. When upstream
   chooses one, the fork mirrors it in the same absorb cycle.
+- **Dependency overrides** (`rm-276`): the `package.json` `overrides` block
+  carries six audit-driven resolver floors — `brace-expansion` 2 and 5,
+  `fast-uri` 3, `katex` 0, `toml` 4 (≥5.0.1, `500a3db9`), `undici` 7 — each
+  flooring a transitive resolution past a published advisory; the roadmap
+  record of the floors program is `rm-276` (implemented 2026-10-15).
 
 ## Maintained (time-gated)
 
