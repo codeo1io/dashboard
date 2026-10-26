@@ -1,8 +1,12 @@
 # Actions Darkness Watch
 
-Out-of-band watchdog for GitHub Actions run-creation darkness (rm-1411, landed
-run a79dc20458f1, 2026-10-15). During the 2026-10-09 outage every workflow in
-this repository reported `active` through the API while run *creation* was dead
+Out-of-band watchdog for GitHub Actions run-creation darkness (rm-1411 in
+the merged ledger — minted as rm-858 on its own lineage, renumbered at the
+2026-10-26 integrate under first-landed-wins; implementation salvaged intact
+from run a79dc20458f1's preserved commit 2694f892, landed by run
+d1fd991d77b8 on 2026-10-16). During the 2026-10-09
+outage every workflow in this repository reported `active` through the API
+while run *creation* was dead
 repo-wide: the newest run of any workflow stayed at 2026-10-09T01:59:31Z for six
 plus days, a 14-file adopt merged to `main` with zero CI validation, and twelve
 open PRs showed no checks. Nothing that runs *inside* Actions can detect that
@@ -21,6 +25,12 @@ node scripts/actions-darkness-watch.ts
 Optional environment: `ACTIONS_DARKNESS_REPO` (default `codeo1io/dashboard`),
 `ACTIONS_DARKNESS_TOKEN` or `GITHUB_TOKEN` (avoids unauthenticated rate limits),
 `ACTIONS_DARKNESS_NOW` (ISO timestamp; test seam only).
+
+**Chosen firing seam:** out-of-band invocation — ad-hoc local runs (as above)
+plus the operator/estate-tripwire cadence, whose 0/1/3 ladder this probe
+matches. An in-repo scheduled workflow was rejected on principle: it cannot
+fire during the very darkness it must detect, so the watchdog would be dead
+exactly when needed.
 
 ## Verdict semantics
 
@@ -55,17 +65,29 @@ tripwire so operator tooling can treat both probes uniformly.
 
 ## Boundary with the in-repo red-watch
 
-rm-289 owns the in-repo half (workflow-file drift caught by repository tests).
-This script owns the out-of-band half. If both go red together, trust the
-out-of-band signal: repository tests cannot run while Actions is dark.
+rm-289 owns the failure-conclusion half (scheduled workflows that RAN and
+went red — its alert route keys on run conclusions). This script owns the
+run-creation half: runs that were owed and never created, upstream of any
+conclusion rm-289 could observe. A quiet rm-289 route while schedules are due
+is itself a darkness symptom — run this probe. And if both signals disagree,
+trust the out-of-band one: repository tests and in-repo crons cannot run while
+Actions is dark.
 
 ## Recorded proof
 
 - Forced-DARK: `test/actions-darkness-watch.test.ts` pins the semantics
-  (stale-plus-owed, never-ran, threshold boundary, trigger filtering).
+  (stale-plus-owed, never-ran, threshold boundary, trigger filtering) and the
+  full exit ladder through `main()` with the GitHub reads stubbed (0 GREEN /
+  1 UNKNOWN / 3 DARK).
 - Live DARK, 2026-10-14T23:58Z: verdict `DARK`, exit 3, 10/10 candidates dark —
   `Main`/`CodeQL`/`Release`/`Scorecard`/`visual` at 5.9 days stale with
   `pushed_at` 2026-10-14T23:53:06Z newer than every last run; the five
   schedule-only lanes (audit, base-drift, canary, fro-bot, upstream-drift)
   dark with no runs in the window. The outage state this runbook was written
   under.
+- Live DARK, 2026-10-15T18:11Z (adoption re-proof, run d1fd991d77b8): exit 3,
+  10/10 candidates dark — `Main`/`CodeQL` last run 2026-10-09T01:59:31Z and
+  `Release`/`Scorecard`/`visual` 2026-10-09T01:51:54Z (6.7 days stale) with
+  `pushed_at` 2026-10-15T18:09:26Z newer than every last run; the five
+  schedule-only lanes still never-ran in the 100-run window. Darkness
+  unbroken through adoption day.
