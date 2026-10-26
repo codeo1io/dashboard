@@ -1,9 +1,10 @@
-import {describe, expect, it} from 'vitest'
+import {afterEach, describe, expect, it, vi} from 'vitest'
 
 import {
   classifyWorkflows,
   computeDarkness,
   DARKNESS_THRESHOLD_MS,
+  main,
 } from '../scripts/actions-darkness-watch.ts'
 
 const NOW = '2026-10-15T12:00:00.000Z'
@@ -11,6 +12,33 @@ const PUSHED_RECENT = '2026-10-14T21:00:00.000Z'
 
 function daysAgo(days: number): string {
   return new Date(Date.parse(NOW) - days * 24 * 60 * 60 * 1000).toISOString()
+}
+
+function jsonResponse(body: unknown): Response {
+  return {ok: true, status: 200, json: async () => body} as unknown as Response
+}
+
+function errorResponse(): Response {
+  return {ok: false, status: 503, json: async () => ({})} as unknown as Response
+}
+
+function stubGitHubApi(responses: {workflows: unknown; runs: unknown; repo: unknown}): void {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: unknown) => {
+      const href = String(url)
+      if (href.endsWith('/actions/workflows?per_page=100')) {
+        return jsonResponse(responses.workflows)
+      }
+      if (href.endsWith('/actions/runs?per_page=100')) {
+        return jsonResponse(responses.runs)
+      }
+      if (href.endsWith('/repos/codeo1io/dashboard')) {
+        return jsonResponse(responses.repo)
+      }
+      throw new Error(`unexpected url: ${href}`)
+    }),
+  )
 }
 
 function verdictFor(options: {
@@ -157,5 +185,53 @@ describe('computeDarkness', () => {
     })
     expect(result.candidates).toBe(1)
     expect(result.verdict).toBe('DARK')
+  })
+})
+
+describe('main exit ladder', () => {
+  // The exit codes are the watchdog's contract with the estate-tripwire
+  // ladder (0 GREEN / 1 UNKNOWN / 3 DARK), so they are pinned through main()
+  // itself with the GitHub REST reads stubbed. The local trigger index is
+  // real: .github/workflows/main.yaml is push-triggered in this repository.
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
+  })
+
+  const workflowFixtures = {
+    workflows: {
+      workflows: [{id: 900001, path: '.github/workflows/main.yaml', name: 'Main'}],
+    },
+    repo: {pushed_at: daysAgo(1)},
+  }
+
+  it('exits 0 (GREEN) when the freshest candidate is within budget', async () => {
+    vi.stubEnv('ACTIONS_DARKNESS_REPO', 'codeo1io/dashboard')
+    vi.stubEnv('ACTIONS_DARKNESS_NOW', NOW)
+    stubGitHubApi({
+      ...workflowFixtures,
+      runs: {workflow_runs: [{workflow_id: 900001, created_at: daysAgo(0.1)}]},
+    })
+    await expect(main()).resolves.toBe(0)
+  })
+
+  it('exits 3 (DARK) when a candidate is days-stale and owed a run', async () => {
+    vi.stubEnv('ACTIONS_DARKNESS_REPO', 'codeo1io/dashboard')
+    vi.stubEnv('ACTIONS_DARKNESS_NOW', NOW)
+    stubGitHubApi({
+      ...workflowFixtures,
+      runs: {workflow_runs: [{workflow_id: 900001, created_at: daysAgo(6)}]},
+    })
+    await expect(main()).resolves.toBe(3)
+  })
+
+  it('exits 1 (UNKNOWN) when the API reads fail', async () => {
+    vi.stubEnv('ACTIONS_DARKNESS_REPO', 'codeo1io/dashboard')
+    vi.stubEnv('ACTIONS_DARKNESS_NOW', NOW)
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => errorResponse()),
+    )
+    await expect(main()).resolves.toBe(1)
   })
 })

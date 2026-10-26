@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // scripts/actions-darkness-watch.ts
 //
-// Out-of-band Actions-darkness watchdog (rm-1411, run a79dc20458f1).
+// Out-of-band Actions-darkness watchdog (rm-1411 in the merged ledger; minted
+// as rm-858 on its own lineage, renumbered at the 2026-10-26 integrate under
+// first-landed-wins — salvaged intact from run a79dc20458f1's preserved
+// commit 2694f892, adopted by run d1fd991d77b8 on 2026-10-16).
 //
 // Detects GitHub Actions run-creation darkness WITHOUT depending on Actions
 // itself: queries the Actions REST API for the latest-run timestamps of every
@@ -10,10 +13,12 @@
 // the repository's pushed_at is newer than that workflow's last run (i.e. a run
 // was owed by a push/schedule trigger and never created).
 //
-// Boundary (recorded with rm-289): the in-repo red-watch owns workflow-file
-// drift; this script owns the out-of-band run-creation signal. It intentionally
-// performs no repository writes and needs no CI lane — it is the probe you run
-// locally while Actions is dark.
+// Boundary (recorded with rm-289): rm-289 owns the failure-conclusion watch
+// (scheduled workflows that RAN and went red — its alert route keys on run
+// conclusions); this script owns the run-creation darkness signal — a run was
+// owed by a push/schedule trigger and never created, upstream of any
+// conclusion rm-289 could observe. It performs no repository writes and
+// needs no CI lane — it is the probe you run locally while Actions is dark.
 //
 // Usage:
 //   node scripts/actions-darkness-watch.ts
@@ -203,7 +208,7 @@ async function fetchJson<T>(url: string, token: string | undefined): Promise<T> 
   return (await response.json()) as T
 }
 
-async function main(): Promise<number> {
+export async function main(): Promise<number> {
   const repo = process.env.ACTIONS_DARKNESS_REPO ?? 'codeo1io/dashboard'
   const now = process.env.ACTIONS_DARKNESS_NOW ?? new Date().toISOString()
   const token = process.env.ACTIONS_DARKNESS_TOKEN ?? process.env.GITHUB_TOKEN

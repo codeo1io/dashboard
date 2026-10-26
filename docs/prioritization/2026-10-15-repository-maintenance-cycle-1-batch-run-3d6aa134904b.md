@@ -218,3 +218,17 @@ rm-2009 SyntaxError reason reduction rides the staged src/listener/store.ts
 tree). Resolution note: the round-1 graft had duplicated the compound
 extension #57 tail comment; this round de-duplicated it. The run authored no
 batch doc of its own, so this doc remains the sole marker-bearing carrier.
+
+Landing-record re-census at the 2026-10-26 integrate (conflict case
+3462e77b67b04c15bb90670ef2eba741, merging run
+d1fd991d77b84450b7abb0b359662d97's landing 81591cf into post-2026.10.74 main
+280fd3d): **340 defs / 0 dups / max rm-2134** — the actions-darkness watchdog
+def landed as rm-1411 (the a79dc204 fog band's canonical id; the batch's own
+rm-858 numeral lost first-landed-wins to main's absorb-window def) together
+with the batch's evolved watchdog trio (script with exported main(), the
+16-case test, the runbook with the firing-seam note) and the
+Actions-suspension six-job-mirror solutions doc; the batch's sibling numeral
+mints rm-857/rm-859/rm-860 and its four evidence riders were reconciled as
+superseded-in-substance, with every disposition recorded in rm-1411's merge
+rider. The run authored no batch doc of its own, so this doc remains the sole
+marker-bearing carrier.
