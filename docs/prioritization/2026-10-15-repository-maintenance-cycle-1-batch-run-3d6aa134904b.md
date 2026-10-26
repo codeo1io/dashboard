@@ -182,3 +182,10 @@ correction applied by the review: the re-census preamble above originally
 read "five riders" — the landed delta carries four standalone roadmap riders
 (rm-252 window census, majors/impeccable, rm-689 pin sweep, rm-139 node gate)
 plus the implement and compound riders recorded inside the two defs.
+
+Landing-record re-census at the 2026-10-26 integrate (conflict case
+79d5828af8774fd08776ff827526c24a, merging run
+83e235f3dd984f7493d5494e8aec40a6's landing 3a03333a into post-2026.10.74
+main): 330 defs / 0 dups / max rm-2134 — rm-892/rm-893/rm-894 grafted onto
+the current wall (rm-892 and rm-894 as mainline-supersession records, rm-893
+implemented with its artifacts in the merge).
