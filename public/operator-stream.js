@@ -60,6 +60,18 @@ export function sseBufferByteLength(text) {
   return sseTextEncoder.encode(text).length
 }
 
+// rm-1507: byte-true UTF-8 accounting for the SSE buffer cap, under the name
+// the twin-parity suite and the incremental client accounting use — the same
+// TextEncoder measure as sseBufferByteLength above (rm-1484, first-landed).
+// The cap check itself no longer recomputes the whole buffer: readChunk
+// maintains `bufferBytes` incrementally (recompute-delta on append, subtract
+// the extracted record's bytes on boundary, reset on flush) via
+// appendStreamChunkByteDelta, mirroring the server twin
+// (src/gateway/operator-sse-reader.ts). Exported for the twin parity suite.
+export function sseBufferUtf8Bytes(text) {
+  return sseTextEncoder.encode(text).length
+}
+
 /**
  * Hard cap on cumulative accumulated run-output characters. The raw SSE buffer cap
  * bounds a single frame; this bounds the reducer's growing answer string so a stream
@@ -676,6 +688,40 @@ export function appendStreamChunk(buffer, decoded) {
     text = text.slice(0, -1)
   }
   return normalizeCrlf(text) + held
+}
+
+// rm-1507: incremental byte delta of one appendStreamChunk fold. The fold
+// produces newBuffer = B + normalizeCrlf(prevHeld + chunkCore) + held, where
+// B is the retained prefix and contains no '\r' (normalizeCrlf is
+// idempotent), so the byte delta is computable by encoding ONLY the
+// junction — the previously-held CR (if any) plus the chunk text that passes
+// through normalizeCrlf — never the retained buffer. Steady-state per-chunk
+// cost is therefore linear in chunk size, not buffer size. A trailing lone
+// high surrogate is pulled into the junction as well: it was previously
+// counted as one U+FFFD (3 bytes) and may pair with the incoming chunk, so
+// its 3 bytes are subtracted and re-encoded in place. Exported for the twin
+// suite; the server reader carries the identical math inline
+// (src/gateway/operator-sse-reader.ts, pinned by the parity test).
+export function appendStreamChunkByteDelta(buffer, decoded) {
+  const text = buffer + decoded
+  let core = text
+  let held = ''
+  if (text.endsWith('\r')) {
+    held = '\r'
+    core = text.slice(0, -1)
+  }
+  const prevHeldBytes = buffer.endsWith('\r') ? 1 : 0
+  let junctionStart = buffer.length - prevHeldBytes
+  let prevTailBytes = 0
+  if (junctionStart > 0) {
+    const lastUnit = buffer.charCodeAt(junctionStart - 1)
+    if (lastUnit >= 0xD800 && lastUnit <= 0xDBFF) {
+      junctionStart -= 1
+      prevTailBytes = 3 // the lone high surrogate was counted as one U+FFFD
+    }
+  }
+  const junction = normalizeCrlf(core.slice(junctionStart))
+  return sseBufferUtf8Bytes(junction) + (held === '\r' ? 1 : 0) - prevHeldBytes - prevTailBytes
 }
 
 // ---------------------------------------------------------------------------
@@ -5350,6 +5396,11 @@ export function initOperatorStream(opts) {
 
         const decoder = new TextDecoder()
         let buffer = ''
+        // rm-1507: true UTF-8 byte count of `buffer` — maintained in lockstep
+        // with the server twin (recompute on append, subtract on record
+        // extraction, reset on flush). Never `.length`: that counts UTF-16
+        // units, not bytes.
+        let bufferBytes = 0
         const reader = response.body.getReader()
 
         function readChunk() {
@@ -5365,6 +5416,7 @@ export function initOperatorStream(opts) {
                     dispatch(flushResult.frame)
                   }
                   buffer = ''
+                  bufferBytes = 0
                 }
                 // Stream ended — check if we should reconnect
                 if (state.shouldReconnect) {
@@ -5380,14 +5432,24 @@ export function initOperatorStream(opts) {
                 // would terminate its line early, so the LF opening the next
                 // chunk would forge a phantom record boundary and silently
                 // drop the frame. The held CR normalizes with the next chunk.
-                buffer = appendStreamChunk(buffer, decoder.decode(value, {stream: true}))
+                // rm-1507: the byte counter advances by the fold's incremental
+                // delta (encodes only the junction — see
+                // appendStreamChunkByteDelta), never the whole buffer; record
+                // extraction below subtracts the removed record's bytes.
+                const decodedChunk = decoder.decode(value, {stream: true})
+                bufferBytes += appendStreamChunkByteDelta(buffer, decodedChunk)
+                buffer = appendStreamChunk(buffer, decodedChunk)
               }
 
               // Hard buffer cap — abort the reader and fail closed terminally
               // (no reconnect) if exceeded without a record boundary.
-              // rm-1484: the cap is byte-true — see sseBufferByteLength. A UTF-16
-              // `.length` here undercounted astral/CJK content 2-3x.
-              if (sseBufferByteLength(buffer) > MAX_SSE_BUFFER_BYTES) {
+              // rm-1484/rm-1507: the cap is byte-true AND incremental — see
+              // sseBufferByteLength / appendStreamChunkByteDelta. A UTF-16
+              // `.length` here undercounted astral/CJK content 2-3x (rm-1484),
+              // and a whole-buffer re-encode per chunk cost O(buffer × chunks)
+              // (rm-1507); the maintained `bufferBytes` counter is exact at
+              // every step (pinned by test/operator-stream-sse-parity.test.ts).
+              if (bufferBytes > MAX_SSE_BUFFER_BYTES) {
                 clearFirstFrameTimer()
                 if (abortController) {
                   abortController.abort()
@@ -5401,6 +5463,7 @@ export function initOperatorStream(opts) {
               while (boundary !== -1) {
                 const record = buffer.slice(0, boundary)
                 buffer = buffer.slice(boundary + 2)
+                bufferBytes -= sseBufferUtf8Bytes(`${record}\n\n`)
 
                 const result = parseSseFrame(`${record}\n\n`)
                 if (result !== null && result.success) {
