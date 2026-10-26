@@ -30,7 +30,7 @@ ARG DASHBOARD_VERSION=dev
 # '/lib/ld-linux-aarch64.so.1' loader failure in prod-deps; release run
 # 39255231972). Bun is a static binary; the build-platform one serves both
 # targets.
-FROM --platform=$BUILDPLATFORM oven/bun:1.4.3@sha256:ec06c3b6cea04192ae6770c434f668ca41d343ad19fa6472216c7b48be39c598 AS bun
+FROM --platform=$BUILDPLATFORM oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d AS bun
 
 # ── Builder stage ─────────────────────────────────────────────────────────────
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS builder
