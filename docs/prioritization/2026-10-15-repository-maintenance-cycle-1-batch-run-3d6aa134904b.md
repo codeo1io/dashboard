@@ -232,3 +232,25 @@ mints rm-857/rm-859/rm-860 and its four evidence riders were reconciled as
 superseded-in-substance, with every disposition recorded in rm-1411's merge
 rider. The run authored no batch doc of its own, so this doc remains the sole
 marker-bearing carrier.
+
+Landing-record re-census at the 2026-10-26 integrate (conflict case
+71e4d68fbea14fdfbc6e4134b4f4d61c, merging run
+74d2adffdc534ae2a12084413829d1bc's landing e0754df into post-2026.10.74 main
+a263111): **341 defs / 0 dups / max rm-2134** — the cycle-1 batch's tripwire
+def lands as rm-1493 (its authored post-renumber numeral; free on main) with
+its three executable surfaces: the alert-only contract-parity job in
+upstream-drift.yaml, scripts/check-gateway-contract-parity.ts (re-run green
+live at this merge — pins 1.13.0 == pinned agent v0.125.3 == latest v0.125.5,
+warn-only tag lag), and test/check-gateway-contract-parity.test.ts (16/16).
+The batch's #639 run-list ordering port is superseded-in-substance by main's
+upstream adoptions: the ordering semantics are native at head and
+test/operator-run-index-core.test.js already carries a superset battery (all
+eleven ported scenarios plus the focus variant on the native
+refreshOperatorRunIndex seam), so the batch's older-harness append was dropped
+(re-declared identifiers; would not parse). The playwright trio leg resolved
+to main's advanced truth (package exact-pin 1.64.0 + bun.lock post-pnpm-
+retirement + main's regenerated operator-dark baseline; the #639 semantics
+are pixel-neutral). Riders grafted at their authored walls (rm-252 merge
+rider, rm-271 registry-pins + trio doctrine, rm-693 OperatorPushHealth);
+rm-249's kill-switch rider dropped as false-for-tree, already corrected and
+superseded on main. Full disposition in the ROADMAP tail integrate comment.
