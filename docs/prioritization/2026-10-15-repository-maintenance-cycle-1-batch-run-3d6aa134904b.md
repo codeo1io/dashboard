@@ -189,3 +189,17 @@ Landing-record re-census at the 2026-10-26 integrate (conflict case
 main): 330 defs / 0 dups / max rm-2134 — rm-892/rm-893/rm-894 grafted onto
 the current wall (rm-892 and rm-894 as mainline-supersession records, rm-893
 implemented with its artifacts in the merge).
+
+Landing-record re-census at the 2026-10-26 integrate (conflict case
+bc0264adf47843cfbc5defa8ec8d6a88, merging run
+fa1a9c89b26b4f588dde806ed872ec07's landing c095989e into post-2026.10.74 main
+36cc3570): **336 defs / 0 dups / max rm-2134** — the cycle-2 batch's six mints
+rm-1506..rm-1511 grafted immediately before the Closed items heading (the band
+main's extension #49 reserved for this lineage), with rm-1511 recorded
+superseded-by-convergence against main's first-landed rm-1459, rm-1507
+implemented over main's rm-1484/rm-1485 band (client incremental cap
+accounting + the cross-twin parity suite), rm-1508/rm-1509/rm-1510 and rm-1446
+implemented at this merge, and rm-1506 staying candidate (deployment-gated).
+Companion merge cures recorded in the integrate graft comment at the ROADMAP
+tail: the clonedeps manifest re-cured to the merged pin v0.125.3@c1173a2e and
+scripts/preflight.ts adapted to the Bun-managed tree.
