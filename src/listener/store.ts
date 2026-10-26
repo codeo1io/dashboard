@@ -73,14 +73,23 @@ function parseLinksCell(raw: string, id: string): readonly ListenerLink[] {
     // (src/shutdown.ts's injected default remains the only one under src/).
     // The logger's emit() redacts CONTEXT fields only, so the message text is
     // pre-sanitized here via sanitizeErrorMessage (house pattern,
-    // aggregator.ts:576) — a V8 SyntaxError message can embed a raw snippet of
-    // the corrupt cell (2026-10-18 independent-review fix). Warning-level
-    // still lands on stderr via the console-backed sink, so log-channel
-    // assertions keep observing it.
+    // aggregator.ts:576). Warning-level still lands on stderr via the
+    // console-backed sink, so log-channel assertions keep observing it.
+    // rm-2009 (2026-10-20, run bcdcf49b59a144598e8c873a07a2b23f, grafted at
+    // the 2026-10-26 integrate): the reason must never interpolate verbatim
+    // cell payload either — the SyntaxError class of a bare JSON.parse
+    // reduces to a fixed content-free reason (V8 < 12 embeds a raw snippet
+    // of the offending JSON in error.message; Node 24's is position-based —
+    // the reduction is engine-independent defence), and every other error
+    // class passes through sanitizeErrorMessage (which strips credential
+    // shapes, not arbitrary persisted content — the ingest validator's
+    // messages are value-free by design, so nothing real is lost).
+    const reason =
+      error instanceof SyntaxError
+        ? 'links cell is not valid JSON'
+        : sanitizeErrorMessage(error instanceof Error ? error.message : String(error))
     logger.warning(
-      `[listener-store] degraded links cell on message ${id}: ${
-        sanitizeErrorMessage(error instanceof Error ? error.message : String(error))
-      } — serving empty links, other fields intact`,
+      `[listener-store] degraded links cell on message ${id}: ${reason} — serving empty links, other fields intact`,
     )
     return []
   }

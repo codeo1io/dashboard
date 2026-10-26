@@ -203,3 +203,18 @@ implemented at this merge, and rm-1506 staying candidate (deployment-gated).
 Companion merge cures recorded in the integrate graft comment at the ROADMAP
 tail: the clonedeps manifest re-cured to the merged pin v0.125.3@c1173a2e and
 scripts/preflight.ts adapted to the Bun-managed tree.
+
+Landing-record re-census at the 2026-10-26 integrate (conflict case
+4164aa371cd8469f970087090dc01600, completing resolver round 1 case
+6dde924b71694f61ad232a729941ddf0, merging run
+bcdcf49b59a144598e8c873a07a2b23f's landing 932af37 into post-2026.10.74 main
+2f350cf): **339 defs / 0 dups / max rm-2134** — the base/log/doc truth trio
+rm-2008/rm-2009/rm-2010 grafted onto the current wall with their compound
+implemented-pending-landing statuses, evidence riders (including review-F1
+and absorb-reconcile), and the tail extension #56/#57 comments; the
+review-F1 PINNED restriction rides the staged base-drift.yaml and the
+rm-2009 SyntaxError reason reduction rides the staged src/listener/store.ts
++ listener-store-degradation battery (both re-verified green on this merged
+tree). Resolution note: the round-1 graft had duplicated the compound
+extension #57 tail comment; this round de-duplicated it. The run authored no
+batch doc of its own, so this doc remains the sole marker-bearing carrier.
