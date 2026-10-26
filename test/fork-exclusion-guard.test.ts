@@ -66,18 +66,18 @@ describe('fork exclusion invariants (rm-131)', () => {
     expect(existsSync(resolve(repoRoot, '.github/renovate.json5'))).toBe(false)
   })
 
-  it('Dockerfile pins Bun 1.4.3 (toolchain stage) and never reinstates pnpm (2026.10.48 adoption)', () => {
+  it('Dockerfile pins Bun 1.4.4 (toolchain stage) and never reinstates pnpm (2026.10.48 adoption; pin re-bumped 1.4.3→1.4.4 by landed #710, 2026-10-25)', () => {
     const dockerfile = read('Dockerfile')
-    expect(dockerfile).toMatch(/oven\/bun:1\.4\.3@sha256:/)
+    expect(dockerfile).toMatch(/oven\/bun:1\.4\.4@sha256:/)
     // pnpm must never come back as an install tool. (The runtime-stage prune
     // may still DELETE pnpm/corepack paths inherited from the Node base image.)
     expect(dockerfile).not.toMatch(/pnpm@/)
     expect(dockerfile).not.toMatch(/corepack (enable|prepare)/)
   })
 
-  it('package.json packageManager pins bun@1.4.3 (upstream #648 migration)', () => {
+  it('package.json packageManager pins bun@1.4.4 (upstream #648 migration; re-bumped by #710)', () => {
     const pkg = JSON.parse(read('package.json')) as {packageManager?: string}
-    expect(pkg.packageManager).toBe('bun@1.4.3')
+    expect(pkg.packageManager).toBe('bun@1.4.4')
   })
 
   it('.gitignore keeps the run-state entries guarded against upstream merges (rm-159 residue)', () => {
