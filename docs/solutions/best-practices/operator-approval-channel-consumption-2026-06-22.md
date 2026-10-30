@@ -214,6 +214,14 @@ The rules, in order:
   once a question reconcile has completed in the current connection, and not before: until then
   a missed settle frame cannot be told from a list that has not shown the question yet.
 
+A `running` status frame can also carry a wait reason (`waitReason`), saying why a draining run
+has not finished. It is a lower-priority detail, not a status. The gateway sends it only on
+`running`, so a wire `waiting_for_approval` or `waiting_for_question` arrives without one, and
+the client drops the stored reason. The client shows the label only while `getEffectiveStatus`
+still gives `running`: an open approval or question on a `running` entry hides it, and it returns
+when the overlay closes if the stored reason is still set. Every status frame sets or removes the
+reason, so it never outlives the frame that carried it.
+
 ### The run list stays current, and terminal is sticky
 
 The list refreshes in place while the window is visible: on an interval, on becoming visible,

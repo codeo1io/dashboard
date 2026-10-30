@@ -14,7 +14,8 @@ import {describe, expect, it} from 'vitest'
  * speak 1.13.0 and this guard keeps the two declarations in lockstep. Any change
  * that bumps one declaration without the other — or diverges the twins —
  * fails here and must either be part of a deliberate absorb/verdict landing
- * (rm-252 lineage) or back the bump out.
+ * (rm-252 lineage) or back the bump out. Re-derived again at the 2026.10.78
+ * adoption (upstream #740, contract 1.14.0, draining-run wait reasons).
  *
  * public/operator-run-index.js carries no version declaration of its own
  * (only the stream twin pins), so this guard pins the two declarations that
@@ -30,12 +31,12 @@ function read(path: string): string {
 describe('operator contract scope guard (rm-1483 / rm-252)', () => {
   it('keeps the server contract version pinned at 1.11.0', () => {
     const versionTs = read('src/gateway/operator-contract/version.ts')
-    expect(versionTs).toContain("export const OPERATOR_CONTRACT_VERSION = '1.13.0'")
+    expect(versionTs).toContain("export const OPERATOR_CONTRACT_VERSION = '1.14.0'")
   })
 
   it('keeps the stream twin pinned to the same version', () => {
     const streamJs = read('public/operator-stream.js')
-    expect(streamJs).toContain("export const PINNED_CONTRACT_VERSION = '1.13.0'")
+    expect(streamJs).toContain("export const PINNED_CONTRACT_VERSION = '1.14.0'")
   })
 
   it('declares the pin in neither place with any other value', () => {
@@ -44,6 +45,6 @@ describe('operator contract scope guard (rm-1483 / rm-252)', () => {
     const declared = [...versionTs.matchAll(/OPERATOR_CONTRACT_VERSION = '([^']+)'/g)]
       .concat([...streamJs.matchAll(/PINNED_CONTRACT_VERSION = '([^']+)'/g)])
       .map(m => m[1])
-    expect(new Set(declared)).toEqual(new Set(['1.13.0']))
+    expect(new Set(declared)).toEqual(new Set(['1.14.0']))
   })
 })

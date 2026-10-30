@@ -41,7 +41,7 @@
     "@axe-core/playwright": "4.13.0",
     "@bfra.me/eslint-config": "0.54.0",
     "@bfra.me/tsconfig": "0.13.2",
-    "@opencode-ai/plugin": "1.19.3",
+    "@opencode-ai/plugin": "1.19.4",
     "@playwright/test": "1.64.0",
     "@tailwindcss/vite": "4.3.3",
     "@testing-library/jest-dom": "7.0.1",
