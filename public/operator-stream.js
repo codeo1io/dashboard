@@ -32,7 +32,7 @@ import {formatRelativeTime, normalizeIsoTimestamp} from './operator-time.js'
 // ---------------------------------------------------------------------------
 
 /** Contract version this client expects on the ready frame. */
-export const PINNED_CONTRACT_VERSION = '1.13.0'
+export const PINNED_CONTRACT_VERSION = '1.14.0'
 
 /** Base delay in milliseconds for exponential backoff. */
 export const RETRY_BASE_MS = 1000
@@ -237,6 +237,15 @@ const VALID_PROVIDER_FAILURE_REASONS = new Set([
 ])
 
 /**
+ * Allowlisted OperatorWaitReason values — out-of-set values normalize to absent.
+ * Mirrors src/gateway/operator-contract/wait-reason.ts OPERATOR_WAIT_REASONS. Membership is a Set check
+ * after a `typeof` string check, so prototype names and non-strings never match.
+ */
+const VALID_WAIT_REASONS = Object.freeze(
+  new Set(['agent-working', 'awaiting-reply', 'awaiting-background-task', 'confirming-completion']),
+)
+
+/**
  * Dashboard-owned display labels for known failure reasons — render labels from
  * this map, never the raw failureKind wire string. A missing or unmapped reason
  * has no entry here and falls back to generic 'Failed' at the render boundary.
@@ -267,6 +276,18 @@ export const PROVIDER_FAILURE_REASON_LABELS = new Map([
 ])
 
 const PROVIDER_FAILURE_LABELS = new Set(PROVIDER_FAILURE_REASON_LABELS.values())
+
+/**
+ * Dashboard-owned display labels for the run wait reason, keyed by the four allowlisted wire values.
+ * Each says what the run is doing and asks the operator for nothing. Render the label, never the wire
+ * value: lookup is by Map, so a prototype name or an unknown string has no entry.
+ */
+export const WAIT_REASON_LABELS = new Map([
+  ['agent-working', 'Agent still working'],
+  ['awaiting-reply', 'Finishing its reply'],
+  ['awaiting-background-task', 'Waiting on a background task'],
+  ['confirming-completion', 'Confirming it has finished'],
+])
 
 // ---------------------------------------------------------------------------
 // Checkout provenance / checkout preparation — labels
@@ -845,6 +866,12 @@ export function parseSseFrame(record) {
       VALID_PROVIDER_FAILURE_REASONS.has(parsed.providerFailureReason)
         ? parsed.providerFailureReason
         : undefined
+    // waitReason follows the same soft rule and is meaningful only on a `running` status; on any other
+    // status, or for an unknown or non-string value, it is omitted and the frame is kept.
+    const waitReason =
+      parsed.status === 'running' && typeof parsed.waitReason === 'string' && VALID_WAIT_REASONS.has(parsed.waitReason)
+        ? parsed.waitReason
+        : undefined
     // checkoutProvenance / checkoutPreparation follow the same soft rule: validated
     // field by field, capped and sanitized, closed into a DTO. Invalid or absent →
     // omitted. They never fail the status frame.
@@ -864,6 +891,7 @@ export function parseSseFrame(record) {
           stale: parsed.stale,
           ...(failureKind === undefined ? {} : {failureKind}),
           ...(providerFailureReason === undefined ? {} : {providerFailureReason}),
+          ...(waitReason === undefined ? {} : {waitReason}),
           ...(checkoutProvenance === undefined ? {} : {checkoutProvenance}),
           ...(checkoutPreparation === undefined ? {} : {checkoutPreparation}),
         },
@@ -1258,7 +1286,7 @@ export function nextStreamState(current, event) {
       if (current.connection !== 'live') {
         return current
       }
-      const {runId, status, phase, startedAt, stale, failureKind, providerFailureReason, checkoutProvenance, checkoutPreparation} =
+      const {runId, status, phase, startedAt, stale, failureKind, providerFailureReason, waitReason, checkoutProvenance, checkoutPreparation} =
         event.data
       const isTerminal = TERMINAL_STATUSES.has(status)
       // Use a null-prototype object to guard against __proto__ key pollution.
@@ -1305,6 +1333,13 @@ export function nextStreamState(current, event) {
         // A non-terminal frame preserves whatever the prior entry carried (spread above).
         ...(isTerminal ? {cancelInFlight: false} : {}),
         ...(reasonLabel === undefined ? {} : {reasonLabel}),
+      }
+      // The wait reason is transient: every status frame sets it from the frame or removes it, so it is never
+      // inherited from the previous entry through the spread above.
+      if (waitReason === undefined) {
+        delete nextEntry.waitReason
+      } else {
+        nextEntry.waitReason = waitReason
       }
       // Checkout fields: latest VALID value wins, per field. An absent or invalid value
       // (the parser omitted it) keeps whatever is stored — including on the terminal frame.
@@ -1572,6 +1607,7 @@ export function nextStreamState(current, event) {
                   ? {}
                   : {questionOpen: new Map(), questionClaimedExempt: new Set()}),
               }
+          delete terminalEntry.waitReason
           if (typeof terminalEntry.outputSeq !== 'number') {
             terminalEntry.outputUnavailable = true
           }
@@ -1582,6 +1618,8 @@ export function nextStreamState(current, event) {
             shouldReconnect: false,
           }
         }
+        // The run stays live, so its stored wait reason stays too: the gateway does not re-send an
+        // unchanged status after this reset, and the next status frame replaces or removes the reason.
         return {
           ...current,
           snapshotMissing: Object.assign(Object.create(null), current.snapshotMissing, {[resetRunId]: true}),
@@ -2119,6 +2157,25 @@ export function getEffectiveStatus(runEntry) {
     return runEntry.questionReconcileDone === true ? 'running' : wire
   }
   return wire
+}
+
+/**
+ * The wait-reason label for a run entry, or undefined when none shows. A function of the current state
+ * only: the wire status is `running` and so is the effective status (no open approval or question), the
+ * run is not terminal, the connection is live, no checkout preparation is in progress, no cancel is in
+ * flight, and the stored reason has dashboard copy.
+ *
+ * @param {object|undefined|null} runEntry - A RunEntry from the stream state's runs map.
+ * @param {string} connection - The stream connection state.
+ * @returns {string|undefined} The dashboard copy to show, or undefined when no label shows.
+ */
+export function getWaitReasonLabel(runEntry, connection) {
+  if (runEntry === undefined || runEntry === null || connection !== 'live') return undefined
+  if (runEntry.terminal === true || runEntry.cancelInFlight === true) return undefined
+  if (runEntry.status !== 'running' || getEffectiveStatus(runEntry) !== 'running') return undefined
+  if (runEntry.checkoutPreparation !== undefined) return undefined
+  const waitReason = runEntry.waitReason
+  return typeof waitReason === 'string' ? WAIT_REASON_LABELS.get(waitReason) : undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -3601,6 +3658,24 @@ function recordedStreamSetup(runId, record) {
 }
 
 /**
+ * Release what a stream painted into the reason line it shares with the run list. Every caller drops the
+ * stream-owner marker, so the list owns the line again. The callers differ in whether the text goes too:
+ *   - `clearText: true` empties the text and `data-reason-state`: what the stream painted is gone, the
+ *     connection drifted, ended or left the live state, or an earlier attachment's wait label is stale.
+ *   - `clearText: false` keeps the text and `data-reason-state`: a preparation headline or failure reason
+ *     is something the list can repaint, so it stays on close() and when a new attachment starts.
+ * Only `clearText` is a decision; the marker is always released. The stream's own paint bookkeeping is
+ * reset by the stream's wrapper around this function (`releasePaintedReason`).
+ */
+function releaseReasonLine(reasonEl, {clearText}) {
+  if (clearText) {
+    reasonEl.textContent = ''
+    if (reasonEl.dataset) delete reasonEl.dataset.reasonState
+  }
+  if (reasonEl.dataset) delete reasonEl.dataset.reasonOwner
+}
+
+/**
  * Initialize the operator run stream for a given run ID.
  *
  * This function touches the DOM and must only be called from a browser context.
@@ -3650,6 +3725,14 @@ export function initOperatorStream(opts) {
   const summaryStatus = typeof opts.summaryStatus === 'string' && SUMMARY_STATUSES.has(opts.summaryStatus)
     ? opts.summaryStatus
     : undefined
+
+  // The reason line is shared with the run list, and this attachment has painted nothing in it yet. A wait
+  // label an earlier attachment left behind is cleared; any stream-owner marker is dropped either way.
+  if (reasonEl?.dataset) {
+    releaseReasonLine(reasonEl, {
+      clearText: reasonEl.dataset.reasonOwner === 'stream' && reasonEl.dataset.reasonState === 'wait',
+    })
+  }
 
   // Every stream-owned region starts each attachment empty and hidden; updateDOM alone shows one.
   if (checkoutEl) {
@@ -3989,6 +4072,19 @@ export function initOperatorStream(opts) {
   let aborted = false // set by close() to prevent late timer from fetching
   let announcedFailure = false
   let paintedPreparationHeadline = false // reasonEl currently shows a headline this stream wrote from checkoutPreparation
+  let paintedWaitLabel = null // the wait-reason text this stream wrote into reasonEl, or null when it wrote none
+  let paintedFailureReason = false // reasonEl currently shows a failure or provider reason this stream wrote
+
+  // Release the reason line through releaseReasonLine and reset the paint bookkeeping with it, so a claim the
+  // stream made is always released the same way. Clearing the text also forgets a painted headline; keeping it
+  // leaves the headline flag, which still describes the text on the line.
+  const releasePaintedReason = clearText => {
+    if (!reasonEl) return
+    releaseReasonLine(reasonEl, {clearText})
+    paintedWaitLabel = null
+    paintedFailureReason = false
+    if (clearText) paintedPreparationHeadline = false
+  }
   // Latest valid startedAt from a status frame; never reset to blank. A recorded run seeds it so the first paint has it.
   let latestStartedAt = initialStartedAt
 
@@ -4500,12 +4596,21 @@ export function initOperatorStream(opts) {
     if (reasonEl) {
       const runEntry = state.runs[runId]
       const runIsTerminal = runEntry !== undefined && runEntry.terminal === true
+      // While the stream has text painted in reasonEl it marks the element, so a run list refresh leaves it alone.
+      const claimReasonLine = () => {
+        if (reasonEl.dataset) reasonEl.dataset.reasonOwner = 'stream'
+      }
       if (runEntry && (state.connection === 'live' || runIsTerminal)) {
         const view = toSafeRunView(runEntry)
+        // One precedence chain: a failure or provider reason, then the preparation headline, then the wait label.
+        const waitLabel = getWaitReasonLabel(runEntry, state.connection)
         if (view.reasonLabel !== undefined) {
           reasonEl.textContent = view.reasonLabel
           if (reasonEl.dataset) reasonEl.dataset.reasonState = 'present'
+          claimReasonLine()
           paintedPreparationHeadline = false
+          paintedWaitLabel = null
+          paintedFailureReason = true
           const preparation = runEntry.checkoutPreparation
           failureLabelStatesPreparation = view.reasonLabel === FAILURE_REASON_LABELS['checkout-substituted'] &&
             preparation?.outcome === 'refused' && preparation.reason === 'checkout-substituted'
@@ -4514,12 +4619,23 @@ export function initOperatorStream(opts) {
           const template = CHECKOUT_PREPARATION_HEADLINE_LABELS[preparation.outcome]
           reasonEl.textContent = fillLabelTemplate(template, {reason: describeCheckoutPreparationReason(preparation)})
           if (reasonEl.dataset) reasonEl.dataset.reasonState = 'present'
+          claimReasonLine()
           paintedPreparationHeadline = true
-        } else if (paintedPreparationHeadline) {
-          // The preparation this stream painted is gone; a reason painted at page load is left alone.
-          reasonEl.textContent = ''
-          if (reasonEl.dataset) delete reasonEl.dataset.reasonState
-          paintedPreparationHeadline = false
+          paintedWaitLabel = null
+          paintedFailureReason = false
+        } else if (waitLabel !== undefined) {
+          // The text is written only when it changes: the reason can change every few seconds and the line is silent.
+          if (paintedWaitLabel !== waitLabel) {
+            reasonEl.textContent = waitLabel
+            if (reasonEl.dataset) reasonEl.dataset.reasonState = 'wait'
+            claimReasonLine()
+            paintedPreparationHeadline = false
+            paintedWaitLabel = waitLabel
+            paintedFailureReason = false
+          }
+        } else if (paintedPreparationHeadline || paintedWaitLabel !== null || paintedFailureReason) {
+          // What this stream painted is gone; a reason painted at page load is left alone.
+          releasePaintedReason(true)
         }
       } else if (!aborted) {
         const conn = state.connection
@@ -4531,9 +4647,10 @@ export function initOperatorStream(opts) {
             conn === 'submitted-unobservable' ||
             conn === 'closed')
         ) {
-          reasonEl.textContent = ''
-          if (reasonEl.dataset) delete reasonEl.dataset.reasonState
-          paintedPreparationHeadline = false
+          releasePaintedReason(true)
+        } else if (paintedWaitLabel !== null) {
+          // Any other connection state that is not live (connecting, reconnecting, backpressure) drops the label.
+          releasePaintedReason(true)
         }
       }
     }
@@ -5440,6 +5557,11 @@ export function initOperatorStream(opts) {
       }
       if (cancelEl !== undefined && cancelEl !== null) cancelEl.hidden = true
       if (waitingEl) waitingEl.hidden = true
+      if (reasonEl) {
+        // The wait label is this stream's alone and goes with it. A headline or a failure reason stays for the
+        // list to repaint, and the list owns the line again.
+        releasePaintedReason(paintedWaitLabel !== null)
+      }
       state = nextStreamState(state, {type: 'stream-closed'})
     },
   }

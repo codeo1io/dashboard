@@ -66,6 +66,9 @@ export type ProviderFailureReason =
   | 'provider-rejected-request'
   | 'unclassified'
 
+/** Why a draining `running` run has not finished yet. Later gateway versions may add values; the parser drops any not listed. */
+export type WaitReason = 'agent-working' | 'awaiting-reply' | 'awaiting-background-task' | 'confirming-completion'
+
 /**
  * Dashboard-owned display labels for known failure reasons, keyed by FailureKind.
  * Must stay identical (keys and label values) to the map exported from
@@ -79,6 +82,9 @@ export declare const FAILURE_REASON_LABELS: Readonly<Record<FailureKind, string>
  * public/operator-run-index.js — parity is enforced by tests.
  */
 export declare const PROVIDER_FAILURE_REASON_LABELS: ReadonlyMap<ProviderFailureReason, string>
+
+/** Dashboard-owned display labels for the run wait reason. The wire value never reaches the DOM. */
+export declare const WAIT_REASON_LABELS: ReadonlyMap<WaitReason, string>
 
 // ---------------------------------------------------------------------------
 // Checkout provenance / checkout preparation (closed browser DTOs)
@@ -274,6 +280,8 @@ export interface StatusFrameData {
   readonly failureKind?: FailureKind
   /** Present only on a FAILED `session-error` frame with a known reason. */
   readonly providerFailureReason?: ProviderFailureReason
+  /** Present only on a `running` frame with a known reason. */
+  readonly waitReason?: WaitReason
   /** Closed, sanitized DTO. Omitted when absent or invalid. */
   readonly checkoutProvenance?: CheckoutProvenance
   /** Closed, sanitized DTO. Omitted when absent or invalid. */
@@ -399,6 +407,12 @@ export interface RunEntry {
    * raw failureKind wire value.
    */
   readonly reasonLabel?: string
+  /**
+   * Why a draining run has not finished yet. Set from the latest status frame and removed by any status frame
+   * that does not carry one, by a `reset` (`no-snapshot`), and by a terminal status. In-memory only; never part of
+   * toSafeRunView or a finished-run record.
+   */
+  readonly waitReason?: WaitReason
   /**
    * What the run started from. Latest valid value wins; an absent or invalid frame value
    * keeps this one. Exclusive with `checkoutPreparation`. In-memory only; never part of
@@ -658,6 +672,12 @@ export declare function hasOpenQuestions(runEntry: RunEntry | undefined | null):
  * stored. Returns '' for an absent entry.
  */
 export declare function getEffectiveStatus(runEntry: RunEntry | undefined | null): string
+
+/**
+ * The wait-reason label for a run entry, or undefined when none shows: only a live, non-terminal run
+ * whose wire and effective status are `running`, with no checkout preparation and no cancel in flight.
+ */
+export declare function getWaitReasonLabel(runEntry: RunEntry | undefined | null, connection: string): string | undefined
 
 /**
  * Page-level question record for a run. Tombstones (settled requests, never evicted) and drafts

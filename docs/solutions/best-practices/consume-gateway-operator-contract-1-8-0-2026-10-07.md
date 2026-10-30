@@ -237,7 +237,12 @@ gateway catches up.
 Do not apply the rendering parts to collapsed run-list summaries unless the summary
 contract carries the new fields. Here a run summary carries its run ID, repo, status, timestamps,
 failure kind, and the optional `providerFailureReason` and `prompt`, and a static test pins that
-`public/operator-run-index.js` never reads checkout fields. A summary status that gains values (the
+`public/operator-run-index.js` never reads checkout fields. A status-frame-only field such as
+`waitReason` lives only on the live run entry: every status frame sets or removes it, and it never
+reaches `toSafeRunView`, the finished-run record or a summary row. When the stream paints such a
+field into a header line the list also writes, the stream marks the line as its own
+(`data-reason-owner="stream"`) so a list refresh leaves it alone; the gateway does not resend an
+unchanged status, so a wiped line would stay blank. A summary status that gains values (the
 waiting statuses) is a different change: it needs a label, a class token and a style rule on the
 collapsed card, and a terminal card must not take a non-terminal one back.
 

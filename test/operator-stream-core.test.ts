@@ -50,6 +50,7 @@ import {
   getOpenApprovals,
   getOpenQuestions,
   getQuestionPageStore,
+  getWaitReasonLabel,
   hasOpenApprovals,
   hasOpenQuestions,
   hasUsableFinishedRun,
@@ -80,6 +81,7 @@ import {
   sanitizeCheckoutText,
   takeUsableFinishedRun,
   toSafeRunView,
+  WAIT_REASON_LABELS,
 } from '../public/operator-stream.js'
 import {
   CHECKOUT_OPERATIONS,
@@ -90,6 +92,7 @@ import {
   OBSTRUCTION_KINDS,
   OPERATOR_CONTRACT_VERSION,
   OPERATOR_PROVIDER_FAILURE_REASONS,
+  OPERATOR_WAIT_REASONS,
   QUESTION_HEADER_MAX_LENGTH,
   QUESTION_OPTION_DESCRIPTION_MAX_LENGTH,
   QUESTION_OPTION_LABEL_MAX_LENGTH,
@@ -331,6 +334,77 @@ describe('parseSseFrame — pure parser', () => {
           throw new Error('expected a server status frame')
         }
         expect(browser.frame.data.providerFailureReason).toBe(server.frame.data.providerFailureReason)
+      }
+    })
+  })
+  describe('waitReason', () => {
+    const STATUS_CASES = [
+      {status: 'running', phase: 'EXECUTING'},
+      {status: 'waiting_for_approval', phase: 'EXECUTING'},
+      {status: 'waiting_for_question', phase: 'EXECUTING'},
+      {status: 'queued', phase: 'PENDING'},
+      {status: 'blocked', phase: 'PENDING'},
+      {status: 'succeeded', phase: 'COMPLETED'},
+      {status: 'failed', phase: 'FAILED'},
+      {status: 'cancelled', phase: 'CANCELLED'},
+    ]
+    const VALUES: readonly unknown[] = [
+      ...OPERATOR_WAIT_REASONS,
+      'future-reason',
+      '',
+      'Agent-Working',
+      '__proto__',
+      'toString',
+      'constructor',
+      1,
+      null,
+      true,
+      ['agent-working'],
+      {},
+      {reason: 'agent-working'},
+    ]
+    const hasWaitReason = (data: object) => Object.hasOwn(data, 'waitReason')
+
+    it.each(OPERATOR_WAIT_REASONS)('keeps %s on a running frame', waitReason => {
+      const data = parseStatusData({...ACTIVE_STATUS, waitReason})
+      expect(data.waitReason).toBe(waitReason)
+    })
+
+    it('drops an unknown, empty, wrongly cased, prototype-name or non-string value and keeps the frame', () => {
+      for (const waitReason of VALUES.filter(value => !OPERATOR_WAIT_REASONS.includes(value as never))) {
+        const data = parseStatusData({...ACTIVE_STATUS, waitReason})
+        expect(data.status, JSON.stringify(waitReason)).toBe('running')
+        expect(hasWaitReason(data), JSON.stringify(waitReason)).toBe(false)
+      }
+    })
+
+    it('drops a known value on every status except running and keeps the frame', () => {
+      for (const {status, phase} of STATUS_CASES.filter(c => c.status !== 'running')) {
+        const data = parseStatusData({...ACTIVE_STATUS, status, phase, waitReason: 'awaiting-reply'})
+        expect(data.status, status).toBe(status)
+        expect(hasWaitReason(data), status).toBe(false)
+      }
+    })
+
+    it('omits the field when a running frame has none', () => {
+      expect(hasWaitReason(parseStatusData(ACTIVE_STATUS))).toBe(false)
+    })
+
+    it('agrees with the server reader on every value crossed with every status', () => {
+      for (const {status, phase} of STATUS_CASES) {
+        for (const waitReason of VALUES) {
+          const label = `${status}/${JSON.stringify(waitReason)}`
+          const text = `event: status\ndata: ${JSON.stringify({...ACTIVE_STATUS, status, phase, waitReason})}\n\n`
+          const browser = parseSseFrame(text)
+          const server = parseSseChunk(text)[0]
+          if (browser?.success !== true || browser.frame.type !== 'status') throw new Error(`browser rejected ${label}`)
+          if (server === undefined || !server.success || server.frame.type !== 'status') {
+            throw new Error(`server rejected ${label}`)
+          }
+          expect(hasWaitReason(browser.frame.data), label).toBe(hasWaitReason(server.frame.data))
+          expect(browser.frame.data.waitReason, label).toBe(server.frame.data.waitReason)
+          expect(browser.frame.data.status, label).toBe(server.frame.data.status)
+        }
       }
     })
   })
@@ -10305,6 +10379,172 @@ describe('question status — label, wire acceptance and styling', () => {
   })
 })
 
+describe('nextStreamState — waitReason', () => {
+  const live = (summaryStatus?: string): StreamState => {
+    const initial = {...INITIAL_STATE, ...(summaryStatus === undefined ? {} : {summaryStatus})} as StreamState
+    return nextStreamState(initial, {type: 'ready', data: {contractVersion: PINNED_CONTRACT_VERSION}})
+  }
+  const status = (state: StreamState, overrides: Record<string, unknown> = {}): StreamState => {
+    const data = {...ACTIVE_STATUS, ...overrides} as StatusFrameData
+    return nextStreamState(state, {type: 'status', data})
+  }
+  const hasWaitReason = (state: StreamState) => Object.hasOwn(state.runs['run-abc'] ?? {}, 'waitReason')
+
+  it.each(OPERATOR_WAIT_REASONS)('stores %s from a running frame on the run entry', waitReason => {
+    const state = status(live(), {waitReason})
+    expect(state.runs['run-abc']?.waitReason).toBe(waitReason)
+  })
+
+  it('a later running frame with another reason replaces the stored one', () => {
+    const state = status(status(live(), {waitReason: 'agent-working'}), {waitReason: 'confirming-completion'})
+    expect(state.runs['run-abc']?.waitReason).toBe('confirming-completion')
+  })
+
+  it('a later running frame with no reason removes the stored one', () => {
+    const state = status(status(live(), {waitReason: 'awaiting-reply'}), {})
+    expect(state.runs['run-abc']?.status).toBe('running')
+    expect(hasWaitReason(state)).toBe(false)
+  })
+
+  it('a terminal frame removes the stored reason', () => {
+    const state = status(status(live(), {waitReason: 'awaiting-reply'}), {status: 'succeeded', phase: 'COMPLETED'})
+    expect(state.runs['run-abc']?.terminal).toBe(true)
+    expect(hasWaitReason(state)).toBe(false)
+  })
+
+  it('an approval or question wait removes the stored reason', () => {
+    for (const waitStatus of ['waiting_for_approval', 'waiting_for_question']) {
+      const state = status(status(live(), {waitReason: 'awaiting-reply'}), {status: waitStatus})
+      expect(state.runs['run-abc']?.status, waitStatus).toBe(waitStatus)
+      expect(hasWaitReason(state), waitStatus).toBe(false)
+    }
+  })
+
+  it('a frame for another run does not touch this run\'s reason', () => {
+    const state = status(status(live(), {waitReason: 'agent-working'}), {runId: 'run-peer'})
+    expect(state.runs['run-abc']?.waitReason).toBe('agent-working')
+    expect(Object.hasOwn(state.runs['run-peer'] ?? {}, 'waitReason')).toBe(false)
+  })
+
+  it('reset no-snapshot on a non-terminal run keeps the stored reason and keeps the run live', () => {
+    for (const summaryStatus of [undefined, 'running']) {
+      const withReason = status(live(summaryStatus), {waitReason: 'awaiting-background-task'})
+      const state = nextStreamState(withReason, {type: 'reset', data: {runId: 'run-abc', reason: 'no-snapshot'}})
+      expect(state.connection, String(summaryStatus)).toBe('live')
+      expect(state.runs['run-abc']?.status, String(summaryStatus)).toBe('running')
+      expect(state.runs['run-abc']?.waitReason, String(summaryStatus)).toBe('awaiting-background-task')
+      expect(state.snapshotMissing?.['run-abc'], String(summaryStatus)).toBe(true)
+      // the earlier state is not mutated
+      expect(withReason.runs['run-abc']?.waitReason).toBe('awaiting-background-task')
+    }
+  })
+
+  it('reset no-snapshot with a terminal summary builds a terminal entry without the reason', () => {
+    const withReason = status(live('succeeded'), {waitReason: 'awaiting-background-task'})
+    const state = nextStreamState(withReason, {type: 'reset', data: {runId: 'run-abc', reason: 'no-snapshot'}})
+    expect(state.connection).toBe('closed')
+    expect(state.runs['run-abc']?.terminal).toBe(true)
+    expect(hasWaitReason(state)).toBe(false)
+  })
+
+  it('toSafeRunView carries no waitReason from an entry that had one', () => {
+    const entry = status(live(), {waitReason: 'awaiting-reply'}).runs['run-abc']
+    expect(entry?.waitReason).toBe('awaiting-reply')
+    const view = toSafeRunView(entry as never)
+    expect(Object.keys(view)).not.toContain('waitReason')
+    expect(JSON.stringify(view)).not.toContain('awaiting-reply')
+  })
+})
+
+describe('wait reason label', () => {
+  const live = (): StreamState => nextStreamState(INITIAL_STATE, {type: 'ready', data: {contractVersion: PINNED_CONTRACT_VERSION}})
+  const entryWith = (overrides: Record<string, unknown> = {}): RunEntry => {
+    const data = {...ACTIVE_STATUS, waitReason: 'awaiting-background-task', ...overrides} as StatusFrameData
+    return nextStreamState(live(), {type: 'status', data}).runs['run-abc'] as RunEntry
+  }
+
+  it('has copy for exactly the vendored wait reasons', () => {
+    expect([...WAIT_REASON_LABELS.keys()].sort()).toEqual([...OPERATOR_WAIT_REASONS].sort())
+  })
+
+  it.each([
+    ['agent-working', 'Agent still working'],
+    ['awaiting-reply', 'Finishing its reply'],
+    ['awaiting-background-task', 'Waiting on a background task'],
+    ['confirming-completion', 'Confirming it has finished'],
+  ])('maps %s to its copy', (waitReason, copy) => {
+    expect(WAIT_REASON_LABELS.get(waitReason as never)).toBe(copy)
+    expect(getWaitReasonLabel(entryWith({waitReason}), 'live')).toBe(copy)
+  })
+
+  it('no copy string repeats its wire value or an approval or question status', () => {
+    for (const [wire, copy] of WAIT_REASON_LABELS) {
+      expect(copy).not.toBe(wire)
+      expect(copy.toLowerCase()).not.toContain(wire)
+      expect(copy).not.toMatch(/waiting for (approval|answer|question)|^running$/i)
+    }
+  })
+
+  it('has no label without an entry or without a stored reason', () => {
+    expect(getWaitReasonLabel(undefined, 'live')).toBeUndefined()
+    expect(getWaitReasonLabel(entryWith({waitReason: undefined}), 'live')).toBeUndefined()
+  })
+
+  it('has no label unless the connection is live', () => {
+    const entry = entryWith()
+    for (const connection of ['connecting', 'reconnecting', 'failed', 'drift', 'not-found', 'backpressure', 'submitted-unobservable', 'closed']) {
+      expect(getWaitReasonLabel(entry, connection), connection).toBeUndefined()
+    }
+  })
+
+  it('has no label for a terminal entry, even one that still carries a reason', () => {
+    const terminal = {...entryWith(), terminal: true, status: 'succeeded'} as RunEntry
+    expect(getWaitReasonLabel(terminal, 'live')).toBeUndefined()
+  })
+
+  it('has no label while a cancel is in flight', () => {
+    const cancelling = nextStreamState(
+      nextStreamState(live(), {type: 'status', data: {...ACTIVE_STATUS, waitReason: 'awaiting-reply'}}),
+      {type: 'cancel', data: {runId: 'run-abc'}},
+    ).runs['run-abc'] as RunEntry
+    expect(cancelling.cancelInFlight).toBe(true)
+    expect(getWaitReasonLabel(cancelling, 'live')).toBeUndefined()
+  })
+
+  it('has no label while a checkout preparation is in progress', () => {
+    const preparing = {...entryWith(), checkoutPreparation: {outcome: 'refused', reason: 'detached'}} as unknown as RunEntry
+    expect(getWaitReasonLabel(preparing, 'live')).toBeUndefined()
+  })
+
+  it('has no label while an open approval overlays the running status, and returns when it closes', () => {
+    const open = nextStreamState(
+      nextStreamState(live(), {type: 'status', data: {...ACTIVE_STATUS, waitReason: 'awaiting-background-task'}}),
+      {type: 'approval', data: {runId: 'run-abc', requestID: 'req-1', permission: 'shell', command: 'echo', settled: false} as never},
+    )
+    const withApproval = open.runs['run-abc'] as RunEntry
+    expect(getEffectiveStatus(withApproval)).toBe('waiting_for_approval')
+    expect(withApproval.waitReason).toBe('awaiting-background-task')
+    expect(getWaitReasonLabel(withApproval, 'live')).toBeUndefined()
+
+    const settled = nextStreamState(open, {type: 'approval', data: {runId: 'run-abc', requestID: 'req-1', settled: true} as never})
+    expect(getWaitReasonLabel(settled.runs['run-abc'] as RunEntry, 'live')).toBe('Waiting on a background task')
+  })
+
+  it('has no label for a wire status other than running', () => {
+    for (const status of ['queued', 'blocked', 'waiting_for_approval', 'waiting_for_question']) {
+      const entry = {...entryWith(), status} as RunEntry
+      expect(getWaitReasonLabel(entry, 'live'), status).toBeUndefined()
+    }
+  })
+
+  it('cannot resolve a prototype member or an unknown value to copy', () => {
+    for (const waitReason of ['__proto__', 'toString', 'constructor', 'future-reason', '']) {
+      const entry = {...entryWith(), waitReason} as unknown as RunEntry
+      expect(getWaitReasonLabel(entry, 'live'), waitReason).toBeUndefined()
+    }
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Expired snapshot handling
 // ---------------------------------------------------------------------------
@@ -10627,6 +10867,67 @@ describe('expired snapshot — selector/emitter parity', () => {
     ])
     expect(js).toContain("'run-output-unavailable'")
     expect(css).toMatch(/\.run-output-unavailable(?![\w-])/)
+  })
+})
+
+describe('reason line — static parity across modules and the stylesheet', () => {
+  const readSources = async () => {
+    const fs = await import('node:fs/promises')
+    const [stream, runIndex, css] = await Promise.all([
+      fs.readFile('public/operator-stream.js', 'utf8'),
+      fs.readFile('public/operator-run-index.js', 'utf8'),
+      fs.readFile('web/src/index.css', 'utf8'),
+    ])
+    return {stream, runIndex, css}
+  }
+  const literalsFor = (source: string, property: string, operator: string) =>
+    new Set([...source.matchAll(new RegExp(String.raw`\.dataset\??\.${property}\s*${operator}\s*'([^']+)'`, 'g'))].map(match => match[1]))
+
+  it('the stream writes the owner marker value the run list reads', async () => {
+    const {stream, runIndex} = await readSources()
+    // dataset.reasonOwner is the data-reason-owner attribute.
+    const written = literalsFor(stream, 'reasonOwner', '=')
+    const readByStream = literalsFor(stream, 'reasonOwner', '===')
+    const readByList = literalsFor(runIndex, 'reasonOwner', '!==?')
+    expect([...written]).toEqual(['stream'])
+    expect([...readByStream]).toEqual(['stream'])
+    expect([...readByList]).toEqual(['stream'])
+  })
+
+  it('every data-reason-state value the stylesheet selects is a value a module emits', async () => {
+    const {stream, runIndex, css} = await readSources()
+    const emitted = new Set([...literalsFor(stream, 'reasonState', '='), ...literalsFor(runIndex, 'reasonState', '=')])
+    expect(emitted).toEqual(new Set(['present', 'wait']))
+    const selected = [...css.matchAll(/\[data-reason-state="([^"]*)"\]/g)].map(match => match[1] as string)
+    expect(selected.length).toBeGreaterThan(0)
+    for (const value of selected) expect(emitted.has(value), `data-reason-state="${value}"`).toBe(true)
+  })
+
+  it('the wait value the stream emits has its desktop rules and its 480px rule in the stylesheet', async () => {
+    const {stream, css} = await readSources()
+    expect(literalsFor(stream, 'reasonState', '=')).toContain('wait')
+    const waitSelectors = [...css.matchAll(/\.run-reason\[data-reason-state="wait"\]/g)]
+    // the base rule, the desktop :has() rule and the 480px :has() rule
+    expect(waitSelectors).toHaveLength(3)
+    expect(css).toMatch(/\.run-card:has\(\.run-reason\[data-reason-state="wait"\]\)\s+\.run-repo/)
+    const mobileStart = css.lastIndexOf('@media (max-width: 480px)', waitSelectors.at(-1)?.index)
+    expect(mobileStart).toBeGreaterThan(-1)
+    expect(waitSelectors.at(-1)?.index).toBeGreaterThan(mobileStart)
+    expect(waitSelectors.at(-2)?.index).toBeLessThan(mobileStart)
+  })
+
+  it('the browser wait reason allowlist is the vendored one, compared in both directions', async () => {
+    const {stream} = await readSources()
+    const literal = stream.match(/const VALID_WAIT_REASONS = Object\.freeze\(\s*new Set\(\[([^\]]*)\]\)/)?.[1]
+    expect(literal, 'expected the VALID_WAIT_REASONS Set literal').toBeDefined()
+    const browser = new Set([...(literal ?? '').matchAll(/'([^']+)'/g)].map(match => match[1]))
+    const vendored = new Set<string>(OPERATOR_WAIT_REASONS)
+    expect(vendored.size).toBeGreaterThan(0)
+    for (const value of vendored) expect(browser.has(value), `browser is missing ${value}`).toBe(true)
+    for (const value of browser) expect(vendored.has(value as string), `browser has extra ${value}`).toBe(true)
+    // and through the parser: every vendored value survives, one extra does not
+    for (const waitReason of [...vendored]) expect(parseStatusData({...ACTIVE_STATUS, waitReason}).waitReason).toBe(waitReason)
+    expect(Object.hasOwn(parseStatusData({...ACTIVE_STATUS, waitReason: 'fixture-extra-reason'}), 'waitReason')).toBe(false)
   })
 })
 
@@ -12520,6 +12821,22 @@ describe('finished-run store — recording', () => {
     await h.push(fcReset('run-fc-run', 'no-snapshot'))
 
     expect(fcRecord('run-fc-run')).toBeUndefined()
+  })
+
+  it('never records a wait reason, whether the run ended by a terminal frame or an expired snapshot', async () => {
+    const ended = await fcOpen('run-fc-wr-term')
+    await ended.push(fcStatus('run-fc-wr-term', 'running', {waitReason: 'awaiting-reply'}))
+    await ended.push(fcOutput('run-fc-wr-term', 'done'), fcStatus('run-fc-wr-term', 'succeeded'))
+    const endedRecord = fcRecord('run-fc-wr-term')
+    expect(endedRecord).toBeDefined()
+    expect(Object.keys(endedRecord ?? {})).not.toContain('waitReason')
+
+    const gone = await fcOpen('run-fc-wr-gone', {summaryStatus: 'succeeded'})
+    await gone.push(fcStatus('run-fc-wr-gone', 'running', {waitReason: 'awaiting-reply'}))
+    await gone.push(fcReset('run-fc-wr-gone', 'no-snapshot'))
+    const goneRecord = fcRecord('run-fc-wr-gone')
+    expect(goneRecord).toBeDefined()
+    expect(Object.keys(goneRecord ?? {})).not.toContain('waitReason')
   })
 
   it('records nothing for a terminal reset with no status frame', async () => {
