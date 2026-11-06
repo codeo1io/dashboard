@@ -13,7 +13,7 @@
 # --platform flag and COPY cannot express deletions, so this is the minimal
 # target-executed step the design allows — see the rm-558 CI-time note in
 # .github/workflows/release.yaml).
-ARG NODE_IMAGE=node:24-trixie-slim@sha256:54f84b4cf8432b21aaffd5d3ce8d41e12cea0d10d33c09d2f3c9879d49d6b446
+ARG NODE_IMAGE=node:24-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d
 
 # rm-1483 (#641 residual, run 9511a1b5): release-channel tag baked into the
 # SPA at build time. release.yaml passes the calver tag as a build-arg; 'dev'

@@ -74,6 +74,15 @@ Endpoint parity is guarded in both directions by `test/endpoint-parity-guard.tes
 every live route must appear here (or on an explicit allowlist inside that test), and every row
 here must name a route the server actually mounts.
 
+### Push notifications
+
+The operator PWA supports opt-in Web Push for approval, question and run-failed events. Notifications
+carry fixed text and a deep link to the run, and tapping one opens that run. They have no inline
+Approve/Deny actions: the payload omits the tool and command, so a decision from the notification
+would be blind, and Safari/iOS ignores action buttons (see
+[fro-bot/agent#1917](https://github.com/fro-bot/agent/issues/1917)). Subscriptions and dispatch live
+in the Gateway; the privacy policy is served at `/privacy`.
+
 ## Configuration
 
 Access is single-operator: GitHub OAuth authenticates the request and an exact, case-sensitive
