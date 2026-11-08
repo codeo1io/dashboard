@@ -19,6 +19,9 @@ import {describe, expect, it} from 'vitest'
  * Re-derived again at the 2026.11.7 adoption (upstream #761, contract
  * 1.15.0: listing routes may answer 503 redaction-policy-unavailable;
  * fro-bot/agent pin v0.135.0 = ee29f539, ls-remote verified).
+ * Re-derived again at the 2026.11.9 adoption (upstream #783 + #779; contract
+ * UNCHANGED at 1.15.0 — the release ships the redaction-policy UX without a
+ * contract bump; fro-bot/agent pin v0.136.4 = 9facdaa8, ls-remote verified).
  *
  * public/operator-run-index.js carries no version declaration of its own
  * (only the stream twin pins), so this guard pins the two declarations that
