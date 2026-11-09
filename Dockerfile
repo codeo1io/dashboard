@@ -94,6 +94,12 @@ RUN bun install --filter './' --production --frozen-lockfile --ignore-scripts
 
 FROM ${NODE_IMAGE}
 
+# The pinned base still ships zlib1g 1.3.1-1+b1 (CVE-2026-85091, CVE-2026-76844). Remove this once a node digest
+# with 1:1.3.dfsg+really1.3.1-1+deb13u1 or later lands.
+RUN apt-get update \
+    && apt-get install --only-upgrade -y --no-install-recommends zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 
