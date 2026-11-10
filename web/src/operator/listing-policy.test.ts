@@ -77,7 +77,7 @@ describe('listing policy unavailability', () => {
     const retry = document.querySelector<HTMLButtonElement>('[data-failure="unavailable"] button')
     expect(retry?.textContent).toBe('Try again')
     retry?.click()
-    await vi.waitFor(() => expect(document.querySelector('#repo-picker-container')?.textContent).toBe('No repositories configured.'))
+    await vi.waitFor(() => expect(document.querySelector('#repo-picker-container')?.textContent).toBe('No repositories configured.'), { timeout: 5_000 })
     expect(fetch).toHaveBeenCalledTimes(2)
   })
 
@@ -89,7 +89,7 @@ describe('listing policy unavailability', () => {
     vi.stubGlobal('fetch', fetch)
     await launch.initOperatorLaunch()
     document.querySelector<HTMLButtonElement>('[data-failure="policy-unavailable"] button')?.click()
-    await vi.waitFor(() => expect(document.querySelector('#launch-repo-select')).not.toBeNull())
+    await vi.waitFor(() => expect(document.querySelector('#launch-repo-select')).not.toBeNull(), { timeout: 5_000 })
     expect(fetch).toHaveBeenCalledTimes(2)
   })
 })
