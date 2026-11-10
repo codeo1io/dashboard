@@ -33,6 +33,7 @@ import {Hono, type Context} from 'hono'
 import {getCookie, setCookie} from 'hono/cookie'
 import {secureHeaders} from 'hono/secure-headers'
 import {fetchGitHubUserLogin, makeGitHubOAuthClient} from './auth/oauth.ts'
+import {parseTrustedProxies, resolveClientKey} from './client-address.ts'
 import {createOperatorClient} from './gateway/operator-client.ts'
 import {
   readGatewayOperatorOrigin,
@@ -156,7 +157,7 @@ const RATE_LIMIT_MAX_PER_CLASS: Record<RateLimitClass, number> = {
  * still full, admission fails CLOSED — a new key gets a 429 — trading a
  * moment of availability for a bounded memory footprint (rm-286).
  */
-const RATE_LIMIT_MAX_KEYS = envIntOrDefault('RATE_LIMIT_MAX_KEYS', 10_000)
+export const RATE_LIMIT_MAX_KEYS = envIntOrDefault('RATE_LIMIT_MAX_KEYS', 10_000)
 
 /**
  * Default for the trusted-proxy opt-in: RATE_LIMIT_TRUSTED_PROXY in
@@ -596,6 +597,21 @@ export interface DashboardAppConfig {
    * the read/ack routes still work if listenerStore is provided.
    */
   listenerIngestKey?: string | null | undefined
+  /**
+   * Trusted reverse-proxy addresses or CIDR ranges, comma separated (the raw
+   * `DASHBOARD_TRUSTED_PROXIES` value). `X-Forwarded-For` is honored for
+   * rate-limit keying ONLY when the socket peer matches one of these — from
+   * any other peer the header is ignored (client-spoofable), and the walk
+   * takes the right-most entry the trusted proxy itself appended. Unset or
+   * blank means no proxy is trusted (direct topology — the socket address is
+   * the client). A malformed value THROWS at construction (fail-loud).
+   *
+   * Adopted from upstream 2026.11.11 (#792, src/client-address.ts). Replaces
+   * the fork's rm-129 first-hop switch as the trust mechanism: the legacy
+   * RATE_LIMIT_TRUSTED_PROXY=1 env remains honored as a compat alias for the
+   * overwriting-proxy topology (see defaultTrustedProxies below).
+   */
+  trustedProxies?: string | undefined
 }
 
 /**
@@ -891,7 +907,8 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
   // sit OUTSIDE isSensitive by design: they never reach this limiter and
   // consume no class budget (rm-262) — asset flooding is the edge proxy's
   // problem, not this middleware's.
-  const rateLimitTrustedProxy = opts?.rateLimitTrustedProxy ?? defaultRateLimitTrustedProxy()
+  const trustedProxies = parseTrustedProxies(opts?.trustedProxies ?? process.env.DASHBOARD_TRUSTED_PROXIES)
+  const legacyTrustedProxy = opts?.rateLimitTrustedProxy ?? defaultRateLimitTrustedProxy()
   app.use('*', async (c: Context, next) => {
     const path = new URL(c.req.url).pathname
     // rm-500 (2026-09-30): the logout pair joins the sensitive set — POST
@@ -907,25 +924,36 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
 
     if (isSensitive) {
       // getConnInfo throws in test context (app.request()); fall back to 'unknown'.
-      let ip: string
+      let socketAddress: string | undefined
       try {
-        ip = getConnInfo(c).remote.address ?? 'unknown'
+        socketAddress = getConnInfo(c).remote.address
       } catch {
-        ip = 'unknown'
+        socketAddress = undefined
       }
-      if (rateLimitTrustedProxy) {
-        // Trusted-proxy mode: key on the FIRST X-Forwarded-For hop. That hop
-        // is the real client ONLY when the proxy OVERWRITES XFF (see the
-        // opts comment above: enable only for an overwriting proxy). A proxy
-        // that APPENDS puts the real client LAST — first-hop keying there
-        // would let callers pick their own throttle keys.
-        const firstHop = c.req.header('x-forwarded-for')?.split(',')[0]?.trim()
-        // Cap the key: a plain IP/host is ≤45 chars, so anything longer is
-        // not an address, and an unbounded token alphabet would grow
-        // rateLimitMap without bound inside the sweep window. A
-        // deterministic prefix cap keeps each spoofed token on ONE key.
-        if (firstHop !== undefined && firstHop !== '') ip = firstHop.slice(0, 64)
+      const forwardedFor = c.req.header('x-forwarded-for') ?? null
+      let ip: string
+      if (legacyTrustedProxy) {
+        // Legacy compat (RATE_LIMIT_TRUSTED_PROXY / opts.rateLimitTrustedProxy,
+        // pinned by test/rate-limit-config.test.ts + test/rate-limit-class.test.ts):
+        // key on the FIRST XFF hop — the overwriting-proxy topology that env
+        // was designed for. A proxy that APPENDS puts the real client LAST;
+        // first-hop keying there lets callers pick their own throttle keys,
+        // which is why this path is legacy and DASHBOARD_TRUSTED_PROXIES is
+        // the sanctioned trust source (upstream #792, adopted 2026.11.11).
+        const firstHop = forwardedFor?.split(',')[0]?.trim()
+        ip = firstHop !== undefined && firstHop !== '' ? firstHop.slice(0, 64) : socketAddress ?? 'unknown'
       } else {
+        // Upstream #792 keying: the socket peer is trusted only when it
+        // matches DASHBOARD_TRUSTED_PROXIES (addresses/CIDRs); from a trusted
+        // peer the RIGHT-most non-proxy XFF entry is the client (the one the
+        // proxy itself appended — client-supplied entries to its left are
+        // never read); from any other peer the header is ignored entirely.
+        // IPv4 keys per address, IPv6 per /64. An absent/malformed header
+        // degrades to the proxy's own key (one shared bucket) — never open.
+        ip = resolveClientKey({socketAddress, forwardedFor}, trustedProxies)
+      }
+
+      if (!legacyTrustedProxy && trustedProxies.kind === 'direct') {
         // rm-183 — default topology: keying IGNORES XFF, so if a proxy sits
         // in front anyway, every proxied client shares this direct address's
         // per-class bucket. Watch (bounded, log-once) for two distinct XFF
@@ -937,7 +965,7 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
           const collapse = observeXffCollapse(ip, xff)
           if (collapse !== null) {
             logger.warning(
-              'Rate limiter client collapse: multiple X-Forwarded-For values hit one direct-address bucket — set RATE_LIMIT_TRUSTED_PROXY=1 ONLY if the proxy overwrites X-Forwarded-For with the real client (behind an appending proxy first-hop keying is client-spoofable)',
+              'Rate limiter client collapse: multiple X-Forwarded-For values hit one direct-address bucket — set DASHBOARD_TRUSTED_PROXIES to the proxy address/CIDR (or, legacy, RATE_LIMIT_TRUSTED_PROXY=1 ONLY if the proxy overwrites X-Forwarded-For with the real client)',
               {
                 directAddress: collapse.directAddress,
                 firstXff: collapse.firstXff,
