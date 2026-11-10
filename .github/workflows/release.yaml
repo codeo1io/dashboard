@@ -123,7 +123,9 @@ jobs:
   release:
     name: Release
     needs: [guard]
-    if: needs.guard.outputs.should-release == 'true'
+    # The ref check repeats what the guard decides in shell, so the job that mints the
+    # publication token never depends on that script alone to stay off non-main refs.
+    if: needs.guard.outputs.should-release == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     # rm-188 (cycle 13, 2026-09-25): pinned ubuntu-24.04 — ubuntu-26.04 images are
     # published while the ubuntu-latest alias still maps to 24.04; re-evaluate
@@ -430,6 +432,10 @@ jobs:
       # publication steps below degrade to a warning — mirroring the dispatch job's
       # unprovisioned-secret contract. The scanned image is still published to GHCR by
       # the ci-<run> tag from the build step, and :latest promotion needs no App token.
+      # (Upstream 2026.11.11 #792 rationale, adopted: the minted token is scoped to
+      # this repository and to contents:write, which covers every use below — creating
+      # and deleting the tag ref, and creating, viewing, editing and deleting the
+      # GitHub Release. The App installation is broader; this narrows the minted token.)
       - name: 🤖 Get App token for publication
         id: app-token
         if: env.HAS_RELEASE_APP == 'true'
@@ -437,6 +443,9 @@ jobs:
         with:
           app-id: ${{ secrets.APPLICATION_ID }}
           private-key: ${{ secrets.APPLICATION_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
 
       - name: ⚠️ Publication credentials not provisioned
         if: env.HAS_RELEASE_APP != 'true'
