@@ -13,7 +13,7 @@
 # --platform flag and COPY cannot express deletions, so this is the minimal
 # target-executed step the design allows — see the rm-558 CI-time note in
 # .github/workflows/release.yaml).
-ARG NODE_IMAGE=node:24-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d
+ARG NODE_IMAGE=node:24-trixie-slim@sha256:af02d57b57719b9657a45199a79264a9437940cd55b3c7b3fc99615654f124a0
 
 # rm-1483 (#641 residual, run 9511a1b5): release-channel tag baked into the
 # SPA at build time. release.yaml passes the calver tag as a build-arg; 'dev'
@@ -90,6 +90,9 @@ RUN bun install --filter './' --production --frozen-lockfile --ignore-scripts
 # current base's libpcre2-8-0 version (dpkg-query) before relying on it
 # whenever the digest moves again (moved again 2026-10-30: 54f84b4, upstream
 # #737 via the 2026.10.78 adoption — re-verify before the next release claim).
+# Moved again 2026-11-12: af02d57b, upstream #812 via the 2026.11.17 adoption
+# (#810-#812 were three successive base-digest refreshes across .14-.16; the
+# fork adopted .17 directly — the libpcre2 re-verify note above applies).
 # History: docs/solutions/best-practices/trivy-base-image-alerts-unfixable-by-design-2026-08-30.md
 
 FROM ${NODE_IMAGE}
