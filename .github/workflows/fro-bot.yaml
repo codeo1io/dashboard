@@ -304,7 +304,8 @@ jobs:
         (
           github.event_name == 'issues' &&
           !endsWith(github.event.issue.user.login || '', '[bot]') &&
-          (github.event.issue.user.login || '') != 'fro-bot'
+          (github.event.issue.user.login || '') != 'fro-bot' &&
+          contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.issue.author_association || '')
         ) ||
         (
           github.event_name == 'pull_request' &&
@@ -338,7 +339,7 @@ jobs:
           # Schedule/dispatch keep it because branch-pr delivery pushes with it.
           persist-credentials: >-
             ${{
-            !contains(fromJSON('["pull_request", "issue_comment", "issues"]'), github.event_name)
+            !contains(fromJSON('["pull_request", "pull_request_review_comment", "issue_comment", "issues"]'), github.event_name)
             }}
           # Always check out the default/workflow ref — never PR-head code. On
           # issue_comment the fork guard cannot see PR fork status (the event has
@@ -354,7 +355,7 @@ jobs:
       - name: Run Fro Bot
         if: github.event_name != 'schedule' || env.HAS_FRO_BOT_PAT == 'true'
         id: fro-bot-agent
-        uses: fro-bot/agent@7f7bf8917435c04c83dd3bb749896ffec6b3886b # v0.136.5
+        uses: fro-bot/agent@dc05527ab5a54fcc142040b04c7a4ef94f84210c # v0.139.1
         env:
           OPENCODE_PROMPT_ARTIFACT: 'true'
           TASK_PROMPT: >-
