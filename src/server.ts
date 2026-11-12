@@ -960,6 +960,10 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
         // values against one address — the in-band proof that multiple real
         // clients collapsed into one budget — and surface it exactly once
         // per process. Un-proxied traffic (no XFF header) pays nothing.
+        // (Kept through the 2026.11.13 adoption: this log-once diagnostic
+        // predates upstream #806 and is deliberately bounded — one warning
+        // per process lifetime, samples capped at 128 chars — unlike the
+        // steady-state 429 line #806 redacts below.)
         const xff = c.req.header('x-forwarded-for')
         if (xff !== undefined && xff.trim() !== '') {
           const collapse = observeXffCollapse(ip, xff)
@@ -978,7 +982,18 @@ async function buildDashboardApp(opts?: DashboardAppConfig): Promise<Hono<{Varia
       }
 
       if (!checkRateLimit(ip, Date.now(), classifyRateLimitPath(path))) {
-        logger.warning('Rate limit exceeded', {ip, path})
+        // Upstream #806 (adopted with 2026.11.13): keep client addresses in
+        // the short-lived limiter only, never in persistent logs — the 429
+        // line carries the address FAMILY (derived from the accounting-key
+        // prefix, ipv4:/ipv6/64:) and the path, never the key itself. The
+        // fork's legacy first-hop path and the socket fallback key raw
+        // addresses without a prefix; those classify as 'unknown' here,
+        // which is the conservative answer upstream's own garbage-key case
+        // expects. loggablePath() is NOT ported: the fork carries no wiki
+        // routes (the only paths upstream collapses), so the raw path this
+        // fork has always logged is already id-free.
+        const family = ip.startsWith('ipv4:') ? 'ipv4' : ip.startsWith('ipv6/64:') ? 'ipv6' : 'unknown'
+        logger.warning('Rate limit exceeded', {family, path})
         // rm-741: every limiter 429 carries Retry-After as integer
         // seconds-to-window-reset (ceil, clamped >= 1). NOTE (open question,
         // deferred with the def): the value reflects the key's SHARED window,
