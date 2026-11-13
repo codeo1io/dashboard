@@ -254,3 +254,9 @@ are pixel-neutral). Riders grafted at their authored walls (rm-252 merge
 rider, rm-271 registry-pins + trio doctrine, rm-693 OperatorPushHealth);
 rm-249's kill-switch rider dropped as false-for-tree, already corrected and
 superseded on main. Full disposition in the ROADMAP tail integrate comment.
+
+## Review-run re-census (2026-11-13, conductor run 00abe6e5768348ccba55f128b7e20b45 reviewing PR #1168 — ledger-only, not a batch cohort)
+
+**342 defs / 0 dups / max rm-2135** — retroactive ownership mint rm-2135 for the vi.waitFor
+explicit-timeout guard (the collided 'rm-1501 (ours)' label of batch run b9c4278c / PR #1025),
+with an episode rider on rm-1510; no other defs touched, no statuses flipped.
