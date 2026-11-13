@@ -4,7 +4,7 @@ import process from 'node:process'
 import ts from 'typescript'
 import {describe, expect, it} from 'vitest'
 
-// rm-1501 (run b9c4278c cycle-2 batch 'verification truth on the post-absorb
+// rm-2135 (run b9c4278c cycle-2 batch 'verification truth on the post-absorb
 // base'): vi.waitFor defaults to a 1000ms budget (vitest 4.1.11
 // WaitForOptions — verified against the installed types; there is no
 // config-level knob for it, unlike testTimeout), and that default is the
@@ -13,6 +13,7 @@ import {describe, expect, it} from 'vitest'
 // site now passes an explicit { timeout: 5_000 } (105 sites across 6 files at
 // landing). This guard fails when any vi.waitFor call under web/src regresses
 // to the implicit default, so the family cannot quietly return.
+// (label corrected 2026-11-13 from the pre-collision id rm-1501 to the guard's owning def; see ROADMAP rm-2135)
 
 const repoRoot = process.cwd()
 const WEB_SRC = join(repoRoot, 'web', 'src')
@@ -64,7 +65,7 @@ function findImplicitBudgetWaitForCalls(file: string): CallSite[] {
   return offenders
 }
 
-describe('web vi.waitFor explicit-timeout guard (rm-1501)', () => {
+describe('web vi.waitFor explicit-timeout guard (rm-2135)', () => {
   const files = collectSourceFiles(WEB_SRC)
   const offenders = files.flatMap(findImplicitBudgetWaitForCalls)
   const totalWaitForCalls = files.reduce(
