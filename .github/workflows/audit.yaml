@@ -117,7 +117,13 @@ jobs:
       - name: Audit every resolved package
         run: |
           set -euo pipefail
-          if bun audit; then
+          # 2026-11-16 (rm-278 cycle): --ignore GHSA-gcqx-w48m-w2h4 (deepmerge low,
+          # prototype poisoning of RETURNED objects) — dev-only chain
+          # (workbox-build > @rollup/plugin-node-resolve > deepmerge ^4.2.2).
+          # No patched release exists: 4.3.1 is the 4.x terminal and the advisory
+          # covers >=4.2.0 <=4.3.1; a 5.x pin would need an upstream range change.
+          # Ignored with rationale here so the signal keeps watching everything else.
+          if bun audit --ignore GHSA-gcqx-w48m-w2h4; then
             echo 'audit clean — zero known advisories against every resolved version'
             exit 0
           fi
