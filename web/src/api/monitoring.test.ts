@@ -132,5 +132,76 @@ describe('monitoring API', () => {
       const res = await fetchMonitoring()
       expect(res).toEqual({ ok: false, reason: 'contract-drift' })
     })
+
+    // rm-2137: the server emits the rm-156 watchdog fields on the wire; the
+    // client parse is optional-absent (older servers / cached payloads) with
+    // strict typing when present — the rm-1447 platformStatus pattern.
+    it('rm-2137: absent watchdog fields parse to null/false defaults', async () => {
+      const mockData = {
+        repos: [],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+      const res = await fetchMonitoring()
+      expect(res.ok).toBe(true)
+      if (res.ok) {
+        expect(res.data.refreshDurationMs).toBeNull()
+        expect(res.data.refreshDegraded).toBe(false)
+      }
+    })
+
+    it('rm-2137: present watchdog fields parse through', async () => {
+      const mockData = {
+        repos: [],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: 1742000000000,
+        refreshDurationMs: 45123,
+        refreshDegraded: true,
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+      const res = await fetchMonitoring()
+      expect(res.ok).toBe(true)
+      if (res.ok) {
+        expect(res.data.refreshDurationMs).toBe(45123)
+        expect(res.data.refreshDegraded).toBe(true)
+      }
+    })
+
+    it('rm-2137: malformed refreshDegraded fails closed as contract-drift', async () => {
+      const mockData = {
+        repos: [],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+        refreshDegraded: 'yes',
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+      const res = await fetchMonitoring()
+      expect(res).toEqual({ ok: false, reason: 'contract-drift' })
+    })
+
+    it('rm-2137: malformed refreshDurationMs fails closed as contract-drift', async () => {
+      const mockData = {
+        repos: [],
+        staleBanner: false,
+        driftCount: 0,
+        enumerationIncomplete: null,
+        refreshedAt: null,
+        refreshDurationMs: '45s',
+      }
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(mockData), { status: 200 }))
+
+      const res = await fetchMonitoring()
+      expect(res).toEqual({ ok: false, reason: 'contract-drift' })
+    })
   })
 })

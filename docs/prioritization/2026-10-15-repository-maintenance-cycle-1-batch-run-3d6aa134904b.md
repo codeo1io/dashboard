@@ -246,6 +246,24 @@ The batch's #639 run-list ordering port is superseded-in-substance by main's
 upstream adoptions: the ordering semantics are native at head and
 test/operator-run-index-core.test.js already carries a superset battery (all
 eleven ported scenarios plus the focus variant on the native
+
+Landing-record re-census at the 2026-11-19 roadmap phase (run
+1b4ea0710ef24e9eba055503337fd13f, repository-maintenance 0e5f4316 cycle:1,
+roadmap cf109d7b83cb4834b6726b64ade345fe, worktree base cafc17e37d6d):
+**354 defs / 0 dups / max rm-2147** — this cycle's roadmap phase minted
+rm-2135..rm-2146 (twelve research-backed candidates: monitoring unknown-stale
+truth, threshold-watcher self-ingest, fleet-truth surfacing, post-landing
+verification gate, branch-protection rulesets, action-pin cohort, CI-guard
+cohort, weekly hygiene workflow, docs-truth batch, PWA icon repair,
+test-assertion micros, client-render micros) plus rm-2147 (pin-rewind guard);
+four implemented-pending-landing claims flipped to landed with evidence
+(rm-1462/rm-1463 tree-proven at tip; rm-1523/rm-843 proven ancestors of
+origin/main by scripts/roadmap-ledger-check.ts — PROVEN-STALE 2 → 0); five
+riders attached (rm-131 guard extension, rm-195 history ring, rm-252
+agent-pin decision, rm-139 gate-met, rm-1510 tsconfig excludes); research
+54faf53eee6a487aac54497d6de323d8 + assess 30b4f319e78e412c80e78f4c0f1a7e69
+are the mint sources; `node scripts/roadmap-census.ts` at this tree prints
+354/0/rm-2147 and the guard battery passes 13/13.
 refreshOperatorRunIndex seam), so the batch's older-harness append was dropped
 (re-declared identifiers; would not parse). The playwright trio leg resolved
 to main's advanced truth (package exact-pin 1.64.0 + bun.lock post-pnpm-
