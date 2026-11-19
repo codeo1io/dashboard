@@ -117,9 +117,36 @@ function platformBannerPhrase(platform: PlatformStatusSummary): string {
   return platform.overall === 'critical' ? 'a critical platform incident' : 'a major platform incident'
 }
 
+/** rm-192: the drill-down set — a failing default branch, in red or count-only shape. */
+function isFailing(repo: MonitoringRepo): boolean {
+  return repo.status.rollupState === 'red' || repo.status.failingChecks > 0
+}
+
+/**
+ * rm-2135: a repo whose data is degraded — the rollup is unknown (the last
+ * fetch failed) or the counts are flagged stale. These rows are NOT "not
+ * failing": rendering them as healthy would make an outage look green.
+ */
+function isDegraded(repo: MonitoringRepo): boolean {
+  return !isFailing(repo) && (repo.status.rollupState === 'unknown' || repo.status.stale)
+}
+
 function MonitoringBoard({data}: {data: MonitoringData}) {
-  const redRepos = data.repos.filter(repo => repo.status.rollupState === 'red' || repo.status.failingChecks > 0)
-  const remaining = data.repos.length - redRepos.length
+  const redRepos = data.repos.filter(isFailing)
+  const degradedRepos = data.repos.filter(isDegraded)
+  const remaining = data.repos.length - redRepos.length - degradedRepos.length
+  // rm-2135: "all clear" asserts a KNOWN-GOOD snapshot — nothing red, nothing
+  // degraded, non-empty, and not a stale banner. Anything else renders the
+  // honest state (cards, degraded group, or the suppressed branch).
+  const healthy = redRepos.length === 0 && degradedRepos.length === 0
+  const allClear = healthy && data.repos.length > 0 && !data.staleBanner
+  // rm-2137: fleet totals from per-repo counts the server already emits.
+  const fleetPrCount = data.repos.reduce((sum, repo) => sum + repo.status.openPrCount, 0)
+  const fleetIssueCount = data.repos.reduce((sum, repo) => sum + repo.status.openIssueCount, 0)
+  const fleetAlertsKnown = data.repos.every(repo => repo.status.openAlertCount !== null)
+  const fleetAlertCount = fleetAlertsKnown
+    ? data.repos.reduce((sum, repo) => sum + (repo.status.openAlertCount ?? 0), 0)
+    : null
   const refreshedAt = data.refreshedAt === null ? null : new Date(data.refreshedAt).toLocaleString()
   const platform = data.platformStatus
 
@@ -142,17 +169,84 @@ function MonitoringBoard({data}: {data: MonitoringData}) {
         </div>
       )}
 
-      {redRepos.length === 0 ? (
-        <div data-testid="monitoring-all-clear" className="operator-empty-state">
-          <div className="operator-empty-icon" aria-hidden="true" style={{opacity: 0.2}}>✓</div>
-          <p className="operator-empty-title">All repositories green</p>
-          <p className="operator-empty-desc">
-            {data.repos.length} tracked {data.repos.length === 1 ? 'repository' : 'repositories'}, no failing checks
-            on default branches.
-          </p>
+      {data.refreshDegraded && (
+        <div data-testid="monitoring-watchdog-banner" className="operator-warning-panel" role="status">
+          Last refresh exceeded the watchdog ceiling
+          {data.refreshDurationMs !== null ? ` (${(data.refreshDurationMs / 1000).toFixed(1)}s)` : ''} — counts may
+          be incomplete.
         </div>
+      )}
+
+      {(data.driftCount > 0 || (data.enumerationIncomplete !== null && data.enumerationIncomplete > 0)) && (
+        <div data-testid="monitoring-completeness-banner" className="operator-warning-panel" role="status">
+          Fleet picture incomplete — {data.driftCount} drifted
+          {data.driftCount === 1 ? ' repository' : ' repositories'}
+          {data.enumerationIncomplete !== null && data.enumerationIncomplete > 0
+            ? ` · ${data.enumerationIncomplete} ${data.enumerationIncomplete === 1 ? 'repository' : 'repositories'} could not be enumerated`
+            : ''}
+          .
+        </div>
+      )}
+
+      {(fleetPrCount > 0 || fleetIssueCount > 0 || (fleetAlertCount ?? 0) > 0) && (
+        <div data-testid="monitoring-attention-inbox" className="listener-message-card" role="status">
+          <span data-testid="monitoring-pr-count">{fleetPrCount} open pull requests</span> ·{' '}
+          <span data-testid="monitoring-issue-count">{fleetIssueCount} open issues</span> ·{' '}
+          <span data-testid="monitoring-alert-count">
+            {fleetAlertCount === null ? 'alert counts unavailable (partial fetch)' : `${fleetAlertCount} open alerts`}
+          </span>{' '}
+          · across {data.repos.length} {data.repos.length === 1 ? 'repository' : 'repositories'}
+        </div>
+      )}
+
+      {healthy ? (
+        allClear ? (
+          <div data-testid="monitoring-all-clear" className="operator-empty-state">
+            <div className="operator-empty-icon" aria-hidden="true" style={{opacity: 0.2}}>✓</div>
+            <p className="operator-empty-title">All repositories green</p>
+            <p className="operator-empty-desc">
+              {data.repos.length} tracked {data.repos.length === 1 ? 'repository' : 'repositories'}, no failing checks
+              on default branches.
+            </p>
+          </div>
+        ) : (
+          <div data-testid="monitoring-all-clear-suppressed" className="operator-empty-state">
+            <div className="operator-empty-icon" aria-hidden="true" style={{opacity: 0.2}}>…</div>
+            <p className="operator-empty-title">No failing checks recorded</p>
+            <p className="operator-empty-desc">
+              The snapshot is {data.repos.length === 0 ? 'empty' : 'stale'} — all-clear is withheld until a fresh,
+              complete refresh.
+            </p>
+          </div>
+        )
       ) : (
-        redRepos.map(repo => <RedRepoCard key={repo.fullName} repo={repo} />)
+        <>
+          {redRepos.map((repo) => (
+            <RedRepoCard key={repo.fullName} repo={repo} />
+          ))}
+          {degradedRepos.length > 0 && (
+            <div data-testid="monitoring-degraded-banner" className="operator-warning-panel" role="status">
+              {degradedRepos.length} of {data.repos.length}{' '}
+              {data.repos.length === 1 ? 'repository is' : 'repositories are'} reporting degraded or unavailable data
+              — the fleet picture is incomplete.
+            </div>
+          )}
+          {degradedRepos.map((repo) => (
+            <div key={repo.fullName} data-testid="monitoring-degraded-repo" className="listener-message-card">
+              <div className="listener-header">
+                <h3 className="listener-title" style={{margin: 0}}>
+                  {repo.fullName}
+                </h3>
+                <span className="listener-severity severity-warning">data degraded</span>
+              </div>
+              <div style={{fontSize: 'var(--text-body-sm)', color: 'var(--color-text-muted)'}}>
+                {repo.status.rollupState === 'unknown'
+                  ? 'Status unknown — the last fetch failed; no counts are shown rather than stale-looking zeros.'
+                  : 'Status is stale — counts are from the last successful refresh.'}
+              </div>
+            </div>
+          ))}
+        </>
       )}
 
       <div data-testid="monitoring-footer" style={{fontSize: 'var(--text-body-sm)', color: 'var(--color-text-muted)'}}>
@@ -162,6 +256,9 @@ function MonitoringBoard({data}: {data: MonitoringData}) {
           </span>
         )}
         {refreshedAt !== null ? <span>refreshed {refreshedAt}</span> : <span>never refreshed</span>}
+        {data.refreshDurationMs !== null && (
+          <span> · refresh took {(data.refreshDurationMs / 1000).toFixed(1)}s</span>
+        )}
       </div>
     </div>
   )

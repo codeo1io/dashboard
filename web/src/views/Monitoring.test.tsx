@@ -40,6 +40,8 @@ function makeData(overrides: Partial<MonitoringData> = {}): MonitoringData {
     enumerationIncomplete: null,
     refreshedAt: 1742000000000,
     platformStatus: null,
+    refreshDurationMs: null,
+    refreshDegraded: false,
     ...overrides
   }
 }
@@ -305,6 +307,237 @@ describe('Monitoring (rm-192 red-repo drill-down)', () => {
     expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/auth/login')
     // The network-error retry copy must NOT be shown for session expiry.
     expect(screen.queryByTestId('monitoring-error')).not.toBeInTheDocument()
+  })
+
+  // rm-2135: the board's core promise — "All repositories green" — must not
+  // render while repos are reporting degraded/unavailable data. Unknown
+  // rollups and stale counts get their own degraded group; all-clear requires
+  // a non-stale, non-empty, fully-known snapshot (the rm-780 cold-start fold).
+  describe('rm-2135 degraded-state visibility', () => {
+    it('renders the degraded banner and rows when every repo is unknown/stale — never all-clear', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({
+          repos: [
+            makeRepo({fullName: 'codeo1io/dashboard', status: {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], stale: true}}),
+            makeRepo({fullName: 'fro-bot/agent', status: {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], stale: false}}),
+          ],
+        }),
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      expect(screen.getByTestId('monitoring-degraded-banner')).toBeInTheDocument()
+      expect(screen.getAllByTestId('monitoring-degraded-repo')).toHaveLength(2)
+      expect(screen.queryByTestId('monitoring-all-clear')).not.toBeInTheDocument()
+    })
+
+    it('excludes degraded repos from the not-failing tally on a mixed board', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({
+          repos: [
+            makeRepo({fullName: 'fro-bot/agent'}),
+            makeRepo({fullName: 'codeo1io/dashboard', status: {rollupState: 'unknown', failingChecks: 0, failingCheckDetails: [], stale: true}}),
+            makeRepo({fullName: 'codeo1io/.github', status: {rollupState: 'green', failingChecks: 0, failingCheckDetails: []}}),
+          ],
+        }),
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      expect(screen.getByTestId('monitoring-red-repo')).toBeInTheDocument()
+      expect(screen.getByTestId('monitoring-degraded-repo')).toBeInTheDocument()
+      expect(screen.getByTestId('monitoring-footer')).toHaveTextContent('1 repository not failing')
+    })
+
+    it('renders a stale-counts repo as degraded even when its rollup is green', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({
+          repos: [makeRepo({status: {rollupState: 'green', failingChecks: 0, failingCheckDetails: [], stale: true}})],
+        }),
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      expect(screen.getByTestId('monitoring-degraded-repo')).toHaveTextContent(/stale/i)
+      expect(screen.queryByTestId('monitoring-all-clear')).not.toBeInTheDocument()
+    })
+
+    it('keeps the all-clear board for a genuinely healthy snapshot (regression)', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({
+          repos: [makeRepo({status: {rollupState: 'green', failingChecks: 0, failingCheckDetails: []}})],
+        }),
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      expect(screen.getByTestId('monitoring-all-clear')).toBeInTheDocument()
+      expect(screen.queryByTestId('monitoring-degraded-banner')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('monitoring-all-clear-suppressed')).not.toBeInTheDocument()
+    })
+
+    it('rm-780 fold: suppresses all-clear on an empty cold-start snapshot', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({repos: [], staleBanner: true}),
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      expect(screen.getByTestId('monitoring-all-clear-suppressed')).toBeInTheDocument()
+      expect(screen.queryByTestId('monitoring-all-clear')).not.toBeInTheDocument()
+    })
+
+    it('rm-780 fold: suppresses all-clear when healthy repos ride a stale snapshot', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({
+          repos: [makeRepo({status: {rollupState: 'green', failingChecks: 0, failingCheckDetails: []}})],
+          staleBanner: true,
+        }),
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      expect(screen.getByTestId('monitoring-all-clear-suppressed')).toBeInTheDocument()
+      expect(screen.queryByTestId('monitoring-all-clear')).not.toBeInTheDocument()
+    })
+  })
+
+  // rm-2137: the server fetches and emits fleet data every cycle that the
+  // client parsed but never rendered. The attention-inbox surfaces the totals;
+  // completeness and watchdog banners make partial fetches visible.
+  describe('rm-2137 fleet-truth surfacing', () => {
+    it('renders the attention-inbox with fleet PR/issue/alert totals', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({
+          repos: [
+            makeRepo({fullName: 'a', status: {openPrCount: 3, openIssueCount: 2, openAlertCount: 2}}),
+            makeRepo({fullName: 'b', status: {openPrCount: 3, openIssueCount: 5, openAlertCount: null}}),
+          ],
+        }),
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      const inbox = screen.getByTestId('monitoring-attention-inbox')
+      expect(inbox).toHaveTextContent('6 open pull requests')
+      expect(inbox).toHaveTextContent('7 open issues')
+    })
+
+    it('marks alert totals unavailable when any repo lacks an alert count', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({
+          repos: [
+            makeRepo({status: {openPrCount: 1, openAlertCount: 4}}),
+            makeRepo({fullName: 'b', status: {openPrCount: 1, openAlertCount: null}}),
+          ],
+        }),
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      expect(screen.getByTestId('monitoring-attention-inbox')).toHaveTextContent('alert counts unavailable')
+    })
+
+    it('hides the attention-inbox when all totals are zero', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({repos: [makeRepo({status: {rollupState: 'green', failingChecks: 0, failingCheckDetails: []}})]}),
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      expect(screen.queryByTestId('monitoring-attention-inbox')).not.toBeInTheDocument()
+    })
+
+    it('renders the completeness banner for drift and enumeration gaps, absent when clean', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({driftCount: 2, enumerationIncomplete: 3}),
+      })
+
+      const first = render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      expect(screen.getByTestId('monitoring-completeness-banner')).toHaveTextContent('2')
+      expect(screen.getByTestId('monitoring-completeness-banner')).toHaveTextContent('3')
+      first.unmount()
+
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({driftCount: 0, enumerationIncomplete: null}),
+      })
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      expect(screen.queryByTestId('monitoring-completeness-banner')).not.toBeInTheDocument()
+    })
+
+    it('renders the watchdog banner when the refresh degraded, with the duration', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({refreshDegraded: true, refreshDurationMs: 45000}),
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      expect(screen.getByTestId('monitoring-watchdog-banner')).toHaveTextContent('45.0s')
+    })
+
+    it('renders the refresh duration in the footer', async () => {
+      vi.mocked(monitoringApi.fetchMonitoring).mockResolvedValueOnce({
+        ok: true,
+        data: makeData({refreshDurationMs: 12345}),
+      })
+
+      render(<Monitoring />)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10)
+      })
+
+      expect(screen.getByTestId('monitoring-footer')).toHaveTextContent('refresh took 12.3s')
+    })
   })
 
   // rm-251 regressions: the pre-hook inline poll wedged permanently on one

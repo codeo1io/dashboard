@@ -57,6 +57,10 @@ export interface MonitoringData {
   readonly refreshedAt: number | null
   /** rm-1447: null when the server could not fetch the feed (fail-open both directions). */
   readonly platformStatus: PlatformStatusSummary | null
+  /** rm-2137: last refresh duration (rm-156 watchdog signal); null when absent on the wire. */
+  readonly refreshDurationMs: number | null
+  /** rm-2137: true when the last refresh exceeded the watchdog ceiling (rm-156 watchdog signal). */
+  readonly refreshDegraded: boolean
 }
 
 export type FetchMonitoringResult =
@@ -197,6 +201,21 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
       platformStatus = parsed
     }
 
+    // rm-2137: the rm-156 watchdog fields are optional-absent (older payloads)
+    // but strictly typed when present — the rm-1447 platformStatus pattern.
+    let refreshDurationMs: number | null = null
+    if (data.refreshDurationMs !== undefined) {
+      if (data.refreshDurationMs !== null && typeof data.refreshDurationMs !== 'number') {
+        return {ok: false, reason: 'contract-drift'}
+      }
+      refreshDurationMs = data.refreshDurationMs
+    }
+    let refreshDegraded = false
+    if (data.refreshDegraded !== undefined) {
+      if (typeof data.refreshDegraded !== 'boolean') return {ok: false, reason: 'contract-drift'}
+      refreshDegraded = data.refreshDegraded
+    }
+
     const repos: MonitoringRepo[] = []
     for (const item of data.repos) {
       const parsed = parseRepo(item)
@@ -213,6 +232,8 @@ export async function fetchMonitoring(opts: {abortSignal?: AbortSignal} = {}): P
         enumerationIncomplete: data.enumerationIncomplete,
         refreshedAt: data.refreshedAt,
         platformStatus,
+        refreshDurationMs,
+        refreshDegraded,
       },
     }
   } catch (err) {
