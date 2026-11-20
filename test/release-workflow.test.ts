@@ -28,7 +28,9 @@ interface Job {
 }
 
 const workflow = parse(readFileSync(resolve(process.cwd(), '.github/workflows/release.yaml'), 'utf8')) as {
-  readonly on: Record<string, unknown>
+  readonly on: {
+    push?: {branches?: string[]; paths?: string[]}
+  } & Record<string, unknown>
   readonly jobs: Record<string, Job>
 }
 

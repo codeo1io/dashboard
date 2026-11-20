@@ -15,28 +15,14 @@
 //   2 = usage/parse error (prints error to stderr)
 //
 // Decision logic:
-//   1. If any changed file matches a "hard release" pattern => release. The
-//      corpus is defined once in scripts/release-paths.ts and locked both ways
-//      against release.yaml's on.push.paths filter by test/should-release.test.ts
-//      (file-exact: Dockerfile, bunfig.toml, .github/workflows/release.yaml,
-//      scripts/should-release.ts, scripts/compute-release-tag.ts,
-//      scripts/gzip-static-sidecars.ts; dir prefixes: src/, web/, public/;
-//      root tsconfig*.json). bunfig.toml is hard because the Dockerfile COPYs
-//      it (with bun.lock) into both image build stages and it carries the
-//      install policy (linker/minimumReleaseAge) that shapes the image's
-//      dependency graph.
-//      .github/actions/setup/** is deliberately NOT hard (reviewed 2026-09-23):
-//      the Release workflow never invokes that composite action (main.yaml and
-//      codeql.yaml do) and it plays no part in the image build, so a change
-//      there cannot alter the shipped image.
+//   1. If any changed file matches a "hard release" pattern (src/**, Dockerfile,
+//      bunfig.toml, .github/workflows/release.yaml, scripts/should-release.ts,
+//      tsconfig*.json) => release.
 //   2. If package.json is in the changed set, diff the runtime fields
 //      (dependencies, engines, packageManager, overrides, workspaces,
 //       trustedDependencies, scripts, type, exports, imports) between base and head.
 //      If any runtime field changed => release.
-//      If only proven non-artifact devDependencies changed, and the lockfile
-//      is unchanged => skip. With bun.lock also in the changed set the
-//      guard fails open and releases (rm-167): a lockfile regen can move an
-//      in-range runtime resolution even when only devDependencies were edited.
+//      If only proven non-artifact devDependencies changed => skip.
 //      Unknown devDependency changes fail open and trigger a release because
 //      Docker installs them before the shipped browser bundle is built.
 //   3. If only bun.lock changed (no package.json diff) => release.
@@ -52,10 +38,6 @@
 
 import {readFileSync} from 'node:fs'
 import process from 'node:process'
-import {
-  HARD_RELEASE_DIR_PREFIXES,
-  HARD_RELEASE_FILE_PATHS,
-} from './release-paths.ts'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -167,36 +149,45 @@ function loadPkg(path: string, label: string): LoadResult {
 const WEB_TEST_FILE_PATTERN = /\.test\.(?:ts|tsx|js|mjs)$/
 
 /**
- * Returns true if the file path matches a "hard release" pattern — see
- * scripts/release-paths.ts (single source of truth, locked against the
- * release workflow's on.push.paths filter by test/should-release.test.ts):
+ * Returns true if the file path matches a "hard release" pattern:
  *   - src/**
  *   - web/**  (SPA source — built into the image by the builder stage), except
  *     Vitest test files (`*.test.ts`, `*.test.tsx`, `*.test.js`, `*.test.mjs`),
- *     which are never imported into the bundle (upstream #683)
+ *     which are never imported into the bundle
  *   - public/**  (static assets copied into the image)
  *   - Dockerfile
  *   - bunfig.toml
  *   - .github/workflows/release.yaml
  *   - scripts/should-release.ts
  *   - scripts/compute-release-tag.ts
- *   - scripts/gzip-static-sidecars.ts (rm-602: reshapes the shipped web/dist
- *     sidecar set with zero src/ or web/ diff)
+ *   - scripts/gzip-static-sidecars.ts (fork rm-602: reshapes the shipped
+ *     web/dist sidecar set with zero src/ or web/ diff)
  *   - tsconfig*.json (root-level only, not nested paths)
  */
 function isHardReleasePath(filePath: string): boolean {
-  // web/** Vitest test files are the exception (upstream #683): they are never
-  // imported into the image bundle, so a test-only web/ change does not release.
-  // Test setup and config files (e.g. vitest.config.ts) do not match and still
-  // release.
-  if (filePath.startsWith('web/') && WEB_TEST_FILE_PATTERN.test(filePath)) return false
-  if (
-    HARD_RELEASE_DIR_PREFIXES.some(
-      prefix => filePath === prefix || filePath.startsWith(`${prefix}/`),
-    )
-  )
-    return true
-  if (HARD_RELEASE_FILE_PATHS.includes(filePath)) return true
+  if (filePath.startsWith('src/') || filePath === 'src') return true
+  // web/** — SPA source is built into the image by the Dockerfile builder stage,
+  // so a change to web/ triggers a new image build and release. Vitest test files
+  // are the exception: they are never imported into the bundle. Test setup and
+  // config files (e.g. vitest.config.ts) do not match and still release.
+  if (filePath === 'web') return true
+  if (filePath.startsWith('web/')) return !WEB_TEST_FILE_PATTERN.test(filePath)
+  // public/** — static assets (operator browser client, manifest, icons) are
+  // copied into the image (Dockerfile `COPY public/ ./public/`); changes must
+  // trigger a new image build and release.
+  if (filePath.startsWith('public/') || filePath === 'public') return true
+  if (filePath === 'Dockerfile') return true
+  // bunfig.toml configures installs (registry, trusted scripts, install policy),
+  // which shape the dependency graph baked into the image.
+  if (filePath === 'bunfig.toml') return true
+  if (filePath === '.github/workflows/release.yaml') return true
+  if (filePath === 'scripts/should-release.ts') return true
+  if (filePath === 'scripts/compute-release-tag.ts') return true
+  // Fork rm-602 (conflict fa1b4af9, retained post-2026.11.28 adoption): chained
+  // into build:web, which the Docker builder stage runs in-image — a change here
+  // reshapes the shipped web/dist bytes (sidecar set) with zero src/ or web/
+  // diff. Paired in scripts/release-paths.ts (rm-154/rm-248 bidirectional sync).
+  if (filePath === 'scripts/gzip-static-sidecars.ts') return true
   // tsconfig*.json: root-level only (no path separator in the name)
   if (
     !filePath.includes('/') &&
@@ -365,20 +356,7 @@ function decide(
       }
     }
 
-    // Only devDependencies (or other non-runtime fields) changed.
-    // rm-167: the devDeps-only skip is only sound when the LOCKFILE is
-    // unchanged — a devDeps-only manifest edit whose lockfile regen moved an
-    // in-range runtime resolution still changes the image, so consult
-    // hasLockChange before skipping (rule 3's fail-open logic, hoisted so
-    // this branch cannot shadow it).
-    if (hasLockChange) {
-      return {
-        shouldRelease: true,
-        reason:
-          'package.json devDependencies-only change with bun.lock in the diff — ' +
-          'lockfile regen may move an in-range runtime resolution; releasing (fail open)',
-      }
-    }
+    // Only devDependencies (or other non-runtime fields) changed
     return {
       shouldRelease: false,
       reason: 'package.json changed but only devDependencies (or non-runtime fields) differ',

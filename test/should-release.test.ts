@@ -935,22 +935,25 @@ describe('should-release — bunfig.toml change triggers release', () => {
   })
 })
 
-describe('should-release — bun.lock + proven non-artifact devDependency change releases (rm-167)', () => {
-  it('releases when lock + devDependencies changed but no runtime fields changed', () => {
-    // rm-167: the devDeps-only skip is only sound when the lockfile is
-    // UNCHANGED. A devDeps-only manifest edit whose lockfile regen moved
-    // an in-range runtime resolution still changes the image, so the guard
-    // fails open and releases. (This expectation intentionally flipped from
-    // skip in cycle 11 — see ROADMAP rm-167 / assess finding F2.)
+describe('should-release — bun.lock + proven non-artifact devDependency change (rm-167, flipped 2026.11.28)', () => {
+  it('skips when lock + proven devDependencies changed but no runtime fields changed', () => {
+    // rm-167 history: cycle 11 made lock+devDeps fail OPEN (release) because a
+    // lockfile regen could move an in-range runtime resolution into the image.
+    // Upstream 2026.11.28 redesigned the classifier for the batch pipeline:
+    // release-batch.ts renders per-commit notes by running this classifier, and
+    // the pending-review requeue rechecks it — a proven devDeps+lock bump is
+    // noise there, deliberately skipped (upstream test pins the same shape).
+    // Unknown devDependency changes still fail open (see the unknown-devdep
+    // describe below), so the image-safety net survives the flip.
     const base = writePkg(tmpDir, 'base.json', BASE_PKG)
     const head = writePkg(tmpDir, 'head.json', {
       ...BASE_PKG,
       devDependencies: {...BASE_PKG.devDependencies, vitest: '4.1.8'},
     })
     const {exitCode, stdout} = runGuard('package.json\nbun.lock', base, head)
-    expect(exitCode).toBe(0)
-    expect(stdout).toMatch(/^release:/)
-    expect(stdout).toMatch(/bun\.lock/)
+    expect(exitCode).toBe(1)
+    expect(stdout).toMatch(/^skip:/)
+    expect(stdout).toMatch(/devDependencies/)
   })
 })
 

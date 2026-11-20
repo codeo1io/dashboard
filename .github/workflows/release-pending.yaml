@@ -28,6 +28,14 @@ jobs:
     steps:
       - id: route
         env:
+          # Fork gate (item 461b): the batch pipeline is upstream-owner-owned —
+          # it needs the fro-bot release App (APPLICATION_ID/APPLICATION_PRIVATE_KEY)
+          # to mint release/pending and merge the batch PR, none of which exist on
+          # this fork. Without the App the route collapses to no-op so the job
+          # never reds; the fork's own release path is release.yaml's union
+          # (batch-notes branch stays inert until an App-authored batch squash
+          # actually exists; the legacy classifier branch does the releasing).
+          HAS_RELEASE_APP: ${{ secrets.APPLICATION_ID != '' && secrets.APPLICATION_PRIVATE_KEY != '' }}
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
           ACTOR_ID: ${{ github.actor_id }}
@@ -43,6 +51,13 @@ jobs:
           WAKE_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           REPO: ${{ github.repository }}
         run: |
+          # Fork gate: no release App on this fork -> batch pipeline is inert
+          # (mode stays empty = execute job skipped). Upstream-owner machinery.
+          if [ "$HAS_RELEASE_APP" != true ]; then
+            echo "mode=" >> "$GITHUB_OUTPUT"
+            echo "Release App not configured on this fork; batch pipeline inert (fork releases via the legacy classifier)."
+            exit 0
+          fi
           mode=''
           if [[ "$REF" == refs/heads/main ]]; then
             case "$EVENT" in
