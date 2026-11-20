@@ -68,6 +68,16 @@ import process from 'node:process'
 import {afterEach, beforeEach, describe, expect, it} from 'vitest'
 import {parse} from 'yaml'
 
+// ---------------------------------------------------------------------------
+// Fork post-2026.11.28 adoption: release-pending.yaml re-runs the guard script
+// as its recheck classifier, so the corpus module stays live infrastructure.
+// The publisher trigger becomes a UNION: batch-notes-only pushes mint a
+// release via the verified release/pending batch-squash path (upstream's
+// 2026.11.28 model), everything else keeps the fork's legacy classifier — so
+// the rm-248 parity tests below stay live, with batch.md consciously
+// trigger-only in scripts/release-paths.ts.
+// ---------------------------------------------------------------------------
+
 import {
   HARD_RELEASE_DIR_PREFIXES,
   HARD_RELEASE_FILE_PATHS,
@@ -296,11 +306,29 @@ describe('should-release — public/** changes trigger release', () => {
 function readPathsFilter(): string {
   const workflow = readFileSync(resolve(process.cwd(), '.github/workflows/release.yaml'), 'utf8')
   const start = workflow.indexOf('    paths:')
-  const end = workflow.indexOf('  workflow_dispatch:')
+  const end = workflow.indexOf('\nconcurrency:')
   expect(start).toBeGreaterThanOrEqual(0)
   expect(end).toBeGreaterThan(start)
   return workflow.slice(start, end)
 }
+
+describe('should-release — publisher trigger union (fork, post-2026.11.28)', () => {
+  // Upstream 2026.11.28 made the publisher listen ONLY for batch notes; the
+  // fork keeps its merge-driven classifier, so the filter is a union and this
+  // pins both members plus workflow_dispatch (the fork's operator override).
+  it('publisher filter carries the batch-notes path alongside the legacy classifier paths', () => {
+    const filter = readPathsFilter()
+    expect(filter).toContain('docs/releases/batch.md')
+    expect(filter).toMatch(/^\s+- bun\.lock$/m)
+    expect(filter).toMatch(/^\s+- bunfig\.toml$/m)
+    expect(filter).not.toContain('pnpm-lock.yaml')
+  })
+
+  it('workflow_dispatch remains the fork operational override', () => {
+    const workflow = readFileSync(resolve(process.cwd(), '.github/workflows/release.yaml'), 'utf8')
+    expect(workflow).toContain('workflow_dispatch:')
+  })
+})
 
 describe('should-release — workflow path filter parity', () => {
   // GitHub Actions filters on.push.paths BEFORE the guard script runs, so any
@@ -357,16 +385,6 @@ describe('should-release — bunfig.toml change triggers release', () => {
     const {exitCode, stdout} = runGuard('bunfig.toml', base, head)
     expect(exitCode).toBe(0)
     expect(stdout).toMatch(/^release:/)
-  })
-
-  it('release.yaml on.push.paths includes the Bun lockfile and config', () => {
-    const filter = readPathsFilter()
-    expect(filter).toMatch(/^\s+- bun\.lock$/m)
-    expect(filter).toMatch(/^\s+- bunfig\.toml$/m)
-  })
-
-  it('release.yaml on.push.paths does not list the pnpm lockfile', () => {
-    expect(readPathsFilter()).not.toContain('pnpm-lock.yaml')
   })
 })
 
@@ -917,22 +935,25 @@ describe('should-release — bunfig.toml change triggers release', () => {
   })
 })
 
-describe('should-release — bun.lock + proven non-artifact devDependency change releases (rm-167)', () => {
-  it('releases when lock + devDependencies changed but no runtime fields changed', () => {
-    // rm-167: the devDeps-only skip is only sound when the lockfile is
-    // UNCHANGED. A devDeps-only manifest edit whose lockfile regen moved
-    // an in-range runtime resolution still changes the image, so the guard
-    // fails open and releases. (This expectation intentionally flipped from
-    // skip in cycle 11 — see ROADMAP rm-167 / assess finding F2.)
+describe('should-release — bun.lock + proven non-artifact devDependency change (rm-167, flipped 2026.11.28)', () => {
+  it('skips when lock + proven devDependencies changed but no runtime fields changed', () => {
+    // rm-167 history: cycle 11 made lock+devDeps fail OPEN (release) because a
+    // lockfile regen could move an in-range runtime resolution into the image.
+    // Upstream 2026.11.28 redesigned the classifier for the batch pipeline:
+    // release-batch.ts renders per-commit notes by running this classifier, and
+    // the pending-review requeue rechecks it — a proven devDeps+lock bump is
+    // noise there, deliberately skipped (upstream test pins the same shape).
+    // Unknown devDependency changes still fail open (see the unknown-devdep
+    // describe below), so the image-safety net survives the flip.
     const base = writePkg(tmpDir, 'base.json', BASE_PKG)
     const head = writePkg(tmpDir, 'head.json', {
       ...BASE_PKG,
       devDependencies: {...BASE_PKG.devDependencies, vitest: '4.1.8'},
     })
     const {exitCode, stdout} = runGuard('package.json\nbun.lock', base, head)
-    expect(exitCode).toBe(0)
-    expect(stdout).toMatch(/^release:/)
-    expect(stdout).toMatch(/bun\.lock/)
+    expect(exitCode).toBe(1)
+    expect(stdout).toMatch(/^skip:/)
+    expect(stdout).toMatch(/devDependencies/)
   })
 })
 
