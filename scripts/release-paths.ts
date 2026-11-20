@@ -54,4 +54,9 @@ export const HARD_RELEASE_ROOT_TSCONFIG_GLOB = 'tsconfig*.json'
 export const WORKFLOW_TRIGGER_ONLY_PATHS: readonly string[] = [
   'package.json',
   'bun.lock',
+  // 2026.11.28 batch adoption (item 461b): the batch-notes file is a publisher
+  // trigger, not a hard-release classifier path — a batch.md-only push is the
+  // verified release/pending squash (or an operator runbook edit), both decided
+  // in the workflow guard before the classifier runs.
+  'docs/releases/batch.md',
 ]

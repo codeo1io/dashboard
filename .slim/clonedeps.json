@@ -1,26 +1,26 @@
 {
   "version": "1.0.0",
-  "updatedAt": "2026-11-12T15:45:00.000Z",
+  "updatedAt": "2026-11-20T05:55:28.000Z",
   "dependencies": [
     {
       "name": "@fro-bot/gateway",
-      "resolvedVersion": "v0.139.1",
+      "resolvedVersion": "v0.146.0",
       "repoUrl": "https://github.com/fro-bot/agent.git",
-      "ref": "v0.139.1",
+      "ref": "v0.146.0",
       "path": ".slim/clonedeps/repos/fro-bot__agent",
       "packagePath": "packages/gateway",
       "reason": "Gateway GitHub App client, operator OAuth return_to allowlist contract, config.ts secret readers, and Hono build/serve split that the dashboard mirrors.",
-      "pinCommit": "dc05527ab5a54fcc142040b04c7a4ef94f84210c"
+      "pinCommit": "65239fc570b0e7adc3c0d0c263282ee91ff6108d"
     },
     {
       "name": "@fro-bot/runtime",
-      "resolvedVersion": "v0.139.1",
+      "resolvedVersion": "v0.146.0",
       "repoUrl": "https://github.com/fro-bot/agent.git",
-      "ref": "v0.139.1",
+      "ref": "v0.146.0",
       "path": ".slim/clonedeps/repos/fro-bot__agent",
       "packagePath": "packages/runtime",
       "reason": "Runtime shared logger (Logger interface + redactSensitiveFields + Result<T,E> shape) the dashboard's logger and app-client error returns must match.",
-      "pinCommit": "dc05527ab5a54fcc142040b04c7a4ef94f84210c"
+      "pinCommit": "65239fc570b0e7adc3c0d0c263282ee91ff6108d"
     }
   ]
 }
