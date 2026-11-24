@@ -12,14 +12,19 @@ const backendConfig = await defineConfig(
     // .agents/ is a vendored shared-skill bundle (e.g. .agents/skills/impeccable) of
     // third-party .mjs/.md files — not our source; linting it reports tens of thousands
     // of errors.
+    // wiki-writer is excluded from this fork entirely (never-absorb doctrine,
+    // rm-252/259): its directory does not exist, so nothing needs an ignore.
+    // .slim/ holds the cloned dependency-source mirrors (.slim/clonedeps/repos/*).
+    // Mirrors are provisioned on demand (AGENTS.md recipe, rm-1510's lockstep
+    // re-provision instructions) and each carries its OWN eslint config needing
+    // no parent config (upstream 2026.11.29 #899 restructure: the narrowTrees
+    // scoping below now keeps web/.opencode out of BACKEND rules; the fork keeps
+    // the .slim ignore here because mirrors are not lintable source).
     ignores: [
       'docs/plans/**',
       'docs/solutions/**',
       'docs/brainstorms/**',
       '.agents/**',
-      // Fork-only trees (codeo1io/dashboard): vendored agent bundle + generated
-      // slim artifacts — not hand-authored source; kept out of lint scope.
-      '.opencode/**',
       '.slim/**',
     ],
     typescript: {

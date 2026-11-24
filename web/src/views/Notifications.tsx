@@ -142,9 +142,13 @@ export function Notifications({
     // the last-known value synchronously, so a gateway key rotation is
     // detected on the following sweep at the latest, and a hung vapid-key
     // endpoint can only delay detection, never break the sweep.
+    // Fail-open guard (2026.11.29 union): a client without getVapidKey (test
+    // doubles, partial stubs) skips the refresh entirely — same posture as a
+    // failed read: last-known value stands, never an unhandled rejection.
     const keyVersionCache = vapidKeyVersionRef.current
     if (
       keyVersionCache !== null &&
+      typeof pushClient.getVapidKey === 'function' &&
       Date.now() - keyVersionCache.lastRefreshedAt >= VAPID_KEY_VERSION_REFRESH_MS
     ) {
       keyVersionCache.lastRefreshedAt = Date.now()

@@ -86,12 +86,22 @@ describeWorkflowGuard('workflow hardening guard — fro-bot.yaml (rm-1450 restor
     const steps = splitSteps(text)
     expect(steps.length).toBeGreaterThanOrEqual(4)
     const consumers = steps.filter(step => step.includes('secrets.FRO_BOT_PAT'))
-    // Checkout (token:) and Run Fro Bot (github-token:) at minimum.
+    // Checkout (token:), Run Fro Bot (github-token:), and — since upstream
+    // #886/#887's trusted-PR-comment-head resolver (2026.11.29 adoption) — the
+    // prehead step (GH_TOKEN for the permission/PR lookups).
     expect(consumers.length).toBeGreaterThanOrEqual(2)
     for (const step of consumers) {
-      expect(step, `ungated FRO_BOT_PAT consumer step:\n${step.slice(0, 200)}`).toContain(
-        SCHEDULE_GATE_IF,
-      )
+      // The prehead resolver runs ONLY on trusted issue_comment events (its own
+      // gate excludes every other trigger — scheduled runs included), so its
+      // trust gate is the event scope, not the secret-presence gate.
+      const gated =
+        step.includes(SCHEDULE_GATE_IF) ||
+        (step.includes('id: prehead') &&
+          step.includes("github.event_name == 'issue_comment'"))
+      expect(
+        gated,
+        `ungated FRO_BOT_PAT consumer step:\n${step.slice(0, 200)}`,
+      ).toBe(true)
     }
   })
 

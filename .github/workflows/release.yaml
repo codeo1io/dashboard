@@ -531,12 +531,10 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
-          # rm-882 (absorb of upstream #641): create the tag the image was
-          # BUILT with (steps.version.outputs.tag), not a fresh computation —
-          # the stamp in the footer chip and the git tag are then the same
-          # string by construction. A lost race fails loudly here instead of
-          # silently minting a different version than the promoted image.
-          TAG="${{ steps.version.outputs.tag }}"
+          # rm-882 (absorb of upstream #641, kept through #894's env-data refactor):
+          # TAG arrives precomputed from steps.version.outputs.tag via env — the tag
+          # the image was BUILT with, not a fresh computation. The stamp in the
+          # footer chip and the git tag are the same string by construction.
           echo "Creating precomputed release tag $TAG"
           gh api --method POST \
             "repos/${{ github.repository }}/git/refs" \

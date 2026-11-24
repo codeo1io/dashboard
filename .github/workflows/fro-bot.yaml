@@ -424,9 +424,12 @@ jobs:
           [[ "$(git rev-parse HEAD)" == "$TRUSTED_HEAD_SHA" ]] || { echo '::error::Trusted checkout HEAD mismatch'; exit 1; }
 
       - name: 📦 Setup
-        # Fork guard (no FRO_BOT_PAT): skip on unprovisioned scheduled runs;
-        # upstream guard: default-branch Setup when not checking out a trusted PR head.
-        if: ${{ (github.event_name != 'schedule' || env.HAS_FRO_BOT_PAT == 'true') && steps.prehead.outputs.ref == '' }}
+        # Upstream #887: default-branch Setup only — the trusted-PR-head route
+        # checks out the PR tree, whose node_modules the shared Setup would
+        # clobber/mismatch. The fork's unprovisioned-secret guard does not need
+        # a Setup gate: Setup consumes no FRO_BOT_PAT, and the schedule route is
+        # already stopped at the warning step above + the gated Run step below.
+        if: ${{ steps.prehead.outputs.ref == '' }}
         uses: ./.github/actions/setup
 
       - name: Run Fro Bot
