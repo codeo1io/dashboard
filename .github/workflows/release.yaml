@@ -279,12 +279,17 @@ jobs:
           provenance: mode=max
 
       - name: 🧪 Smoke-test candidate image by digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          IMG="ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"
+          IMG="ghcr.io/${{ github.repository }}@$DIGEST"
           docker network create smoke-net
           COOKIE_KEY=$(openssl rand -hex 32)
+          DASHBOARD_LISTENER_INGEST_KEY=$(openssl rand -hex 32)
+          export DASHBOARD_LISTENER_INGEST_KEY
           docker run -d --name dashboard-smoke --network smoke-net \
             -e DASHBOARD_COOKIE_KEY="$COOKIE_KEY" -e DASHBOARD_OPERATOR_LOGIN=smoke-test \
+            -e DASHBOARD_LISTENER_DB=:memory: -e DASHBOARD_LISTENER_INGEST_KEY \
             -p 127.0.0.1:8080:3000 "$IMG"
           # poll host-published port (catches 127.0.0.1 bind regression)
           ok=0
@@ -302,6 +307,17 @@ jobs:
               >/dev/null 2>&1; then sib=1; fi
           if [ "$ok" != 1 ] || [ "$sib" != 1 ]; then
             echo "SMOKE FAILED (host_port_ok=$ok sibling_ok=$sib)"
+            docker logs dashboard-smoke || true
+            exit 1
+          fi
+          # An unsigned request must reach the enabled listener and be rejected.
+          if ! listener_status=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:8080/api/listener/ingest); then
+            echo "SMOKE FAILED: listener ingest request failed"
+            docker logs dashboard-smoke || true
+            exit 1
+          fi
+          if [ "$listener_status" != 401 ]; then
+            echo "SMOKE FAILED: listener ingest returned $listener_status, expected 401"
             docker logs dashboard-smoke || true
             exit 1
           fi
@@ -435,7 +451,7 @@ jobs:
           severity: HIGH,CRITICAL
           limit-severities-for-sarif: true
           exit-code: '0'
-          version: v0.76.0
+          version: v0.76.2
 
       - name: 📦 Upload Trivy SARIF artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -445,7 +461,7 @@ jobs:
           retention-days: 5
 
       - name: 🛡️ Upload Trivy results to code scanning
-        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
+        uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4
         with:
           sarif_file: trivy-results-${{ steps.digest.outputs.normalized }}.sarif
           category: trivy/release-image
@@ -474,7 +490,7 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: '1'
-          version: v0.76.0
+          version: v0.76.2
 
       # rm-882: setup-node moved to the build job (tag precompute); the promote
       # job no longer needs a Node runtime of its own.
@@ -513,6 +529,7 @@ jobs:
         if: ${{ steps.app-token.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
           # rm-882 (absorb of upstream #641): create the tag the image was
           # BUILT with (steps.version.outputs.tag), not a fresh computation —
@@ -531,9 +548,11 @@ jobs:
 
       - name: 📦 Promote release-unique image tags
         if: ${{ steps.app-token.outcome == 'success' }}
+        env:
+          CALVER: ${{ steps.calver.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          CALVER="${{ steps.calver.outputs.tag }}"
-          SRC="ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"
+          SRC="ghcr.io/${{ github.repository }}@$DIGEST"
           SHORT_SHA="$(git rev-parse --short HEAD)"
 
           for TAG in "$CALVER" "sha-${SHORT_SHA}"; do
@@ -568,8 +587,8 @@ jobs:
             got=$(docker buildx imagetools inspect \
               "ghcr.io/${{ github.repository }}:$TAG" \
               | awk '/^Digest:/{d=$2} END{print d}')
-            if [ "$got" != "${{ steps.build.outputs.digest }}" ]; then
-              echo "DIGEST MISMATCH on $TAG: got=$got expected=${{ steps.build.outputs.digest }}"
+            if [ "$got" != "$DIGEST" ]; then
+              echo "DIGEST MISMATCH on $TAG: got=$got expected=$DIGEST"
               exit 1
             fi
           done
@@ -579,9 +598,9 @@ jobs:
         if: ${{ steps.app-token.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          CALVER: ${{ steps.calver.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          CALVER="${{ steps.calver.outputs.tag }}"
-          DIGEST="${{ steps.build.outputs.digest }}"
           SHA="${{ github.sha }}"
 
           gh release create "$CALVER" \
@@ -596,8 +615,10 @@ jobs:
             --notes "${EXISTING_BODY}${IMAGE_BLOCK}"
 
       - name: 🏷️ Promote latest image tag
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          SRC="ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}"
+          SRC="ghcr.io/${{ github.repository }}@$DIGEST"
           verified=0
           for attempt in 1 2 3; do
             got=""
@@ -606,7 +627,7 @@ jobs:
                 && got="$(docker buildx imagetools inspect \
                   "ghcr.io/${{ github.repository }}:latest" \
                   | awk '/^Digest:/{d=$2} END{print d}')" \
-                && [ "$got" = "${{ steps.build.outputs.digest }}" ]; then
+                && [ "$got" = "$DIGEST" ]; then
               verified=1
               break
             fi
@@ -628,8 +649,8 @@ jobs:
         if: failure()
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ steps.calver.outputs.tag }}
         run: |
-          TAG="${{ steps.calver.outputs.tag }}"
           if [ -z "$TAG" ]; then
             echo "No Git ref was created; nothing to clean up."
             exit 0

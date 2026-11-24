@@ -44,15 +44,6 @@ export {REPO_STATUS_QUERY_REGISTRY} from './query-registry.ts'
 // ---------------------------------------------------------------------------
 
 /**
- * A single GraphQL query function. Accepts a query string and variables,
- * returns the raw response data. Injectable so tests never hit the network.
- *
- * @deprecated Use GraphqlQueryForInstallationFn instead — this type is kept
- * for backward compatibility with existing tests that inject graphqlQuery.
- */
-export type GraphqlQueryFn = (query: string, variables: Record<string, unknown>) => Promise<unknown>
-
-/**
  * Per-installation GraphQL query function. Accepts an installationId so the
  * implementation can mint the correct credential for each repo.
  * Injectable so tests never hit the network.
