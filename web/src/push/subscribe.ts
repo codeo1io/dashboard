@@ -197,6 +197,7 @@ export function buildPushClient(opts?: BuildPushClientOptions): PushClient {
     async subscribePush(subscriptionJson, csrfToken, idempotencyKey, signal) {
       if (csrfToken.trim() === '') return err({kind: 'validation'})
       if (idempotencyKey.trim() === '') return err({kind: 'validation'})
+      if (signal?.aborted) return err({kind: 'network'})
 
       const post = (token: string): Promise<Response> =>
         browserFetch(withFixtureSessionId(`${endpointBase}/subscriptions`), {
@@ -220,7 +221,7 @@ export function buildPushClient(opts?: BuildPushClientOptions): PushClient {
         const retryCsrfResult = await this.refreshCsrf()
         if (!retryCsrfResult.success) return retryCsrfResult
 
-        if (signal?.aborted === true) return err({kind: 'network'})
+        if (signal?.aborted) return err({kind: 'network'})
 
         const retryRes = await post(retryCsrfResult.data)
         if (retryRes.ok) return ok(undefined)
@@ -393,6 +394,36 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | 'ti
 }
 
 /**
+ * rm-272 bounded local read that keeps the two degenerate outcomes distinct
+ * (upstream #884 needs the distinction): 'timed-out' => treat as "no local
+ * subscription" (the conservative no-op paths below); 'rejected' => an
+ * inconclusive read (unsubscribe reports localReadFailed, the sweep skips).
+ */
+type BoundedLocalRead =
+  | {readonly kind: 'resolved'; readonly subscription: MinimalPushSubscription | null}
+  | {readonly kind: 'timed-out'}
+  | {readonly kind: 'rejected'}
+
+function boundedLocalRead(
+  read: () => Promise<MinimalPushSubscription | null>,
+  timeoutMs: number,
+): Promise<BoundedLocalRead> {
+  return new Promise(resolve => {
+    const timer = setTimeout(() => resolve({kind: 'timed-out'}), timeoutMs)
+    read().then(
+      subscription => {
+        clearTimeout(timer)
+        resolve({kind: 'resolved', subscription})
+      },
+      () => {
+        clearTimeout(timer)
+        resolve({kind: 'rejected'})
+      },
+    )
+  })
+}
+
+/**
  * Opt-in orchestration: `serviceWorker.ready` (5s timeout) → capability/iOS
  * gate → `Notification.requestPermission()` (skipped if already granted,
  * e.g. on a retry) → `getVapidKey` → `pushManager.subscribe` →
@@ -451,6 +482,14 @@ export async function subscribeOptIn(
 
   if (deps.signal?.aborted) return {kind: 'aborted'}
 
+  // A rejected read cannot establish ownership; keep normal opt-in behavior,
+  // but leave any subsequently acquired subscription alone on abort.
+  const absentBeforeSubscribe = await registration.pushManager.getSubscription().then(
+    existing => existing === null,
+    () => false,
+  )
+  if (deps.signal?.aborted) return {kind: 'aborted'}
+
   let subscription: MinimalPushSubscription
   try {
     subscription = await registration.pushManager.subscribe({
@@ -458,27 +497,25 @@ export async function subscribeOptIn(
       applicationServerKey: urlB64ToUint8Array(vapidKey.publicKey),
     })
   } catch {
-    return {kind: 'subscribe-failed'}
+    return {kind: deps.signal?.aborted ? 'aborted' : 'subscribe-failed'}
   }
 
-  if (deps.signal?.aborted) {
-    // subscribe() already created a local subscription but the gateway has
-    // not been told — drop it so no orphaned subscription lingers until a
-    // reconcile sweep (rm-264).
-    await subscription.unsubscribe().catch(() => false)
+  // Upstream #884 ownership-aware abort: release the subscription only if it
+  // was absent before this flow acquired it (a pre-existing subscription is
+  // not ours to drop). Subsumes the fork's rm-264 orphaned-subscription drop —
+  // that concern is exactly the absent-before-acquire case, now owned by this
+  // gate (and pinned by upstream's abort-cleanup battery).
+  const abort = async (): Promise<SubscribeOutcome> => {
+    if (absentBeforeSubscribe) await subscription.unsubscribe().catch(() => false)
     return {kind: 'aborted'}
   }
+  if (deps.signal?.aborted) return abort()
 
   const csrfResult = await deps.pushClient.refreshCsrf()
+  if (deps.signal?.aborted) return abort()
   if (!csrfResult.success) {
     await subscription.unsubscribe().catch(() => false)
     return {kind: 'subscribe-failed'}
-  }
-
-  if (deps.signal?.aborted) {
-    // Same window as above: local subscription live, gateway uninformed.
-    await subscription.unsubscribe().catch(() => false)
-    return {kind: 'aborted'}
   }
 
   const postResult = await deps.pushClient.subscribePush(
@@ -487,6 +524,8 @@ export async function subscribeOptIn(
     idempotencyKey,
     deps.signal,
   )
+
+  if (deps.signal?.aborted) return abort()
 
   if (!postResult.success) {
     // A failed POST means the gateway never learned about the subscription —
@@ -535,17 +574,28 @@ export async function resubscribeStaleKey(deps: SubscribeDeps): Promise<Subscrib
   if (deps.signal?.aborted) return {kind: 'aborted'}
 
   const vapidResult = await deps.pushClient.getVapidKey()
+  if (deps.signal?.aborted) return {kind: 'aborted'}
   if (!vapidResult.success) return {kind: 'subscribe-failed'}
   if (vapidResult.data.pushDisabled) return {kind: 'unsupported'}
   const vapidKey = vapidResult.data.vapidKey
   if (vapidKey === undefined) return {kind: 'subscribe-failed'}
 
   const existing = await registration.pushManager.getSubscription()
+  if (deps.signal?.aborted) return {kind: 'aborted'}
   if (existing !== null) {
     await existing.unsubscribe().catch(() => false)
   }
 
   if (deps.signal?.aborted) return {kind: 'aborted'}
+
+  let absentBeforeSubscribe = existing === null
+  if (existing !== null) {
+    absentBeforeSubscribe = await registration.pushManager.getSubscription().then(
+      current => current === null,
+      () => false,
+    )
+    if (deps.signal?.aborted) return {kind: 'aborted'}
+  }
 
   let subscription: MinimalPushSubscription
   try {
@@ -555,48 +605,46 @@ export async function resubscribeStaleKey(deps: SubscribeDeps): Promise<Subscrib
     })
   } catch {
     if (deps.signal?.aborted) return {kind: 'aborted'}
+    absentBeforeSubscribe = await registration.pushManager.getSubscription().then(
+      current => current === null,
+      () => false,
+    )
+    if (deps.signal?.aborted) return {kind: 'aborted'}
     try {
       subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: urlB64ToUint8Array(vapidKey.publicKey),
       })
     } catch {
-      return {kind: 'subscribe-failed'}
+      return {kind: deps.signal?.aborted ? 'aborted' : 'subscribe-failed'}
     }
   }
 
-  if (deps.signal?.aborted) {
-    // Fresh local subscription, gateway uninformed — drop it (rm-264).
-    await subscription.unsubscribe().catch(() => false)
+  // Upstream #884 ownership-aware abort (absentBeforeSubscribe tracked across
+  // the unsubscribe -> subscribe -> retry sequence); supersedes rm-264's
+  // unconditional drop — see subscribeOptIn.
+  const abort = async (): Promise<SubscribeOutcome> => {
+    if (absentBeforeSubscribe) await subscription.unsubscribe().catch(() => false)
     return {kind: 'aborted'}
   }
+  if (deps.signal?.aborted) return abort()
 
   const csrfResult = await deps.pushClient.refreshCsrf()
+  if (deps.signal?.aborted) return abort()
   if (!csrfResult.success) {
     await subscription.unsubscribe().catch(() => false)
     return {kind: 'subscribe-failed'}
   }
 
-  if (deps.signal?.aborted) {
-    // Same window: local subscription live, gateway uninformed (rm-264).
-    await subscription.unsubscribe().catch(() => false)
-    return {kind: 'aborted'}
-  }
-
   const postResult = await deps.pushClient.subscribePush(subscription.toJSON(), csrfResult.data, idempotencyKey, deps.signal)
 
+  if (deps.signal?.aborted) return abort()
   if (!postResult.success) {
-    if (deps.signal?.aborted) {
-      // First POST failed (gateway uninformed) and retrying is pointless —
-      // drop the local subscription (rm-264).
-      await subscription.unsubscribe().catch(() => false)
-      return {kind: 'aborted'}
-    }
-
     const csrfShaped = postResult.error.kind === 'http' && postResult.error.status === 400
     let retryCsrfToken = csrfResult.data
     if (csrfShaped) {
       const retryCsrfResult = await deps.pushClient.refreshCsrf()
+      if (deps.signal?.aborted) return abort()
       if (!retryCsrfResult.success) {
         await subscription.unsubscribe().catch(() => false)
         return {kind: 'subscribe-failed'}
@@ -604,12 +652,7 @@ export async function resubscribeStaleKey(deps: SubscribeDeps): Promise<Subscrib
       retryCsrfToken = retryCsrfResult.data
     }
 
-    if (deps.signal?.aborted) {
-      // Retry not yet sent: local subscription live, gateway uninformed
-      // (the first POST failed) — drop it (rm-264).
-      await subscription.unsubscribe().catch(() => false)
-      return {kind: 'aborted'}
-    }
+    if (deps.signal?.aborted) return abort()
 
     const retryPostResult = await deps.pushClient.subscribePush(
       subscription.toJSON(),
@@ -618,14 +661,13 @@ export async function resubscribeStaleKey(deps: SubscribeDeps): Promise<Subscrib
       deps.signal,
     )
 
-    if (retryPostResult.success) {
-      return {kind: 'subscribed'}
+    if (deps.signal?.aborted) return abort()
+
+    if (!retryPostResult.success) {
+      await subscription.unsubscribe().catch(() => false)
+      return {kind: 'subscribe-failed'}
     }
 
-    // Retry failed: gateway uninformed — drop the local subscription (this
-    // also covers the abort-after-retry race, rm-264).
-    await subscription.unsubscribe().catch(() => false)
-    return deps.signal?.aborted ? {kind: 'aborted'} : {kind: 'subscribe-failed'}
   }
 
   return {kind: 'subscribed'}
@@ -647,17 +689,24 @@ export interface UnsubscribeDeps {
  * cleanup (dead-sub detection, session revocation, privacy delete). The
  * endpoint is NEVER persisted solely to work around this.
  */
-export async function unsubscribeOptOut(deps: UnsubscribeDeps): Promise<{readonly gatewayUnsubscribeCalled: boolean}> {
+export async function unsubscribeOptOut(deps: UnsubscribeDeps): Promise<
+  | {readonly gatewayUnsubscribeCalled: boolean; readonly localReadFailed?: never}
+  | {readonly gatewayUnsubscribeCalled: false; readonly localReadFailed: true}
+> {
   const mintKey = deps.mintIdempotencyKey ?? mintIdempotencyKey
-  // rm-272: bound the local read — `navigator.serviceWorker.ready` never settles
-  // when no registration exists, and logout cleanup must not hang on it. A
-  // timeout (or rejection, which withTimeout collapses to 'timeout') reads as
-  // "no local subscription": the Gateway call is skipped per the contract above.
-  const localRead = await withTimeout(
-    deps.getLocalSubscription(),
+  // rm-272 (fork): bound the local read — `navigator.serviceWorker.ready` never
+  // settles when no registration exists, and logout cleanup must not hang on
+  // it. A timeout reads as "no local subscription": the Gateway call is
+  // skipped per the contract above. Upstream #884: a REJECTED read is
+  // inconclusive — no cleanup, retryable (localReadFailed: true).
+  const localRead = await boundedLocalRead(
+    deps.getLocalSubscription,
     deps.localReadTimeoutMs ?? DEFAULT_LOCAL_READ_TIMEOUT_MS,
   )
-  const subscription = localRead === 'timeout' ? null : localRead
+  if (localRead.kind === 'rejected') {
+    return {gatewayUnsubscribeCalled: false, localReadFailed: true}
+  }
+  const subscription = localRead.kind === 'timed-out' ? null : localRead.subscription
 
   if (subscription === null) {
     // Endpointless case — nothing to unsubscribe locally or remotely.
@@ -746,22 +795,26 @@ export async function runReconcileSweep(
   const minIntervalMs = deps.minIntervalMs ?? DEFAULT_MIN_INTERVAL_MS
 
   const permission = getPermission()
-  // rm-272: bound the local read. It rides `navigator.serviceWorker.ready` in
-  // production, which NEVER settles when no registration exists — this was the
-  // file's only unbounded serviceWorkerReady await (the subscribe/resubscribe
+  // rm-272 (fork): bound the local read. It rides `navigator.serviceWorker.ready`
+  // in production, which NEVER settles when no registration exists — this was
+  // the file's only unbounded serviceWorkerReady await (the subscribe/resubscribe
   // siblings wrap theirs in withTimeout). It also runs BEFORE the
   // unchanged/min-interval guards below, so an unbounded read hung EVERY
-  // focus/visibility sweep, not just the first. A timeout (or rejection,
-  // collapsed into 'timeout') reads as "no local subscription": the handoff
-  // derivation stays conservative — no local hash => 'not_subscribed' => no
-  // destructive action (the reconcile guard is unconditional since the
-  // subscription-list absorb) — so a slow or stuck
-  // service worker can never license a teardown.
-  const localRead = await withTimeout(
-    deps.getLocalSubscription(),
+  // focus/visibility sweep, not just the first. A timeout reads as
+  // "no local subscription": the handoff derivation stays conservative — no
+  // local hash => 'not_subscribed' => no destructive action (the reconcile
+  // guard is unconditional since the subscription-list absorb) — so a slow or
+  // stuck service worker can never license a teardown.
+  // Upstream #884: a REJECTED read is inconclusive — skip the sweep without
+  // mutating anything (the next sweep retries).
+  const localRead = await boundedLocalRead(
+    deps.getLocalSubscription,
     deps.localReadTimeoutMs ?? DEFAULT_LOCAL_READ_TIMEOUT_MS,
   )
-  const localSubscription = localRead === 'timeout' ? null : localRead
+  if (localRead.kind === 'rejected') {
+    return {skipped: true, action: undefined, uiState: undefined, nextCache: cache}
+  }
+  const localSubscription = localRead.kind === 'timed-out' ? null : localRead.subscription
   const subscriptionPresent = localSubscription !== null
 
   // cache.handoffState === undefined means no sweep has run yet — always run the

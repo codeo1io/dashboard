@@ -254,3 +254,14 @@ are pixel-neutral). Riders grafted at their authored walls (rm-252 merge
 rider, rm-271 registry-pins + trio doctrine, rm-693 OperatorPushHealth);
 rm-249's kill-switch rider dropped as false-for-tree, already corrected and
 superseded on main. Full disposition in the ROADMAP tail integrate comment.
+
+Landing-record re-census at the 2026-11-24 render repair (adoption branch
+fix/adopt-2026.11.29, curing the rm-893-class 2026-11-21 managed render):
+**339 defs / 0 dups / max rm-2134** — the wall re-rendered from the
+canonical store by the emission-hygiene-patched hermes-roadmap renderer
+(codeo1io/hermes-roadmap#13: no trailing whitespace on empty fields,
+backticked container reprs and `[object Object]` fragments, content-derived
+track taxonomy restored at 7 values, empty-string criteria emit no line).
+The three cross-lineage refs re-dispositioned under the house fog
+convention (rm-553, rm-678) and the rm-13640 ref reworded to name its
+outcome. This doc remains the sole marker-bearing carrier.
