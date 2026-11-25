@@ -13,6 +13,11 @@ jobs:
   analysis:
     name: Scorecard analysis
     runs-on: ubuntu-latest
+    # rm-603 close-out: every scheduled check in this repo carries an explicit
+    # house ceiling (sibling: dependency-review.yaml's 10-minute rationale);
+    # without one a wedged scorecard-action or upload step burns a runner for
+    # GitHub's 360-minute default — this was the only unbounded workflow.
+    timeout-minutes: 10
     permissions:
       contents: read
       security-events: write

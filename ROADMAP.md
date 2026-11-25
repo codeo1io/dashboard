@@ -159,6 +159,16 @@
 - acceptance: scripts/roadmap-census.ts and test/roadmap-integrity-guard.test.ts exist and pass on a clean main checkout (content restored from batch parent 06396b4, census updated to the live ledger); the guard asserts the def count, zero duplicate ids, and the max id; the landing pipeline gains a post-merge check that `git ls-tree` of the merge result contains every file the batch doc declares as a deliverable; green suite plus the recorded census on the landing PR
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
+### Release-pending App-token mint gains repository scoping (permission-scoped, installation-wide today)
+- id: `rm-2135` | track: security | priority: 88.0 | status: in_progress
+- acceptance: the release-pending.yaml execute-job create-github-app-token step (release-pending.yaml:105-110) adds `owner: ${{ github.repository_owner }}` and `repositories: ${{ github.event.repository.name }}`, matching the sibling narrowing proven at release.yaml:510-513 and the infra-dispatch mint at release.yaml:712; the permission-* inputs stay as-is (contents/pull-requests write remain needed); a comment names the excess-privilege scenario this closes (compromised runner or script injection in that job currently yields write access to every repository in the App installation for the token lifetime — scripts/release-pending.ts only ever operates on this repository); actionlint clean; the minted-token breadth is exactly this repository, verifiable by reading the step block
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Release rollback symmetry: promoted GHCR image tags removed on failure or promote-latest reordered after the release object
+- id: `rm-2136` | track: reliability | priority: 88.0 | status: in_progress
+- acceptance: the failure-path cleanup (release.yaml:644-663) also removes the promoted image tags (`$CALVER` and `sha-${SHORT_SHA}`) — `docker buildx imagetools rm` or a registry-API delete tolerating already-absent tags — so a failed release leaves no pullable version-pinned tags for a commit with no release; OR the step order changes so the Promote-latest step runs only after the GitHub Release object exists, with a comment recording which inversion the chosen cure closes (registry-published-without-release vs latest-repointed-at-a-rolled-back-release) and which residual remains; actionlint clean; rm-708 green-run gates unaffected
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
 ### Deterministic visual gate: pinned Playwright container image
 - id: `rm-142` | track: reliability | priority: 86.0 | status: in_progress
 - acceptance: visual job runs inside the mcr Playwright image matching the repo pin (or the documented lighter form: runs-on ubuntu-24.04 plus a written baseline-regen procedure); no runtime browser-install step remains; all three dark baselines regenerated once inside that image with provenance recorded in the visual spec header
@@ -330,6 +340,21 @@
 - acceptance: upstream fro-bot/dashboard PR #641 (+89/-45, 5 files, mergeable-clean 2026-10-16) absorbed with fork adaptations, LANDING as run 47f9aaefa379's batch: release.yaml hoists tag computation (node scripts/compute-release-tag.ts) into the build job and DELETES the 5-attempt tag-race retry loop, passing the tag as a Docker build-arg; Dockerfile gains `ARG DASHBOARD_VERSION=dev` -> `ENV VITE_DASHBOARD_VERSION` before `pnpm build:web`; AppShell.tsx footer shows the version, linking release notes only for calver `^\d{4}\.\d{2}\.\d+$` values (plain-text dev fallback) with the URL pointed at CODEO1IO/dashboard releases (not upstream); build-output-no-tracking allowed-origins grows `https://github.com` as a documented navigation link; the repo's actions/setup-node pin stays at v7.1.0 (949feb24); actionlint + AppShell tests (valid version links, dev/undefined/malformed render as plain text) + build-output-no-tracking green at the delta
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
+### SSE retry budget re-arms on sustained success (rm-220 rider)
+- id: `rm-2137` | track: operator-experience | priority: 72.0 | status: in_progress
+- acceptance: the operator-stream reducer resets retryCount to 0 when a reconnect succeeds — in the ready arm or on a sustained-live timer (>=60s connected) — so RETRY_MAX_COUNT semantics change from session-lifetime to consecutive-failure budget: a test proves five fully-recovered disconnects no longer reach terminal failed; the exponential backoff derivation from the pre-reset value stays monotonic within one recovery episode (documented in a comment); rm-220 remains the primary watchdog def — this rider only changes the budget semantics
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Listener ack surface works — or loudly declares itself broken — under gateway-session auth
+- id: `rm-2138` | track: operator-experience | priority: 72.0 | status: in_progress
+- acceptance: a recorded decision plus implementation for the ackCsrf wiring (server.ts:1280-1283): either the CSRF key derives from the gateway-session identity surface so ack mutations work with DASHBOARD_OPERATOR_LOGIN unset, or a boot warning names the mode limitation and the listener route docstring is corrected — whichever ships, the silent 403/503 class (csrf unavailable under an auth mode the docstring claims is covered) is eliminated; a test covers the gateway-session-mode wiring path; fail-closed preserved — no ack without a valid CSRF pair in either mode
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Shutdown closes the listener store after the server drain
+- id: `rm-2139` | track: reliability | priority: 72.0 | status: in_progress
+- acceptance: shutdown.ts reorders cleanup so closeListenerStore runs after closeServer completes (or at the force-exit deadline), eliminating the window where an in-flight listener request fails with database-connection-not-open during graceful drain; a test drives a request in flight across the drain and asserts no 500 from the store-closed state; the module drain contract comment (in-flight requests keep their sockets) becomes true end-to-end
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
 ### Reality canary for the GitHub data path (verify the real transport contract)
 - id: `rm-179` | track: security | priority: 71.0 | status: in_progress
 - acceptance: (c) lands with rm-177; (a) OR (b) lands as a scheduled canary (weekly, read-only, GITHUB_TOKEN only, never writes) whose red means the real API would reject our query today; the canary log shows a hash of the exact query text it executed; alert route documented (run conclusion + issue)
@@ -469,6 +494,11 @@
 - acceptance: the hermes-autonomy roadmap-sync renderer defect is recorded as an external defect with first-hand reproduction evidence — arrays and objects stringified into markdown link labels (a 20-element array label and literal `[object Object]` in the 3e3664c wall), and its whitespace pass re-introduces trailing-ws (the historical frozen-50 lint baseline); in-repo defense: an authoring convention (acceptance and signals values scalar or pipe-delimited, never bare bracket-comma label syntax) plus a guard that fails when the tree wall lints worse than the wall at merge-base HEAD,origin/main — the guard probe never modifies repository files and its detection is proven live on a deliberate bad render
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
+### Weekly hygiene workflow schedules the landed drift scripts (dry-run report, never auto-apply)
+- id: `rm-2140` | track: reliability | priority: 60.0 | status: in_progress
+- acceptance: one scheduled workflow (weekly cron, explicit permissions, timeout-minutes sized per the rm-603 house ceiling) runs sweep-stale-conductor-refs in dry-run report mode plus roadmap-ledger-check and conductor-pr-janitor (whichever exist in-tree), bubbling the report into the run summary; --apply stays push-gated and is NOT scheduled; the workflow comments the standing drift baseline it surfaces (1,267 local conductor/* heads, 4,477 total refs at the 2026-11-27 probe — the scripts are landed but no workflow invokes them, grep-verified); actionlint clean
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
 ### vitest 4→5 migration when the dated re-evaluation lands (2026-10-21)
 - id: `rm-1524` | track: reliability | priority: 59.5 | status: in_progress
 - evidence: campaign-recorded in dashboard ROADMAP.md
@@ -551,6 +581,11 @@
 - acceptance: `test/prose-residue-guard.test.ts` walk() prunes excluded directories during traversal (identical semantics; kills the cold-suite 30s-timeout class); snapshot-store `logPersistProblem` guards its context keys against payload shadowing (`path`/`error` inside `detail`) with a spy test covering the shadow path; lint census truthed to 50 with the two new bracket-group trips at ROADMAP.md:878/:880 backtick-wrapped (rider also carried by the restore spool family — fog rm-857, first landed wins); idempotency fallbacks stay owned by the rm-482 rider, not minted here
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
+### Landed-scripts test-coverage batch: schedule orchestration, preflight machine, gzip guards, canary branches
+- id: `rm-2141` | track: reliability | priority: 55.0 | status: in_progress
+- acceptance: (1) runPending schedule-mode orchestration (scripts/release-pending.ts:113-121) executes under test in both directions — an in-window Sunday/Wednesday-15:00-UTC env set proceeds to scheduleAttemptAllowed and an out-of-window set is refused with the exact refusal string; (2) scripts/preflight.ts gains a unit test covering the webdist freshness comparison, the actionlint warn-vs-fail classification, and the final exit aggregation with skip parsing; (3) scripts/gzip-static-sidecars.ts generator tests cover isCompressible compressed-extension rejection and skip-if-not-smaller — including the regression class where dropping the compressed-extension guard would emit nested .gz siblings that the current output-side suite cannot catch (its sidecar loop only iterates compressible names); (4) graphql-canary error branches get tests or a recorded acceptance comment naming the real-API-surface rationale; (5) the release-pending gh-failure fallback unguarded JSON.parse (release-pending.ts:278) gains try/catch with a test exercising malformed stdout so the real gh stderr surfaces in the step summary; full suite green
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
 ### Security-posture transparency: name the by-design Scorecard deviations
 - id: `rm-143` | track: security | priority: 54.0 | status: in_progress
 - acceptance: one posture surface (README section or docs/runbooks/security-posture.md) lists every sub-score below 8 with its reason and owner; once stranded rm-134's payload lands, the badge resolves to the fork's own score
@@ -619,6 +654,16 @@
 
 ### base-drift tag literal derives from the Dockerfile ARG (rm-779 class, second site)
 - id: `rm-856` | track: reliability | priority: 50.0 | status: in_progress
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Docs-truth micro-batch 4: impeccable pin sync + the pnpm-citation cluster
+- id: `rm-2142` | track: docs | priority: 50.0 | status: in_progress
+- acceptance: AGENTS.md:77 states the CI Design Check pin main.yaml:93 actually runs (4.10.0 today) in a form that cannot go stale — name the source of truth or drop the literal version so the bump-the-pin-in-both-places instruction cannot restore a stale pin; dependency-review.yaml:33 and audit.yaml:24 stop citing the nonexistent pnpm-workspace.yaml and name the real control (bunfig.toml minimumReleaseAge 259200, seconds — the old citation was wrong in file, value, and units); canary.yaml:109 describes the setup composite as Bun; playwright.config.ts:5,8,29 and test/static-assets.test.ts:82,139,1665,1716 say bun run build:web; a grep sweep finds no remaining pnpm prose outside the rm-2134 landed set; lint green
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Ingest HMAC replay-window decision: accept with written mitigations or add a nonce cache
+- id: `rm-2143` | track: security | priority: 50.0 | status: in_progress
+- acceptance: a recorded decision on verifyIngestSignature or in docs/runbooks/security-posture.md: either accept the plus-or-minus-300s replayability with the mitigation census written down (dedupeKey idempotency via the partial UNIQUE index with read_at-preserving upsert, 500-row/30-day prune, 16KB body cap, dedicated ingest rate budget, length-guarded timingSafeEqual) or add a nonce/jti cache bounded to the window with explicit storage and eviction semantics; the decision names the threat model honestly (public pre-auth operator-feed duplication/spam vector, not a data-integrity break); a test pins whichever behavior ships
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Gateway session-validation roundtrip: cache or consciously keep per-request
@@ -730,6 +775,16 @@
 - acceptance: root-cause each class with run-log citations (promote-readback: the GHCR propagation-latency hypothesis tested against the readback target + timing, not assumed; build-and-push: distinguish transient registry/daemon failure from systematic); if propagation latency is confirmed, the promote step gains graduated backoff or a manifest-registry-API digest assertion (never a blind re-push that could race the CalVer tag), behind the existing tag-race guards; a triage row (run ids + decision) lands in the release runbook or the batch doc; the next release run at main is green OR the residual class is documented with an infra/upstream reference; guard/smoke/Trivy layers untouched.
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
+### GraphQL drill-down overfetch trim: first 1-2 per suite against the 25-entry render cap
+- id: `rm-2144` | track: performance | priority: 45.0 | status: in_progress
+- acceptance: query-registry.ts live templates drop per-suite checkRuns nodes from first 50 to first 1-2 — counts already come from totalCount and the drill-down consumer caps at FAILING_CHECK_DETAILS_CAP 25 total, so first 50 x 100 suites (~5,000 node objects per repo worst case, each carrying a detailsUrl) is two orders of magnitude over the rendered payload on every 60s refresh; the canary drill-down-coverage counting updates to the new shape; query-shape-guard pins the registry change; a before/after node-object estimate lands in the batch doc; failing-check rendering stays count-correct for suites whose failing runs exceed the fetched slice
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Parity-check script fetches carry explicit timeouts (rm-156 scope extension to CI-side scripts)
+- id: `rm-2145` | track: security | priority: 45.0 | status: in_progress
+- acceptance: both fetches in scripts/check-gateway-contract-parity.ts (lines 141 and 185) use AbortSignal.timeout with a named bound constant (pattern: oauth.ts GITHUB_FETCH_TIMEOUT_MS) — today they pass headers only, so a hung transport wedges the script in-process (CI-bounded only by canary timeout-minutes 10); a comment names the rm-156 call class this joins; a test or static assertion pins the timeout presence; the weekly canary run stays green with the bound never tripping in normal operation
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
 ### Render the vendored session push-health field (ready/degraded/unknown)
 - id: `rm-1446` | track: reliability | priority: 44.0 | status: in_progress
 - evidence: campaign-recorded in dashboard ROADMAP.md
@@ -809,6 +864,11 @@
 ### Workflow pin-consistency and minor-bump batch
 - id: `rm-137` | track: reliability | priority: 40.0 | status: in_progress
 - acceptance: single sha-pinned discipline for checkout and upload-artifact across all workflows including visual.yaml; the three npm minors ride the first dependabot window (~2026-10-03) where possible rather than manual same-day adoption while minimumReleaseAge is inactive on main (activate it via rm-135 first); gates green at the pushed sha
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Hygiene riders: dead operator-copy module decision + latent tsconfig excludes
+- id: `rm-2146` | track: architecture | priority: 40.0 | status: in_progress
+- acceptance: (a) src/gateway/operator-copy.ts is deleted or wired into the approval surfaces it was written for, decision recorded — zero importers across src/ and test/ re-verified at mint time (grep excluding the file itself); (b) tsconfig.json excludes .slim and .agents trees (matching the eslint ignore set) or a comment records why the include glob may typecheck provisioned clonedeps mirrors — latent today (only clonedeps.json and skill markdown live there) but check-types starts typechecking mirror sources the moment a mirror is provisioned per the AGENTS.md recipe; check-types green before and after
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### GitHub-availability awareness: annotate CI-blind windows from the public status feed

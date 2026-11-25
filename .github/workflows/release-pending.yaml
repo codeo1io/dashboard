@@ -107,6 +107,14 @@ jobs:
         with:
           app-id: ${{ secrets.APPLICATION_ID }}
           private-key: ${{ secrets.APPLICATION_PRIVATE_KEY }}
+          # rm-2135: narrow the minted token to THIS repository, mirroring the
+          # publication mint in release.yaml (same owner/repositories pattern).
+          # The App installation is broader: without owner/repositories the token
+          # spans every installed repo for its lifetime, and a compromised runner
+          # in this job would carry that whole breadth — while
+          # scripts/release-pending.ts only ever operates on this repository.
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
           permission-contents: write
           permission-pull-requests: write
       - name: Run pending release operation

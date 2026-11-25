@@ -74,12 +74,15 @@ view of Fro Bot's cross-repo footprint.
 - `.agents/skills/` is the canonical home for cross-harness agent skills (read by
   both OpenCode and GitHub Copilot). Install shared skills there, not per-harness:
   e.g. `npx impeccable skills install --providers=agents --scope=project`. The CI
-  Design Check pins `impeccable@4.6.0` in `.github/workflows/main.yaml` (exact pin
-  for reproducibility); 4.x honors `.impeccable/config.json` `ignoreValues` (verified
+  Design Check runs `npx impeccable@<exact-version> detect` from
+  `.github/workflows/main.yaml` — that invocation is the single source of truth
+  for the pinned version; this prose deliberately names no literal so the two
+  can never drift apart again (they drifted twice: 4.9.2, then 4.10.0, while an
+  earlier form of this paragraph still said 4.6.0). 4.x honors
+  `.impeccable/config.json` `ignoreValues` (verified
   against the `--ease-spring` bounce-easing token), but the detector cannot read Tailwind
   utilities — static pages like `web/privacy.html` must declare role sizes explicitly
-  (see its `<style>` block) or `flat-type-hierarchy` fires; bump the pin in both places
-  together.
+  (see its `<style>` block) or `flat-type-hierarchy` fires.
 - Live/browser verification needs the dev server backgrounded and run without
   `--watch` (which masks crashes by parking). The recipe — and the orchestrator-owns-
   the-server pattern for subagent verification — is in

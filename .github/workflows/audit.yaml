@@ -21,8 +21,8 @@
 # issues are disabled on this fork (has_issues=false → the issue API 410s),
 # the same convention base-drift.yaml documents for its authoritative exit 1.
 #
-# Day-2 designed red (also recorded in pnpm-workspace.yaml's undici floor
-# comment): no indexed undici advisory touches 7.29.1 or the 7.x tip 7.30.0
+# Day-2 designed red (also recorded in package.json's `undici@7` floor
+# override, `>=7.30.0 <8.0.0`): no indexed undici advisory touches 7.29.1 or the 7.x tip 7.30.0
 # (verified 2026-10-01: GitHub's advisory DB indexes 46 undici records, none
 # with a vulnerable range containing either; npm's DB indexes ten, all
 # patching at >=7.29.1), so this gate going red on ANY undici 7.x means a

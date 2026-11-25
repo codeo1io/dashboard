@@ -643,7 +643,7 @@ jobs:
           fi
           echo "latest digest verification OK"
 
-      - name: 🧹 Cleanup on failure (delete Git ref + release)
+      - name: 🧹 Cleanup on failure (delete Git ref + release + image tags)
         if: failure()
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -658,6 +658,22 @@ jobs:
             "repos/${{ github.repository }}/git/refs/tags/$TAG" \
             >/dev/null 2>&1 || echo "Git ref $TAG not found or already deleted."
           gh release delete "$TAG" --yes 2>/dev/null || echo "Release $TAG not found or already deleted."
+          # rm-2136: rollback symmetry. The promote step above publishes the
+          # release-unique image tags BEFORE the release object exists, so a
+          # failure past promote left version-pinned tags pullable from GHCR for
+          # a commit with no release. Best-effort removal reuses this job's GHCR
+          # login (docker credentials persist across steps in the job): tolerant
+          # of already-absent tags and of GHCR refusing the delete (a failed
+          # cleanup must never mask the original failure). Residual by design:
+          # a COMPLETED 'Promote latest' flip is not reverted here (that would
+          # need the previous digest) — the reorder variant recorded in the
+          # def's acceptance is the full cure for that inversion.
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          for IMAGE_TAG in "$TAG" "sha-${SHORT_SHA}"; do
+            docker buildx imagetools rm \
+              "ghcr.io/${{ github.repository }}:${IMAGE_TAG}" \
+              2>/dev/null || echo "Image tag ${IMAGE_TAG} not deleted (absent, or GHCR refused) — recorded residual."
+          done
           echo "Cleanup complete."
 
   # Dispatch the gated infra deploy for the version just released. Best-effort: this

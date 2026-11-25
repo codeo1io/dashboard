@@ -87,9 +87,9 @@ jobs:
     # at the rm-139 Node-26 window (2026-10-28).
     runs-on: ubuntu-24.04
     # rm-280 (2026-10-01): 5 → 10 — the rm-280 install (below) adds the cold
-    # pnpm-install spread on top of the seconds-scale canary run itself. Cold
+    # bun-install spread on top of the seconds-scale canary run itself. Cold
     # installs measured 5-84s at aa9937f (run 35688534671 — the setup action's
-    # own rm-145 note) and the pnpm-store cache only helps from the second run
+    # own rm-145 note) and the bun install cache only helps from the second run
     # on, so 10 covers a slow cold runner without inviting a silent hang.
     timeout-minutes: 10
     steps:
@@ -106,7 +106,9 @@ jobs:
       # 2026-09-28 dispatch) did exactly that, and the weekly cron had never
       # produced a run. rm-280's acceptance offered install-vs-inline and chose
       # INSTALL, via the same digest-pinned composite every Main job runs
-      # (pnpm + Node 24 + cache: pnpm + `pnpm install --frozen-lockfile`).
+      # (Bun + Node 24 + a bun.lock-keyed install cache +
+      # `bun install --frozen-lockfile`; the composite's own pnpm-era prose was
+      # corrected with the 2026.10.48 Bun adoption).
       # rm-288 (2026-10-03, run 7ce48fe5 integrate) landed the sibling half:
       # the registry moved to zero-import src/github/query-registry.ts and
       # scripts/graphql-canary.ts now imports only it, so the script itself no

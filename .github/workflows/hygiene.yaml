@@ -1,0 +1,90 @@
+---
+name: Hygiene drift report
+
+# rm-2140: the three drift scripts landed without a scheduler — nothing ever
+# surfaced their findings, so shared-.git drift accumulated silently (baseline
+# at the 2026-11-27 probe: 1,267 local conductor/* heads, 1,606 remote refs,
+# 4,477 refs total; no workflow invoked sweep-stale-conductor-refs,
+# roadmap-ledger-check, or conductor-pr-janitor — grep-verified). This weekly
+# job is REPORT-ONLY by construction: every script runs in its default
+# dry-run/read-only mode; --apply (sweep) and --execute (janitor) are
+# push-gated and NEVER scheduled here. A red ledger-check step is the signal,
+# the same convention audit.yaml documents for its designed red.
+
+on:
+  schedule:
+    - cron: '43 5 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  report:
+    name: Drift and hygiene report
+    runs-on: ubuntu-latest
+    # House ceiling for scheduled single-job checks (sibling rationale:
+    # dependency-review.yaml rm-603) — a wedged script burns at most 10
+    # minutes, not the 360-minute default.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # conductor-pr-janitor's read-only `gh pr list` (no --execute here):
+      pull-requests: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The sweep reports on refs visible to this clone; a full fetch sees
+          # all remote refs (fogscan/, preserve/, remote conductor heads). No
+          # remote writes happen in this workflow.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '24'
+
+      # All three scripts import only node builtins (strip-only TS), so no
+      # dependency install is needed on the runner.
+
+      - name: Conductor refs sweep (dry-run report)
+        run: |
+          {
+            echo '## Conductor refs sweep (dry-run)'
+            echo '```'
+            node scripts/sweep-stale-conductor-refs.ts
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Conductor PR janitor (report-only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JANITOR_REPO: ${{ github.repository }}
+        run: |
+          {
+            echo '## Conductor PR janitor (report-only)'
+            echo '```'
+            node scripts/conductor-pr-janitor.ts --repo "$JANITOR_REPO"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Ledger staleness runs LAST so a red exit cannot mask the reports above;
+      # its output is captured into the summary either way, and its exit code
+      # propagates as the job's conclusion (red IS the signal, audit.yaml
+      # convention).
+      - name: Roadmap ledger staleness check (red is the signal)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          out="$(node scripts/roadmap-ledger-check.ts 2>&1)"
+          rc=$?
+          {
+            echo '## Roadmap ledger check'
+            echo '```'
+            printf '%s\n' "$out"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "$out"
+          exit "$rc"

@@ -79,7 +79,7 @@ async function authedGetWithHeaders(
 function hashedBundle(): string {
   const assets = readdirSync('web/dist/assets')
   const js = assets.find(f => f.startsWith('index-') && f.endsWith('.js'))
-  if (js === undefined) throw new Error('hashed SPA bundle missing from web/dist/assets — run pnpm build:web')
+  if (js === undefined) throw new Error('hashed SPA bundle missing from web/dist/assets — run bun run build:web')
   return js
 }
 
@@ -136,7 +136,7 @@ function hashedBundle(): string {
 // Production build artifact assertions — web/dist must be fixture-free
 //
 // These tests scan the compiled browser bundle and service-worker output after
-// `pnpm build:web`. Fixture imports are dev-gated so Vite removes the module
+// `bun run build:web`. Fixture imports are dev-gated so Vite removes the module
 // request strings from production output. The pretest hook runs build:web before
 // vitest, so web/dist is always fresh when these tests run.
 // ---------------------------------------------------------------------------
@@ -1662,7 +1662,7 @@ function firstHashedAsset(): string {
   const dir = resolve(process.cwd(), 'web/dist/assets')
   const files = readdirSync(dir).find(f => /-[\w-]{8}\.[a-z]+$/.test(f))
   if (files === undefined) {
-    throw new Error(`no content-hashed asset found in ${dir} — run pnpm build:web`)
+    throw new Error(`no content-hashed asset found in ${dir} — run bun run build:web`)
   }
   return files
 }
@@ -1713,7 +1713,7 @@ describe('rm-690 — Cache-Control policy for static surfaces', () => {
 
 // ---------------------------------------------------------------------------
 // Static response compression — rm-602 (repository-maintenance cycle 3,
-// run f2821fb57c34): `pnpm build:web` emits `<name>.gz` sidecars
+// run f2821fb57c34): `bun run build:web` emits `<name>.gz` sidecars
 // (scripts/gzip-static-sidecars.ts) and the web/dist serveStatic family runs
 // `precompressed: true`, so @hono/node-server selects the gzip variant by
 // Accept-Encoding (Content-Encoding: gzip + Vary: Accept-Encoding, with
