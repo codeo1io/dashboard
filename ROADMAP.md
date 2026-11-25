@@ -106,8 +106,8 @@
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Refactor 20 high-complexity function(s)
-- id: `rm-021` | track: reliability | priority: 90.0 | status: candidate
-- signals: reliability.complexity_hot:.agents/skills/impeccable/scripts/live-browser.js::L158, reliability.complexity_hot:.agents/skills/impeccable/scripts/live-browser.js::L233, reliability.complexity_hot:.agents/skills/impeccable/scripts/live-browser.js::L234, reliability.complexity_hot:.agents/skills/impeccable/scripts/live-browser.js::L235, reliability.complexity_hot:.agents/skills/impeccable/scripts/live-browser.js::L348 (+15 more)
+- id: `rm-021` | track: operator-experience | priority: 90.0 | status: candidate
+- signals: reliability.complexity_hot:.agents/skills/impeccable/scripts/live-browser.js::L121, reliability.complexity_hot:.agents/skills/impeccable/scripts/live-browser.js::L183, reliability.complexity_hot:.agents/skills/impeccable/scripts/live-browser.js::L258, reliability.complexity_hot:.agents/skills/impeccable/scripts/live-browser.js::L259, reliability.complexity_hot:.agents/skills/impeccable/scripts/live-browser.js::L260 (+15 more)
 - acceptance: Each flagged function is decomposed below the branch threshold with behavior locked by characterization tests
 - evidence: ast-based branch-count check passes at HEAD (full suite green; conductor validation digest validation:v1:<sha> recorded in the shipping PR)
 
@@ -1073,7 +1073,7 @@
 
 ### Render-landing channel governance — managed roadmap renders arrive as PRs, never direct pushes
 - id: `rm-680` | track: security | priority: 31.0 | status: in_progress
-- acceptance: managed ROADMAP renders open a PR and never push main directly; each render PR carries a pre/post id-census delta (defs added = mints with provenance, defs removed = explicit supersede references only), a provenance-comment delta or explicit supersede note, and lint-green plus the ledger-integrity guard (fog rm-678: cross-lineage numeral) green (the ledger-integrity guard, both halves) on the rendered tree; a direct main push of ROADMAP.md by the emitter is treated as a security-class regression in postmortem terms; with rm-116 filled and admin-enforced the channel becomes structurally blocked rather than conventionally avoided.
+- acceptance: managed ROADMAP renders open a PR and never push main directly; each render PR carries a pre/post id-census delta (defs added = mints with provenance, defs removed = explicit supersede references only), a provenance-comment delta or explicit supersede note, and lint-green plus rm-678 guard-green (the ledger-integrity guard, both halves) on the rendered tree; a direct main push of ROADMAP.md by the emitter is treated as a security-class regression in postmortem terms; with rm-116 filled and admin-enforced the channel becomes structurally blocked rather than conventionally avoided.
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Split operator-stream-core.test.ts by concern
@@ -1374,7 +1374,7 @@
 - acceptance: README's class description names exactly the gated paths (or the gate is widened to match the claim — a behavior decision recorded in the entry); the contract doc's messages example carries prunedCount with the same semantics as src/listener/contract.ts; the existing env-docs guard stays green
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
-### main.yaml's rider comment contradicts the actual timeouts (claims 20/40; code says 35/20)
+### main.yaml's rm-13640 rider comment contradicts the actual timeouts (claims 20/40; code says 35/20)
 - id: `rm-486` | track: reliability | priority: 24.0 | status: in_progress
 - acceptance: the comment states 35 (Lint) and 20 (Test) with the poll-window rationale in one place; NO timeout-minutes value changes in this item; a grep across .github/workflows finds no other comment citing a timeout value that contradicts its job
 - evidence: campaign-recorded in dashboard ROADMAP.md
@@ -1592,7 +1592,7 @@
 
 ### Route-level code splitting for the SPA bundle (recorded LOW with counters)
 - id: `rm-559` | track: performance | priority: 12.0 | status: in_progress
-- acceptance: only if still worth it after the compression/caching siblings of the closed cold-load band (fog rm-553: cross-lineage numeral) land and a fresh cold-load measure says otherwise: per-view React.lazy + Suspense boundaries; initial route chunk measurably smaller (before/after first-load JS numbers recorded); no PWA/offline regression (sw precache list still complete); web suite green
+- acceptance: only if still worth it after the rm-553-class compression/caching siblings land and a fresh cold-load measure says otherwise: per-view React.lazy + Suspense boundaries; initial route chunk measurably smaller (before/after first-load JS numbers recorded); no PWA/offline regression (sw precache list still complete); web suite green
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Four workflows carry no timeout-minutes
