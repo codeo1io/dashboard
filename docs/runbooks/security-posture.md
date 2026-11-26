@@ -1,7 +1,7 @@
 # Security Posture
 
 The README badge shows this fork's own OpenSSF Scorecard (weekly analysis via
-the Scorecard workflow). As of the 2026-09-22 run the score is **7.1** — high
+the Scorecard workflow). As of the 2026-11-25 run the score is **8.5** — high
 for a repo this young, but several sub-scores read low, and most of those are
 **deliberate design decisions**, not oversights. This runbook names every
 sub-score below 8 with its disposition so a reader never has to guess whether
@@ -16,9 +16,7 @@ by design, with the reason).
 | Branch-Protection | -1 | tracked | `rm-116` (required checks on main, sequenced before `rm-146` auto-merge) |
 | Code-Review | 0 | declined | single-operator autonomous loop — see below |
 | CII-Best-Practices | 0 | declined | badge-program overhead disproportionate for internal tooling |
-| Fuzzing | 0 | tracked | `rm-144` (fast-check property suites over OSS-Fuzz) |
 | License | 0 | tracked | `rm-147`, blocked-external — upstream is also unlicensed |
-| Maintained | 0 | time-gated | self-resolves ~2026-11-08 (90-day activity heuristic, measured from repo created_at 2026-08-10) |
 | Signed-Releases | -1 | declined | image-based deploys, no GitHub Releases by design |
 
 ## Why the declined items are declined
@@ -45,19 +43,21 @@ by design, with the reason).
   roadmap records as the root cause of three red landings. Fixing it is a
   prerequisite for dependabot auto-merge (`rm-146`) — automerging without
   required checks would automate exactly that failure mode.
-- **Fuzzing** (`rm-144`): the network-shaped surfaces (both SSE parsers and
-  listener ingest) get in-stack property-based tests instead of OSS-Fuzz,
-  which is disproportionate for a monitoring dashboard.
 - **License** (`rm-147`): `gh api repos/codeo1io/dashboard` reports
   `license: null` and upstream `fro-bot/dashboard` has none either (404), so
   a unilateral fork-side LICENSE would be legally hollow. When upstream
   chooses one, the fork mirrors it in the same absorb cycle.
 
-## Maintained (time-gated)
+## Rows retired by the 2026-11-25 run
 
-Scorecard's Maintained check wants commit activity across a ~90-day window;
-the fork was created 2026-08-10, so the check cannot pass yet. Expected to
-self-resolve around 2026-11-08. No action.
+Two former below-8 rows scored ≥8 in the 2026-11-25 run and left the table —
+retired here rather than lingering as stale rows:
+
+- **Fuzzing 0 → 10** (was tracked `rm-144`): the check no longer reads low,
+  so this runbook's below-8 contract no longer covers it.
+- **Maintained 0 → 10** (was time-gated): the ~90-day activity window (fork
+  created 2026-08-10) closed, self-resolving exactly as the retired row
+  predicted ("~2026-11-08").
 
 ## Maintenance of this document
 

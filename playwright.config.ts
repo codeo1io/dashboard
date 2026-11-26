@@ -2,10 +2,10 @@
  * Playwright config for the dark (report-only) visual-regression + axe a11y gate.
  *
  * The suite runs the dashboard entirely in fixture mode — the same headless
- * harness as `pnpm dev:fixture` — so it never touches a live gateway, GitHub,
+ * harness as `bun run dev:fixture` — so it never touches a live gateway, GitHub,
  * or any production credential:
  *
- * - the web bundle is built with `pnpm build:web:fixture` (VITE_FIXTURE_MODE=true,
+ * - the web bundle is built with `bun run build:web:fixture` (VITE_FIXTURE_MODE=true,
  *   DEV-gated fixture code included, output in web/dist-fixture);
  * - the server boots exactly like `dev:fixture` (NODE_ENV=development, loopback
  *   bind, DASHBOARD_WEB_DIST=./web/dist-fixture, fixture harness + dev
@@ -26,7 +26,7 @@
 import process from 'node:process'
 import {defineConfig, devices} from '@playwright/test'
 
-/** Dedicated fixture-mode port (avoid 3000, which `pnpm dev` claims). */
+/** Dedicated fixture-mode port (avoid 3000, which `bun run dev` claims). */
 const port = Number.parseInt(process.env.DASHBOARD_VISUAL_PORT ?? '4311', 10)
 const baseURL = `http://127.0.0.1:${port}`
 

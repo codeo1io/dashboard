@@ -63,19 +63,21 @@ view of Fro Bot's cross-repo footprint.
   `GATEWAY_OPERATOR_TRUSTED_PROXIES` on the gateway deployment (sign-in/rate limits are keyed on
   the resolved client address) — see the runbook's Trusted proxies section.
 - `docs/solutions/` — documented solutions to past problems, organized by category
-  with YAML frontmatter (`module`, `tags`, `problem_type`). Relevant when
+  with YAML frontmatter (`module` and `problem_type` throughout, `tags` on most
+  entries — 121 of 157 as of 2026-11-26). Relevant when
   implementing or debugging in documented areas.
 - Validate workflows with actionlint via the container form (see
   `docs/solutions/workflow-issues/actionlint-pipx-missing-container-form-2026-09-19.md`)
   — the container form assumes nothing from the host (no pipx/python
   dependency on the runner image).
 - New `.yaml`/`.yml` files must single-quote string values — eslint's `yml` plugin
-  enforces `yml/quotes` repo-wide (`pnpm lint`), e.g. `patterns: ['*']` in dependabot groups.
+  enforces `yml/quotes` repo-wide (`bun run lint`), e.g. `patterns: ['*']` in dependabot groups.
 - `.agents/skills/` is the canonical home for cross-harness agent skills (read by
   both OpenCode and GitHub Copilot). Install shared skills there, not per-harness:
   e.g. `npx impeccable skills install --providers=agents --scope=project`. The CI
-  Design Check pins `impeccable@4.6.0` in `.github/workflows/main.yaml` (exact pin
-  for reproducibility); 4.x honors `.impeccable/config.json` `ignoreValues` (verified
+  Design Check pins `impeccable@4.10.0` in `.github/workflows/main.yaml` (exact pin
+  for reproducibility; parity with this bullet is machine-checked by
+  `test/toolpin-parity-guard.test.ts`); 4.x honors `.impeccable/config.json` `ignoreValues` (verified
   against the `--ease-spring` bounce-easing token), but the detector cannot read Tailwind
   utilities — static pages like `web/privacy.html` must declare role sizes explicitly
   (see its `<style>` block) or `flat-type-hierarchy` fires; bump the pin in both places
