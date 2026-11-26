@@ -30,11 +30,6 @@
 - acceptance: (a) a render-guard test suite (test/roadmap-render-guard.test.ts, extending the roadmap-length-guard pattern) reads ROADMAP.md from the repo and FAILS on: any line with trailing whitespace, any rm-NNN narrative ref resolving to neither a def-line nor a Closed-items id, def-line track census collapsing below the recorded multi-value taxonomy (guard pins a minimum distinct-track count sourced from the 5bf15e1 census), and eslint ROADMAP.md erroring non-zero — so the next managed render that regresses any leg breaks the gate instead of shipping silently; (b) one repair landing makes the repo green while the guard is in force: the 47 trailing-space lines and the :19:32 label-ref instance fixed (backtick-wrap the bracketed list per rm-284's proven cure), the 23 dangling refs resolved (pruned defs restored or their narrative refs reworded to name outcomes), track values re-derived for defs whose work is not reliability; (c) the repair lands WITH or AFTER the renderer-side emit fixes (empty-field trailing space, bracket-list label refs, uniform track emission) or records why repo-side repair alone survives the next render — repo-side whitespace fixes without the renderer fix regress on the next sync; (d) `pnpm lint` RC 0 and the full suite green on the landing tree, including the new guard.
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
-### Aggregator GraphQL queries are a live syntax error (//-comments inside templates)
-- id: `rm-177` | track: reliability | priority: 97.0 | status: in_progress
-- acceptance: the two comments become `#`-style or move outside the templates (the rm-110 ceiling note survives in valid form); a structural guard test asserts no exported query template contains a `//`-prefixed line (negative-verified); full suite green; the board's live data path recovers — proven by rm-179's canary or one recorded live query
-- evidence: campaign-recorded in dashboard ROADMAP.md
-
 ### Lint gate blocked on main: ROADMAP paragraph-length cliff (rm-103 and rm-157 signals paragraphs)
 - id: `rm-284` | track: security | priority: 97.0 | status: in_progress
 - acceptance: the two paragraphs are split into blank-line-separated sub-paragraphs (blank line + 2-space indent, same list item) at plain-text boundaries into fragments ~2.4K chars, content byte-exact on rejoin — the proven cure measured 7317ch→14s rc=0 and 7967ch→13s rc=0 (run c06f7bf3d796, same attempt); CI Lint completes green well under the 35m timeout on the landing tree (post-fix reference: 53s); a length scan (awk 'length($0)>5000') finds no non-HTML-comment line above ~4K chars in ROADMAP.md; the rule errors masked beneath the timeout are fixed in the same pass — markdown/no-missing-label-refs fires on bracketed lists like `tags: [security, …]` (proven instance: docs/prioritization/2026-09-29-cycle-19-batch.md:4, landed bbc5b55 — backtick-wrap cures)
@@ -50,49 +45,9 @@
 - acceptance: PR #9 merged (or its payload cherry-picked) with the four-file conflict set resolved; ROADMAP rm numbering reconciled in the merge (the landed rm-131/rm-132/rm-133 keep their landed meaning, stranded duplicates renumbered); base-drift.yaml on main passes the actionlint container gate and its first scheduled run logs pinned and live digests; `minimumReleaseAge: 1440` active alongside the existing Exclude list; README badges resolve against codeo1io/dashboard and the endpoints list names /privacy and the listener routes; full suite green at the merge sha (the rm-126 lock test takes the count 3115 to 3116)
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
-### Absorb upstream window 2026.10.26-.35: the #631 subscription-list wire fix cures the live flat-parse bug
-- id: `rm-862` | track: operator-experience | priority: 95.0 | status: in_progress
-- acceptance: src/gateway/operator-contract/push.ts parses the shaped subscriptions envelope (a list of metadata records with epoch-ms isTimestamp-guarded dates) — the single flat string-date record path and its fixture are replaced, with red-then-green tests pinning both the envelope and the date guards; the absorb lands as cherry-picked upstream content with fork exclusions preserved (no wiki-writer, no renovate, no full Workbox sw.ts — kill-switch discipline); riders dispositioned in the landing note: #629 install steps, #630 waiting line, #634 jumped-card scroll, #633 deduped against any unlanded fork twin, open PR #636 folded only if merged by then; full gates green
-- evidence: campaign-recorded in dashboard ROADMAP.md
-
-### Push-subscription list wire: port upstream #631 before any v0.122.x gateway faces the fork
-- id: `rm-873` | track: operator-experience | priority: 95.0 | status: in_progress
-- acceptance: GET `/operator/push/subscriptions` parses the gateway's actual wire — a `subscriptions` array with epoch-ms numeric `createdAt`/`updatedAt` behind `isTimestamp`-style guards — replacing the single flat string-date record at `src/gateway/operator-contract/push.ts:156-174` and the `operator-client.ts:761-775` call site; the client picks its own entry by endpoint hash; `web/src/push/reconcile.ts` and `web/src/push/subscribe.ts` consumers see the active subscription instead of a protocol error; the fixture flips from flat record to list wire with the old shape negative-tested; ported against upstream 8470f86 content (PR #631, merged 2026-10-15T08:13Z), never a wholesale merge — cross-family: spool rm-863 and fog rm-867 claim the same port, first landed wins; follow-up anchor (review F1 2026-10-17): before any list-wire gateway is relied on, the client must correlate entries by endpoint hash (match the local hash against ANY entry — upstream's multi-device-safe design), the fixture-harness GET must flip to the list wire with the flat shape negative-tested, and a two-ACTIVE-entry reduction test must pin selection — the current active-first reduction lets a second device's record win, and web reconcile/subscribe then resolves action 'cleanup' against the first device's healthy local subscription
-- evidence: campaign-recorded in dashboard ROADMAP.md
-
-### Operator contract 1.9.0→1.11.0: waiting runs, list auto-refresh, notification deep links — drift-proofing before the gateway moves
-- id: `rm-863` | track: operator-experience | priority: 94.0 | status: candidate
-- acceptance: server, browser and fixture pins move together to exactly 1.11.0 (a 1.9.0 ready frame drifts, both directions tested); every run-summary parser accepts waiting_for_approval and waiting_for_question — collapsed cards show the stream's existing wording with the hyphenated status classes the CSS already styles, and a terminal status never regresses; the run list refreshes on the 30-second visible timer, on visibility return, before a card expands, and on a notification jump, never writing the stream-attached card; question-notification clicks build the target only from a runId passing the validated dynamic-id pattern and focus an open window without reload; the 1.10.0 session push-health field parses without rendering (display stays with rm-693); full suite green and the landing note records the deploy-coordination requirement (the exact-version check means dashboard and gateway ship together)
-- evidence: campaign-recorded in dashboard ROADMAP.md
-
 ### Render-guard census test: block the next managed-render damage round in-repo (lint census hit 50)
 - id: `rm-864` | track: security | priority: 93.0 | status: candidate
 - acceptance: a roadmap render-guard test asserts, on ROADMAP.md as it lands: zero trailing whitespace, zero markdownlint no-missing-label-refs trips (file-scoped eslint or an equivalent parser), def-ids unique, rm-references resolve (zero dangling), and the def census equals a named expected constant the next managed render must bump deliberately (never silently); stringified-object prose (a bare bracketed object token in narrative text) fails the guard; the test lands green alongside the current render's repair or documents why the repair is renderer-side
-- evidence: campaign-recorded in dashboard ROADMAP.md
-
-### Visual-gate parity cure: @playwright/test lockfile/container split-landing (grows rm-142) — ADOPTED ON MAIN
-- id: `rm-881` | track: reliability | priority: 93.0 | status: in_progress
-- acceptance: ADOPTED-ON-MAIN 2026-10-17 (f521ec7 lineage): a sibling lane landed the full cure at 1.64.0 — package.json exact-pins `@playwright/test` 1.64.0, visual.yaml pins v1.64.0-noble@sha256:06a9939e..., pnpm-lock agrees, and test/visual-playwright-image-lockstep.test.ts guards the triple (exact-pin shape + package/lockfile/image agreement) inside the required Main check, with the image/baseline pairing regenerated under that pin. THIS RUN'S CONTRIBUTION: the 2026-10-16 diagnosis chain (lockfile 1.64.0 via 6179cb7 vs visual.yaml v1.63.0-noble@eff16c30, no guard existed — research attempt 00c7281e) plus a red-first parity-guard proof (1 failed pre-fix / 2 passed post-fix at 5d5f9be, attempt 2148019f). NO further churn to 1.64.1: the pin/baseline/guard triple must stay paired and the landed 1.64.0 pairing satisfies this acceptance
-- evidence: campaign-recorded in dashboard ROADMAP.md
-
-### Operator contract two minors behind upstream and the fork parsers disagree — extend both sides to 1.11.0
-- id: `rm-884` | track: operator-experience | priority: 93.0 | status: in_progress
-- acceptance: both version labels move to 1.11.0 in one change and the server-side VALID_RUN_SUMMARY_STATUSES gains waiting_for_approval and waiting_for_question so the server allowlist equals the browser allowlist, with a guard test asserting the two sets stay identical; waiting-overlay run-summary fixtures pass through BOTH parsers (operator-sse-reader server-side and the operator-stream browser property suite) red-before/green-after; upstream 1.10 and 1.11 feature deltas (waiting line and run time on cards #623, notification jump #640, iOS install steps #629) are each adopted with fork adaptations or explicitly excluded with a recorded fork reason; rm-252 acceptance text re-derived from the stale 1.8.0 target to 1.11.0 and rm-157 chain noted as the lineage; fork-exclusion guard green (no wiki-write surface returns)
-- evidence: campaign-recorded in dashboard ROADMAP.md
-
-### Upstream absorb batch 2026-09-20 (node 0e0ff40, hono 4.13.8, retire in-image patch)
-- id: `rm-111` | track: reliability | priority: 92.0 | status: in_progress
-- acceptance: recorded from dashboard ROADMAP.md by campaign ingest
-- evidence: campaign-recorded in dashboard ROADMAP.md
-
-### Security floors + the audit-invisible hono pair: one lockfile refresh to audit-zero (GHSA-hrr3 hardens the fast-uri floor to 3.1.8)
-- id: `rm-285` | track: security | priority: 92.0 | status: in_progress
-- acceptance: floors go brace-expansion@2 >=2.1.7, brace-expansion@5 >=5.0.12, fast-uri@3 >=3.1.8 <4.0.0, undici@7 >=7.29.1 <8.0.0; the lockfile re-resolves to fast-uri 3.1.8, brace-expansion 2.1.7 + 5.0.12, undici 7.29.1, hono 4.13.11, @hono/node-server 2.1.3 — every one in-range for the package.json specifiers (no manifest edit); `pnpm audit -r` exits 0 re-probed LIVE at implement time; dependabot alerts #29/#30 close after the push; hono 4.13.12 (published 2026-09-30T09:43:03Z, routine — NOT the security line) is an optional in-range rider only after minimumReleaseAge maturity 2026-10-01T09:43Z
-- evidence: campaign-recorded in dashboard ROADMAP.md
-
-### Operator contract 1.11.0: waiting overlays must not silently vanish runs from the index
-- id: `rm-874` | track: operator-experience | priority: 92.0 | status: in_progress
-- acceptance: `src/gateway/operator-contract/run-summary.ts` status union extends with `waiting_for_approval` and `waiting_for_question` (upstream #619 semantics — overlays applied by the gateway on running runs) and a surviving-parse test proves a running run carrying an overlay survives `parseRunSummaryList` instead of the per-item `continue` skip; `version.ts` single-pin flips to 1.11.0 only as one coordinated landing with the gateway deploy (exact-match gate on both sides); upstream `sw.ts`/`sw-notification.ts` hunks excluded per the kill-switch invariant; fork-only modules upstream deleted are reconciled by content, not wholesale
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### base-drift digest extraction yields empty (gate can never pass)
@@ -1073,7 +1028,7 @@
 
 ### Render-landing channel governance — managed roadmap renders arrive as PRs, never direct pushes
 - id: `rm-680` | track: security | priority: 31.0 | status: in_progress
-- acceptance: managed ROADMAP renders open a PR and never push main directly; each render PR carries a pre/post id-census delta (defs added = mints with provenance, defs removed = explicit supersede references only), a provenance-comment delta or explicit supersede note, and lint-green plus rm-678 guard-green (the ledger-integrity guard, both halves) on the rendered tree; a direct main push of ROADMAP.md by the emitter is treated as a security-class regression in postmortem terms; with rm-116 filled and admin-enforced the channel becomes structurally blocked rather than conventionally avoided.
+- acceptance: managed ROADMAP renders open a PR and never push main directly; each render PR carries a pre/post id-census delta (defs added = mints with provenance, defs removed = explicit supersede references only), a provenance-comment delta or explicit supersede note, and lint-green plus fog rm-678 guard-green (the ledger-integrity guard, both halves) on the rendered tree; a direct main push of ROADMAP.md by the emitter is treated as a security-class regression in postmortem terms; with rm-116 filled and admin-enforced the channel becomes structurally blocked rather than conventionally avoided.
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Split operator-stream-core.test.ts by concern
@@ -1374,7 +1329,7 @@
 - acceptance: README's class description names exactly the gated paths (or the gate is widened to match the claim — a behavior decision recorded in the entry); the contract doc's messages example carries prunedCount with the same semantics as src/listener/contract.ts; the existing env-docs guard stays green
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
-### main.yaml's rm-13640 rider comment contradicts the actual timeouts (claims 20/40; code says 35/20)
+### main.yaml's timeout rider comment contradicts the actual timeouts (claims 20/40; code says 35/20)
 - id: `rm-486` | track: reliability | priority: 24.0 | status: in_progress
 - acceptance: the comment states 35 (Lint) and 20 (Test) with the poll-window rationale in one place; NO timeout-minutes value changes in this item; a grep across .github/workflows finds no other comment citing a timeout value that contradicts its job
 - evidence: campaign-recorded in dashboard ROADMAP.md
@@ -1592,7 +1547,7 @@
 
 ### Route-level code splitting for the SPA bundle (recorded LOW with counters)
 - id: `rm-559` | track: performance | priority: 12.0 | status: in_progress
-- acceptance: only if still worth it after the rm-553-class compression/caching siblings land and a fresh cold-load measure says otherwise: per-view React.lazy + Suspense boundaries; initial route chunk measurably smaller (before/after first-load JS numbers recorded); no PWA/offline regression (sw precache list still complete); web suite green
+- acceptance: only if still worth it after the compression/caching siblings land and a fresh cold-load measure says otherwise: per-view React.lazy + Suspense boundaries; initial route chunk measurably smaller (before/after first-load JS numbers recorded); no PWA/offline regression (sw precache list still complete); web suite green
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
 ### Four workflows carry no timeout-minutes
@@ -1649,5 +1604,14 @@
 - `rm-115` CSRF tokens for listener ack mutations — superseded
 - `rm-138` Resolve the PWA kill-switch vestige (decision: strip precache wiring or implement offline) — done
 - `rm-149` OAuth PKCE (S256) for the operator login flow — done
+- `rm-177` Aggregator GraphQL query template //-comments — done: comments live outside the templates; test/aggregator-template-guard.test.ts asserts no //-line in any exported query template (suite green at base af26a5e7, re-run this run)
+- `rm-862` Absorb upstream 2026.10.26-.35: #631 subscription-list wire — done: shipped at base; src/gateway/operator-contract/push.ts parses the subscriptions list wire with isTimestamp-guarded epoch-ms dates
+- `rm-873` Push-subscription list wire (upstream #631 port) — done: src/gateway/operator-contract/push.ts:118-181 at base satisfies the list-wire, date-guard, and negative-tested-fixture legs
+- `rm-863` Operator contract 1.9.0→1.11.0 drift-proofing — superseded: the shipped pin is 1.15.0 (src/gateway/operator-contract/version.ts at base), four minors past this item’s 1.11.0 coordination framing
+- `rm-884` Operator contract parsers extended to 1.11.0 — superseded: shipped contract version 1.15.0 (src/gateway/operator-contract/version.ts at base) is beyond the 1.11.0 target this framed
+- `rm-874` Operator contract 1.11.0 waiting overlays — superseded: version.ts single-pins 1.15.0 at base; the 1.11.0 coordinated-landing framing is stale
+- `rm-285` Security floors + the audit-invisible hono pair — done: exceeded by the landed 2026.11.29 adoption (PR #1184, commit 9b9739484): fast-uri@3 >=3.1.9, undici@7 >=7.30.0, zod@4 >=4.6.6, hono ^4.13.16, @hono/node-server ^2.1.6
+- `rm-111` Upstream absorb batch 2026-09-20 — done: superseded-by-landing of the 2026.11.29 upstream adoption (PR #1184, commit 9b9739484, tag ancestry 3dad28fba)
+- `rm-881` Visual-gate parity cure: @playwright/test lockfile/container split-landing — done: ADOPTED ON MAIN per its own acceptance; legs re-verified at base (package.json exact-pin 1.64.0, visual.yaml v1.64.0-noble@sha256:06a9939e, test/visual-playwright-image-lockstep.test.ts)
 
 <!-- managed by hermes-roadmap render; do not edit by hand -->
