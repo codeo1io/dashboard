@@ -265,3 +265,11 @@ track taxonomy restored at 7 values, empty-string criteria emit no line).
 The three cross-lineage refs re-dispositioned under the house fog
 convention (rm-553, rm-678) and the rm-13640 ref reworded to name its
 outcome. This doc remains the sole marker-bearing carrier.
+
+2026-11-26 re-census (conductor run 532a211ddbd5, README/ROADMAP doc-truth
+reconciliation): **330 defs / 0 dups / max rm-2134** — nine landed-or-
+superseded ledger items moved to Closed items (rm-177, rm-862, rm-873,
+rm-863, rm-881, rm-884, rm-111, rm-285, rm-874, each citing base af26a5e7
+evidence in its closure line); the tip render's three re-dangled narrative
+refs re-cured the recorded way (fog rm-678; the rm-13640 and rm-553 refs
+reworded to name their outcomes).
