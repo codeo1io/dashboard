@@ -1627,6 +1627,41 @@
 - acceptance: AbortSignal.timeout(bounded) added with the bound named in a comment; web test pins the abort path; cycle doc updates the family census (which members remain open)
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
+### Upstream adoption-readiness lane: 2026.11.29-to-tip delta (agent v0.151.0, run-trace collector, impeccable 4.11.0)
+- id: `rm-2135` | track: architecture | priority: 90.0 | status: in_progress
+- acceptance: bounded disposition of the post-adoption upstream delta through the standing absorb window (rm-252): fro-bot/agent pin moves v0.147.1 to v0.151.0 (or a recorded hold reason naming the blocking surface); #924 run-trace collector wiring evaluated for a read-only fork (collector destination availability; the upstream diff touches only .github/workflows/fro-bot.yaml) with adopt-or-exclude recorded; impeccable pin 4.10.0 to 4.11.0 lands in the same change as any AGENTS.md pin-mention update; the adoption PR carries the managed-render pre/post id-census delta
+- evidence: upstream releases API — tag 2026.11.29 published 2026-11-23T04:14:36Z is the fork's adopted base; upstream default-branch commits observed 2026-11-27/28 via gh api: 550d792f (agent v0.149.2 #923), 94b75c95 (v0.150.0 #926), 3cfd0300 (v0.151.0 #930), d35bfa32 (run-trace collector #924), d858e2cc (impeccable v4.11.0 #932), 88c8494c (@types/react 19.3.1 #931), 609ece90 (bfra-me/.github v4.43.1 #934), 9c151f95 (docs #933); fork pin at .github/workflows/fro-bot.yaml:441 at HEAD ee1f22dd5
+
+### AGENTS.md Design-Check pin claim drifted from the workflow pin (4.6.0 narrated vs 4.10.0 pinned) — make the mention version-agnostic
+- id: `rm-2136` | track: docs | priority: 60.0 | status: in_progress
+- acceptance: AGENTS.md Design-Check paragraph stops hardcoding the impeccable version — it names .github/workflows/main.yaml as the single source of truth for the pin (the same version-agnostic-by-construction cure the clonedeps entry received after its silent drift); optional guard arm: test asserts main.yaml carries an impeccable@N.N.N pin while AGENTS.md carries none, so the pair cannot drift again
+- evidence: AGENTS.md:77 narrates `impeccable@4.6.0` while .github/workflows/main.yaml:93 runs `npx impeccable@4.10.0 detect` — verified at HEAD ee1f22dd5; the pin moved upstream to v4.11.0 (commit d858e2cc) without the doc noticing
+
+### GraphQL canary freeze-death resilience: 0/2 lifetime, both deaths at the frozen install
+- id: `rm-2137` | track: reliability | priority: 80.0 | status: in_progress
+- acceptance: the canary completes under a cold cache — warm the install path (restore-keys on the provisioned engine cache plus a recorded cold-start budget) or add a no-install read-only mode with the freeze mode documented; the next two weekly fires produce completed runs carrying the query-drift verdict either way; the scheduler-miss arm stays with rm-1961, this def owns only the install-freeze death mode
+- evidence: .github/workflows/canary.yaml:18-22 comments at HEAD record 0/2 lifetime with both deaths at the frozen install and a Monday cron that has never fired; scripts/graphql-canary.ts is the canary body
+
+### healthz freshness/rate-limit contract: serve the already-maintained metrics instead of literal nulls
+- id: `rm-2138` | track: operator-experience | priority: 50.0 | status: in_progress
+- acceptance: the authed API surface (monitoring DTO or healthz) carries real freshness and throttle state sourced from existing server structures — refreshedAt/refreshDurationMs/enumerationIncomplete already on the snapshot plus limiter occupancy (key count, window reset) — replacing the unconditional `lastFetch: null, rateLimit: null`; strict runtime parse mirrored in web/src/api/monitoring.ts; contract-drift tests pin the added fields; deliberately narrow data-contract arm, distinct from the superseded rm-107 system-status panel
+- evidence: src/routes/api.ts:103 returns `c.json({ok: true, lastFetch: null, rateLimit: null})` at HEAD; AggregatorSnapshot already carries refreshedAt/refreshDurationMs/refreshDegraded/enumerationIncomplete (src/github/aggregator.ts)
+
+### TypeScript 7 evaluation record (ecosystem watch): 7.0.2 current, fork pins 6.0.3
+- id: `rm-2139` | track: capability | priority: 30.0 | status: in_progress
+- acceptance: a dated evaluation record in docs/ covering TS7-native compiler compatibility for all three tsconfig projects (root strip-only TS, web/, .opencode/), the eslint-plugin-erasable-syntax-only interaction, and vite/vitest toolchain interplay, ending in an explicit adopt/hold/split decision — evaluation only, no blind version bump
+- evidence: npm view typescript reports 7.0.2 latest (observed 2026-11-28); package.json pins typescript 6.0.3; the strip-only/erasableSyntaxOnly posture is the exact surface the TS7 native compiler changes
+
+### Declarative fork-exclusion manifest consumed at absorb time (exclusions currently guarded only post-hoc)
+- id: `rm-2140` | track: reliability | priority: 85.0 | status: in_progress
+- acceptance: a machine-readable exclusion manifest (paths plus reasons — renovate.yaml, @fro.bot/wiki-write-core tree, workspace-package seams) becomes the single source of truth consumed by BOTH fork-exclusion-guard.test.ts and the absorb/merge tooling, so excluded paths drop mechanically at merge time instead of being caught after landing; manifest changes require a paired guard update
+- evidence: docs/solutions/workflow-issues/renovate-upstream-sync-regression-2026-09-21.md and the upstream-fork-hygiene class (four recorded sync regressions re-introducing excluded files); test/fork-exclusion-guard.test.ts enforces only post-merge
+
+### Standing local full-suite validation lane for Actions-suspension outages (nine documented hand-built mirrors)
+- id: `rm-2141` | track: capability | priority: 75.0 | status: in_progress
+- acceptance: one versioned local validation entrypoint (script or documented recipe) replacing the per-outage bespoke mirrors, with a parity probe naming which CI legs it covers (root vitest, web vitest, check-types, lint), first exercised by the next suspension incident; retirement criteria recorded for when hosted Actions service returns
+- evidence: docs/solutions/workflow-issues/actions-suspension-fullsuite-local-mirror-substitute-2026-10-16.md heads the actions-suspension class — nine recorded incidents (weekly recurrence) each forcing a hand-built local full-suite mirror substitute
+
 ## Closed items
 
 - `rm-104` Harden the roadmap render (vendored-path exclusion, stack-correct evidence, lint-clean output) — done

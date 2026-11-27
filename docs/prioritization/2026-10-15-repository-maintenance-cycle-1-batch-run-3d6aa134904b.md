@@ -265,3 +265,5 @@ track taxonomy restored at 7 values, empty-string criteria emit no line).
 The three cross-lineage refs re-dispositioned under the house fog
 convention (rm-553, rm-678) and the rm-13640 ref reworded to name its
 outcome. This doc remains the sole marker-bearing carrier.
+
+- Landing-record re-census (2026-11-28, roadmap-update phase run abca4675): **(346 defs / 0 dups / max rm-2141)** — seven new defs minted for this cycle: the upstream 2026.11.29-to-tip adoption-readiness lane, the AGENTS.md impeccable pin-mention drift cure, GraphQL canary freeze-death resilience, the healthz real-metrics data contract, the TypeScript 7 evaluation record, the declarative fork-exclusion manifest at absorb time, and the standing local validation lane for Actions-suspension outages. No Closed-items or existing def lines touched; the three cross-lineage render refs remain pending the managed-render fog lane.
