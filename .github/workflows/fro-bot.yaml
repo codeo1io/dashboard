@@ -426,10 +426,13 @@ jobs:
       - name: 📦 Setup
         # Upstream #887: default-branch Setup only — the trusted-PR-head route
         # checks out the PR tree, whose node_modules the shared Setup would
-        # clobber/mismatch. The fork's unprovisioned-secret guard does not need
-        # a Setup gate: Setup consumes no FRO_BOT_PAT, and the schedule route is
-        # already stopped at the warning step above + the gated Run step below.
-        if: ${{ steps.prehead.outputs.ref == '' }}
+        # clobber/mismatch. The fork's unprovisioned-secret guard DOES need a
+        # schedule gate too (run 45958527922, 3+ consecutive daily failures):
+        # the schedule-without-secret route skips Checkout (gated above), so an
+        # ungated Setup hits "Can't find action.yml" — there is no checkout for
+        # ./.github/actions/setup to resolve against. The warning step above
+        # only emits ::warning; it does not stop the job.
+        if: ${{ steps.prehead.outputs.ref == '' && (github.event_name != 'schedule' || env.HAS_FRO_BOT_PAT == 'true') }}
         uses: ./.github/actions/setup
 
       - name: Run Fro Bot
