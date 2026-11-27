@@ -123,6 +123,21 @@ jobs:
           # No patched release exists: 4.3.1 is the 4.x terminal and the advisory
           # covers >=4.2.0 <=4.3.1; a 5.x pin would need an upstream range change.
           # Ignored with rationale here so the signal keeps watching everything else.
+          # 2026-11-27 (rm-2135 disposition, NOT an ignore): picomatch@4.0.7
+          # (bun.lock; dev-only chains: @rollup/pluginutils, eslint, fdir
+          # optional peer) sits on the terminal line of GHSA-fc5q-39xc-vjpf
+          # — no patched 4.x exists, so no floor can close it and no ignore
+          # is needed: bun audit's advisory DB does not flag 4.0.7 (verified
+          # 2026-11-27, bun 1.4.4, `bun audit` clean of picomatch). Accepted
+          # risk, recorded here so the advisory stops re-surfacing unowned.
+          # If a future bun audit run starts flagging picomatch, the
+          # disposition is --ignore GHSA-fc5q-39xc-vjpf with this rationale
+          # (the deepmerge convention above) — there is no patch to floor to.
+          # 2026-11-27 (rm-276 convention): serialize-javascript floored to
+          # '>=7.1.3 <8.0.0' in package.json overrides (GHSA-m5mm-p8h7-m29v,
+          # low, XSS via unescaped </script> in serialized function bodies
+          # — dev-only workbox-build > @rollup/plugin-terser chain); the
+          # floor and the regenerated bun.lock land in the same change.
           if bun audit --ignore GHSA-gcqx-w48m-w2h4; then
             echo 'audit clean — zero known advisories against every resolved version'
             exit 0

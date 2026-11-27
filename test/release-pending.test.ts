@@ -164,7 +164,9 @@ it('prepares a held PR and reuses its unchanged head', () => {
     [[sha, 'closed'], 2, 1, /readback mismatch/i],
     [['labels'], 1, 0, /readback mismatch/i],
     [[sha, 'e'.repeat(40)], 2, 1, /readback mismatch/i],
-    [[sha, 'failure'], 2, 1, /GET failed/i],
+    // rm-2137: transient fetch failures now retry inside the bounded budget
+    // instead of aborting — a fully failing window still fail-closes.
+    [[sha, 'failure', 'failure', 'failure', 'failure'], 5, 4, /readback mismatch/i],
   ] as const) {
     ref = sha
     committed = false
@@ -177,6 +179,22 @@ it('prepares a held PR and reuses its unchanged head', () => {
     expect(wait).toHaveBeenCalledTimes(expectedWaits)
     expect(writes).toEqual([['git', 'push', `--force-with-lease=refs/heads/release/pending:${sha}`, 'origin', `${nextHead}:refs/heads/release/pending`]])
   }
+  // rm-2137: a single transient readback fetch failure recovers — one blip
+  // no longer aborts the whole prepare step; the retry budget absorbs it
+  // and the PR still lands (push + title/body PATCH).
+  ref = sha
+  committed = false
+  readbackHeads = [sha, 'failure', nextHead]
+  commands.length = 0
+  writes.length = 0
+  wait.mockClear()
+  expect(prepare()).toMatch(/prepared/i)
+  expect(commands.filter(line => line === 'gh api repos/fro-bot/dashboard/pulls/42')).toHaveLength(3)
+  expect(wait).toHaveBeenCalledTimes(2)
+  expect(writes).toEqual([['git', 'push', `--force-with-lease=refs/heads/release/pending:${sha}`, 'origin', `${nextHead}:refs/heads/release/pending`]])
+  // The title/body already match this version (set by the earlier PATCH leg),
+  // so the recovery lands with the push alone — no second PATCH.
+  expect(writes.some(entry => entry[0] === 'gh')).toBe(false)
   wait.mockRestore()
   committed = false
   unrelated = true

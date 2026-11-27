@@ -203,6 +203,102 @@
 - acceptance: rm-022 acceptance renders the module list without a bracketed-link label (fenced or comma prose), rm-802 two bracketed phrases escaped or rephrased, and the render INPUT is fixed so regeneration cannot reintroduce either shape — array/object values never land in a prose field; pnpm lint on ROADMAP.md reports zero no-missing-label-refs at HEAD and the render-guard lineage (fog rm-860 family) grows a no-bare-label assertion; coordination note in the batch doc: the emitting renderer is hermes-autonomy-side, so the repo-side acceptance is lint-green output plus the guard, with the renderer fix recorded in the owning system
 - evidence: campaign-recorded in dashboard ROADMAP.md
 
+### picomatch GHSA-fc5q-39xc-vjpf: write the advisory disposition instead of drifting
+- id: `rm-2135` | track: security | priority: 84.0 | status: candidate
+- signals: bun.lock resolves `picomatch@4.0.7` — the terminal line of GHSA-fc5q-39xc-vjpf, no patched 4.x exists; package.json's override floors cover brace-expansion, minimatch, glob, fast-uri, zod, and katex but not picomatch
+- acceptance: a written disposition lands — either an accepted-risk ignore with the GHSA id, the 4.0.7-is-terminal fact, and the recorded reachability argument (dev-only consumers: rollup pluginutils, eslint, fdir optional peer), or a designed-red forcing function mirroring the audit.yaml undici pattern; the chosen entry sits adjacent to the overrides block in package.json; a re-resolve of bun.lock confirms the resolution unchanged unless a fixed line has published; the choice is restated in the next research envelope so it stops re-surfacing; full suite green
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Actions run-creation darkness detection inside the 60s aggregator loop
+- id: `rm-2136` | track: reliability | priority: 82.5 | status: candidate
+- signals: `scripts/actions-darkness-watch.ts` detects run-creation darkness only when run manually; `docs/runbooks/actions-darkness-watch.md` states nothing that runs inside Actions can detect the state; the aggregator already polls GitHub every 60s
+- acceptance: an additive read-only GraphQL selection comparing newest commit timestamps to newest check-suite/workflow-run timestamps registers in `src/github/query-registry.ts` so the graphql canary auto-extends; the aggregator computes a per-repo darkness verdict using the runbook's staleness budgets and surfaces it in the monitoring DTO with a Monitoring-view banner per the degraded-platform precedent (rm-1447 lineage); verdict logic has red-first unit tests; token permissions stay within the existing read-only set — no scope additions, invariant 1; full suite green
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### release-pending hardening: token scoping, CalVer drift, readback retry, and the half-guard
+- id: `rm-2137` | track: security | priority: 79.0 | status: candidate
+- signals: `.github/workflows/release-pending.yaml:105` mints an installation-wide App token where `release.yaml:510-515` scopes per-repo in the same estate; `scripts/release-pending.ts:141` computes the CalVer next-version without reconciling prepare-vs-release drift; `:193` aborts the readback retry loop on transient fetch errors; `test/release-workflow.test.ts` pins release.yaml's scoped mint shape while the release-pending.yaml mint has no shape guard at all; schedule-mode `runPending` (`scripts/release-pending.ts:113`) has no end-to-end coverage
+- acceptance: release-pending.yaml mints repo-scoped tokens or records the enumeration-only justification inline; the CalVer prepare-vs-release drift reconciles against the live tag set before acting; the readback retry treats transient errors as bounded retries rather than aborts; a guard leg pins the release-pending.yaml mint shape alongside test/release-workflow.test.ts's release.yaml mint assertions; an e2e leg proves the schedule path end-to-end (the FRO_BOT_PAT-gated dispatch pattern from test/workflow-hardening-guard.test.ts); full suite green
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Aggregator union membership must use both keys of the denylist entry
+- id: `rm-2138` | track: security | priority: 78.5 | status: candidate
+- signals: `src/github/aggregator.ts:516` filters the installation-enumerated union by node_id only while the redaction denylist is dual-key (name plus node_id) — a name-matched, node_id-skewed entry re-enters the union, and a query is itself a leak signal (invariant 2)
+- acceptance: the union filter consults both denylist keys with a red-first property test skewing one key while matching the other (mirroring the dual-key denylist cure's test shape); the fail-closed behavior — data-branch read failure serves stale or empty, never an unfiltered union — stays pinned; the monitoring DTO emits only denylist-clean rows; full suite green
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Operator SSE retryCount never re-arms after one recovery
+- id: `rm-2139` | track: reliability | priority: 74.0 | status: candidate
+- signals: `public/operator-stream.js:1352` decrements retryCount per backoff but never resets it on successful reattach — a second later drop exhausts a budget already spent
+- acceptance: retryCount re-arms after a successful reattach, or the budget model is re-derived to a time-window shape with the choice recorded; the browser property suite pins two sequential drops with a recovery between them; public/operator-stream.js stays the served-asset seam with no build step; full suite green
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Release-channel staleness as an always-visible dashboard card (rm-740 mirror)
+- id: `rm-2140` | track: operator-experience | priority: 72.5 | status: candidate
+- signals: `scripts/release-channel-staleness.ts` makes a dead release channel loud only as a scheduled red CI run; the fork's channel is dormant by design today (`HAS_RELEASE_APP` false in release-pending.yaml); a red workflow badge is subject to the attention problem it encodes
+- acceptance: the CalVer-tag-age verdict with retired-with-owner decision-file handling is computed server-side against the repo's own tags via public refs and rendered as a card beside platform-status (the `src/github/platform-status.ts` folding pattern); every operator visit evaluates channel freshness instead of every CI panic; unit tests pin the verdict semantics from the script's exit-0/1/2 ladder; full suite green
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Push subscription ownership gate is asymmetric on failure paths
+- id: `rm-2141` | track: reliability | priority: 72.0 | status: candidate
+- signals: `web/src/push/subscribe.ts:516` checks ownership before the happy path, but the failure paths (cleanup on key rotation, resubscribe teardown, unsubscribe) can act without the same gate
+- acceptance: the ownership check is enforced on every mutating path symmetric to the happy path, with a red-first test acting on a foreign subscription across the failure routes; the reconcile-sweep self-healing semantics stay intact; full suite green
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Remote-refs janitor: bound the conductor branch litter on origin
+- id: `rm-2142` | track: reliability | priority: 64.0 | status: candidate
+- signals: `git ls-remote origin` counts 2330 refs (2320 at the 2026-11-18 research — monotonic growth); no janitor or hygiene workflow exists in `.github/workflows/`
+- acceptance: a scheduled janitor workflow deletes merged or stale `conductor/*` heads on origin with an explicit preservation list (open-PR heads, the current run's refs, protected tags) and a dry-run mode whose report is committed as evidence before the first destructive run; deletion is branch-scoped, never tag or protection mutation; the workflow passes actionlint; the next remote-refs census shows the count bounded below the first-run count
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Docs-truth sweep: pin sync and the pnpm-vs-bun workflow citations
+- id: `rm-2143` | track: docs | priority: 58.0 | status: candidate
+- signals: `AGENTS.md:77` cites impeccable 4.6.0 while `.github/workflows/main.yaml` pins 4.10.0; `docs/runbooks/outage-validation.md:31`, `audit.yaml:24`, `dependabot.yml:18`, `AGENTS.md:73`, `test/static-assets.test.ts:82`, and `playwright.config.ts:5` cite pnpm forms in a bun-gated repo
+- acceptance: every stale citation is corrected in one sweep with a grep-clean proof — pnpm absent outside quoted historical prose, impeccable version strings reconciled to the live pin with both places bumped together per the existing convention; the sweep lands as one docs-only change; full suite green with no behavior surfaces touched
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### In-range dependency rider window (2026-11-27 census)
+- id: `rm-2144` | track: docs | priority: 56.0 | status: candidate
+- signals: npm registry 2026-11-27: eslint 10.15.0 (fork 10.14.0 — also upstream parity), vitest 5.1.2 (5.1.1), vite 8.4.0 (8.3.8), `@playwright/test` 1.65.1 (1.64.0), hono 4.13.23 (4.13.16), fast-check 4.11.0 (4.10.2); react, yaml, `@octokit/core`, markdown-it already at latest
+- acceptance: one lockfile-only window lands the six in-range refreshes together per the rider convention — bun.lock re-resolved, behavior-bearing notes recorded; jsdom 31.0.1 and TypeScript 7.0.2 are explicitly NOT taken here (they ride the ecosystem-majors window rm-271 with its own disposition); check-types, lint, and the full suite green on the bumped tree
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Fleet-signal batch: monitoring grid, failing-check rollup, drift digest
+- id: `rm-2145` | track: operator-experience | priority: 54.0 | status: candidate
+- signals: `web/src/views/Monitoring.tsx:24` defers the full grid (rm-104) while the monitoring DTO already emits openPrCount, openIssueCount, openAlertCount, discovery_channel, and stale flags the drill-down view never renders; `failingCheckDetails` (capped at 25 per aggregator) is per-repo only; buildWorkingSet discards drift identity (driftCount++ with no record of which repo appeared or vanished)
+- acceptance: a sortable or filterable full-fleet grid lands over the existing DTO with no new query (rm-104's def); a fleet-wide failing-check rollup aggregates the per-repo names into a top signal; working-set drift diffs become ackable listener rows via the existing ingest-message shape; the drift digest pairs with the aggregator dual-key fix (rm-2138) so drift counting is correct before it becomes loud; full suite green
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Operator visibility batch: glass self-health view, listener filters, push test affordance
+- id: `rm-2146` | track: operator-experience | priority: 52.0 | status: candidate
+- signals: self-health signals are scattered — healthz is liveness-only per rm-107, refreshDegraded and staleBanner live in the monitoring DTO, pushHealth in Notifications, pruned and dropped counts in Listener, SSE lastGoodAt in App — with no single honest system-status surface; `web/src/views/Listener.tsx` fetches a flat limit-100 with no filter params; push has no end-to-end test affordance
+- acceptance: one operator-facing system-status view consolidates last-good-fetch age, watchdog degradation streak, ingest age, push delivery health, and boot-cache provenance; the listener route grows server-side filters (source, severity, kind, time range) over the existing SQLite store with tests; a benign test-notification affordance dispatches through the exact gateway push path (the `/operator/*` proxy seam) exercising the full chain; read-only invariant holds throughout; full suite green
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### healthz under the public rate limit: liveness probe rate-limited
+- id: `rm-2147` | track: reliability | priority: 50.0 | status: candidate
+- signals: `src/server.ts:282` routes `/healthz` through the public per-path-class limiter (60/min default) — a monitor polling faster trips the limiter and reads a healthy app as rate-limited
+- acceptance: healthz is exempted or moved to an internal class, with a red-first test proving unlimited liveness polling while the public class still enforces its limit for other paths; the exemption is explicit in the limiter config, not an incidental path-prefix accident; full suite green
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Operator-asset delivery: precompression and icon weight
+- id: `rm-2148` | track: performance | priority: 46.0 | status: candidate
+- signals: `src/server.ts:1364` serves `operator-stream.js` (~365KB) uncompressed on every boot; `web/public/` PWA icons total ~641KB across regenerated sizes
+- acceptance: operator assets are precompressed at build or install time (brotli and/or gzip, served encoding negotiated) and static-asset tests pin the compressed variants; the icon set is regenerated at true needed sizes with a committed before/after weight record; the served content decompresses byte-identically, proven by a test; full suite green
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### tsconfig exclude list overstated: re-derive the strip-only check surface
+- id: `rm-2149` | track: performance | priority: 44.0 | status: candidate
+- signals: the server tsconfig's exclude list names vendored or generated paths whose necessity is unrecorded — check-types time and clarity cost with no coverage gain
+- acceptance: the exclude list is re-derived to the minimal true set with a recorded rationale per surviving entry; check-types (server, web, .opencode) stays green before and after; the diff is config-only with no source changes
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
+### Data-history capabilities: CI-state series and release verification surface
+- id: `rm-2150` | track: operator-experience | priority: 42.0 | status: candidate
+- signals: the 60s refresh discards history (snapshot-store persists only the last good snapshot — red-duration and flakiness are unanswerable); release recovery verification (commit, tag, release linkage; pending-PR approval state) is a manual runbook procedure while every fact except the registry digest is reachable with read-only GraphQL
+- acceptance: a compact per-repo rollup series (repo, state, failing-check count, refreshedAt) appends to a node:sqlite table using the listener store's retention patterns, enabling red-duration and flap counts in the monitoring surface; a release-state surface cross-checks the runbook invariants via additive query-registry selections with canary auto-extension; the registry-digest half stays manual with the limitation recorded (installation tokens cannot read GHCR); retention bounds the store size; full suite green
+- evidence: campaign-recorded in dashboard ROADMAP.md
+
 ### Gateway contract forward-support: 1.7.0/1.8.0 fields, v0.116.0 401 semantics, and the v0.117.0 absorb riders (grows rm-157)
 - id: `rm-252` | track: operator-experience | priority: 80.0 | status: in_progress
 - acceptance: the operator contract version accepted extends additively to 1.8.0 (1.6.0/1.7.0/1.8.0); run-status renders checkout-advance provenance and distinguishes workspace-preparation failures from run failures and incomplete invocation (rm-157's acceptance rides here); 401 from a gateway at v0.116.0+ maps to an operator-actionable workspace-unavailable state rather than auth-required; BOTH parsers (src/gateway/operator-sse-reader.ts and public/operator-stream.js — see rm-253's wire-or-fold decision) grow the new fields exactly once; the workflow pin bumps to the absorbed agent version with the riders above

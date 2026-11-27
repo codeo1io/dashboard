@@ -35,9 +35,20 @@ const workflow = parse(readFileSync(resolve(process.cwd(), '.github/workflows/re
   readonly jobs: Record<string, Job>
 }
 
+const pendingWorkflow = parse(readFileSync(resolve(process.cwd(), '.github/workflows/release-pending.yaml'), 'utf8')) as {
+  readonly on: Record<string, unknown>
+  readonly jobs: Record<string, Job>
+}
+
 function mintStep(job: string, id: string): Step {
   const step = workflow.jobs[job]?.steps.find(candidate => candidate.id === id)
   if (step === undefined) throw new Error(`step ${id} not found in job ${job}`)
+  return step
+}
+
+function pendingMintStep(job: string, id: string): Step {
+  const step = pendingWorkflow.jobs[job]?.steps.find(candidate => candidate.id === id)
+  if (step === undefined) throw new Error(`step ${id} not found in job ${job} of release-pending.yaml`)
   return step
 }
 
@@ -112,6 +123,29 @@ describe('release workflow — infra dispatch token', () => {
     const step = mintStep('dispatch-deploy', 'dispatch-token')
     expect(permissionInputs(step)).toEqual({'permission-actions': 'write'})
     expect(step.with?.repositories).toBe('infra')
+  })
+})
+
+describe('release-pending workflow — token mint scope (rm-2137)', () => {
+  const step = pendingMintStep('execute', 'app-token')
+
+  it('is minted with a pinned create-github-app-token', () => {
+    expect(step.uses).toMatch(/^actions\/create-github-app-token@[0-9a-f]{40}\b/u)
+  })
+
+  it('requests exactly contents:write and pull-requests:write', () => {
+    // Uses: merge the pending PR (pull-requests:write) and push/read the
+    // reserved release/pending ref (contents:write) — nothing wider.
+    expect(permissionInputs(step)).toEqual({'permission-contents': 'write', 'permission-pull-requests': 'write'})
+  })
+
+  it('is limited to this repository by name', () => {
+    // The App installation is broader than the pending-release flow needs;
+    // mint-time scoping is the only narrowing. Mirrors the publication-token
+    // legs above (upstream 2026.11.11 #792 rationale) — the script hard-checks
+    // that origin is this repository, so scope and target always agree.
+    expect(step.with?.owner).toMatch(/github\.repository_owner/u)
+    expect(step.with?.repositories).toMatch(/github\.event\.repository\.name/u)
   })
 })
 
