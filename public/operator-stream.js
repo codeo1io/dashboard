@@ -1356,6 +1356,13 @@ export function nextStreamState(current, event) {
       return {
         ...current,
         connection: 'live',
+        // rm-2139: a successful reattach re-arms the retry budget. The count
+        // is a consecutive-failure budget for the CURRENT connection
+        // attempt cycle, not a lifetime total — otherwise six transient
+        // drops spread over a long operator session (each recovered in
+        // seconds) would exhaust RETRY_MAX_COUNT and permanently fail the
+        // stream. Drift keeps the count (drift never reconnects).
+        retryCount: 0,
         shouldReconnect: false,
       }
     }

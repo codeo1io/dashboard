@@ -140,6 +140,21 @@ export function runPending(mode: 'prepare' | 'review' | 'schedule', env: NodeJS.
     if (notes === null || notes.length === 0) return 'No release notes to prepare.'
     const version = run('node', ['scripts/compute-release-tag.ts']).trim()
     if (!/^\d{4}\.(?:0[1-9]|1[0-2])\.(?:0|[1-9]\d*)$/.test(version)) throw new Error('Invalid next release CalVer')
+    // rm-2137: the computed tag comes from the git tag set while this flow's
+    // baseline (notes, previous batch) comes from releases/latest — the two
+    // views can diverge when a tag exists without its release yet. The
+    // prepared version must be the exact successor of the latest release
+    // tag (same month → patch + 1; a later month → patch 0), otherwise the
+    // PR title/body would advertise a version that does not follow the
+    // published sequence. Fail closed and reconcile manually.
+    {
+      const [releaseYear = -1, releaseMonth = -1, releasePatch = -1] = release.tag_name.split('.').map(Number)
+      const [nextYear = -1, nextMonth = -1, nextPatch = -1] = version.split('.').map(Number)
+      const expectedPatch = nextYear === releaseYear && nextMonth === releaseMonth ? releasePatch + 1 : 0
+      if (nextPatch !== expectedPatch) {
+        throw new Error(`CalVer drift: next tag ${version} is not the successor of latest release ${release.tag_name}; reconcile the tag set manually.`)
+      }
+    }
     const title = `chore: release ${version}`
     const body = `Release ${version}.\n\n${notes}\n**Approve to release:** When the required checks pass, submit an **Approve** review. The App merges the pull request and starts Release. Do not click **Merge**.`
     const remote = run('git', ['remote', 'get-url', 'origin']).trim()
@@ -192,7 +207,14 @@ export function runPending(mode: 'prepare' | 'review' | 'schedule', env: NodeJS.
     if (existing && !unchanged && old !== head) {
       for (let attempt = 0; attempt < 4 && validReadback(current) && current.head.sha === old; attempt++) {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000)
-        current = api(`pulls/${pr.number}`) as Pull
+        try {
+          current = api(`pulls/${pr.number}`) as Pull
+        } catch {
+          // rm-2137: a transient fetch failure (5xx, rate limit, network
+          // blip) must not abort the lag-retry loop — the attempt budget
+          // still bounds the wait, and the post-loop readback check below
+          // fail-closes on a genuinely stale PR head.
+        }
       }
     }
     if (!validReadback(current) || current.head.sha !== head) throw new Error('Pending PR readback mismatch')

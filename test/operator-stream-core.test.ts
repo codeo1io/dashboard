@@ -883,6 +883,21 @@ describe('nextStreamState — ready frame', () => {
     })
     expect(state.shouldReconnect).toBe(false)
   })
+
+  it('re-arms the retry budget on a successful reattach (rm-2139)', () => {
+    // Two drops with a recovery between them: the second drop must start
+    // from a fresh budget, not the budget spent surviving the first.
+    const live = nextStreamState(INITIAL_STATE, {type: 'ready', data: {contractVersion: PINNED_CONTRACT_VERSION}})
+    const firstDrop = nextStreamState(live, {type: 'unexpected-close'})
+    expect(firstDrop.connection).toBe('reconnecting')
+    expect(firstDrop.retryCount).toBe(1)
+    const recovered = nextStreamState(firstDrop, {type: 'ready', data: {contractVersion: PINNED_CONTRACT_VERSION}})
+    expect(recovered.connection).toBe('live')
+    expect(recovered.retryCount).toBe(0)
+    const secondDrop = nextStreamState(recovered, {type: 'unexpected-close'})
+    expect(secondDrop.connection).toBe('reconnecting')
+    expect(secondDrop.retryCount).toBe(1)
+  })
 })
 
 describe('nextStreamState — status frame', () => {

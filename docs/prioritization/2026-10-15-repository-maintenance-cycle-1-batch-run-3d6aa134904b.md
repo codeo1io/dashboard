@@ -265,3 +265,6 @@ track taxonomy restored at 7 values, empty-string criteria emit no line).
 The three cross-lineage refs re-dispositioned under the house fog
 convention (rm-553, rm-678) and the rm-13640 ref reworded to name its
 outcome. This doc remains the sole marker-bearing carrier.
+
+<!-- 2026-11-27 repository-maintenance roadmap phase, run 4b7a6aad304b, attempt 7aa63d11 (working tree, uncommitted) -->
+Landing-record re-census: 355 defs / 0 dups / max rm-2150 — 16 new campaign defs minted (rm-2135 through rm-2150) from the same-run assess (27 findings) and research (12 candidates); per the last-match-wins rule this re-census supersedes the prior 339/0/rm-2134 claim for the live tree.

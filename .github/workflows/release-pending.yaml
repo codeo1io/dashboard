@@ -103,10 +103,17 @@ jobs:
         with:
           node-version: '24'
       - id: app-token
+        # rm-2137: the App installation is broader than the pending-release flow
+        # needs — mint scoped to this repository, mirroring release.yaml's
+        # publication-token pattern (upstream 2026.11.11 #792 rationale). The
+        # script hard-checks that origin is this repository, so scope and
+        # target always agree.
         uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           app-id: ${{ secrets.APPLICATION_ID }}
           private-key: ${{ secrets.APPLICATION_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
           permission-contents: write
           permission-pull-requests: write
       - name: Run pending release operation
