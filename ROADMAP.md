@@ -8,8 +8,8 @@
 
 ## Fleet context
 
-- upstreams (this repo builds on): .github
-- dependents (changes here affect): glmplus
+- upstreams (this repo builds on): .github, agent, hermes-agent, hermes-stewardship-dashboard
+- dependents (changes here affect): (host), glmplus, hermes-control-ui, hermes-stewardship-dashboard, maestro
 - graph: evidence-derived (imports/refs/deploy surfaces); advisory
 
 ## Open items
